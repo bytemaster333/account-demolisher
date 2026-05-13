@@ -1,0 +1,22 @@
+# Build output
+.next/
+out/
+dist/
+coverage/
+
+# Dependencies
+node_modules/
+
+# Lockfiles
+pnpm-lock.yaml
+
+# Hand-written research / planning docs (don't reformat)
+researches/
+plan.md
+
+# Generated
+next-env.d.ts
+
+# Test artifacts
+playwright-report/
+test-results/

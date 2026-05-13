@@ -1,0 +1,103 @@
+# Stellar Ecosystem Proposal 1 (SEP-1) declaration for Account Demolisher.
+#
+# The presence of this file at the canonical URL is part of the supply-chain
+# integrity story:
+#
+#   https://demolisher.stellar.org/.well-known/stellar.toml
+#
+# Reference deployment operators serve this file under `.well-known/`. Next.js
+# auto-publishes anything under `public/` at the matching path, but the SEP-1
+# canonical location is `/.well-known/stellar.toml` — operators should add a
+# rewrite rule (Vercel `vercel.json` or `next.config.ts` `rewrites()`) so that
+# both paths resolve here.
+#
+# Embedders that self-host (CEXes, wallets) MUST replace every placeholder
+# below with their own operator details and SIGNING_KEY, then re-sign the
+# release artifact. The placeholder values are NOT valid for production traffic.
+
+# ---------------------------------------------------------------------------
+# General information
+# ---------------------------------------------------------------------------
+
+VERSION = "0.0.0"
+NETWORK_PASSPHRASE = "Public Global Stellar Network ; September 2015"
+
+# The canonical URL that this TOML attests to. Reference deployment is
+# `demolisher.stellar.org` (placeholder, subject to SDF assignment). Embedders
+# replace with their own canonical URL.
+WEB_AUTH_ENDPOINT = "https://demolisher.stellar.org"
+
+# ---------------------------------------------------------------------------
+# Documentation
+# ---------------------------------------------------------------------------
+
+[DOCUMENTATION]
+ORG_NAME = "Account Demolisher (reference deployment)"
+ORG_DBA = "Stellar Development Foundation"
+ORG_URL = "https://demolisher.stellar.org"
+ORG_LOGO = "https://demolisher.stellar.org/icon.svg"
+ORG_DESCRIPTION = """
+Account Demolisher is an open-source (Apache-2.0) Stellar account-closure
+tool. It drains and merges Stellar accounts cleanly across both classic
+Stellar operations and Soroban DeFi protocols (Blend, Aquarius, Soroswap,
+FxDAO). The reference deployment is operated by the Stellar Development
+Foundation. Embedders (wallets, exchanges) may self-host with their own
+per-deployment mediator key.
+"""
+ORG_OFFICIAL_EMAIL = "demolisher@stellar.org"
+ORG_SUPPORT_EMAIL = "demolisher-support@stellar.org"
+ORG_GITHUB = "stellar/account-demolisher"
+ORG_KEYBASE = ""
+ORG_TWITTER = ""
+ORG_LICENSING_AUTHORITY = "n/a — Apache-2.0 open source software"
+
+# ---------------------------------------------------------------------------
+# Principals (people responsible)
+# ---------------------------------------------------------------------------
+
+[[PRINCIPALS]]
+name = "Reference Deployment Operator"
+email = "demolisher@stellar.org"
+keybase = ""
+twitter = ""
+github = "stellar"
+id_photo_hash = ""
+verification_photo_hash = ""
+
+# ---------------------------------------------------------------------------
+# Signing keys
+# ---------------------------------------------------------------------------
+#
+# `SIGNING_KEY` is the Stellar account whose secret signs SEP-10 challenges
+# AND co-signs the strictly-shape-validated 2-op
+# `accountMerge → mediator` + `payment → user-destination` mediator
+# transactions. The reference deployment generates this key at provisioning
+# time and stores the secret in the Vercel encrypted environment as
+# `MEDIATOR_SECRET`. Embedders MUST generate their own key.
+#
+# The placeholder `GAAAA...` below is intentionally not a valid mediator. Real
+# deployments overwrite this file with their actual signing public key before
+# publication.
+
+SIGNING_KEY = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+# `SIGNERS` lists every account that may sign mediator transactions. For the
+# reference deployment this is a single signer (the mediator). Embedders that
+# want multisig on the mediator-side add their additional signers here.
+
+[[SIGNERS]]
+name = "Mediator (per-deployment)"
+public_key = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+weight = 1
+
+# ---------------------------------------------------------------------------
+# Currencies — none. The demolisher does not issue assets.
+# ---------------------------------------------------------------------------
+
+# (no [[CURRENCIES]] entries)
+
+# ---------------------------------------------------------------------------
+# Validators — none. The demolisher does not run validation nodes.
+# ---------------------------------------------------------------------------
+
+# (no [[VALIDATORS]] entries)
