@@ -1,18 +1,12 @@
-/**
- * fxdao vault exit builder. produces two unsigned txs per vault:
- *  - pay_debt(prev_key, vault_key, new_prev_key, amount): with amount == vault.debt and
- *    new_prev_key == None, burns the user's synthetic balance and returns all locked
- *    collateral. requires the user to hold vault.debt of the synthetic.
- *  - redeem(caller, denomination, new_prev_key, amount): any synthetic holder can burn
- *    and pull collateral from the lowest-indexed vault. equivalent to pay_debt only when
- *    the user's vault is the lowest.
- *
- * prev_key: the on-chain vault list is sorted by collateral ratio; pay_debt needs the
- * prev_key of the user's current vault. resolving it requires many round-trips, so this
- * module emits OptionalVaultKey::None as a placeholder. the orchestrator MUST substitute
- * the real prev_key (via findPrevVaultKey) before signing whenever the user's vault is
- * not the lowest.
- */
+// fxdao vault exit builder. produces two unsigned txs per vault:
+//   pay_debt(prev_key, vault_key, new_prev_key, amount): with amount == vault.debt
+//     and new_prev_key == None, burns the user's synthetic balance and returns all
+//     locked collateral. requires the user to hold vault.debt of the synthetic.
+//   redeem(caller, denomination, new_prev_key, amount): any synthetic holder can
+//     burn and pull collateral from the lowest-indexed vault. equivalent to pay_debt
+//     only when the user's vault is the lowest.
+//
+// prev_key is resolved by the hydrator via findPrevVaultKey before this is called.
 
 import {
   BASE_FEE,
@@ -31,6 +25,7 @@ import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
 
 import { getFxDAOVaultsContractId } from "./contracts";
 import type { FxDAOVault } from "./client";
+import { optionalVaultKeyScVal, type VaultKey } from "./prev-key";
 
 // five-minute timeout
 const MAX_TIMEOUT_SECONDS = 300;
@@ -41,13 +36,16 @@ export interface FxDAOVaultExit {
   readonly redeem: Transaction;
 }
 
-// build the two-step unsigned exit for one vault
+// build the two-step unsigned exit for one vault.
+// prevKey must be supplied by the caller (resolved via findPrevVaultKey upstream);
+// null means the user's vault is the head of the sorted linked list.
 export async function buildVaultExit(
   vault: FxDAOVault,
   userPublicKey: string,
   network: NetworkConfig,
   sourceAccount: Horizon.AccountResponse,
   syntheticAssetIssuer: string,
+  prevKey: VaultKey | null,
 ): Promise<FxDAOVaultExit> {
   if (vault.debt <= 0n) {
     throw new RangeError(
@@ -67,7 +65,14 @@ export async function buildVaultExit(
     );
   }
 
-  const payDebt = buildPayDebtTx(vault, userPublicKey, sourceAccount, network, vaultsContractId);
+  const payDebt = buildPayDebtTx(
+    vault,
+    userPublicKey,
+    sourceAccount,
+    network,
+    vaultsContractId,
+    prevKey,
+  );
   const redeem = buildRedeemTx(vault, userPublicKey, sourceAccount, network, vaultsContractId);
 
   assertTransactionAllowed(payDebt, network);
@@ -125,10 +130,11 @@ function buildPayDebtTx(
   sourceAccount: Horizon.AccountResponse,
   network: NetworkConfig,
   vaultsContractId: string,
+  prevKey: VaultKey | null,
 ): Transaction {
   const contract = new Contract(vaultsContractId);
   const callArgs: xdr.ScVal[] = [
-    optionalVaultKeyNone(), // prev_key — placeholder; orchestrator resolves at submit time
+    optionalVaultKeyScVal(prevKey), // prev_key resolved by hydration via findPrevVaultKey
     vaultKeyScVal(userPublicKey, vault.denomination),
     optionalVaultKeyNone(), // new_prev_key — None because amount == debt closes the vault
     nativeToScVal(vault.debt, { type: "u128" }), // full debt

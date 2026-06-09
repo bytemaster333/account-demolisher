@@ -97,6 +97,7 @@ function getSorobanTransaction(node: PlanNode): Transaction | undefined {
     case "BackstopQueue":
       return node.metadata.transaction;
     case "TransferAsIs":
+      return node.metadata.transaction;
     case "FinalClassicTx":
     case "MediatorForward":
       return undefined;
@@ -112,9 +113,6 @@ async function simulateClassicNode(
   }
   if (node.kind === "MediatorForward") {
     return simulateMediatorForward(node, deps);
-  }
-  if (node.kind === "TransferAsIs") {
-    return simulateTransferAsIs(node, deps);
   }
   // defensive: catches future union expansions.
   throw new Error(
@@ -168,32 +166,6 @@ async function simulateMediatorForward(
   if (node.metadata.memo !== undefined) {
     builder.addMemo(Memo.text(node.metadata.memo));
   }
-  builder.setTimeout(0);
-  const tx = builder.build();
-  return {
-    kind: "classic",
-    xdr: tx.toEnvelope().toXDR("base64"),
-    operationCount: 1,
-    estimatedFee: tx.fee,
-  };
-}
-
-async function simulateTransferAsIs(
-  node: Extract<PlanNode, { kind: "TransferAsIs" }>,
-  deps: SimulationDeps,
-): Promise<SimulationOutcome> {
-  // metadata sanity + a stub envelope so the UI has something to show.
-  if (node.metadata.amount <= 0n) {
-    throw new Error(
-      `simulateNode: TransferAsIs "${node.id}" must carry amount > 0; got ${node.metadata.amount.toString()}`,
-    );
-  }
-  const synthetic = new Account(SYNTHETIC_SOURCE_PUBLIC_KEY, "0");
-  const builder = new TransactionBuilder(synthetic, {
-    fee: BASE_FEE,
-    networkPassphrase: deps.network.passphrase,
-  });
-  builder.addOperation(Operation.bumpSequence({ bumpTo: "0" }));
   builder.setTimeout(0);
   const tx = builder.build();
   return {

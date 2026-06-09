@@ -30,6 +30,12 @@ import { poolIndexHexToBytes } from "@/lib/adapters/aquarius/pools";
 import { removeLiquidityByContractIds } from "@/lib/adapters/soroswap/lp";
 import { convertToXLM } from "@/lib/adapters/soroswap/aggregator";
 import { buildVaultExit } from "@/lib/adapters/fxdao/exit";
+import {
+  findPrevVaultKey as defaultFindPrevVaultKey,
+  type VaultKey,
+} from "@/lib/adapters/fxdao/prev-key";
+import { getFxDAOVaultsContractId } from "@/lib/adapters/fxdao/contracts";
+import { getAllowlistForNetwork } from "@/lib/config/contracts";
 import { FXDAO_MAINNET_STABLE_ISSUER } from "@/lib/adapters/fxdao/contracts";
 import { buildRevoke } from "@/lib/soroban/allowances";
 import { buildTransfer } from "@/lib/soroban/sep41";
@@ -60,6 +66,7 @@ export interface HydrationAdapterOverrides {
   readonly aquariusClaim?: typeof aquariusClaim;
   readonly removeLiquidityByContractIds?: typeof removeLiquidityByContractIds;
   readonly buildVaultExit?: typeof buildVaultExit;
+  readonly findPrevVaultKey?: typeof defaultFindPrevVaultKey;
   readonly convertToXLM?: typeof convertToXLM;
   readonly buildTransfer?: typeof buildTransfer;
 }
@@ -271,6 +278,12 @@ async function hydrateNode(
     case "PayFxDAODebt": {
       const sourceAccount = await getSourceAccount();
       const fn = a.buildVaultExit ?? buildVaultExit;
+      const prevKey = await resolveFxDaoPrevKey(
+        deps,
+        userPublicKey,
+        node.metadata.vaultDenomination,
+        a.findPrevVaultKey,
+      );
       const exit = await fn(
         {
           denomination: node.metadata.vaultDenomination,
@@ -282,6 +295,7 @@ async function hydrateNode(
         deps.network,
         sourceAccount,
         FXDAO_MAINNET_STABLE_ISSUER,
+        prevKey,
       );
       setTransaction(node, exit.payDebt);
       return;
@@ -289,13 +303,13 @@ async function hydrateNode(
 
     case "RedeemFxDAO": {
       if (node.metadata.debt <= 0n) {
-        // buildVaultExit requires debt > 0n (redeem burns synthetic == debt).
         throw new Error(
           `RedeemFxDAO: vault debt is ${node.metadata.debt.toString()} (must be > 0); cannot build redeem`,
         );
       }
       const sourceAccount = await getSourceAccount();
       const fn = a.buildVaultExit ?? buildVaultExit;
+      // redeem doesn't take prev_key; pass null and pick the redeem half only.
       const exit = await fn(
         {
           denomination: node.metadata.vaultDenomination,
@@ -306,6 +320,7 @@ async function hydrateNode(
         deps.network,
         sourceAccount,
         FXDAO_MAINNET_STABLE_ISSUER,
+        null,
       );
       setTransaction(node, exit.redeem);
       return;
@@ -474,4 +489,30 @@ function synthesizeBlendPositionForBackstop(metadata: {
     supply: new Map(),
     emissions: new Map(),
   };
+}
+
+// resolve the user's predecessor in the fxdao vault linked list.
+// returns null if the user is the head (or list is empty).
+async function resolveFxDaoPrevKey(
+  deps: HydrationDeps,
+  userPublicKey: string,
+  denomination: string,
+  override?: typeof defaultFindPrevVaultKey,
+): Promise<VaultKey | null> {
+  const fn = override ?? defaultFindPrevVaultKey;
+  const vaultsContractId = resolveFxDaoVaultsId(deps.network);
+  return fn(vaultsContractId, userPublicKey, denomination, deps.network, { server: deps.rpc });
+}
+
+function resolveFxDaoVaultsId(network: NetworkConfig): string {
+  if (network.id === "mainnet") return getFxDAOVaultsContractId();
+  if (network.id === "testnet") {
+    const list = getAllowlistForNetwork(network);
+    const entry = list.find((c) => c.protocol === "fxdao" && c.name === "FxDAO::VaultsContract");
+    if (!entry) {
+      throw new Error("FxDAO VaultsContract is not on the testnet allow-list");
+    }
+    return entry.id;
+  }
+  throw new Error(`FxDAO has no published ${network.id} deployment`);
 }

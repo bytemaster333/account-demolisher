@@ -374,8 +374,8 @@ export function isSorobanNode(node: PlanNode): boolean {
     case "ClaimAquariusRewards":
     case "ConvertSorobanToXLM":
     case "BackstopQueue":
-      return true;
     case "TransferAsIs":
+      return true;
     case "FinalClassicTx":
     case "MediatorForward":
       return false;

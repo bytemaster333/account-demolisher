@@ -232,23 +232,11 @@ export function generatePlan(
     });
   }
 
-  // sep-41 conversions; reserved for a future positions stream.
-  for (const balance of audit.balances) {
-    if (!isConvertibleSEP41(balance)) continue;
-    const id = makeId("convert", balanceKey(balance.asset));
-    nodes.push({
-      id,
-      kind: "ConvertSorobanToXLM",
-      dependencies: [],
-      status: "pending",
-      description: `Convert ${balance.amount} ${describeAsset(balance.asset)} to XLM`,
-      metadata: {
-        kind: "ConvertSorobanToXLM",
-        asset: balance.asset,
-        amount: parseAmountToStroops(balance.amount),
-      },
-    });
-  }
+  // classical credit balances are converted to xlm by path_payment_strict_send
+  // inside the final classic tx (handled by classic-batcher.ts). custom sep-41
+  // contract balances (non-trustline tokens) aren't discovered by auditAccount,
+  // so there's no balance source to enumerate here. ConvertSorobanToXLM nodes
+  // are emitted only when a positions provider surfaces a soroban token holding.
 
   // backstop queue: only emitted when an extended position type is passed in.
 
@@ -369,11 +357,6 @@ function describeAsset(asset: AssetIdentifier): string {
     case "liquidity_pool_shares":
       return `LP:${asset.poolId.slice(0, 6)}`;
   }
-}
-
-// no-op placeholder until a richer source surfaces sep-41 contract balances.
-function isConvertibleSEP41(_balance: AuditBalance): boolean {
-  return false;
 }
 
 // decimal string -> stroops bigint (7 decimals).
