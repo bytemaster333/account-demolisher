@@ -1,6 +1,6 @@
 // pure plan generator: audit + positions + allowances -> deterministic PlanTree.
 
-import type { AccountAudit, AssetIdentifier, AuditBalance } from "@/lib/types/account";
+import type { AccountAudit } from "@/lib/types/account";
 import type { BatchOptions, ClassicBatch, ClassicMemo } from "@/lib/types/plan";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import type {
@@ -335,39 +335,6 @@ function makeId(...parts: readonly string[]): string {
 function shortAddr(s: string): string {
   if (s.length <= 12) return s;
   return `${s.slice(0, 6)}...${s.slice(-4)}`;
-}
-
-function balanceKey(asset: AssetIdentifier): string {
-  switch (asset.kind) {
-    case "native":
-      return "native";
-    case "credit":
-      return `${asset.code}:${asset.issuer}`;
-    case "liquidity_pool_shares":
-      return `pool:${asset.poolId}`;
-  }
-}
-
-function describeAsset(asset: AssetIdentifier): string {
-  switch (asset.kind) {
-    case "native":
-      return "XLM";
-    case "credit":
-      return asset.code;
-    case "liquidity_pool_shares":
-      return `LP:${asset.poolId.slice(0, 6)}`;
-  }
-}
-
-// decimal string -> stroops bigint (7 decimals).
-function parseAmountToStroops(s: string): bigint {
-  const trimmed = s.trim();
-  const negative = trimmed.startsWith("-");
-  const abs = negative ? trimmed.slice(1) : trimmed;
-  const [intPart = "0", fracPart = ""] = abs.split(".");
-  const fracPadded = (fracPart + "0000000").slice(0, 7);
-  const result = BigInt(intPart) * 10_000_000n + BigInt(fracPadded || "0");
-  return negative ? -result : result;
 }
 
 export type {

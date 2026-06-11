@@ -102,10 +102,7 @@ function optionalVaultKeyNone(): xdr.ScVal {
   return xdr.ScVal.scvVec([nativeToScVal("None", { type: "symbol" })]);
 }
 
-/**
- * encode a VaultKey struct as scvMap with fields ordered alphabetically (a host invariant).
- * vault lookup uses (account, denomination); index is informational and can be a placeholder.
- */
+// encode a VaultKey struct as scvMap with fields ordered alphabetically (host invariant).
 function vaultKeyScVal(account: string, denomination: string, index: bigint = 0n): xdr.ScVal {
   return xdr.ScVal.scvMap([
     new xdr.ScMapEntry({
