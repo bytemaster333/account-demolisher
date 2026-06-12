@@ -1,26 +1,13 @@
 // per-node simulator: routes soroban nodes to rpc simulate and classic nodes
 // to a well-formedness build pass.
 
-import {
-  Account,
-  BASE_FEE,
-  Keypair,
-  Memo,
-  Operation,
-  TransactionBuilder,
-  type Horizon,
-  type Transaction,
-  type rpc,
-} from "@stellar/stellar-sdk";
+import { BASE_FEE, type Horizon, type Transaction, type rpc } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { simulate, type SimulationResult } from "@/lib/soroban/simulate";
 
 import type { PlanNode, SimulationOutcome } from "./tree";
 import { isSorobanNode } from "./tree";
-
-// throwaway G-address used as a source for synthetic well-formedness envelopes.
-const SYNTHETIC_SOURCE_PUBLIC_KEY = Keypair.fromRawEd25519Seed(Buffer.alloc(32, 0)).publicKey();
 
 export interface SimulationDeps {
   readonly server: rpc.Server;
@@ -122,73 +109,36 @@ async function simulateClassicNode(
 
 async function simulateFinalClassicTx(
   node: Extract<PlanNode, { kind: "FinalClassicTx" }>,
-  deps: SimulationDeps,
+  _deps: SimulationDeps,
 ): Promise<SimulationOutcome> {
   const batches = node.metadata.batches;
   if (batches.length === 0) {
     throw new Error(`simulateNode: FinalClassicTx "${node.id}" has zero batches; cannot validate`);
   }
-  // synthetic envelope check: builds against a throwaway source so the SDK
-  // confirms the operations parse. real envelope is built at submit time.
   const firstBatch = batches[0]!;
-  const synthetic = new Account(SYNTHETIC_SOURCE_PUBLIC_KEY, "0");
-  const builder = new TransactionBuilder(synthetic, {
-    fee: BASE_FEE,
-    networkPassphrase: deps.network.passphrase,
-  });
-  builder.addOperation(Operation.bumpSequence({ bumpTo: "0" }));
-  if (firstBatch.memo) {
-    builder.addMemo(memoFromBatch(firstBatch.memo));
-  }
-  builder.setTimeout(0);
-  const tx = builder.build();
-  const xdrStr = tx.toEnvelope().toXDR("base64");
   const opCount = firstBatch.operations.length;
+  // the real envelope is built at submit time using the live account state.
+  // we report what we actually know: op count and the per-op fee floor.
   return {
     kind: "classic",
-    xdr: xdrStr,
+    xdr: "",
     operationCount: opCount,
-    estimatedFee: tx.fee,
+    estimatedFee: (Number.parseInt(BASE_FEE, 10) * opCount).toString(),
   };
 }
 
 async function simulateMediatorForward(
-  node: Extract<PlanNode, { kind: "MediatorForward" }>,
-  deps: SimulationDeps,
+  _node: Extract<PlanNode, { kind: "MediatorForward" }>,
+  _deps: SimulationDeps,
 ): Promise<SimulationOutcome> {
-  // simplest classic op: payment or accountMerge from mediator to destination.
-  const synthetic = new Account(node.metadata.mediatorPublicKey, "0");
-  const builder = new TransactionBuilder(synthetic, {
-    fee: BASE_FEE,
-    networkPassphrase: deps.network.passphrase,
-  });
-  builder.addOperation(Operation.accountMerge({ destination: node.metadata.ultimateDestination }));
-  if (node.metadata.memo !== undefined) {
-    builder.addMemo(Memo.text(node.metadata.memo));
-  }
-  builder.setTimeout(0);
-  const tx = builder.build();
+  // the mediator forward is one payment + one accountMerge built at submit time
+  // against the mediator's live sequence number.
   return {
     kind: "classic",
-    xdr: tx.toEnvelope().toXDR("base64"),
-    operationCount: 1,
-    estimatedFee: tx.fee,
+    xdr: "",
+    operationCount: 2,
+    estimatedFee: (Number.parseInt(BASE_FEE, 10) * 2).toString(),
   };
-}
-
-function memoFromBatch(memo: { type: string; value: string }): Memo {
-  switch (memo.type) {
-    case "text":
-      return Memo.text(memo.value);
-    case "id":
-      return Memo.id(memo.value);
-    case "hash":
-      return Memo.hash(memo.value);
-    case "return":
-      return Memo.return(memo.value);
-    default:
-      throw new Error(`memoFromBatch: unsupported memo type "${memo.type}"`);
-  }
 }
 
 export class SimulationFailedError extends Error {

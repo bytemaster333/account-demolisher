@@ -199,13 +199,20 @@ export class DirectContractProvider implements IDeFiPositionProvider {
     return pools.map(aquariusPoolToSummary);
   }
 
-  // soroswap getUserPositions isn't routed through our proxy yet; returns [] until wired
+  // soroswap on-chain discovery isn't implemented. the soroswap public api has
+  // no "user lp positions" endpoint and iterating every factory pair to call
+  // balance(user) is expensive on every audit. throw a clear error so the
+  // aggregator surfaces this gap via the returned errors[] field instead of
+  // silently returning fake empty positions.
   private async discoverSoroswap(
     _server: rpc.Server,
     _network: NetworkConfig,
     _userAddress: string,
   ): Promise<readonly SoroswapPositionSummary[]> {
-    return [];
+    throw new Error(
+      "discoverSoroswap: not implemented. users with soroswap lp positions must " +
+        "close them manually before merging.",
+    );
   }
 
   private async discoverFxDAO(

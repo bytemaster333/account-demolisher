@@ -80,12 +80,16 @@ export function SimulationPanel({ outcome, className }: SimulationPanelProps): R
         <dt className="text-slate-600">estimated fee</dt>
         <dd>{outcome.estimatedFee}</dd>
       </dl>
-      <details>
-        <summary className="cursor-pointer text-slate-700">envelope XDR</summary>
-        <pre className="mt-1 max-h-32 overflow-auto break-all rounded bg-white p-2 font-mono text-[10px]">
-          {outcome.xdr}
-        </pre>
-      </details>
+      {outcome.xdr ? (
+        <details>
+          <summary className="cursor-pointer text-slate-700">envelope XDR</summary>
+          <pre className="mt-1 max-h-32 overflow-auto break-all rounded bg-white p-2 font-mono text-[10px]">
+            {outcome.xdr}
+          </pre>
+        </details>
+      ) : (
+        <p className="text-[11px] text-slate-500">envelope built at submit time</p>
+      )}
     </section>
   );
 }

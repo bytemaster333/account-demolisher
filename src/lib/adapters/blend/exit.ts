@@ -118,8 +118,9 @@ export async function buildExitSequence(
         : inferAssetIdentifier(asset, network),
       poolId: position.poolId,
       note:
-        `Acquire ${amount.toString()} of ${asset} before repaying on Blend pool ${position.poolName}. ` +
-        `Orchestrator routes via a swap. No repay tx will be signed until the user holds the borrowed amount.`,
+        `Requires ${amount.toString()} of ${asset} to repay on Blend pool ${position.poolName}. ` +
+        `Automatic swap routing is not implemented; if the user does not already hold the asset, ` +
+        `the repay step will fail and the position must be closed manually before merging.`,
     });
   }
 

@@ -1,6 +1,6 @@
-// page-flow xstate machine for /demolish: wraps auditAccount + generatePlan +
-// simulateNode + executeClassicDemolition. lives alongside the canonical
-// orchestrator machine until all adapter streams are wired in.
+// xstate machine driving /demolish. discovery -> preview -> execute via the
+// shared executePlanTreeOnChain helper. progress events are reflected back
+// onto plan-tree nodes so the ui shows live status.
 
 import { assign, fromPromise, setup } from "xstate";
 import { TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";

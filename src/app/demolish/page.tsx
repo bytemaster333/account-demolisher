@@ -163,8 +163,6 @@ export default function DemolishPage(): React.JSX.Element {
   const isDiscovering = state === "discovering";
   const isPreviewing = state === "previewing";
   const isAwaitingConfirmation = state === "awaiting_confirmation";
-  // underscore-prefixed to dodge no-unused-vars until the UI wires it up
-  const _isExecuting = state === "executing";
   const isSucceeded = state === "succeeded";
   const isFailed = state === "failed";
   const isCancelled = state === "cancelled";
