@@ -366,8 +366,8 @@ export default function HomePage(): React.JSX.Element {
                 </p>
                 <div
                   style={{
-                    display: "flex",
-                    flexWrap: "wrap",
+                    display: "grid",
+                    gridTemplateColumns: "repeat(2, max-content)",
                     gap: 12,
                     marginTop: 36,
                   }}
@@ -403,12 +403,14 @@ export default function HomePage(): React.JSX.Element {
                       <path d="M5 12h14M13 6l6 6-6 6" />
                     </svg>
                   </Link>
-                  <Link
-                    href="/allowances"
+                  <a
+                    href="https://www.youtube.com/watch?v=A_c2uk8yvBY"
+                    target="_blank"
+                    rel="noopener noreferrer"
                     style={{
                       display: "inline-flex",
                       alignItems: "center",
-                      gap: 8,
+                      gap: 9,
                       padding: "14px 20px",
                       background: "var(--surface)",
                       color: "var(--fg)",
@@ -420,10 +422,13 @@ export default function HomePage(): React.JSX.Element {
                       textDecoration: "none",
                     }}
                   >
-                    View allowances
-                  </Link>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                      <path d="M8 5v14l11-7z" />
+                    </svg>
+                    Watch the demo
+                  </a>
                   <a
-                    href="https://github.com/bytemaster333/account-demolisher"
+                    href="https://docs.demolisher.saliht.xyz"
                     target="_blank"
                     rel="noopener noreferrer"
                     style={{
@@ -445,43 +450,6 @@ export default function HomePage(): React.JSX.Element {
                       width="16"
                       height="16"
                       viewBox="0 0 24 24"
-                      fill="currentColor"
-                      aria-hidden
-                    >
-                      <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.1.79-.25.79-.56v-2.02c-3.2.7-3.87-1.36-3.87-1.36-.52-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.71.08-.71 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.51-1.47.11-3.06 0 0 .97-.31 3.18 1.18a11.05 11.05 0 0 1 5.79 0c2.21-1.49 3.18-1.18 3.18-1.18.62 1.59.23 2.77.11 3.06.74.81 1.19 1.84 1.19 3.1 0 4.43-2.69 5.41-5.25 5.69.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56C20.21 21.38 23.5 17.08 23.5 12 23.5 5.65 18.35.5 12 .5z" />
-                    </svg>
-                    View on GitHub
-                  </a>
-                </div>
-                <div
-                  style={{
-                    display: "flex",
-                    marginTop: 14,
-                  }}
-                >
-                  <a
-                    href="https://docs.demolisher.saliht.xyz"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 10,
-                      padding: "16px 24px",
-                      background: "var(--accent-soft)",
-                      color: "var(--accent)",
-                      border: "1px solid var(--accent-line)",
-                      borderRadius: 12,
-                      fontWeight: 600,
-                      fontSize: 15.5,
-                      cursor: "pointer",
-                      textDecoration: "none",
-                    }}
-                  >
-                    <svg
-                      width="18"
-                      height="18"
-                      viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"
                       strokeWidth={2}
@@ -493,19 +461,30 @@ export default function HomePage(): React.JSX.Element {
                       <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
                     </svg>
                     Read the docs
-                    <svg
-                      width="16"
-                      height="16"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth={2.2}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      aria-hidden
-                    >
-                      <path d="M5 12h14M13 6l6 6-6 6" />
+                  </a>
+                  <a
+                    href="https://github.com/bytemaster333/account-demolisher"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 9,
+                      padding: "14px 20px",
+                      background: "var(--surface)",
+                      color: "var(--fg)",
+                      border: "1px solid var(--border-2)",
+                      borderRadius: 11,
+                      fontWeight: 600,
+                      fontSize: 15,
+                      cursor: "pointer",
+                      textDecoration: "none",
+                    }}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                      <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.1.79-.25.79-.56v-2.02c-3.2.7-3.87-1.36-3.87-1.36-.52-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.71.08-.71 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.51-1.47.11-3.06 0 0 .97-.31 3.18 1.18a11.05 11.05 0 0 1 5.79 0c2.21-1.49 3.18-1.18 3.18-1.18.62 1.59.23 2.77.11 3.06.74.81 1.19 1.84 1.19 3.1 0 4.43-2.69 5.41-5.25 5.69.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56C20.21 21.38 23.5 17.08 23.5 12 23.5 5.65 18.35.5 12 .5z" />
                     </svg>
+                    View on GitHub
                   </a>
                 </div>
                 <div
@@ -2424,8 +2403,207 @@ export default function HomePage(): React.JSX.Element {
             </div>
           </div>
         </section>
+
+        <section
+          style={{
+            borderTop: "1px solid var(--border)",
+            background: "var(--bg)",
+          }}
+        >
+          <div
+            style={{
+              maxWidth: 1180,
+              margin: "0 auto",
+              padding: "84px 28px",
+            }}
+          >
+            <div style={{ maxWidth: 720, marginBottom: 44 }}>
+              <div
+                style={{
+                  font: "600 12px/1 Geist, sans-serif",
+                  color: "var(--accent)",
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  marginBottom: 13,
+                }}
+              >
+                Documentation
+              </div>
+              <h2
+                style={{
+                  margin: "0 0 14px",
+                  fontSize: 34,
+                  fontWeight: 600,
+                  letterSpacing: "-0.025em",
+                  textWrap: "pretty",
+                }}
+              >
+                Everything is documented
+              </h2>
+              <p
+                style={{
+                  margin: 0,
+                  fontSize: 15,
+                  lineHeight: 1.6,
+                  color: "var(--fg-2)",
+                }}
+              >
+                The closure plan, the mediator path, the allowance viewer, the multisig
+                coordination, the security model. Every claim in the docs traces back to a specific
+                file in the source.
+              </p>
+            </div>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                gap: 14,
+                marginBottom: 32,
+              }}
+            >
+              <DocCard
+                title="Getting started"
+                body="Open the live app, run the demo flow, connect a real wallet, or paste a secret key."
+                href="https://docs.demolisher.saliht.xyz/docs/getting-started"
+              />
+              <DocCard
+                title="How it works"
+                body="The audit, the plan tree, the 9-phase classical batch, the simulator, the executor."
+                href="https://docs.demolisher.saliht.xyz/docs/how-it-works"
+              />
+              <DocCard
+                title="Destinations &amp; mediator"
+                body="Sending recovered XLM to a wallet, and how the mediator path reaches an exchange."
+                href="https://docs.demolisher.saliht.xyz/docs/destinations-and-mediator"
+              />
+              <DocCard
+                title="Security"
+                body="What the deployment can do, the contract allow-list, the safety gates, the CSP."
+                href="https://docs.demolisher.saliht.xyz/docs/security"
+              />
+              <DocCard
+                title="Allowance viewer"
+                body="Audit and revoke SEP-41 token approvals on any address."
+                href="https://docs.demolisher.saliht.xyz/docs/allowance-viewer"
+              />
+              <DocCard
+                title="Self host"
+                body="Install, configure environment variables, run under your own domain."
+                href="https://docs.demolisher.saliht.xyz/docs/self-host"
+              />
+            </div>
+
+            <a
+              href="https://docs.demolisher.saliht.xyz"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 9,
+                padding: "13px 22px",
+                background: "var(--accent)",
+                color: "var(--accent-fg)",
+                border: "none",
+                borderRadius: 11,
+                fontWeight: 600,
+                fontSize: 15,
+                textDecoration: "none",
+              }}
+            >
+              Open the full docs
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2.2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <path d="M5 12h14M13 6l6 6-6 6" />
+              </svg>
+            </a>
+          </div>
+        </section>
       </main>
     </AppShell>
+  );
+}
+
+function DocCard({
+  title,
+  body,
+  href,
+}: {
+  readonly title: string;
+  readonly body: string;
+  readonly href: string;
+}): React.JSX.Element {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+        padding: "20px 22px",
+        background: "var(--surface)",
+        border: "1px solid var(--border)",
+        borderRadius: 14,
+        color: "var(--fg)",
+        textDecoration: "none",
+        transition: "border-color 140ms, background 140ms",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+        }}
+      >
+        <span
+          style={{
+            fontWeight: 600,
+            fontSize: 15,
+            letterSpacing: "-0.005em",
+          }}
+        >
+          {title}
+        </span>
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2.2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{ color: "var(--fg-3)", flexShrink: 0 }}
+          aria-hidden
+        >
+          <path d="M7 17L17 7M9 7h8v8" />
+        </svg>
+      </div>
+      <p
+        style={{
+          margin: 0,
+          fontSize: 13.5,
+          lineHeight: 1.55,
+          color: "var(--fg-2)",
+        }}
+      >
+        {body}
+      </p>
+    </a>
   );
 }
 
