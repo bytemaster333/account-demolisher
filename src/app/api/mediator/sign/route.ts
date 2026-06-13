@@ -1,13 +1,4 @@
 // strict 2-op merge-payment co-signing endpoint
-//
-// the validator in `@/lib/mediator/validator` is the primary security boundary.
-// it rejects any envelope outside the narrow merge -> payment pattern. the
-// rate limiter and CORS allow-list below are defense in depth.
-//
-// this route must never:
-//  - log the request body
-//  - log the mediator keypair, its public key, or any signature
-//  - import the mediator secret loader from anywhere other than `getMediatorKeypair()`
 
 import { getPublicEnv } from "@/lib/config/env";
 import { resolveNetwork } from "@/lib/config/networks";
@@ -29,8 +20,8 @@ interface Bucket {
 
 const buckets = new Map<string, Bucket>();
 
-// token-bucket throttle keyed by remote IP. returns true when a token is consumed.
-// in-process map, so multi-instance deployments throttle per instance.
+// token-bucket throttle keyed by remote IP. returns true when a token is consumed
+// in-process map, so multi-instance deployments throttle per instance
 function consumeToken(ip: string, now: number = Date.now()): boolean {
   const existing = buckets.get(ip);
   if (existing === undefined) {
@@ -57,8 +48,8 @@ export function __resetRateLimiterForTests(): void {
 
 const DEV_ALLOWED_ORIGINS = new Set<string>(["http://localhost:3000", "http://localhost:3001"]);
 
-// build CORS headers for an origin. prod only allows origins in MEDIATOR_ALLOWED_ORIGIN (csv).
-// when unset, no CORS headers (effectively same-origin).
+// build CORS headers for an origin. prod only allows origins in MEDIATOR_ALLOWED_ORIGIN (csv)
+// when unset, no CORS headers (effectively same-origin)
 function buildCorsHeaders(origin: string | null): Record<string, string> {
   if (origin === null) return {};
 
@@ -245,8 +236,8 @@ function methodNotAllowed(): Response {
   );
 }
 
-// returns the mediator's public key so the browser orchestrator can build the merge op.
-// only used by the reference (server-held) deployment; self-hosted mode generates its own keypair.
+// returns the mediator's public key so the browser orchestrator can build the merge op
+// only used by the reference (server-held) deployment; self-hosted mode generates its own keypair
 export function GET(): Response {
   try {
     const publicKey = getMediatorKeypair().publicKey();

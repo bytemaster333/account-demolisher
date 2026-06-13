@@ -1,15 +1,17 @@
-# account demolisher
+# Account Demolisher
 
-a tool for cleanly closing stellar accounts. drains the account, unwinds any soroban defi positions, and merges what's left to a destination wallet or exchange.
+A tool for cleanly closing Stellar accounts. Drains the account, unwinds any Soroban DeFi positions, and merges what's left to a destination wallet or exchange.
 
-supports both classic stellar ops (offers, trustlines, data entries, signers, claimable balances) and soroban defi (blend, aquarius, soroswap, fxdao).
+Supports both classic Stellar ops (offers, trustlines, data entries, signers, claimable balances) and Soroban DeFi (Blend, Aquarius, Soroswap, FxDAO).
 
-## requirements
+Live at https://demolisher.saliht.xyz/
 
-- node 22 (see `.nvmrc`)
+## Requirements
+
+- Node 22 (see `.nvmrc`)
 - pnpm 10
 
-## setup
+## Setup
 
 ```bash
 pnpm install
@@ -17,40 +19,40 @@ cp .env.example .env.local
 pnpm dev
 ```
 
-open http://localhost:3000
+Open http://localhost:3000
 
-## env vars
+## Environment variables
 
-required for the mediator backend (used when sending to a cex):
+Required for the mediator backend (used when sending to a centralized exchange):
 
 - `MEDIATOR_SECRET` — the mediator account's secret key (`S...`)
 
-optional:
+Optional:
 
 - `NEXT_PUBLIC_STELLAR_NETWORK` — `mainnet` | `testnet` | `futurenet` (default `testnet`)
-- `NEXT_PUBLIC_HORIZON_URL` — override horizon endpoint
-- `NEXT_PUBLIC_RPC_URL` — override soroban rpc endpoint
+- `NEXT_PUBLIC_HORIZON_URL` — override Horizon endpoint
+- `NEXT_PUBLIC_RPC_URL` — override Soroban RPC endpoint
 - `SOROSWAP_API_KEY` — for the swap aggregator
-- `ORION_API_URL`, `ORION_API_KEY` — defi positions provider
-- `OCTOPOS_API_URL`, `OCTOPOS_API_KEY` — defi positions provider (fallback)
+- `ORION_API_URL`, `ORION_API_KEY` — DeFi positions provider
+- `OCTOPOS_API_URL`, `OCTOPOS_API_KEY` — DeFi positions provider (fallback)
 
-## scripts
+## Scripts
 
-| command          | purpose              |
+| Command          | Purpose              |
 | ---------------- | -------------------- |
-| `pnpm dev`       | next.js dev server   |
-| `pnpm build`     | production build     |
-| `pnpm start`     | run production build |
-| `pnpm typecheck` | tsc --noEmit         |
-| `pnpm lint`      | eslint               |
-| `pnpm format`    | prettier --write     |
+| `pnpm dev`       | Next.js dev server   |
+| `pnpm build`     | Production build     |
+| `pnpm start`     | Run production build |
+| `pnpm typecheck` | `tsc --noEmit`       |
+| `pnpm lint`      | ESLint               |
+| `pnpm format`    | Prettier `--write`   |
 
-## routes
+## Routes
 
-- `/demolish` — main flow: connect wallet, audit account, review plan, execute
-- `/allowances` — view and revoke active sep-41 token allowances
-- `/plan/[id]` — refractor-linked multisig coordination view
+- `/demolish` — main flow: connect wallet, audit account, review plan, execute.
+- `/allowances` — view and revoke active SEP-41 token allowances.
+- `/plan/[id]` — Refractor-linked multisig coordination view.
 
-## license
+## License
 
-apache-2.0
+Apache 2.0

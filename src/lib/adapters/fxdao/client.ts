@@ -1,8 +1,4 @@
-/**
- * fxdao vault discovery. the on-chain contract only exposes get_vault(caller, denomination),
- * so we enumerate FXDAO_KNOWN_DENOMINATIONS (USD/EUR/GBP) and call once each.
- */
-
+// fxdao vault discovery. the on-chain contract only exposes get_vault(caller, denomination),
 import {
   Account,
   BASE_FEE,
@@ -21,13 +17,7 @@ import { simulate } from "@/lib/soroban/simulate";
 
 import { FXDAO_KNOWN_DENOMINATIONS, getFxDAOVaultsContractId } from "./contracts";
 
-/**
- * one open fxdao vault.
- *  - denomination: on-chain Symbol (USD/EUR/GBP), not the Xx-suffixed asset code
- *  - debt: total_debt field, in the synthetic stablecoin's smallest units
- *  - collateral: total_collateral field, in collateral-asset smallest units (XLM stroops on mainnet)
- *  - healthFactor: optional; computing it requires an oracle read, left undefined here
- */
+// one open fxdao vault
 export interface FxDAOVault {
   readonly denomination: string;
   readonly debt: bigint;
@@ -35,11 +25,11 @@ export interface FxDAOVault {
   readonly healthFactor?: number;
 }
 
-// pluggable deps. tests inject server and may inject simulate.
+// pluggable deps. tests inject server and may inject simulate
 export interface FxDAOClientDeps {
   readonly server?: rpc.Server;
   readonly simulate?: typeof simulate;
-  // override the denomination list. production should not pass this.
+  // override the denomination list. production should not pass this
   readonly denominations?: readonly string[];
 }
 
@@ -109,7 +99,7 @@ async function tryGetVault(
   return decodeVault(sim.retval, denomination);
 }
 
-// decode the Vault ScVal returned by get_vault
+// decode the vault ScVal returned by get_vault
 function decodeVault(retval: xdr.ScVal, fallbackDenomination: string): FxDAOVault | null {
   const decoded: unknown = scValToNative(retval);
   if (decoded === null || typeof decoded !== "object") return null;

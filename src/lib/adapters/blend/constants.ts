@@ -1,7 +1,4 @@
-/**
- * blend constants pinned outside the SDK.
- */
-
+// blend constants pinned outside the SDK
 import { BLEND_MAINNET_INFRASTRUCTURE } from "./pools";
 
 // v2 backstop withdrawal queue duration in seconds (17 days)

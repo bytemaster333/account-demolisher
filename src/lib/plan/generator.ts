@@ -1,4 +1,4 @@
-// pure plan generator: audit + positions + allowances -> deterministic PlanTree.
+// pure plan generator: audit + positions + allowances -> deterministic PlanTree
 
 import type { AccountAudit } from "@/lib/types/account";
 import type { BatchOptions, ClassicBatch, ClassicMemo } from "@/lib/types/plan";
@@ -17,11 +17,11 @@ import { buildPlanTree, type PlanNode, type PlanTree } from "./tree";
 export interface GeneratePlanOptions {
   readonly useMediator?: boolean;
   readonly mediatorPublicKey?: string;
-  // allowance pairs opted in for revocation, keyed `${contractId}|${spender}`.
+  // allowance pairs opted in for revocation, keyed `${contractId}|${spender}`
   readonly selectedAllowances?: readonly string[];
   readonly selectedClaimableBalanceIds?: readonly string[];
   readonly memo?: ClassicMemo;
-  // fallback address if the CEX rejects the deposit.
+  // fallback address if the CEX rejects the deposit
   readonly userFallbackAddress?: string;
 }
 
@@ -63,7 +63,7 @@ export function generatePlan(
     revokeIds.push(id);
   }
 
-  // blend repays, one node per (pool, asset) with amount > 0.
+  // blend repays, one node per (pool, asset) with amount > 0
   const blendRepayIdsByPool = new Map<string, string[]>();
   for (const pool of positions.blend) {
     const ids: string[] = [];
@@ -88,7 +88,7 @@ export function generatePlan(
     if (ids.length > 0) blendRepayIdsByPool.set(pool.poolId, ids);
   }
 
-  // fxdao debt payments, one per vault with debt > 0.
+  // fxdao debt payments, one per vault with debt > 0
   const fxDebtIdsByDenom = new Map<string, string>();
   for (const vault of positions.fxdao) {
     if (vault.debt <= 0n) continue;
@@ -108,7 +108,7 @@ export function generatePlan(
     fxDebtIdsByDenom.set(vault.denomination, id);
   }
 
-  // blend collateral + supply withdraws; depend on the pool's repays.
+  // blend collateral + supply withdraws; depend on the pool's repays
   const blendWithdrawIdsByPool = new Map<string, string[]>();
   for (const pool of positions.blend) {
     const ids: string[] = [];
@@ -128,7 +128,7 @@ export function generatePlan(
     if (ids.length > 0) blendWithdrawIdsByPool.set(pool.poolId, ids);
   }
 
-  // aquarius LPs, independent.
+  // aquarius LPs, independent
   const aquariusWithdrawIdsByPool = new Map<string, string>();
   for (const pool of positions.aquarius) {
     if (pool.shareBalance <= 0n) continue;
@@ -149,7 +149,7 @@ export function generatePlan(
     aquariusWithdrawIdsByPool.set(pool.poolIndex, id);
   }
 
-  // soroswap LPs, independent.
+  // soroswap LPs, independent
   const soroswapWithdrawIds: string[] = [];
   for (const pos of positions.soroswap) {
     if (pos.shareBalance <= 0n) continue;
@@ -170,7 +170,7 @@ export function generatePlan(
     soroswapWithdrawIds.push(id);
   }
 
-  // fxdao redeem depends on the same vault's debt payment.
+  // fxdao redeem depends on the same vault's debt payment
   for (const vault of positions.fxdao) {
     if (vault.collateral <= 0n) continue;
     const id = makeId("fxdao-redeem", vault.denomination);
@@ -190,10 +190,10 @@ export function generatePlan(
     });
   }
 
-  // blend emissions, one per pool, after its withdraws.
+  // blend emissions, one per pool, after its withdraws
   for (const pool of positions.blend) {
     const withdraws = blendWithdrawIdsByPool.get(pool.poolId) ?? [];
-    // skip pools with no activity; the simulator drops zero-emission claims.
+    // skip pools with no activity; the simulator drops zero-emission claims
     if (
       (pool.liabilities.size === 0 || allValuesZero(pool.liabilities)) &&
       (pool.collateral.size === 0 || allValuesZero(pool.collateral)) &&
@@ -216,7 +216,7 @@ export function generatePlan(
     });
   }
 
-  // aquarius rewards, one per withdrawn pool.
+  // aquarius rewards, one per withdrawn pool
   for (const [poolIndex, withdrawId] of aquariusWithdrawIdsByPool) {
     const id = makeId("aquarius-claim", poolIndex);
     nodes.push({
@@ -233,12 +233,8 @@ export function generatePlan(
   }
 
   // classical credit balances are converted to xlm by path_payment_strict_send
-  // inside the final classic tx (handled by classic-batcher.ts). custom sep-41
-  // contract balances (non-trustline tokens) aren't discovered by auditAccount,
-  // so there's no balance source to enumerate here. ConvertSorobanToXLM nodes
-  // are emitted only when a positions provider surfaces a soroban token holding.
 
-  // backstop queue: only emitted when an extended position type is passed in.
+  // backstop queue: only emitted when an extended position type is passed in
 
   // final classic transaction
   const finalId = "final-classic-tx";
@@ -254,7 +250,7 @@ export function generatePlan(
   };
   const batches: readonly ClassicBatch[] = batchClassicDemolition(audit, batchOptions);
 
-  // every soroban node must complete before the merge.
+  // every soroban node must complete before the merge
   const sorobanDeps: string[] = nodes
     .filter((n) => n.kind !== "FinalClassicTx" && n.kind !== "MediatorForward")
     .map((n) => n.id);
@@ -270,6 +266,13 @@ export function generatePlan(
       batches,
       destination,
       useMediator,
+      ...(opts.selectedClaimableBalanceIds
+        ? { claimableBalanceIds: opts.selectedClaimableBalanceIds }
+        : {}),
+      ...(opts.userFallbackAddress ? { userFallbackAddress: opts.userFallbackAddress } : {}),
+      ...(useMediator && opts.mediatorPublicKey
+        ? { mediatorPublicKey: opts.mediatorPublicKey }
+        : {}),
     },
   });
 
@@ -290,7 +293,7 @@ export function generatePlan(
     });
   }
 
-  // keep maps alive for future edge additions and topology inspection.
+  // keep maps alive for future edge additions and topology inspection
   void revokeIds;
   void soroswapWithdrawIds;
 
@@ -327,7 +330,7 @@ function allValuesZero(m: ReadonlyMap<string, bigint>): boolean {
   return true;
 }
 
-// stable id format: lower-cased parts joined with ":".
+// stable id format: lower-cased parts joined with ":"
 function makeId(...parts: readonly string[]): string {
   return parts.map((p) => p.toLowerCase()).join(":");
 }

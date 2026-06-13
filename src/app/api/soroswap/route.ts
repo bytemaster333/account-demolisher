@@ -1,16 +1,52 @@
-// typed proxy to the Soroswap aggregator REST API. keeps SOROSWAP_API_KEY server-side.
-//
-// the browser-side client posts { op, payload }; we route the supported op
-// to the matching upstream endpoint and forward the response verbatim
-// (Authorization header injected here, stripped from outbound responses).
-//
-// the API key must never appear in the response body, response headers, or any log line.
-// this route is a pure proxy — slippage/allowlist/route-plan checks happen in the aggregator layer.
+// typed proxy to the soroswap aggregator REST API
+
+import { Resolver } from "node:dns";
+import { Agent, fetch as undiciFetch } from "undici";
 
 import { getServerEnv, requireServerEnv } from "@/server/server-env";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+// some local DNS resolvers (pi-hole, AdGuard, NextDNS finance-category blocks)
+let publicDnsAgent: Agent | null = null;
+function getPublicDnsAgent(): Agent {
+  if (publicDnsAgent) return publicDnsAgent;
+  const resolver = new Resolver();
+  resolver.setServers(["1.1.1.1", "8.8.8.8"]);
+  publicDnsAgent = new Agent({
+    connect: {
+      lookup: (hostname, options, callback) => {
+        resolver.resolve4(hostname, (err, addresses) => {
+          if (err) return callback(err as NodeJS.ErrnoException, "", 4);
+          const usable = (addresses ?? []).filter((a) => a !== "0.0.0.0");
+          if (usable.length === 0) {
+            return callback(
+              new Error(`no usable A record for ${hostname}`) as NodeJS.ErrnoException,
+              "",
+              4,
+            );
+          }
+          // undici supports both callback shapes; the `all` option flips between them
+          if ((options as { all?: boolean })?.all) {
+            (
+              callback as unknown as (
+                err: NodeJS.ErrnoException | null,
+                addrs: { address: string; family: 4 }[],
+              ) => void
+            )(
+              null,
+              usable.map((a) => ({ address: a, family: 4 })),
+            );
+            return;
+          }
+          callback(null, usable[0]!, 4);
+        });
+      },
+    },
+  });
+  return publicDnsAgent;
+}
 
 // 5 requests per 60s per IP
 const RATE_LIMIT_CAPACITY = 5;
@@ -114,7 +150,7 @@ interface UpstreamCall {
   body?: unknown;
 }
 
-// map an op + payload to an upstream HTTP call. minimal shape validation only.
+// map an op + payload to an upstream HTTP call. minimal shape validation only
 function planUpstreamCall(req: OpRequest): UpstreamCall | { error: string } {
   switch (req.op) {
     case "getProtocols": {
@@ -176,7 +212,7 @@ function planUpstreamCall(req: OpRequest): UpstreamCall | { error: string } {
   }
 }
 
-// rate-limit, parse op envelope, plan the upstream call, attach Authorization, forward verbatim
+// rate-limit, parse op envelope, plan the upstream call, attach authorization, forward verbatim
 export async function POST(request: Request): Promise<Response> {
   const ip = getRemoteIp(request);
 
@@ -227,19 +263,21 @@ export async function POST(request: Request): Promise<Response> {
   const normalizedBase = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
   const upstreamUrl = `${normalizedBase}${plan.path}`;
 
-  let upstreamResponse: Response;
+  let upstreamResponse: Awaited<ReturnType<typeof undiciFetch>>;
   try {
-    const init: RequestInit = {
+    // undici fetch with a custom dispatcher that uses public DNS — bypasses
+    // local DNS sinkholes that block finance-category domains
+    upstreamResponse = await undiciFetch(upstreamUrl, {
       method: plan.method,
       headers: {
         accept: "application/json",
-        // Soroswap SDK 0.4.0's HttpClient uses Authorization: Bearer
+        // soroswap SDK 0.4.0's HttpClient uses authorization: bearer
         authorization: `Bearer ${apiKey}`,
         ...(plan.method === "POST" ? { "content-type": "application/json" } : {}),
       },
       ...(plan.body !== undefined ? { body: JSON.stringify(plan.body) } : {}),
-    };
-    upstreamResponse = await fetch(upstreamUrl, init);
+      dispatcher: getPublicDnsAgent(),
+    });
   } catch (err) {
     const raw = err instanceof Error ? err.message : "Upstream request failed.";
     return jsonResponse(
@@ -262,17 +300,16 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   if (!upstreamResponse.ok) {
-    let message: string;
-    if (
-      parsedBody !== null &&
-      typeof parsedBody === "object" &&
-      "message" in (parsedBody as Record<string, unknown>) &&
-      typeof (parsedBody as Record<string, unknown>)["message"] === "string"
-    ) {
-      message = (parsedBody as Record<string, unknown>)["message"] as string;
-    } else {
-      message = `Soroswap upstream returned ${upstreamResponse.status}.`;
-    }
+    const pb = parsedBody as Record<string, unknown> | null;
+    const readStr = (k: string): string | null =>
+      pb !== null && typeof pb[k] === "string" ? (pb[k] as string) : null;
+    // upstream uses different shapes per endpoint: `message`, `title`, `detail`, `error`
+    const message =
+      readStr("message") ??
+      readStr("title") ??
+      readStr("detail") ??
+      readStr("error") ??
+      `Soroswap upstream returned ${upstreamResponse.status}.`;
     return jsonResponse(
       {
         ok: false,

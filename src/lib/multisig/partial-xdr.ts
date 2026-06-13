@@ -1,25 +1,13 @@
-// merges signatures from independently-signed envelopes into a canonical one.
-// used as the final fallback for multisig coordination: originator signs and
-// exports the xdr, co-signer signs and pastes back, we merge.
-//
-// rules:
-//   - reject partials whose tx hash differs from the canonical.
-//   - admit only signatures that verify against a candidate public key.
-//   - de-dup by decorated-sig bytes.
-//   - when expectedSigners is supplied, only those keys are admitted.
-//
-// fee-bump envelopes are out of scope; the inner classic tx is what's signed here.
+// merges signatures from independently-signed envelopes into a canonical one
 
 import { Keypair, TransactionBuilder, xdr, type Transaction } from "@stellar/stellar-sdk";
 
 export interface MergeOptions {
-  // allowlist of public keys we admit signatures for.
+  // allowlist of public keys we admit signatures for
   readonly expectedSigners?: readonly string[];
 }
 
 // merges novel signatures from partialXdrs into canonicalXdr; returns the
-// fully-signed envelope.
-// throws on non-classic envelope, hash mismatch, or out-of-allowlist signer.
 export function mergeSignatures(
   canonicalXdr: string,
   partialXdrs: readonly string[],
@@ -43,7 +31,7 @@ export function mergeSignatures(
   const canonicalHash = canonical.hash();
 
   // collect candidate public keys. with expectedSigners we trust the
-  // allowlist; without it we fall back to the tx + per-op source accounts.
+  // allowlist; without it we fall back to the tx + per-op source accounts
   const candidates: readonly string[] = collectCandidateSigners(
     canonical,
     partialXdrs,
@@ -90,13 +78,13 @@ export function mergeSignatures(
 function isClassicTransaction(
   tx: Transaction | import("@stellar/stellar-sdk").FeeBumpTransaction,
 ): tx is Transaction {
-  // FeeBumpTransaction exposes feeSource + innerTransaction.
+  // FeeBumpTransaction exposes feeSource + innerTransaction
   const candidate = tx as unknown as { feeSource?: unknown; innerTransaction?: unknown };
   return candidate.feeSource === undefined && candidate.innerTransaction === undefined;
 }
 
 // when expectedSigners is set we use it verbatim; otherwise fall back to the
-// tx + per-op source accounts as the smallest defensible candidate set.
+// tx + per-op source accounts as the smallest defensible candidate set
 function collectCandidateSigners(
   canonical: Transaction,
   partialXdrs: readonly string[],
@@ -113,7 +101,7 @@ function collectCandidateSigners(
     if (op.source) candidates.add(op.source);
   }
 
-  // walk partials too as a safety net for hand-rolled envelopes.
+  // walk partials too as a safety net for hand-rolled envelopes
   for (const partial of partialXdrs) {
     try {
       const tx = TransactionBuilder.fromXDR(partial, networkPassphrase);
@@ -123,16 +111,14 @@ function collectCandidateSigners(
         if (op.source) candidates.add(op.source);
       }
     } catch {
-      // defer parse errors to the main loop.
+      // defer parse errors to the main loop
     }
   }
 
   return Array.from(candidates);
 }
 
-// recover the public key that signed sig over txHash. returns null when no
-// candidate verifies. uses the decorated sig hint as a fast pre-filter, then
-// falls back to a full sweep for non-ed25519 hint shapes.
+// recover the public key that signed sig over txHash
 function recoverSigningKey(
   sig: xdr.DecoratedSignature,
   txHash: Buffer,
@@ -141,7 +127,7 @@ function recoverSigningKey(
   const hint = Buffer.from(sig.hint());
   const signature = Buffer.from(sig.signature());
 
-  // hint-narrowed first.
+  // hint-narrowed first
   for (const key of candidates) {
     const kp = Keypair.fromPublicKey(key);
     if (Buffer.from(kp.signatureHint()).equals(hint) && kp.verify(txHash, signature)) {
@@ -149,7 +135,7 @@ function recoverSigningKey(
     }
   }
 
-  // full sweep for quirky wallets with unusual hints.
+  // full sweep for quirky wallets with unusual hints
   for (const key of candidates) {
     const kp = Keypair.fromPublicKey(key);
     if (kp.verify(txHash, signature)) return key;
@@ -158,7 +144,7 @@ function recoverSigningKey(
   return null;
 }
 
-// dedup decorated signatures by their wire-format bytes.
+// dedup decorated signatures by their wire-format bytes
 function alreadyPresent(
   existing: readonly xdr.DecoratedSignature[],
   candidate: xdr.DecoratedSignature,

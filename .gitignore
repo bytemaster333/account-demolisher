@@ -48,7 +48,7 @@ blob-report/
 # tests
 tests/
 
-# docs and reports
+# docs / research / planning
 docs/
 researches/
 plan.md
@@ -56,15 +56,20 @@ completion.md
 *.report.md
 notes.md
 NOTES.md
+frontend.md
 
-# IDE
+# design assets
+design/
+
+# IDE / tooling
 .idea/
 .vscode/
+.claude/
 *.swp
 
 # os
 Thumbs.db
 
-# all markdown by default except README and LICENSE-style files
+# all markdown by default except README
 *.md
 !README.md

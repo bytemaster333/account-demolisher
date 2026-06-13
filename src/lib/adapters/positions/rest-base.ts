@@ -1,9 +1,4 @@
-/**
- * shared HTTP plumbing for the REST position providers (orion, octopos).
- * both route through POST /api/positions where the api key is injected server-side.
- * never read *_API_KEY from this file.
- */
-
+// shared HTTP plumbing for the REST position providers (orion, octopos)
 import {
   type DeFiPositionProviderName,
   type IDeFiPositionProvider,
@@ -16,7 +11,7 @@ import { parseProtocolPositions } from "./schema";
 
 export const DEFAULT_POSITIONS_PROXY_URL = "/api/positions";
 
-// op identifier accepted by the proxy. "direct" not accepted — direct provider runs client-side.
+// op identifier accepted by the proxy. "direct" not accepted — direct provider runs client-side
 export type PositionsProxyProvider = Exclude<DeFiPositionProviderName, "direct">;
 
 export interface RestProviderOptions {
@@ -29,13 +24,7 @@ export interface ProxyAvailabilityResponse {
   readonly reason?: string;
 }
 
-/**
- * shared base class for OrionProvider and OctoposProvider. both speak the same proxy envelope;
- * only the provider discriminator changes.
- *  - isAvailable POSTs { provider, op: "health" }; false on non-2xx or upstream unconfigured
- *  - getPositions POSTs { provider, op: "getPositions", userAddress, network }; throws
- *    ProviderUnavailable on unreachable, ProviderSchemaMismatch on shape drift
- */
+// shared base class for OrionProvider and OctoposProvider. both speak the same proxy envelope;
 export abstract class RestPositionProvider implements IDeFiPositionProvider {
   abstract readonly name: PositionsProxyProvider;
   protected readonly proxyUrl: string;

@@ -1,13 +1,4 @@
-// sep-41 token contract callers.
-//
-// standard interface:
-//   - balance(id: Address) -> i128
-//   - allowance(from: Address, spender: Address) -> AllowanceValue { amount: i128, live_until_ledger: u32 }
-//   - transfer(from: Address, to: Address, amount: i128)
-//   - approve(from: Address, spender: Address, amount: i128, expiration_ledger: u32)
-//   - decimals() -> u32
-//   - name() -> String
-//   - symbol() -> String
+// sep-41 token contract callers
 
 import {
   BASE_FEE,
@@ -31,10 +22,10 @@ import { assembleSubmittable, simulateRead } from "./simulate";
 
 const FIVE_MINUTES_SECONDS = 300;
 
-// decimals() is immutable per contract, so cache per (server, contractId).
+// decimals() is immutable per contract, so cache per (server, contractId)
 const decimalsCache = new WeakMap<rpc.Server, Map<string, number>>();
 
-// balance(id: Address) -> i128
+// balance(id: address) -> i128
 export async function balance(
   server: rpc.Server,
   contractId: string,
@@ -98,7 +89,7 @@ function decodeAllowance(v: xdr.ScVal): { amount: bigint; live_until_ledger: num
   return { amount, live_until_ledger: liveUntilLedger };
 }
 
-// decimals() -> u32, cached per (server, contractId).
+// decimals() -> u32, cached per (server, contractId)
 export async function decimals(
   server: rpc.Server,
   contractId: string,
@@ -126,7 +117,7 @@ export async function decimals(
   return value;
 }
 
-// name() -> String
+// name() -> string
 export async function name(
   server: rpc.Server,
   contractId: string,
@@ -137,7 +128,7 @@ export async function name(
   return fromScValString(retval);
 }
 
-// symbol() -> String
+// symbol() -> string
 export async function symbol(
   server: rpc.Server,
   contractId: string,
@@ -148,7 +139,7 @@ export async function symbol(
   return fromScValString(retval);
 }
 
-// build a transfer(from, to, amount) tx, simulated + assembled.
+// build a transfer(from, to, amount) tx, simulated + assembled
 export async function buildTransfer(
   server: rpc.Server,
   contractId: string,
@@ -168,7 +159,7 @@ export async function buildTransfer(
   );
 }
 
-// build an approve(from, spender, amount, expiration_ledger) tx.
+// build an approve(from, spender, amount, expiration_ledger) tx
 export async function buildApprove(
   server: rpc.Server,
   contractId: string,
@@ -208,7 +199,7 @@ async function buildInvoke(
 
   const prepared = await assembleSubmittable(server, tx);
   // narrow off FeeBumpTransaction via innerTransaction. fee-bump wrapping
-  // happens in the orchestrator, not here.
+  // happens in the orchestrator, not here
   if ("innerTransaction" in prepared) {
     throw new Error("buildInvoke: prepareTransaction returned a FeeBumpTransaction unexpectedly");
   }

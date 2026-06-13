@@ -1,14 +1,9 @@
-// claimable-balance predicate evaluation.
-//
-// horizon serializes predicates with both snake_case and camelCase keys
-// across versions; we accept both. unknown shapes evaluate to false —
-// conservative: skip a cb the user can manually claim later rather than ask
-// them to sign a claim that would just bounce.
+// claimable-balance predicate evaluation
 
 import type { ClaimableBalanceEntry } from "@/lib/types/account";
 
 // horizon-shaped predicate node. recursive `unknown`-leaning since horizon's
-// shape is not pinned across versions.
+// shape is not pinned across versions
 export type ClaimPredicate =
   | { readonly unconditional: true }
   | { readonly and: readonly ClaimPredicate[] }
@@ -25,11 +20,11 @@ interface HorizonClaimant {
   readonly predicate: unknown;
 }
 
-// returns true iff the user holding this predicate may claim NOW.
-// unknown / unrecognized shapes return false.
+// returns true iff the user holding this predicate may claim NOW
+// unknown / unrecognized shapes return false
 export function evaluatePredicate(predicate: unknown, ledgerCloseTime: Date): boolean {
   if (predicate === null || predicate === undefined) {
-    // a null predicate on a claimant means "unconditional" in some encodings.
+    // a null predicate on a claimant means "unconditional" in some encodings
     return true;
   }
   if (typeof predicate !== "object") return false;
@@ -54,19 +49,19 @@ export function evaluatePredicate(predicate: unknown, ledgerCloseTime: Date): bo
 
   if ("not" in p) {
     const child = p["not"];
-    // `not: null` → not-evaluable, return false.
+    // `not: null` → not-evaluable, return false
     if (child === null || child === undefined) return false;
     return !evaluatePredicate(child, ledgerCloseTime);
   }
 
-  // abs_before / absBefore — claimable if ledger time is strictly before.
+  // abs_before / absBefore — claimable if ledger time is strictly before
   const absRaw = pickStringOrNumber(p, ["abs_before", "absBefore"]);
   if (absRaw !== null) {
     const epochMs = parseAbsTime(absRaw);
     if (epochMs === null) return false;
     return ledgerCloseTime.getTime() < epochMs;
   }
-  // standalone abs_before_epoch / absBeforeEpoch.
+  // standalone abs_before_epoch / absBeforeEpoch
   const absEpochRaw = pickStringOrNumber(p, ["abs_before_epoch", "absBeforeEpoch"]);
   if (absEpochRaw !== null) {
     const seconds = parseEpochSeconds(absEpochRaw);
@@ -75,8 +70,6 @@ export function evaluatePredicate(predicate: unknown, ledgerCloseTime: Date): bo
   }
 
   // rel_before — needs the original record creation time we don't have;
-  // be conservative and return false. horizon usually resolves these to
-  // abs_before in the sibling field.
   if ("rel_before" in p || "relBefore" in p) {
     return false;
   }
@@ -84,11 +77,7 @@ export function evaluatePredicate(predicate: unknown, ledgerCloseTime: Date): bo
   return false;
 }
 
-// filter cbs down to those the user can claim right now.
-//
-// note: ClaimableBalanceEntry.predicate (per account-audit) is the raw
-// claimants array — NOT a single predicate. find the matching claimant
-// and evaluate its predicate.
+// filter cbs down to those the user can claim right now
 export function filterClaimableNow(
   cbs: readonly ClaimableBalanceEntry[],
   userPublicKey: string,
@@ -105,7 +94,7 @@ function isClaimableForUser(
   if (!cb.claimants.includes(userPublicKey)) return false;
   const raw = cb.predicate;
 
-  // case A: predicate is the full claimants array.
+  // case a: predicate is the full claimants array
   if (Array.isArray(raw)) {
     const entry = (raw as readonly unknown[]).find(
       (e): e is HorizonClaimant =>
@@ -117,7 +106,7 @@ function isClaimableForUser(
     return evaluatePredicate(entry.predicate, ledgerCloseTime);
   }
 
-  // case B: predicate is a single node already addressed to the user.
+  // case b: predicate is a single node already addressed to the user
   return evaluatePredicate(raw, ledgerCloseTime);
 }
 
@@ -135,12 +124,12 @@ function pickStringOrNumber(
 
 function parseAbsTime(raw: string | number): number | null {
   if (typeof raw === "number") {
-    // numbers are epoch seconds.
+    // numbers are epoch seconds
     return Number.isFinite(raw) ? raw * 1000 : null;
   }
   const trimmed = raw.trim();
   if (trimmed === "") return null;
-  // pure-digit string → epoch seconds.
+  // pure-digit string → epoch seconds
   if (/^\d+$/.test(trimmed)) {
     const n = Number(trimmed);
     return Number.isFinite(n) ? n * 1000 : null;

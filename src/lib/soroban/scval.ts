@@ -1,4 +1,4 @@
-// thin wrappers over nativeToScVal / scValToNative for sep-41 args.
+// thin wrappers over nativeToScVal / scValToNative for sep-41 args
 
 import { Address, nativeToScVal, scValToNative, xdr } from "@stellar/stellar-sdk";
 
@@ -65,7 +65,7 @@ export function fromScValSymbol(v: xdr.ScVal): string {
   return n;
 }
 
-// sep-41 name()/symbol() return ScVal String. accepts both for completeness.
+// sep-41 name()/symbol() return ScVal string. accepts both for completeness
 export function fromScValString(v: xdr.ScVal): string {
   const kind = v.switch().name;
   if (kind !== "scvString" && kind !== "scvSymbol") {

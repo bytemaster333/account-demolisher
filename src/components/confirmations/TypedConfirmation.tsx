@@ -1,15 +1,13 @@
 "use client";
 
-// destructive-action confirmation. confirm enables once the last 4 chars are typed AND 5s elapse.
+// destructive-action confirmation
 
 import { useEffect, useId, useRef, useState } from "react";
 
-import { cn } from "@/lib/utils";
-
 export interface TypedConfirmationProps {
-  // full destination G-address; the last 4 chars are the required confirmation string
+  // full destination g-address; the last 4 chars are the required confirmation string
   readonly destination: string;
-  // delay before confirm enables. defaults to 5000ms.
+  // delay before confirm enables. defaults to 5000ms
   readonly delayMs?: number;
   readonly onConfirm: () => void;
   readonly onCancel: () => void;
@@ -17,6 +15,7 @@ export interface TypedConfirmationProps {
 }
 
 const DEFAULT_DELAY_MS = 5000;
+const TICK_MS = 100;
 
 export function TypedConfirmation({
   destination,
@@ -26,14 +25,16 @@ export function TypedConfirmation({
   className,
 }: TypedConfirmationProps): React.JSX.Element {
   const titleId = useId();
-  const descriptionId = useId();
   const inputId = useId();
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const required = destination.slice(-4);
+  const destHead = destination.length > 4 ? destination.slice(0, -4) : "";
+  const destTail = destination.length > 0 ? destination.slice(-4) : "";
+
   const [typed, setTyped] = useState("");
-  // start true when delay is non-positive so tests can skip the wait
-  const [delayElapsed, setDelayElapsed] = useState(delayMs <= 0);
+  // elapsed ms since mount, capped at delayMs. used both for the bar fill and the unlock gate
+  const [elapsedMs, setElapsedMs] = useState(delayMs <= 0 ? delayMs : 0);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -41,98 +42,256 @@ export function TypedConfirmation({
 
   useEffect(() => {
     if (delayMs <= 0) return;
-    const handle = setTimeout(() => {
-      setDelayElapsed(true);
-    }, delayMs);
-    return () => clearTimeout(handle);
+    const start = Date.now();
+    const handle = setInterval(() => {
+      const next = Math.min(delayMs, Date.now() - start);
+      setElapsedMs(next);
+      if (next >= delayMs) clearInterval(handle);
+    }, TICK_MS);
+    return () => clearInterval(handle);
   }, [delayMs]);
 
+  const delayElapsed = elapsedMs >= delayMs;
   const matches = typed === required && required.length > 0;
-  const confirmDisabled = !matches || !delayElapsed;
+  const canConfirm = matches && delayElapsed;
+  const timerPct = delayMs > 0 ? Math.min(100, (elapsedMs / delayMs) * 100) : 100;
+  const timerLeft = Math.max(0, Math.ceil((delayMs - elapsedMs) / 1000));
 
   return (
     <div
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}
-      aria-describedby={descriptionId}
       data-testid="typed-confirmation"
-      className={cn(
-        "fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4",
-        className,
-      )}
+      className={className}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 80,
+        background: "rgba(0,0,0,0.55)",
+        backdropFilter: "blur(4px)",
+        display: "grid",
+        placeItems: "center",
+        padding: 20,
+        animation: "fadeIn .15s both",
+      }}
     >
-      <div className="flex w-full max-w-md flex-col gap-4 rounded-lg border border-slate-300 bg-white p-6 shadow-xl">
-        <h2 id={titleId} className="text-lg font-semibold text-slate-900">
-          Confirm demolition
-        </h2>
-        <p id={descriptionId} className="text-sm text-slate-700">
-          This action is irreversible. To proceed, type the{" "}
-          <strong className="font-semibold">last 4 characters</strong> of the destination address.
-        </p>
-        <p className="rounded-md bg-slate-100 px-3 py-2 font-mono text-xs text-slate-900">
-          Destination: <span className="font-semibold">{destination || "(empty)"}</span>
-        </p>
-
-        <label htmlFor={inputId} className="flex flex-col gap-1 text-sm">
-          <span className="font-medium text-slate-800">
-            Last 4 characters: <span className="font-mono">{required || "----"}</span>
-          </span>
-          <input
-            ref={inputRef}
-            id={inputId}
-            type="text"
-            value={typed}
-            onChange={(e) => setTyped(e.currentTarget.value)}
-            maxLength={4}
-            spellCheck={false}
-            autoComplete="off"
-            autoCapitalize="off"
-            data-testid="typed-confirmation-input"
-            aria-invalid={typed.length === 4 && !matches}
-            className="rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
-          />
-        </label>
-
-        <p
-          aria-live="polite"
-          data-testid="typed-confirmation-status"
-          className={cn(
-            "text-xs",
-            delayElapsed ? "text-slate-600" : "text-amber-700",
-            matches && delayElapsed ? "text-emerald-700" : null,
-          )}
+      <div
+        style={{
+          width: "100%",
+          maxWidth: 460,
+          background: "var(--surface)",
+          border: "1px solid var(--border-2)",
+          borderRadius: 20,
+          padding: 30,
+          boxShadow: "var(--shadow)",
+          animation: "fadeUp .2s both",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginBottom: 18,
+          }}
         >
-          {!delayElapsed
-            ? `Wait ${Math.ceil(delayMs / 1000)}s before confirming…`
-            : matches
-              ? "Match. You may confirm."
-              : "Type the 4 characters above to enable Confirm."}
-        </p>
-
-        <div className="mt-2 flex flex-wrap justify-end gap-2">
+          <h2
+            id={titleId}
+            style={{
+              margin: 0,
+              fontSize: 21,
+              fontWeight: 600,
+              letterSpacing: "-0.02em",
+              color: "var(--fg)",
+            }}
+          >
+            Confirm demolition
+          </h2>
           <button
             type="button"
             onClick={onCancel}
+            aria-label="Cancel"
             data-testid="typed-confirmation-cancel"
-            className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-800 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-900"
+            style={{
+              width: 30,
+              height: 30,
+              display: "grid",
+              placeItems: "center",
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+              background: "var(--surface)",
+              color: "var(--fg-3)",
+              cursor: "pointer",
+            }}
           >
-            Cancel
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2.2}
+              strokeLinecap="round"
+            >
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
           </button>
+        </div>
+        <p style={{ margin: "0 0 8px", fontSize: 13.5, color: "var(--fg-2)" }}>
+          Funds will be merged to this destination:
+        </p>
+        <div
+          style={{
+            padding: "14px 16px",
+            borderRadius: 12,
+            background: "var(--surface-2)",
+            border: "1px solid var(--border)",
+            font: "500 13px/1.5 'Geist Mono', monospace",
+            wordBreak: "break-all",
+            marginBottom: 20,
+          }}
+        >
+          <span style={{ color: "var(--fg-2)" }}>{destHead || "(empty)"}</span>
+          <span
+            style={{
+              color: "var(--accent)",
+              background: "var(--accent-soft)",
+              padding: "1px 3px",
+              borderRadius: 4,
+              fontWeight: 600,
+            }}
+          >
+            {destTail}
+          </span>
+        </div>
+        <label
+          htmlFor={inputId}
+          style={{
+            display: "block",
+            fontWeight: 600,
+            fontSize: 13,
+            marginBottom: 9,
+            color: "var(--fg)",
+          }}
+        >
+          Type the last 4 characters to confirm
+        </label>
+        <input
+          ref={inputRef}
+          id={inputId}
+          type="text"
+          value={typed}
+          onChange={(e) => setTyped(e.currentTarget.value)}
+          maxLength={4}
+          spellCheck={false}
+          autoComplete="off"
+          autoCapitalize="off"
+          placeholder="••••"
+          aria-invalid={typed.length === 4 && !matches}
+          data-testid="typed-confirmation-input"
+          style={{
+            width: "100%",
+            padding: "14px 16px",
+            borderRadius: 12,
+            border: "1px solid var(--border-2)",
+            background: "var(--surface-2)",
+            color: "var(--fg)",
+            font: "600 18px/1 'Geist Mono', monospace",
+            letterSpacing: "0.3em",
+            textAlign: "center",
+            boxSizing: "border-box",
+          }}
+        />
+        {canConfirm ? (
           <button
             type="button"
             onClick={onConfirm}
-            disabled={confirmDisabled}
             data-testid="typed-confirmation-confirm"
-            className={cn(
-              "rounded-md px-4 py-2 text-sm font-medium text-white transition-colors",
-              "bg-red-700 hover:bg-red-800 focus:outline-none focus:ring-2 focus:ring-red-900",
-              "disabled:cursor-not-allowed disabled:bg-red-300",
-            )}
+            style={{
+              marginTop: 18,
+              width: "100%",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 9,
+              padding: 15,
+              borderRadius: 12,
+              border: "none",
+              background: "var(--danger)",
+              color: "var(--accent-fg)",
+              fontWeight: 600,
+              fontSize: 15,
+              cursor: "pointer",
+              boxShadow: "0 6px 20px var(--danger-soft)",
+            }}
           >
-            Confirm demolition
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+            </svg>
+            Demolish account
           </button>
-        </div>
+        ) : (
+          <div
+            data-testid="typed-confirmation-status"
+            style={{
+              position: "relative",
+              marginTop: 18,
+              width: "100%",
+              padding: 15,
+              borderRadius: 12,
+              background: "var(--surface-2)",
+              border: "1px solid var(--border)",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                position: "absolute",
+                left: 0,
+                top: 0,
+                bottom: 0,
+                width: `${timerPct}%`,
+                background: "var(--accent-soft)",
+                transition: "width .1s linear",
+              }}
+            />
+            <div
+              aria-live="polite"
+              style={{
+                position: "relative",
+                textAlign: "center",
+                fontWeight: 600,
+                fontSize: 14,
+                color: delayElapsed ? "var(--fg-3)" : "var(--fg-2)",
+              }}
+            >
+              {!delayElapsed
+                ? `Hold on, confirm unlocks in ${timerLeft}s`
+                : "Enter the last 4 characters above"}
+            </div>
+          </div>
+        )}
+        <p
+          style={{
+            margin: "12px 0 0",
+            fontSize: 11.5,
+            color: "var(--fg-3)",
+            textAlign: "center",
+            lineHeight: 1.5,
+          }}
+        >
+          This is irreversible. The delay and re-typing are intentional friction.
+        </p>
       </div>
     </div>
   );

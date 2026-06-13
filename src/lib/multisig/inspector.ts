@@ -1,8 +1,4 @@
 // thin wrapper around @stellar-expert/tx-signers-inspector that returns a
-// narrow view of the required signer set for the orchestrator.
-//
-// the demolisher's terminal tx is an accountMerge (high threshold), so the
-// effective threshold typically equals the account's high_threshold.
 
 import { inspectTransactionSigners } from "@stellar-expert/tx-signers-inspector";
 import type {
@@ -11,27 +7,27 @@ import type {
 } from "@stellar-expert/tx-signers-inspector";
 import type { FeeBumpTransaction, Horizon, Transaction } from "@stellar/stellar-sdk";
 
-// stellar G-address (or pre-auth-tx / hash-x key) + weight.
+// stellar g-address (or pre-auth-tx / hash-x key) + weight
 export interface SignerSummary {
   readonly key: string;
   readonly weight: number;
 }
 
 // threshold is the minimum cumulative weight for this tx (not the account's
-// high_threshold value alone).
+// high_threshold value alone)
 export interface RequiredSigners {
   readonly signers: readonly SignerSummary[];
   readonly threshold: number;
 }
 
 // throws when no per-account requirements match accountId (almost always a
-// caller bug — the tx has no op sourced from accountId).
+// caller bug — the tx has no op sourced from accountId)
 export async function getRequiredSigners(
   server: Horizon.Server,
   accountId: string,
   tx: Transaction | FeeBumpTransaction,
 ): Promise<RequiredSigners> {
-  // inspector accepts a horizon url, not a Horizon.Server instance.
+  // inspector accepts a horizon url, not a horizon.server instance
   const horizonUrl = readServerUrl(server);
   const schema = await inspectTransactionSigners(tx, { horizon: horizonUrl });
 
@@ -46,7 +42,7 @@ export async function getRequiredSigners(
     );
   }
 
-  // copy to plain immutable shape; inspector pre-filters weight-0 and sorts.
+  // copy to plain immutable shape; inspector pre-filters weight-0 and sorts
   const signers: readonly SignerSummary[] = requirements.signers.map(({ key, weight }) => ({
     key,
     weight,
@@ -62,8 +58,8 @@ function isAccountRequirement(req: SignatureRequirements): req is AccountSignatu
   return req.type === "account_signature";
 }
 
-// pull the horizon base URL off Horizon.Server. defensive — degrades with a
-// clear error if the SDK changes shape upstream.
+// pull the horizon base URL off horizon.server. defensive — degrades with a
+// clear error if the SDK changes shape upstream
 function readServerUrl(server: Horizon.Server): string {
   const candidate: unknown = (server as unknown as { serverURL?: { toString?: () => string } })
     .serverURL;

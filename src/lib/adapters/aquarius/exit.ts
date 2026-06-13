@@ -1,7 +1,4 @@
-/**
- * aquarius exit sequencer. emits withdraw + claim steps per pool.
- */
-
+// aquarius exit sequencer. emits withdraw + claim steps per pool
 import type { Horizon, Transaction, rpc } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
@@ -26,13 +23,13 @@ export type AquariusExitStep =
     };
 
 export interface BuildAquariusExitDeps {
-  // gate claim emission per pool. defaults to always emit so AQUA isn't dropped.
+  // gate claim emission per pool. defaults to always emit so AQUA isn't dropped
   readonly claimWhen?: (pool: AquariusPool) => boolean;
   readonly server?: rpc.Server;
   readonly assemble?: typeof assembleSubmittable;
   // lower bound on shareBalance for emitting a withdraw step
   readonly minShareBalance?: bigint;
-  // per-token minimums for withdraw. defaults to all zeros.
+  // per-token minimums for withdraw. defaults to all zeros
   readonly minAmountsFor?: (pool: AquariusPool) => readonly bigint[];
 }
 

@@ -1,9 +1,4 @@
-// in-memory secret-key fallback connector.
-//
-// the user pastes a raw S... seed; we wrap it in a SecretKeyConnector held
-// in a React useRef scoped to the active flow. seed never leaves memory:
-// no storage, no module cache, no logging, no network transmission. when
-// the flow ends the React layer drops its ref and the connector is gc'd.
+// in-memory secret-key fallback connector
 import {
   Keypair,
   StrKey,
@@ -17,8 +12,8 @@ import type { Connector, ConnectorKind } from "@/lib/wallet/connector";
 export class SecretKeyConnector implements Connector {
   public readonly kind: ConnectorKind = "secret";
 
-  // the raw S... seed. we don't cache the derived keypair — it's rebuilt
-  // per sign so the in-memory secret-key bytes live for one method call.
+  // the raw s... seed. we don't cache the derived keypair — it's rebuilt
+  // per sign so the in-memory secret-key bytes live for one method call
   readonly #seed: string;
   readonly #publicKey: string;
 
@@ -34,17 +29,17 @@ export class SecretKeyConnector implements Connector {
     }
     this.#seed = seed;
     // derive once so getPublicKey() doesn't re-run derivation; the pubkey
-    // is public so caching it is fine.
+    // is public so caching it is fine
     this.#publicKey = Keypair.fromSecret(seed).publicKey();
   }
 
-  // no-op for the in-memory path; the seed was supplied at construction.
+  // no-op for the in-memory path; the seed was supplied at construction
   async connect(): Promise<{ publicKey: string }> {
     return { publicKey: this.#publicKey };
   }
 
   // can't zeroize js memory. callers must drop every reference to this
-  // instance after disconnect() so the gc can reclaim it.
+  // instance after disconnect() so the gc can reclaim it
   async disconnect(): Promise<void> {
     return;
   }
@@ -53,9 +48,7 @@ export class SecretKeyConnector implements Connector {
     return this.#publicKey;
   }
 
-  // sign and return the signed xdr. rehydrate from xdr to avoid mutating
-  // the caller's tx.signatures; the Keypair built here is gc-eligible
-  // immediately on return.
+  // sign and return the signed xdr
   async signTransaction(
     tx: Transaction | FeeBumpTransaction,
     networkPassphrase: string,
@@ -69,9 +62,7 @@ export class SecretKeyConnector implements Connector {
     };
   }
 
-  // sign a soroban auth-entry preimage xdr (sep-43). wallets sign over the
-  // bytes of the preimage, not its sha256. address is ignored — we always
-  // sign with our single account.
+  // sign a soroban auth-entry preimage xdr (sep-43)
   async signAuthEntry(
     authEntryXdr: string,
     _address: string,

@@ -1,8 +1,4 @@
-// wrapper around horizon's strict-send path search.
-//
-// used to convert non-xlm classical balances to xlm before issuing
-// CHANGE_TRUST(limit=0), which requires the balance to be zero. returns null
-// only when no path of length <= 5 exists; network errors propagate.
+// wrapper around horizon's strict-send path search
 
 import { Asset } from "@stellar/stellar-sdk";
 import { getHorizon } from "@/lib/stellar/horizon-client";
@@ -10,15 +6,15 @@ import type { NetworkConfig } from "@/lib/config/networks";
 import type { AssetIdentifier } from "@/lib/types/account";
 
 export interface PathResult {
-  // output amount of native xlm as horizon-decimal string (e.g. "12.3456789").
+  // output amount of native xlm as horizon-decimal string (e.g. "12.3456789")
   readonly destinationAmount: string;
-  // intermediate assets; may be empty for direct hops.
+  // intermediate assets; may be empty for direct hops
   readonly path: readonly AssetIdentifier[];
-  // echo of the source amount horizon priced against.
+  // echo of the source amount horizon priced against
   readonly sourceAmount: string;
 }
 
-// max intermediate hops. horizon caps at 6 (source + 5 hops + dest); we mirror.
+// max intermediate hops. horizon caps at 6 (source + 5 hops + dest); we mirror
 const MAX_PATH_LENGTH = 5;
 
 export async function findPathToXLM(
@@ -27,14 +23,14 @@ export async function findPathToXLM(
   network: NetworkConfig,
 ): Promise<PathResult | null> {
   if (isNative(source)) {
-    // xlm -> xlm is degenerate.
+    // xlm -> xlm is degenerate
     return null;
   }
 
   const server = getHorizon(network);
   const sourceAsset = toSdkAsset(source);
 
-  // constrain the search to xlm-only outputs.
+  // constrain the search to xlm-only outputs
   const page = await server.strictSendPaths(sourceAsset, amount, [Asset.native()]).call();
 
   let best: PathResult | null = null;
@@ -85,8 +81,8 @@ function assetRecordToIdentifier(p: {
   };
 }
 
-// compare horizon decimal amount strings without fp loss.
-// returns >0 when a > b, <0 when a < b, 0 when equal.
+// compare horizon decimal amount strings without fp loss
+// returns >0 when a > b, <0 when a < b, 0 when equal
 function compareAmounts(a: string, b: string): number {
   const [aiRaw = "0", afRaw = ""] = a.split(".");
   const [biRaw = "0", bfRaw = ""] = b.split(".");

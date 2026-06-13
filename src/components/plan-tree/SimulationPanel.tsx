@@ -1,4 +1,4 @@
-// read-only viewer for PlanNode.simulated. soroban shows fee/ledger/auth, classic shows ops/fee/xdr.
+// read-only viewer for PlanNode.simulated. soroban shows fee/ledger/auth, classic shows ops/fee/xdr
 
 import { type ReactElement } from "react";
 

@@ -1,7 +1,4 @@
 // post-merge mediator forward: after the user's accountMerge -> mediator lands,
-// builds and submits the second envelope:
-//   payment(mediator -> destination) + accountMerge(mediator -> userFallbackAddress)
-// co-signed via /api/mediator/sign (kind="forward").
 
 import {
   Asset,
@@ -19,7 +16,7 @@ import { requestMediatorSignature } from "@/lib/mediator/client";
 export interface MediatorForwardInput {
   readonly mediatorPublicKey: string;
   readonly destination: string;
-  // defaults to destination if omitted (frees the mediator account).
+  // defaults to destination if omitted (frees the mediator account)
   readonly userFallbackAddress?: string;
   readonly memo?: { readonly type: "text" | "id" | "hash" | "return"; readonly value: string };
   readonly network: NetworkConfig;
@@ -29,7 +26,7 @@ export type MediatorForwardResult =
   | { readonly ok: true; readonly txHash: string }
   | { readonly ok: false; readonly error: string };
 
-// 0.5 XLM buffer for fee margin; accountMerge reclaims the base reserve.
+// 0.5 XLM buffer for fee margin; accountMerge reclaims the base reserve
 const FORWARD_BUFFER_XLM = "0.5000000";
 
 const FIVE_MINUTES = 300;
@@ -103,7 +100,7 @@ export async function submitMediatorForward(
   }
 }
 
-// stroop-precision (7 decimal) decimal helpers; avoids pulling in a decimal lib.
+// stroop-precision (7 decimal) decimal helpers; avoids pulling in a decimal lib
 
 function toStroops(amount: string): bigint {
   const [whole, frac = ""] = amount.split(".");

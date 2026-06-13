@@ -1,13 +1,11 @@
 // browser-side helper for the mediator co-signing endpoint. safe to import
-// from a client component; no server-only deps.
+// from a client component; no server-only deps
 
 export type MediatorSignatureResult =
   | { ok: true; signedXdr: string }
   | { ok: false; code: string; reason: string };
 
-// which validator the route runs against the envelope.
-//   "merge"   - user-side accountMerge to mediator + payment.
-//   "forward" - mediator-side payment to destination + accountMerge to fallback.
+// which validator the route runs against the envelope
 export type MediatorEnvelopeKind = "merge" | "forward";
 
 export interface RequestMediatorSignatureOptions {
@@ -18,8 +16,8 @@ export interface RequestMediatorSignatureOptions {
 
 const DEFAULT_ENDPOINT = "/api/mediator/sign";
 
-// posts the unsigned envelope to the route and returns the typed result.
-// network errors surface as { ok: false, code: "NETWORK_ERROR", ... }.
+// posts the unsigned envelope to the route and returns the typed result
+// network errors surface as { ok: false, code: "NETWORK_ERROR", ... }
 export async function requestMediatorSignature(
   envelopeXdr: string,
   options: RequestMediatorSignatureOptions = {},

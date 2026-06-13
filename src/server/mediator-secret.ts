@@ -4,9 +4,7 @@ import { Keypair, StrKey } from "@stellar/stellar-sdk";
 
 import { getServerEnv } from "@/server/server-env";
 
-// loads the mediator signing keypair from MEDIATOR_SECRET. server-only —
-// accidental client import causes a next.js build error. memoized after
-// the first successful load. never logs the seed or pubkey.
+// loads the mediator signing keypair from MEDIATOR_SECRET
 let cachedKeypair: Keypair | null = null;
 
 export function getMediatorKeypair(): Keypair {
@@ -31,7 +29,7 @@ export function getMediatorKeypair(): Keypair {
   return cachedKeypair;
 }
 
-// test-only: reset the cached keypair.
+// test-only: reset the cached keypair
 export function __resetMediatorKeypairForTests(): void {
   cachedKeypair = null;
 }

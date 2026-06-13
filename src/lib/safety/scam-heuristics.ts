@@ -1,15 +1,4 @@
-// scam-token heuristics. pure deterministic checks on a token's
-// (name, symbol, contractId, issuer) tuple.
-//
-// heuristics:
-//   1. lookalike symbol against the tier-1 list. levenshtein distance 1 → warning,
-//      distance 2 → info.
-//   2. exact symbol collision — symbol matches tier-1 but issuer differs → critical.
-//   3. suspicious character class — symbol has chars outside [A-Z0-9] → critical.
-//   4. unknown soroban contract — contractId not on MAINNET_ALLOWLIST → warning.
-//
-// the ui never auto-revokes; the user always confirms. flags are
-// returned in deterministic insertion order.
+// scam-token heuristics
 
 import { isAllowedContract } from "@/lib/config/contracts";
 import type { AssetIdentifier, AuditBalance } from "@/lib/types/account";
@@ -25,28 +14,28 @@ export type ScamHeuristicId =
 export interface ScamFlag {
   readonly id: ScamHeuristicId;
   readonly severity: ScamSeverity;
-  // short user-presentable message. no html/markdown.
+  // short user-presentable message. no html/markdown
   readonly message: string;
-  // optional structured detail for ui rendering.
+  // optional structured detail for ui rendering
   readonly detail?: Readonly<Record<string, string | number>>;
 }
 
 export interface TokenSubject {
-  // human-readable name as published by the issuer/contract. may be empty.
+  // human-readable name as published by the issuer/contract. may be empty
   readonly name?: string;
-  // asset code / sep-41 symbol. may be empty.
+  // asset code / sep-41 symbol. may be empty
   readonly symbol?: string;
-  // soroban contract id (C...) for sep-41 tokens. omit for classic trustlines.
+  // soroban contract id (c...) for sep-41 tokens. omit for classic trustlines
   readonly contractId?: string;
   // for classic trustlines: the issuer g-address. used to decide whether a
-  // tier-1-matching symbol is the real asset or an impersonator.
+  // tier-1-matching symbol is the real asset or an impersonator
   readonly issuer?: string;
 }
 
-// tier-1 reference list. frozen at compile time.
+// tier-1 reference list. frozen at compile time
 export interface Tier1Asset {
   readonly symbol: string;
-  // issuer g-address, or null for native / sac-only assets.
+  // issuer g-address, or null for native / sac-only assets
   readonly issuer: string | null;
 }
 
@@ -62,10 +51,10 @@ const TIER1_BY_SYMBOL: ReadonlyMap<string, Tier1Asset> = new Map(
   TIER1_ASSETS.map((a) => [a.symbol.toUpperCase(), a]),
 );
 
-// edit distance <= this (and > 0) counts as suspicious.
+// edit distance <= this (and > 0) counts as suspicious
 const LOOKALIKE_DISTANCE_THRESHOLD = 2;
 
-// run all heuristics against the subject.
+// run all heuristics against the subject
 export function evaluateScamHeuristics(subject: TokenSubject): readonly ScamFlag[] {
   const flags: ScamFlag[] = [];
 
@@ -76,7 +65,7 @@ export function evaluateScamHeuristics(subject: TokenSubject): readonly ScamFlag
 
     if (tier1 !== undefined) {
       // exact symbol match: collision iff canonical issuer exists AND
-      // subject issuer differs. abstain if either side is null.
+      // subject issuer differs. abstain if either side is null
       const seenIssuer = subject.issuer ?? null;
       if (tier1.issuer !== null && seenIssuer !== null && seenIssuer !== tier1.issuer) {
         flags.push({
@@ -91,7 +80,7 @@ export function evaluateScamHeuristics(subject: TokenSubject): readonly ScamFlag
         });
       }
     } else {
-      // no exact tier-1 match — look for a lookalike.
+      // no exact tier-1 match — look for a lookalike
       const lookalike = nearestTier1Match(symbolUpper);
       if (lookalike !== null && lookalike.distance <= LOOKALIKE_DISTANCE_THRESHOLD) {
         flags.push({
@@ -108,7 +97,7 @@ export function evaluateScamHeuristics(subject: TokenSubject): readonly ScamFlag
     }
 
     // suspicious character class — runs regardless of tier-1 status so a
-    // collision + suspicious-character combo (e.g. cyrillic USDс) both fire.
+    // collision + suspicious-character combo (e.g. cyrillic usdс) both fire
     if (!/^[A-Z0-9]+$/.test(rawSymbol)) {
       flags.push({
         id: "suspicious_character",
@@ -119,7 +108,7 @@ export function evaluateScamHeuristics(subject: TokenSubject): readonly ScamFlag
     }
   }
 
-  // soroban contract not on the allow-list.
+  // soroban contract not on the allow-list
   if (subject.contractId !== undefined && subject.contractId.length > 0) {
     if (!isAllowedContract(subject.contractId)) {
       flags.push({
@@ -152,13 +141,13 @@ function nearestTier1Match(symbolUpper: string): LookalikeMatch | null {
   return best;
 }
 
-// classic dp levenshtein. tiny inputs (symbols are <= 12 chars), no deps.
+// classic dp levenshtein. tiny inputs (symbols are <= 12 chars), no deps
 export function levenshtein(a: string, b: string): number {
   if (a === b) return 0;
   if (a.length === 0) return b.length;
   if (b.length === 0) return a.length;
 
-  // make `a` the shorter string so the row is small.
+  // make `a` the shorter string so the row is small
   let s = a;
   let t = b;
   if (s.length > t.length) {
@@ -190,7 +179,7 @@ export function levenshtein(a: string, b: string): number {
 }
 
 // run scam heuristics across every credit balance in an audit. one finding
-// per (asset, flag) hit.
+// per (asset, flag) hit
 export function runScamHeuristics(balances: readonly AuditBalance[]): readonly ScamFinding[] {
   const findings: ScamFinding[] = [];
   for (const balance of balances) {
@@ -209,7 +198,7 @@ export interface ScamFinding {
   readonly asset: AssetIdentifier;
 }
 
-// filter findings to those touching a given asset identifier.
+// filter findings to those touching a given asset identifier
 export function findingsForAsset(
   findings: readonly ScamFinding[],
   asset: AssetIdentifier,

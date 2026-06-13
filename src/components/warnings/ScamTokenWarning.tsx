@@ -1,6 +1,6 @@
 "use client";
 
-// surfaces tokens flagged by scam heuristics. informational only — the typed confirmation is the safety net.
+// surfaces tokens flagged by scam heuristics. informational only — the typed confirmation is the safety net
 
 import { useEffect, useId, useRef } from "react";
 

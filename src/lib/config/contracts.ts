@@ -1,9 +1,4 @@
-// network-aware contract-id allow-list.
-//
-// every soroban tx the user signs must have every invoked contract pass
-// the allow-list verifier in src/lib/stellar/allowlist.ts. each entry's
-// verified_at is the iso date the contract id was verified against the
-// upstream project's published deployment json or docs.
+// network-aware contract-id allow-list
 
 import { BLEND_MAINNET_INFRASTRUCTURE, BLEND_MAINNET_POOLS } from "@/lib/adapters/blend/pools";
 import { BLEND_TESTNET_POOLS } from "@/lib/adapters/blend/pools";
@@ -19,8 +14,6 @@ export interface AllowedContract {
 }
 
 // blend mainnet pool ids + infrastructure (factory, backstop, BLND/USDC
-// sacs, comet lp). source: blend-utils mainnet.contracts.json snapshot
-// in src/lib/adapters/blend/pools.ts.
 const BLEND_ALLOWLIST_ENTRIES: readonly AllowedContract[] = [
   ...BLEND_MAINNET_POOLS.map(
     (pool): AllowedContract => ({
@@ -43,8 +36,6 @@ const BLEND_ALLOWLIST_ENTRIES: readonly AllowedContract[] = [
 ];
 
 // fxdao mainnet vault contract + synthetic-stablecoin sacs, mirrored from
-// FXDAO_MAINNET_CONTRACTS so the universal verifier accepts pay_debt /
-// redeem and the inner SAC calls the vault dispatches.
 const FXDAO_ALLOWLIST_ENTRIES: readonly AllowedContract[] = FXDAO_MAINNET_CONTRACTS.map(
   (entry): AllowedContract => ({
     id: entry.id,
@@ -85,10 +76,10 @@ export const MAINNET_ALLOWLIST: readonly AllowedContract[] = [
   ...FXDAO_ALLOWLIST_ENTRIES,
 ];
 
-// testnet allow-list — mirrors the four protocols on stellar testnet.
+// testnet allow-list — mirrors the four protocols on stellar testnet
 
-// blend testnet infrastructure — the eight non-pool testnet contracts.
-// sourced from blend-utils@main/testnet.contracts.json (re-fetched 2026-05-18).
+// blend testnet infrastructure — the eight non-pool testnet contracts
+// sourced from blend-utils@main/testnet.contracts.json (re-fetched 2026-05-18)
 const BLEND_TESTNET_INFRASTRUCTURE_SOURCE =
   "github.com/blend-capital/blend-utils@main/testnet.contracts.json";
 const BLEND_TESTNET_VERIFIED_AT = "2026-05-18";
@@ -173,8 +164,8 @@ const TESTNET_BLEND_ENTRIES: readonly AllowedContract[] = [
   ),
 ];
 
-// soroswap testnet contracts (factory + router; no aggregator on testnet).
-// sourced from soroswap/core@main/public/testnet.contracts.json (re-fetched 2026-05-18).
+// soroswap testnet contracts (factory + router; no aggregator on testnet)
+// sourced from soroswap/core@main/public/testnet.contracts.json (re-fetched 2026-05-18)
 const SOROSWAP_TESTNET_SOURCE = "github.com/soroswap/core@main/public/testnet.contracts.json";
 const TESTNET_SOROSWAP_ENTRIES: readonly AllowedContract[] = [
   {
@@ -193,10 +184,7 @@ const TESTNET_SOROSWAP_ENTRIES: readonly AllowedContract[] = [
   },
 ];
 
-// fxdao testnet contracts. sourced from fxdao.io/docs/addresses/ "Testnet
-// Addresses" section (re-fetched 2026-05-18). includes the vault contract,
-// the four SACs (FXG, USDx, EURx, GBPx), and the oracle. locking-pool is
-// omitted because the docs page does not advertise a testnet id.
+// fxdao testnet contracts
 const FXDAO_TESTNET_SOURCE = "fxdao.io/docs/addresses/ (Testnet)";
 const TESTNET_FXDAO_ENTRIES: readonly AllowedContract[] = [
   {
@@ -243,12 +231,7 @@ const TESTNET_FXDAO_ENTRIES: readonly AllowedContract[] = [
   },
 ];
 
-// aquarius testnet entries. router verified 2026-05-18 against two sources:
-//   1. AquaToken/aquarius-frontend constants/soroban.ts (CONTRACTS[ENV_TESTNET].amm).
-//   2. stellar.expert testnet contract registry, validation.status=verified
-//      against AquaToken/soroban-amm soroban-liquidity-pool-router-contract.
-// the batcher is published in the same constants file but isn't invoked by
-// the current adapter — mirrored here so the verifier accepts it later.
+// aquarius testnet entries
 const TESTNET_AQUARIUS_ENTRIES: readonly AllowedContract[] = [
   {
     id: "CBCFTQSPDBAIZ6R6PJQKSQWKNKWH2QIV3I4J72SHWBIK3ADRRAM5A6GD",
@@ -278,7 +261,7 @@ export const TESTNET_ALLOWLIST: readonly AllowedContract[] = [
 const MAINNET_ALLOWED_IDS: ReadonlySet<string> = new Set(MAINNET_ALLOWLIST.map((c) => c.id));
 const TESTNET_ALLOWED_IDS: ReadonlySet<string> = new Set(TESTNET_ALLOWLIST.map((c) => c.id));
 
-// returns the allow-list for the given network. futurenet returns empty.
+// returns the allow-list for the given network. futurenet returns empty
 export function getAllowlistForNetwork(network: NetworkConfig): readonly AllowedContract[] {
   switch (network.id) {
     case "mainnet":
@@ -291,7 +274,7 @@ export function getAllowlistForNetwork(network: NetworkConfig): readonly Allowed
 }
 
 // pure predicate used by allowlist.ts before signing. omitting network
-// defaults to mainnet for backward compatibility.
+// defaults to mainnet for backward compatibility
 export function isAllowedContract(contractId: string, network?: NetworkConfig): boolean {
   if (network === undefined) {
     return MAINNET_ALLOWED_IDS.has(contractId);
@@ -307,7 +290,7 @@ export function isAllowedContract(contractId: string, network?: NetworkConfig): 
 }
 
 // lookup the human-readable label for a contract. returns null if not
-// allow-listed. omitting network searches the mainnet list.
+// allow-listed. omitting network searches the mainnet list
 export function getAllowedContract(
   contractId: string,
   network?: NetworkConfig,

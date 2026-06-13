@@ -1,12 +1,4 @@
-/**
- * soroswap aggregator-routed asset conversion.
- * converts a non-XLM soroban balance to XLM via the soroswap multi-protocol aggregator
- * (soroswap, phoenix, aqua). classical conversion uses PATH_PAYMENT_STRICT_SEND elsewhere.
- *
- * flow: resolve assetIn → quote EXACT_IN → re-check slippage threshold against our policy →
- * build XDR → parse → assertTransactionAllowed → return.
- */
-
+// soroswap aggregator-routed asset conversion
 import { Asset, TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
@@ -103,13 +95,13 @@ export async function convertToXLM(
   });
 
   const transaction = parseTransaction(built.xdr, args.network);
-  // every contract the user signs for MUST be on the pinned allow-list. re-verify client-side.
+  // every contract the user signs for MUST be on the pinned allow-list. re-verify client-side
   assertTransactionAllowed(transaction, args.network);
 
   return { transaction, quote };
 }
 
-// map our NetworkConfig.id onto the soroswap SDK's network type. futurenet is unsupported.
+// map our NetworkConfig.id onto the soroswap SDK's network type. futurenet is unsupported
 function mapNetworkId(network: NetworkConfig): SoroswapNetwork {
   if (network.id === "mainnet" || network.id === "testnet") {
     return network.id;
@@ -117,7 +109,7 @@ function mapNetworkId(network: NetworkConfig): SoroswapNetwork {
   throw new TypeError(`convertToXLM: Soroswap aggregator does not support network "${network.id}"`);
 }
 
-// resolve an AssetIdentifier to its soroban contract address. LP shares are rejected — use removeLiquidity first.
+// resolve an AssetIdentifier to its soroban contract address. LP shares are rejected — use removeLiquidity first
 function resolveAssetAddress(asset: AssetIdentifier, network: NetworkConfig): string {
   switch (asset.kind) {
     case "native":

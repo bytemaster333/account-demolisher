@@ -1,4 +1,4 @@
-// numbered render of every BatchedOperation grouped by batch. one batch = one stellar tx.
+// numbered render of every BatchedOperation grouped by batch. one batch = one stellar tx
 
 import type { ClassicBatch } from "@/lib/types/plan";
 import { cn } from "@/lib/utils";

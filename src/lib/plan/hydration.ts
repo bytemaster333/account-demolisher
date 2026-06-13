@@ -1,21 +1,4 @@
-// walks the plan tree and attaches an unsigned Transaction to every soroban
-// node by dispatching to the matching adapter builder.
-//
-// node kind -> adapter:
-//   RevokeAllowance      -> soroban/allowances.buildRevoke
-//   RepayBlend           -> blend/exit.buildExitSequence (pick "repay")
-//   WithdrawBlend        -> blend/exit.buildExitSequence (pick "withdraw_*")
-//   ClaimBlendEmissions  -> blend/exit.buildExitSequence (pick "claim_...")
-//   BackstopQueue        -> blend/exit.buildExitSequence (pick "backstop")
-//   WithdrawAquarius     -> aquarius/client.withdraw
-//   ClaimAquariusRewards -> aquarius/client.claim
-//   WithdrawSoroswapLp   -> soroswap/lp.removeLiquidityByContractIds
-//   PayFxDAODebt         -> fxdao/exit.buildVaultExit (pick payDebt)
-//   RedeemFxDAO          -> fxdao/exit.buildVaultExit (pick redeem)
-//   ConvertSorobanToXLM  -> soroswap/aggregator.convertToXLM
-//   TransferAsIs         -> soroban/sep41.buildTransfer
-//   FinalClassicTx       -> no-op (classic builder handles it)
-//   MediatorForward      -> no-op (classic builder handles it)
+// walks the plan tree and attaches an unsigned transaction to every soroban
 
 import { Asset, type Horizon, type Transaction, type rpc } from "@stellar/stellar-sdk";
 
@@ -55,7 +38,7 @@ export interface HydrationDeps {
   readonly network: NetworkConfig;
   readonly currentLedger: number;
   readonly fetchSourceAccount: (publicKey: string) => Promise<Horizon.AccountResponse>;
-  // adapter overrides for tests; prod leaves this undefined.
+  // adapter overrides for tests; prod leaves this undefined
   readonly adapters?: HydrationAdapterOverrides;
 }
 
@@ -72,7 +55,7 @@ export interface HydrationAdapterOverrides {
 }
 
 // per-node failures populate `failures[]` and set node.status = "failed";
-// only `deps` misuse throws. idempotent: nodes with a transaction are skipped.
+// only `deps` misuse throws. idempotent: nodes with a transaction are skipped
 export async function hydratePlanTransactions(
   tree: PlanTree,
   userPublicKey: string,
@@ -87,7 +70,7 @@ export async function hydratePlanTransactions(
 
   const failures: HydrationFailure[] = [];
 
-  // each builder reads + increments its own sequence copy, so caching is safe.
+  // each builder reads + increments its own sequence copy, so caching is safe
   let sourceAccount: Horizon.AccountResponse | null = null;
   const getSourceAccount = async (): Promise<Horizon.AccountResponse> => {
     if (sourceAccount !== null) return sourceAccount;
@@ -98,7 +81,7 @@ export async function hydratePlanTransactions(
   for (const node of topologicalOrder(tree)) {
     if (nodeHasTransaction(node)) continue;
 
-    // classic-only nodes are constructed by the classic builder at submit time.
+    // classic-only nodes are constructed by the classic builder at submit time
     if (node.kind === "FinalClassicTx" || node.kind === "MediatorForward") {
       continue;
     }
@@ -180,7 +163,7 @@ async function hydrateNode(
       const fn = a.buildExitSequence ?? buildExitSequence;
       const position = synthesizeBlendPositionForClaim(node.metadata);
       const deps2: Parameters<typeof fn>[4] = {
-        // force a non-empty reserve-id list; the pool clamps to actual emissions.
+        // force a non-empty reserve-id list; the pool clamps to actual emissions
         claimReserveIds:
           node.metadata.reserveTokenIds.length > 0 ? node.metadata.reserveTokenIds : [0],
       };
@@ -226,7 +209,7 @@ async function hydrateNode(
           tokens: node.metadata.tokens,
           poolIndex: poolIndexHexToBytes(node.metadata.poolIndex),
           shareAmount: node.metadata.shareAmount,
-          // accept any output; slippage policy lives in the orchestrator.
+          // accept any output; slippage policy lives in the orchestrator
           minAmounts: node.metadata.tokens.map(() => 0n),
           sourceAccount,
           network: deps.network,
@@ -262,7 +245,7 @@ async function hydrateNode(
           tokenAAddress: node.metadata.tokenA,
           tokenBAddress: node.metadata.tokenB,
           liquidity: node.metadata.shareBalance.toString(),
-          // accept any output; orchestrator handles slippage.
+          // accept any output; orchestrator handles slippage
           amountAMin: "0",
           amountBMin: "0",
           userAddress: userPublicKey,
@@ -288,7 +271,7 @@ async function hydrateNode(
         {
           denomination: node.metadata.vaultDenomination,
           debt: node.metadata.debt,
-          // collateral lives on the sibling RedeemFxDAO node; pay_debt ignores it.
+          // collateral lives on the sibling RedeemFxDAO node; pay_debt ignores it
           collateral: 0n,
         },
         userPublicKey,
@@ -309,7 +292,7 @@ async function hydrateNode(
       }
       const sourceAccount = await getSourceAccount();
       const fn = a.buildVaultExit ?? buildVaultExit;
-      // redeem doesn't take prev_key; pass null and pick the redeem half only.
+      // redeem doesn't take prev_key; pass null and pick the redeem half only
       const exit = await fn(
         {
           denomination: node.metadata.vaultDenomination,
@@ -382,7 +365,7 @@ function nodeHasTransaction(node: PlanNode): boolean {
   }
 }
 
-// readonly metadata is the documented hydration point; cast through unknown.
+// readonly metadata is the documented hydration point; cast through unknown
 function setTransaction(node: PlanNode, tx: Transaction): void {
   switch (node.kind) {
     case "RevokeAllowance":
@@ -421,8 +404,6 @@ function resolveContractIdForAsset(asset: AssetIdentifier, network: NetworkConfi
 }
 
 // blend position synthesizers — buildExitSequence wants a full BlendUserPositions
-// snapshot but we have one node per liability/withdraw/etc., so we build a
-// single-entry snapshot and filter the returned steps.
 
 function synthesizeBlendPositionForRepay(metadata: {
   readonly poolId: string;
@@ -445,7 +426,7 @@ function synthesizeBlendPositionForWithdraw(metadata: {
   readonly asset: string;
   readonly bucket: "collateral" | "supply";
 }): BlendUserPositions {
-  // exit sequencer skips amount <= 0n; seed with 1n and filter on the way out.
+  // exit sequencer skips amount <= 0n; seed with 1n and filter on the way out
   const map = new Map([[metadata.asset, 1n]]);
   return {
     poolId: metadata.poolId,
@@ -462,7 +443,7 @@ function synthesizeBlendPositionForClaim(metadata: {
   readonly poolId: string;
   readonly reserveTokenIds: readonly number[];
 }): BlendUserPositions {
-  // claimReserveIds on the deps overrides this anyway.
+  // claimReserveIds on the deps overrides this anyway
   void metadata;
   return {
     poolId: metadata.poolId,
@@ -491,8 +472,8 @@ function synthesizeBlendPositionForBackstop(metadata: {
   };
 }
 
-// resolve the user's predecessor in the fxdao vault linked list.
-// returns null if the user is the head (or list is empty).
+// resolve the user's predecessor in the fxdao vault linked list
+// returns null if the user is the head (or list is empty)
 async function resolveFxDaoPrevKey(
   deps: HydrationDeps,
   userPublicKey: string,

@@ -1,4 +1,4 @@
-// read-only summary of an AccountAudit. presentational only.
+// read-only summary of an AccountAudit. presentational only
 
 import type { AccountAudit, AuditBalance } from "@/lib/types/account";
 import { cn } from "@/lib/utils";

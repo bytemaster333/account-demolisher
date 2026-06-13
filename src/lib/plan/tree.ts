@@ -1,5 +1,5 @@
-// plan-tree data model: a DAG of PlanNodes with explicit dependency edges.
-// construction is pure; simulation lives in simulator.ts.
+// plan-tree data model: a DAG of PlanNodes with explicit dependency edges
+// construction is pure; simulation lives in simulator.ts
 
 import type { rpc as RpcNS, Transaction, xdr as XdrNS } from "@stellar/stellar-sdk";
 
@@ -7,7 +7,7 @@ import type { AssetIdentifier } from "@/lib/types/account";
 import type { ClassicBatch } from "@/lib/types/plan";
 
 // soroban nodes carry the full simulation response; classic nodes
-// just confirm well-formedness and emit envelope xdr.
+// just confirm well-formedness and emit envelope xdr
 export type SimulationOutcome =
   | {
       readonly kind: "soroban";
@@ -53,7 +53,7 @@ export type PlanNodeKind =
 export interface PlanNodeBase {
   readonly id: string;
   readonly kind: PlanNodeKind;
-  // ids that must reach confirmed or skipped before this runs.
+  // ids that must reach confirmed or skipped before this runs
   readonly dependencies: readonly string[];
   readonly description: string;
   status: PlanNodeStatus;
@@ -66,7 +66,7 @@ export interface RevokeAllowanceMetadata {
   readonly kind: "RevokeAllowance";
   readonly contractId: string;
   readonly spender: string;
-  // pre-built unsigned approve(..., 0, currentLedger) tx.
+  // pre-built unsigned approve(..., 0, currentLedger) tx
   readonly transaction?: Transaction;
 }
 
@@ -97,7 +97,7 @@ export interface WithdrawAquariusMetadata {
   readonly kind: "WithdrawAquarius";
   readonly poolIndex: string;
   readonly shareAmount: bigint;
-  // ordered reserve token contract addresses required by the withdraw call.
+  // ordered reserve token contract addresses required by the withdraw call
   readonly tokens: readonly string[];
   readonly transaction?: Transaction;
 }
@@ -114,7 +114,7 @@ export interface RedeemFxDAOMetadata {
   readonly kind: "RedeemFxDAO";
   readonly vaultDenomination: string;
   readonly collateral: bigint;
-  // smallest-units synthetic debt the redeem op burns to release collateral.
+  // smallest-units synthetic debt the redeem op burns to release collateral
   readonly debt: bigint;
   readonly transaction?: Transaction;
 }
@@ -135,7 +135,7 @@ export interface ClaimAquariusRewardsMetadata {
 export interface ConvertSorobanToXLMMetadata {
   readonly kind: "ConvertSorobanToXLM";
   readonly asset: AssetIdentifier;
-  // smallest-units amount, normalized by the source adapter.
+  // smallest-units amount, normalized by the source adapter
   readonly amount: bigint;
   readonly transaction?: Transaction;
 }
@@ -161,6 +161,10 @@ export interface FinalClassicTxMetadata {
   readonly batches: readonly ClassicBatch[];
   readonly destination: string;
   readonly useMediator: boolean;
+  // forwarded into batchClassicDemolition during execute-time re-batching
+  readonly claimableBalanceIds?: readonly string[];
+  readonly userFallbackAddress?: string;
+  readonly mediatorPublicKey?: string;
 }
 
 export interface MediatorForwardMetadata {
@@ -243,13 +247,13 @@ export type PlanNode =
   | FinalClassicTxNode
   | MediatorForwardNode;
 
-// rootNodes have zero in-edges; allNodes is the flat id -> node index.
+// rootNodes have zero in-edges; allNodes is the flat id -> node index
 export interface PlanTree {
   readonly rootNodes: readonly PlanNode[];
   readonly allNodes: ReadonlyMap<string, PlanNode>;
 }
 
-// throws on duplicate ids, missing deps, or cycles.
+// throws on duplicate ids, missing deps, or cycles
 export function buildPlanTree(nodes: readonly PlanNode[]): PlanTree {
   const allNodes = new Map<string, PlanNode>();
   for (const node of nodes) {
@@ -271,7 +275,7 @@ export function buildPlanTree(nodes: readonly PlanNode[]): PlanTree {
   return { rootNodes, allNodes };
 }
 
-// iterative DFS that throws on the first cycle with the offending path.
+// iterative DFS that throws on the first cycle with the offending path
 function assertAcyclic(nodes: readonly PlanNode[], allNodes: ReadonlyMap<string, PlanNode>): void {
   type Color = "white" | "gray" | "black";
   const color = new Map<string, Color>();
@@ -316,7 +320,7 @@ function assertAcyclic(nodes: readonly PlanNode[], allNodes: ReadonlyMap<string,
   }
 }
 
-// stable topo order: parents before children, deterministic on input.
+// stable topo order: parents before children, deterministic on input
 export function topologicalOrder(tree: PlanTree): readonly PlanNode[] {
   const inDegree = new Map<string, number>();
   const order: PlanNode[] = [];
@@ -360,7 +364,7 @@ export function topologicalOrder(tree: PlanTree): readonly PlanNode[] {
   return order;
 }
 
-// true for soroban-touching kinds; routes simulation in simulator.ts.
+// true for soroban-touching kinds; routes simulation in simulator.ts
 export function isSorobanNode(node: PlanNode): boolean {
   switch (node.kind) {
     case "RevokeAllowance":

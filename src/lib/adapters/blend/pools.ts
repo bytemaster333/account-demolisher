@@ -1,25 +1,5 @@
-/**
- * frozen snapshot of the blend mainnet pool registry.
- * source: github.com/blend-capital/blend-utils/main/mainnet.contracts.json
- * commit b05242df30b6b6caf9d317646f754541824a5a8b (2025-12-18T13:22:46Z)
- *
- * upstream JSON exposes a flat ids map keyed by role (poolFactoryV2, backstopV2, etc.) but does
- * NOT enumerate per-pool reserves — those live on the pool's on-chain reserveList and must be
- * loaded via Pool.load at runtime. assets is therefore an empty frozen tuple here.
- *
- * only v2 pools live under BLEND_MAINNET_POOLS; legacy v1 contract IDs stay in
- * BLEND_MAINNET_INFRASTRUCTURE so the allow-list covers them.
- */
-
-/**
- * one entry in the blend pool registry.
- *  - pool_id: soroban contract address
- *  - name: human label, matches the on-chain PoolMetadata.name
- *  - version: SDK pool version; PoolV2.load vs PoolV1.load
- *  - assets: reserve assets if statically known. empty here — load dynamically.
- *  - verified_at: ISO date of the upstream snapshot
- *  - source: upstream URL + commit anchor
- */
+// frozen snapshot of the blend mainnet pool registry
+// one entry in the blend pool registry
 export interface BlendPoolEntry {
   readonly pool_id: string;
   readonly name: string;
@@ -33,7 +13,7 @@ const BLEND_UTILS_COMMIT = "b05242df30b6b6caf9d317646f754541824a5a8b";
 const BLEND_UTILS_SOURCE = `github.com/blend-capital/blend-utils@${BLEND_UTILS_COMMIT}/mainnet.contracts.json`;
 const VERIFIED_AT = "2026-05-15";
 
-// mainnet blend pools (v2). snapshotted from mainnet.contracts.json::ids.{FixedV2,YieldBloxV2}.
+// mainnet blend pools (v2). snapshotted from mainnet.contracts.json::ids.{FixedV2,YieldBloxV2}
 export const BLEND_MAINNET_POOLS: readonly BlendPoolEntry[] = Object.freeze([
   Object.freeze({
     pool_id: "CAJJZSGMMM3PD7N33TAPHGBUGTB43OC73HVIK2L2G6BNGGGYOSSYBXBD",
@@ -51,7 +31,7 @@ export const BLEND_MAINNET_POOLS: readonly BlendPoolEntry[] = Object.freeze([
     verified_at: VERIFIED_AT,
     source: BLEND_UTILS_SOURCE,
   } satisfies BlendPoolEntry),
-  // legacy v1 pools — retained so allow-list covers them. PoolV1.load works against these IDs.
+  // legacy v1 pools — retained so allow-list covers them. PoolV1.load works against these IDs
   Object.freeze({
     pool_id: "CDVQVKOY2YSXS2IC7KN6MNASSHPAO7UN2UR2ON4OI2SKMFJNVAMDX6DP",
     name: "Fixed",
@@ -70,13 +50,13 @@ export const BLEND_MAINNET_POOLS: readonly BlendPoolEntry[] = Object.freeze([
   } satisfies BlendPoolEntry),
 ]);
 
-/**
- * frozen snapshot of canonical blend testnet pools.
- * source: github.com/blend-capital/blend-utils/main/testnet.contracts.json (verified 2026-05-16)
- * env override available via BLEND_TESTNET_POOL_ID.
- */
+// frozen snapshot of canonical blend testnet pools
 const BLEND_TESTNET_SOURCE = "github.com/blend-capital/blend-utils@main/testnet.contracts.json";
 const TESTNET_VERIFIED_AT = "2026-05-16";
+
+export const BLEND_TESTNET_POOL_IDS: readonly string[] = Object.freeze([
+  "CCEBVDYM32YNYCVNRXQKDFFPISJJCV557CDZEIRBEE4NCV4KHPQ44HGF",
+]);
 
 export const BLEND_TESTNET_POOLS: readonly BlendPoolEntry[] = Object.freeze([
   Object.freeze({
@@ -92,10 +72,7 @@ export const BLEND_TESTNET_POOLS: readonly BlendPoolEntry[] = Object.freeze([
 // resolved via env override
 export const TESTNET_POOLS = BLEND_TESTNET_POOLS;
 
-/**
- * infrastructure contracts the SDK invokes alongside each pool (factory, backstop,
- * BLND/USDC tokens, comet LP, etc.). sourced from the same upstream ids map.
- */
+// infrastructure contracts the SDK invokes alongside each pool (factory, backstop,
 export interface BlendInfrastructureEntry {
   readonly id: string;
   readonly name: string;

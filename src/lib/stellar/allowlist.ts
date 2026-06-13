@@ -1,7 +1,4 @@
-// contract-id allow-list enforcement.
-//
-// every soroban-touching tx the user signs must pass this verifier. the
-// allow-list is network-aware; classical txs trivially pass.
+// contract-id allow-list enforcement
 
 import {
   Address,
@@ -13,13 +10,13 @@ import { isAllowedContract } from "@/lib/config/contracts";
 import type { NetworkConfig } from "@/lib/config/networks";
 
 export interface AllowlistViolationDetail {
-  // c... strkey of the contract being invoked, or a label if extraction failed.
+  // c... strkey of the contract being invoked, or a label if extraction failed
   readonly contractId: string;
-  // human-readable reason.
+  // human-readable reason
   readonly reason: string;
 }
 
-// thrown when at least one violation is found.
+// thrown when at least one violation is found
 export class AllowlistViolation extends Error {
   public readonly violations: readonly AllowlistViolationDetail[];
 
@@ -33,8 +30,8 @@ export class AllowlistViolation extends Error {
   }
 }
 
-// throws AllowlistViolation if any contract invocation isn't on the list.
-// omitting network defaults to mainnet.
+// throws AllowlistViolation if any contract invocation isn't on the list
+// omitting network defaults to mainnet
 export function assertTransactionAllowed(
   tx: Transaction | FeeBumpTransaction,
   network?: NetworkConfig,
@@ -43,7 +40,7 @@ export function assertTransactionAllowed(
   if (violations.length > 0) throw new AllowlistViolation(violations);
 }
 
-// non-throwing variant. returns every violation for ui display.
+// non-throwing variant. returns every violation for ui display
 export function getViolations(
   tx: Transaction | FeeBumpTransaction,
   network?: NetworkConfig,
@@ -59,7 +56,7 @@ export function getViolations(
   return out;
 }
 
-// flatten ops, transparently unwrapping a fee-bump wrapper.
+// flatten ops, transparently unwrapping a fee-bump wrapper
 function collectOperations(tx: Transaction | FeeBumpTransaction): readonly Operation[] {
   const maybeInner = (tx as FeeBumpTransaction).innerTransaction;
   if (maybeInner !== undefined && maybeInner !== null) {
@@ -68,7 +65,7 @@ function collectOperations(tx: Transaction | FeeBumpTransaction): readonly Opera
   return (tx as Transaction).operations;
 }
 
-// returns null for classical ops or for allow-listed invocations.
+// returns null for classical ops or for allow-listed invocations
 function inspectOperation(
   op: Operation,
   network: NetworkConfig | undefined,
@@ -117,7 +114,7 @@ function inspectOperation(
 
     case "hostFunctionTypeCreateContract":
     case "hostFunctionTypeCreateContractV2":
-      // create_contract deploys new code — never on a pre-existing allow-list.
+      // create_contract deploys new code — never on a pre-existing allow-list
       return {
         contractId: "<create-contract>",
         reason: "Contract-creation host functions are not permitted by this tool.",

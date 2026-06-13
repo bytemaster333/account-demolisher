@@ -1,6 +1,6 @@
 "use client";
 
-// table view of SEP-41 allowances. one row per AllowanceRecord.
+// table view of SEP-41 allowances. one row per AllowanceRecord, design-matched layout
 
 import { useEffect, useMemo, useState } from "react";
 
@@ -9,24 +9,24 @@ import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { decimals as sep41Decimals, symbol as sep41Symbol } from "@/lib/soroban/sep41";
 import { lookupSpender, type SpenderInfo } from "@/lib/soroban/spender-registry";
-import { cn } from "@/lib/utils";
 import type { Connector } from "@/lib/wallet/connector";
 
 import { RevokeButton } from "./RevokeButton";
 
 const SECONDS_PER_LEDGER = 5;
 
+const GRID_COLS = "1.4fr 1.6fr 1fr 1fr 110px";
+
 export interface AllowanceListProps {
   readonly records: readonly AllowanceRecord[];
   readonly userAddress: string;
   readonly network: NetworkConfig;
   readonly currentLedger: number;
-  // null = revoke disabled. ref is only read inside the row click handler, never during render.
+  // null = revoke disabled. ref is only read inside the row click handler, never during render
   readonly connectorRef: React.RefObject<Connector | null> | null;
   readonly showExpired: boolean;
   // re-enumerate after a successful revoke
   readonly onRevoked?: ((record: AllowanceRecord, txHash: string) => void) | undefined;
-  readonly className?: string | undefined;
 }
 
 export function AllowanceList({
@@ -37,45 +37,99 @@ export function AllowanceList({
   connectorRef,
   showExpired,
   onRevoked,
-  className,
 }: AllowanceListProps): React.JSX.Element {
   const visible = useMemo(
     () => (showExpired ? records : records.filter((r) => !r.expired)),
     [records, showExpired],
   );
 
-  if (visible.length === 0) {
-    return (
-      <p
-        role="status"
-        data-testid="allowance-list-empty"
-        className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-600"
-      >
-        {records.length === 0
-          ? "No active SEP-41 allowances found for this address in the scan window."
-          : "All allowances for this address are expired. Toggle “Show expired” to view them."}
-      </p>
-    );
-  }
-
   return (
-    <ul
+    <div
       data-testid="allowance-list"
-      className={cn("flex flex-col gap-2", className)}
-      aria-label="Active SEP-41 allowances"
+      style={{
+        marginTop: 18,
+        background: "var(--surface)",
+        border: "1px solid var(--border)",
+        borderRadius: 16,
+        overflow: "hidden",
+        boxShadow: "var(--shadow-sm)",
+      }}
     >
-      {visible.map((record) => (
-        <AllowanceRow
-          key={`${record.contractId}|${record.spender}`}
-          record={record}
-          userAddress={userAddress}
-          network={network}
-          currentLedger={currentLedger}
-          connectorRef={connectorRef}
-          onRevoked={onRevoked}
-        />
-      ))}
-    </ul>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: GRID_COLS,
+          gap: 14,
+          padding: "13px 20px",
+          borderBottom: "1px solid var(--border)",
+          background: "var(--surface-2)",
+        }}
+      >
+        <span
+          style={{
+            font: "600 10px/1 Geist, sans-serif",
+            color: "var(--fg-3)",
+            letterSpacing: "0.06em",
+          }}
+        >
+          TOKEN
+        </span>
+        <span
+          style={{
+            font: "600 10px/1 Geist, sans-serif",
+            color: "var(--fg-3)",
+            letterSpacing: "0.06em",
+          }}
+        >
+          SPENDER
+        </span>
+        <span
+          style={{
+            font: "600 10px/1 Geist, sans-serif",
+            color: "var(--fg-3)",
+            letterSpacing: "0.06em",
+          }}
+        >
+          ALLOWANCE
+        </span>
+        <span
+          style={{
+            font: "600 10px/1 Geist, sans-serif",
+            color: "var(--fg-3)",
+            letterSpacing: "0.06em",
+          }}
+        >
+          EXPIRES
+        </span>
+        <span />
+      </div>
+
+      {visible.length === 0 ? (
+        <div
+          data-testid="allowance-list-empty"
+          style={{ padding: "54px 24px", textAlign: "center" }}
+        >
+          <div style={{ fontWeight: 600, fontSize: 15 }}>No active allowances found</div>
+          <div style={{ fontSize: 13, color: "var(--fg-2)", marginTop: 6 }}>
+            {records.length === 0
+              ? "This address has no standing approvals in the scanned window."
+              : "All allowances for this address are expired. Toggle “Show expired” to view them."}
+          </div>
+        </div>
+      ) : (
+        visible.map((record) => (
+          <AllowanceRow
+            key={`${record.contractId}|${record.spender}`}
+            record={record}
+            userAddress={userAddress}
+            network={network}
+            currentLedger={currentLedger}
+            connectorRef={connectorRef}
+            onRevoked={onRevoked}
+          />
+        ))
+      )}
+    </div>
   );
 }
 
@@ -85,7 +139,6 @@ interface AllowanceRowProps {
   readonly network: NetworkConfig;
   readonly currentLedger: number;
   readonly connectorRef: React.RefObject<Connector | null> | null;
-  // explicit `| undefined` for exactOptionalPropertyTypes forwarding
   readonly onRevoked?: ((record: AllowanceRecord, txHash: string) => void) | undefined;
 }
 
@@ -132,61 +185,129 @@ function AllowanceRow({
   );
 
   return (
-    <li
+    <div
       data-testid="allowance-row"
-      className={cn(
-        "grid grid-cols-1 gap-3 rounded-lg border bg-white p-3 text-sm md:grid-cols-5 md:items-center",
-        record.expired ? "border-amber-300 bg-amber-50" : "border-slate-300",
-      )}
+      style={{
+        display: "grid",
+        gridTemplateColumns: GRID_COLS,
+        gap: 14,
+        alignItems: "center",
+        padding: "15px 20px",
+        borderBottom: "1px solid var(--border)",
+      }}
     >
-      <div className="flex flex-col">
-        <span className="font-medium" data-testid="row-token-symbol">
+      <div>
+        <div data-testid="row-token-symbol" style={{ fontWeight: 600, fontSize: 14 }}>
           {tokenSymbol ?? (tokenError ? "(unknown)" : "…")}
-        </span>
-        <span className="font-mono text-xs text-slate-500">{truncate(record.contractId)}</span>
+        </div>
+        <div
+          style={{
+            font: "500 11px/1.3 'Geist Mono', monospace",
+            color: "var(--fg-3)",
+            marginTop: 3,
+          }}
+        >
+          {truncate(record.contractId)}
+        </div>
         {tokenError !== null && (
-          <span className="text-xs text-red-600" role="alert">
+          <div
+            role="alert"
+            style={{
+              fontSize: 11,
+              color: "var(--danger)",
+              marginTop: 3,
+            }}
+          >
             {tokenError}
-          </span>
+          </div>
         )}
       </div>
 
-      <div className="flex flex-col">
+      <div>
         {spenderInfo !== null ? (
-          <>
-            <span className="font-medium">{spenderInfo.name}</span>
-            <span className="text-xs text-slate-500">{spenderInfo.protocol}</span>
-          </>
+          <div
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 7,
+              fontWeight: 500,
+              fontSize: 13,
+            }}
+          >
+            <span
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: "50%",
+                background: "var(--success)",
+              }}
+            />
+            <span>{spenderInfo.name}</span>
+            <span style={{ color: "var(--fg-3)", fontSize: 11 }}>· {spenderInfo.protocol}</span>
+          </div>
         ) : (
-          <>
-            <span className="font-mono text-xs">{truncate(record.spender)}</span>
+          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+            <span
+              style={{
+                font: "500 11px/1.3 'Geist Mono', monospace",
+                color: "var(--fg-2)",
+              }}
+            >
+              {truncate(record.spender)}
+            </span>
             <span
               data-testid="unknown-spender-badge"
-              className="mt-1 inline-flex w-fit items-center rounded-md bg-amber-200 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-900"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 7,
+                padding: "4px 9px",
+                borderRadius: 7,
+                background: "var(--danger-soft)",
+                border: "1px solid color-mix(in srgb, var(--danger) 32%, transparent)",
+                width: "fit-content",
+              }}
             >
-              Unknown contract — verify before approving
+              <svg
+                width="13"
+                height="13"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="var(--danger)"
+                strokeWidth={2.2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+              </svg>
+              <span style={{ fontWeight: 600, fontSize: 12, color: "var(--danger)" }}>
+                Unknown, verify
+              </span>
             </span>
-          </>
+          </div>
         )}
       </div>
 
-      <div className="flex flex-col">
-        <span className="font-medium" data-testid="row-amount">
-          {formatAmount(record.amount, tokenDecimals)}
-        </span>
-        <span className="text-xs text-slate-500">
-          {tokenDecimals !== null ? `${tokenDecimals} decimals` : "decimals: …"}
-        </span>
+      <div
+        data-testid="row-amount"
+        style={{ font: "600 13px/1 'Geist Mono', monospace" }}
+        title={tokenDecimals !== null ? `${tokenDecimals} decimals` : undefined}
+      >
+        {formatAmount(record.amount, tokenDecimals)}
       </div>
 
-      <div className="flex flex-col">
-        <span className="font-medium" data-testid="row-expires">
-          {formatExpiry(record.live_until_ledger, currentLedger)}
-        </span>
-        <span className="text-xs text-slate-500">ledger {record.live_until_ledger}</span>
+      <div
+        data-testid="row-expires"
+        style={{
+          font: "500 12.5px/1 'Geist Mono', monospace",
+          color: record.expired ? "var(--warning)" : "var(--fg-2)",
+        }}
+        title={`ledger ${record.live_until_ledger}`}
+      >
+        {formatExpiry(record.live_until_ledger, currentLedger)}
       </div>
 
-      <div className="md:justify-self-end">
+      <div style={{ justifySelf: "end" }}>
         <RevokeButton
           record={record}
           userAddress={userAddress}
@@ -195,7 +316,7 @@ function AllowanceRow({
           onRevoked={onRevoked}
         />
       </div>
-    </li>
+    </div>
   );
 }
 

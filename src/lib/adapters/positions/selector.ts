@@ -1,9 +1,4 @@
-/**
- * selectProvider — picks the first available position provider from a priority-ordered list.
- * canonical order is orion → octopos → direct, but providers come in positionally so tests can rearrange.
- * throws NoProviderAvailable when the chain is exhausted; the error message lists every attempt.
- */
-
+// selectProvider — picks the first available position provider from a priority-ordered list
 import type { IDeFiPositionProvider, DeFiPositionProviderName } from "./interface";
 
 export class NoProviderAvailable extends Error {

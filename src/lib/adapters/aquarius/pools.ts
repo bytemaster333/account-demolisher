@@ -1,7 +1,4 @@
-/**
- * aquarius pool discovery. two interchangeable providers: REST API and event-scan.
- */
-
+// aquarius pool discovery. two interchangeable providers: REST API and event-scan
 import { type rpc, type xdr } from "@stellar/stellar-sdk";
 import { getAllowlistForNetwork, type AllowedContract } from "@/lib/config/contracts";
 import { MAINNET, type NetworkConfig } from "@/lib/config/networks";
@@ -14,13 +11,7 @@ import {
 } from "@/lib/soroban/scval";
 import { simulateRead } from "@/lib/soroban/simulate";
 
-/**
- * one pool the user holds shares in.
- *  - poolIndex: hex-encoded BytesN<32>, 64 lowercase chars, no 0x prefix
- *  - poolType: "constant_product" | "concentrated" | "stable"
- *  - tokens: underlying token contract addresses, ordered as the router stores them
- *  - shareBalance: user's share balance in smallest units
- */
+// one pool the user holds shares in
 export interface AquariusPool {
   readonly poolIndex: string;
   readonly poolType: string;
@@ -39,7 +30,7 @@ export interface AquariusPoolProvider {
   ): Promise<bigint>;
 }
 
-// resolve aquarius router id from the network's allow-list. defaults to mainnet.
+// resolve aquarius router id from the network's allow-list. defaults to mainnet
 function getAquariusRouterIdFromAllowlist(network: NetworkConfig = MAINNET): string {
   const list = getAllowlistForNetwork(network);
   const entry: AllowedContract | undefined = list.find(
@@ -53,7 +44,7 @@ function getAquariusRouterIdFromAllowlist(network: NetworkConfig = MAINNET): str
   return entry.id;
 }
 
-// encode tokens: Vec<Address>
+// encode tokens: vec<address>
 function tokensToScVal(tokens: readonly string[]): xdr.ScVal {
   return scvVec(tokens.map((t) => scvAddress(t)));
 }
@@ -78,7 +69,7 @@ export function poolIndexHexToBytes(poolIndexHex: string): Uint8Array {
   return bytes;
 }
 
-// inverse of poolIndexHexToBytes. lowercase hex, no 0x prefix.
+// inverse of poolIndexHexToBytes. lowercase hex, no 0x prefix
 export function poolIndexBytesToHex(bytes: Uint8Array): string {
   if (bytes.length !== 32) {
     throw new RangeError(
@@ -94,7 +85,7 @@ async function poolIndexToScVal(poolIndexHex: string): Promise<xdr.ScVal> {
   return xdr.ScVal.scvBytes(Buffer.from(poolIndexHexToBytes(poolIndexHex)));
 }
 
-// router.share_id(tokens, pool_index) -> Address. returns the SEP-41 share-token id.
+// router.share_id(tokens, pool_index) -> address. returns the SEP-41 share-token id
 async function readShareIdFromRouter(
   server: rpc.Server,
   network: NetworkConfig,
@@ -225,7 +216,7 @@ export class AquariusAPIPoolProvider implements AquariusPoolProvider {
     });
   }
 
-  // walk the django REST paginated envelope. hard-cap at 100 pages.
+  // walk the django REST paginated envelope. hard-cap at 100 pages
   private async fetchUserPoolsAllPages(userPublicKey: string): Promise<AquariusUserPoolApiEntry[]> {
     const MAX_PAGES = 100;
     const out: AquariusUserPoolApiEntry[] = [];
@@ -297,7 +288,7 @@ function assertUserPoolsApiResponse(parsed: unknown, url: string): AquariusUserP
 export interface AquariusEventScanPoolProviderOptions {
   readonly server: rpc.Server;
   readonly network: NetworkConfig;
-  // soroban RPC retains ~7 days of events by default. defaults to 120_960 ledgers (~7 days at 5s).
+  // soroban RPC retains ~7 days of events by default. defaults to 120_960 ledgers (~7 days at 5s)
   readonly lookbackLedgers?: number;
   readonly maxPages?: number;
 }
@@ -306,7 +297,7 @@ const DEFAULT_EVENT_LOOKBACK_LEDGERS = 120_960;
 const EVENT_PAGE_LIMIT = 10_000;
 const DEFAULT_EVENT_MAX_PAGES = 100;
 
-// discovers pools by scanning router deposit/withdraw events. no third-party API.
+// discovers pools by scanning router deposit/withdraw events. no third-party API
 export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
   private readonly server: rpc.Server;
   private readonly network: NetworkConfig;
@@ -386,7 +377,7 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
           map = await this.readGetPools(value.tokens, userPublicKey);
           poolsByTokens.set(tokensKey, map);
         }
-        // map: Map<poolIndexHex, poolAddress>. reverse-lookup by address.
+        // map: map<poolIndexHex, poolAddress>. reverse-lookup by address
         let poolIndex: string | undefined;
         for (const [idxHex, addr] of map) {
           if (addr === value.poolAddress) {
@@ -427,7 +418,7 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
     });
   }
 
-  // router.pool_type(tokens, pool_index) -> Symbol
+  // router.pool_type(tokens, pool_index) -> symbol
   private async readPoolType(
     tokens: readonly string[],
     poolIndex: string,
@@ -444,7 +435,7 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
     return fromScValSymbol(retval);
   }
 
-  // router.get_pools(tokens) -> Map<BytesN<32>, Address>
+  // router.get_pools(tokens) -> map<BytesN<32>, address>
   private async readGetPools(
     tokens: readonly string[],
     sourcePublicKey: string,
@@ -544,7 +535,7 @@ function tryDecodeDepositOrWithdrawEvent(
   return { poolAddress, tokens };
 }
 
-// internals re-export. not part of the public surface.
+// internals re-export. not part of the public surface
 export const __internals = {
   getAquariusRouterIdFromAllowlist,
   tokensToScVal,

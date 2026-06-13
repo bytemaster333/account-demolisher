@@ -1,11 +1,6 @@
 "use client";
 
-// non-blocking warning for claimable balances whose predicates aren't yet satisfied.
-// merging forfeits the claim; defer is the safe default.
-
-import { useEffect, useId, useRef } from "react";
-
-import { cn } from "@/lib/utils";
+// inline informational notice surfaced above the configure form when the
 
 export interface PendingClaimableBalanceEntry {
   readonly id: string;
@@ -19,86 +14,155 @@ export interface PendingClaimableBalanceEntry {
 
 export interface PendingClaimableBalancesProps {
   readonly pending: readonly PendingClaimableBalanceEntry[];
-  readonly onDefer: () => void;
-  readonly onProceed: () => void;
-  readonly className?: string;
 }
 
 export function PendingClaimableBalances({
   pending,
-  onDefer,
-  onProceed,
-  className,
-}: PendingClaimableBalancesProps): React.JSX.Element {
-  const titleId = useId();
-  const descriptionId = useId();
-  const deferRef = useRef<HTMLButtonElement | null>(null);
-
-  useEffect(() => {
-    deferRef.current?.focus();
-  }, []);
+}: PendingClaimableBalancesProps): React.JSX.Element | null {
+  if (pending.length === 0) return null;
 
   return (
     <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby={titleId}
-      aria-describedby={descriptionId}
+      role="status"
       data-testid="pending-claimable-balances"
-      className={cn(
-        "fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4",
-        className,
-      )}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 10,
+        padding: "12px 14px",
+        borderRadius: 11,
+        background: "color-mix(in srgb, var(--warning-soft) 55%, transparent)",
+        border: "1px solid color-mix(in srgb, var(--warning) 14%, transparent)",
+        color: "var(--fg)",
+      }}
     >
-      <div className="flex w-full max-w-lg flex-col gap-4 rounded-lg border border-amber-400 bg-white p-6 shadow-xl">
-        <h2 id={titleId} className="text-lg font-semibold text-amber-900">
-          Pending claimable balances will be forfeited
-        </h2>
-        <p id={descriptionId} className="text-sm text-slate-700">
-          You are a claimant on the following claimable balances, but their predicates have not yet
-          become claimable. If you merge now, you will forfeit your claim on each of them.
-        </p>
-        <ul
-          data-testid="pending-claimable-balances-list"
-          className="flex max-h-64 flex-col gap-2 overflow-y-auto rounded-md border border-amber-200 bg-amber-50 p-3 text-xs"
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+        <span
+          aria-hidden
+          style={{
+            width: 28,
+            height: 28,
+            borderRadius: 8,
+            background: "color-mix(in srgb, var(--warning) 18%, transparent)",
+            display: "grid",
+            placeItems: "center",
+            flexShrink: 0,
+            marginTop: 1,
+          }}
         >
-          {pending.length === 0 ? (
-            <li className="text-slate-600">No pending claimable balances.</li>
-          ) : (
-            pending.map((cb) => (
-              <li key={cb.id} className="flex flex-col gap-0.5 font-mono">
-                <span className="font-semibold text-amber-900">
-                  {cb.amount} {cb.assetLabel}
-                </span>
-                <span className="text-slate-700">id: {cb.id}</span>
-                {cb.reason !== undefined ? (
-                  <span className="text-slate-600">reason: {cb.reason}</span>
-                ) : null}
-              </li>
-            ))
-          )}
-        </ul>
-
-        <div className="mt-2 flex flex-wrap justify-end gap-2">
-          <button
-            ref={deferRef}
-            type="button"
-            onClick={onDefer}
-            data-testid="pending-claimable-balances-defer"
-            className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-800 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-900"
+          <svg
+            width="15"
+            height="15"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="var(--warning)"
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
           >
-            Defer
-          </button>
-          <button
-            type="button"
-            onClick={onProceed}
-            data-testid="pending-claimable-balances-proceed"
-            className="rounded-md bg-amber-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-700 focus:outline-none focus:ring-2 focus:ring-amber-900"
+            <rect x="3" y="7" width="18" height="13" rx="2" />
+            <path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M12 12v4M9 14h6" />
+          </svg>
+        </span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div
+            style={{
+              fontSize: 13.5,
+              fontWeight: 600,
+              color: "var(--fg)",
+              letterSpacing: "-0.005em",
+            }}
           >
-            Forfeit and proceed
-          </button>
+            {pending.length === 1
+              ? "1 claimable balance attached to this account"
+              : `${pending.length} claimable balances attached to this account`}
+          </div>
+          <div
+            style={{
+              marginTop: 3,
+              fontSize: 12.5,
+              lineHeight: 1.5,
+              color: "var(--fg-2)",
+            }}
+          >
+            The demolisher will claim {pending.length === 1 ? "it" : "them"} into your account and
+            release the sponsorship reserve as part of the close-out — no action needed.
+          </div>
         </div>
       </div>
+
+      <ul
+        data-testid="pending-claimable-balances-list"
+        style={{
+          listStyle: "none",
+          margin: 0,
+          padding: 0,
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+          maxHeight: 220,
+          overflowY: "auto",
+        }}
+      >
+        {pending.map((cb) => (
+          <li
+            key={cb.id}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "8px 11px",
+              borderRadius: 8,
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+            }}
+          >
+            <span
+              aria-hidden
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: "50%",
+                background: "var(--warning)",
+                flexShrink: 0,
+              }}
+            />
+            <span
+              style={{
+                font: "600 12.5px/1 'Geist Mono', monospace",
+                color: "var(--fg)",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {cb.amount} {cb.assetLabel}
+            </span>
+            <span
+              style={{
+                flex: 1,
+                font: "500 11.5px/1 'Geist Mono', monospace",
+                color: "var(--fg-3)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+              title={cb.id}
+            >
+              {cb.id.slice(0, 12)}…{cb.id.slice(-6)}
+            </span>
+            {cb.reason !== undefined ? (
+              <span
+                style={{
+                  fontSize: 11,
+                  color: "var(--warning)",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {cb.reason}
+              </span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

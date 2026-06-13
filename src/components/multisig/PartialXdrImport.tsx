@@ -1,6 +1,6 @@
 "use client";
 
-// drop / paste UI for legacy multi-secret-key multisig. merges co-signer envelopes into the canonical xdr.
+// drop / paste UI for legacy multi-secret-key multisig. merges co-signer envelopes into the canonical xdr
 
 import { TransactionBuilder } from "@stellar/stellar-sdk";
 import {

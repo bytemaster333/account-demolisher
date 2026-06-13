@@ -1,10 +1,4 @@
-/**
- * soroswap LP exit — direct remove_liquidity invocation against the mainnet SoroswapRouter.
- * keeps the LP exit on the same simulate → assemble rails as every other soroban write and
- * sidesteps the SDK's api-key dependency for this leg.
- * the router id is resolved from the allow-list registry (single source of truth).
- */
-
+// soroswap LP exit — direct remove_liquidity invocation against the mainnet SoroswapRouter
 import {
   BASE_FEE,
   Contract,
@@ -36,7 +30,7 @@ export interface RemoveLiquidityArgs {
   readonly amountAMin: string;
   readonly amountBMin: string;
   readonly userAddress: string;
-  // unix seconds. soroswap compares against env.ledger().timestamp().
+  // unix seconds. soroswap compares against env.ledger().timestamp()
   readonly deadline: number;
   readonly network: NetworkConfig;
 }
@@ -69,10 +63,7 @@ export async function removeLiquidity(
   );
 }
 
-/**
- * sibling that accepts already-resolved soroban contract IDs for both pair tokens.
- * used by the plan hydrator which only has the pair's contract ids threaded through.
- */
+// sibling that accepts already-resolved soroban contract IDs for both pair tokens
 export interface RemoveLiquidityByContractIdsArgs {
   readonly tokenAAddress: string;
   readonly tokenBAddress: string;
@@ -133,7 +124,7 @@ export async function removeLiquidityByContractIds(
   return prepared;
 }
 
-// look up the SoroswapRouter contract id from the allow-list. defaults to mainnet.
+// look up the SoroswapRouter contract id from the allow-list. defaults to mainnet
 function getSoroswapRouterId(network?: NetworkConfig): string {
   const list = network === undefined ? MAINNET_ALLOWLIST : getAllowlistForNetwork(network);
   const entry = list.find(

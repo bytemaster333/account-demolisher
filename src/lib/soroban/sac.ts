@@ -1,14 +1,14 @@
-// helpers for stellar asset contracts (sacs) vs classical assets.
+// helpers for stellar asset contracts (sacs) vs classical assets
 
 import { Asset } from "@stellar/stellar-sdk";
 import type { NetworkConfig } from "@/lib/config/networks";
 
-// derive the sac contract address for a classical asset on the given network.
+// derive the sac contract address for a classical asset on the given network
 export function getSACContractId(asset: Asset, network: NetworkConfig): string {
   return asset.contractId(network.passphrase);
 }
 
-// returns the matching asset if contractId is the sac for any of them, else null.
+// returns the matching asset if contractId is the sac for any of them, else null
 export function isSACContract(
   contractId: string,
   knownAssets: readonly Asset[],

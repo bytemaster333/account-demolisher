@@ -1,20 +1,11 @@
-/**
- * direct contract provider — always-available position discovery via in-process
- * soroban/horizon calls. aggregates blend, aquarius, soroswap, and fxdao in parallel
- * via Promise.allSettled so a single protocol failure becomes an errors[] entry
- * rather than aborting the response.
- *
- * soroswap discovery: gap — the SDK's getUserPositions sits behind the api-key path
- * and our /api/soroswap proxy doesn't currently route it. returns []; not an error.
- */
-
+// direct contract provider — always-available position discovery via in-process
 import {
   loadUserPositions,
   type LoadUserPositionsResult,
   type BlendPoolLoader,
   type BlendUserPositions,
 } from "@/lib/adapters/blend/client";
-import { BLEND_MAINNET_POOL_IDS } from "@/lib/adapters/blend/pools";
+import { BLEND_MAINNET_POOL_IDS, BLEND_TESTNET_POOL_IDS } from "@/lib/adapters/blend/pools";
 import {
   AquariusAPIPoolProvider,
   AquariusEventScanPoolProvider,
@@ -35,11 +26,7 @@ import {
   type SoroswapPositionSummary,
 } from "./interface";
 
-/**
- * default aquarius factory: try the REST provider first, fall back to event-scan
- * on failure. wired at call time since the REST endpoint can succeed for one user
- * and fail for another. injectable for tests.
- */
+// default aquarius factory: try the REST provider first, fall back to event-scan
 export interface AquariusProviderFactory {
   (
     server: rpc.Server,
@@ -55,10 +42,7 @@ const defaultAquariusFactory: AquariusProviderFactory = (server, network) => ({
   fallback: new AquariusEventScanPoolProvider({ server, network }),
 });
 
-/**
- * pluggable deps for testability. each external call site (blend SDK loader, aquarius
- * factory, fxdao client) is reachable so tests inject deterministic stand-ins.
- */
+// pluggable deps for testability. each external call site (blend SDK loader, aquarius
 export interface DirectContractProviderDeps {
   readonly blendPoolLoader?: BlendPoolLoader;
   readonly blendPoolIds?: readonly string[];
@@ -150,16 +134,25 @@ export class DirectContractProvider implements IDeFiPositionProvider {
     positions: readonly BlendPositionSummary[];
     perPoolErrors: readonly string[];
   }> {
+    // pick pool ids per network unless the caller injected an explicit override
+    const poolIds =
+      this.deps.blendPoolIds.length > 0 &&
+      this.deps.blendPoolIds !== BLEND_MAINNET_POOL_IDS &&
+      this.deps.blendPoolIds !== BLEND_TESTNET_POOL_IDS
+        ? this.deps.blendPoolIds
+        : network.id === "testnet"
+          ? BLEND_TESTNET_POOL_IDS
+          : BLEND_MAINNET_POOL_IDS;
     // omit the 4th arg so the SDK-backed loader default is used when no override is wired
     const result: LoadUserPositionsResult =
       this.deps.blendPoolLoader !== undefined
         ? await this.deps.blendLoadUserPositions(
             network,
             userAddress,
-            this.deps.blendPoolIds,
+            poolIds,
             this.deps.blendPoolLoader,
           )
-        : await this.deps.blendLoadUserPositions(network, userAddress, this.deps.blendPoolIds);
+        : await this.deps.blendLoadUserPositions(network, userAddress, poolIds);
 
     const positions = result.positions
       .filter(hasAnyNonZeroBlendBalance)
@@ -179,7 +172,7 @@ export class DirectContractProvider implements IDeFiPositionProvider {
   ): Promise<readonly AquariusPositionSummary[]> {
     const { primary, fallback } = this.deps.aquariusFactory(server, network);
 
-    // try REST first; on failure fall over to event-scan. if both fail, propagate.
+    // try REST first; on failure fall over to event-scan. if both fail, propagate
     let pools: AquariusPool[];
     try {
       pools = await primary.getUserPools(userAddress);
@@ -199,11 +192,7 @@ export class DirectContractProvider implements IDeFiPositionProvider {
     return pools.map(aquariusPoolToSummary);
   }
 
-  // soroswap on-chain discovery isn't implemented. the soroswap public api has
-  // no "user lp positions" endpoint and iterating every factory pair to call
-  // balance(user) is expensive on every audit. throw a clear error so the
-  // aggregator surfaces this gap via the returned errors[] field instead of
-  // silently returning fake empty positions.
+  // soroswap on-chain discovery isn't implemented
   private async discoverSoroswap(
     _server: rpc.Server,
     _network: NetworkConfig,

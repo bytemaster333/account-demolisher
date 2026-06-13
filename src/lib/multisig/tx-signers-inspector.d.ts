@@ -1,16 +1,16 @@
-// ambient declarations for @stellar-expert/tx-signers-inspector (pure JS upstream).
-// just enough surface for inspector.ts; extend rather than `as unknown as`.
+// ambient declarations for @stellar-expert/tx-signers-inspector (pure JS upstream)
+// just enough surface for inspector.ts; extend rather than `as unknown as`
 declare module "@stellar-expert/tx-signers-inspector" {
   import type { FeeBumpTransaction, Transaction } from "@stellar/stellar-sdk";
 
-  // weight-0 signers are filtered upstream.
+  // weight-0 signers are filtered upstream
   export interface InspectorSignerDescriptor {
     readonly key: string;
     readonly weight: number;
     readonly isMaster?: boolean;
   }
 
-  // single-source txs have exactly one entry of this shape.
+  // single-source txs have exactly one entry of this shape
   export interface AccountSignatureRequirements {
     readonly type: "account_signature";
     readonly id: string;
@@ -19,7 +19,7 @@ declare module "@stellar-expert/tx-signers-inspector" {
     readonly thresholds?: { low: number; med: number; high: number };
   }
 
-  // CAP-40 extraSigners; not used here.
+  // CAP-40 extraSigners; not used here
   export interface ExtraSignatureRequirements {
     readonly type: "extra_signature";
     readonly key: string;
@@ -42,7 +42,7 @@ declare module "@stellar-expert/tx-signers-inspector" {
     getAllPotentialSigners(): string[];
   }
 
-  // pre-fetched horizon account snapshot, saves a network round-trip.
+  // pre-fetched horizon account snapshot, saves a network round-trip
   export interface AccountInfo {
     readonly id: string;
     readonly thresholds: {

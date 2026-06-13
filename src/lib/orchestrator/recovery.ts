@@ -1,11 +1,4 @@
-// per-failure classifier. takes a thrown/rejected error from any actor and
-// returns a RecoveryDecision the machine dispatches on:
-//   "retry"            - re-run after applying fixups (fee bump, seq refresh).
-//   "surface-consent"  - wait for explicit USER_CONSENT (slippage).
-//   "escalate-fatal"   - bail out.
-//
-// classification is pure; side effects (re-simulation, fee bump, seq refresh)
-// happen inside the machine after the decision is returned.
+// per-failure classifier
 
 import { Horizon, rpc } from "@stellar/stellar-sdk";
 
@@ -24,7 +17,7 @@ export interface RecoveryDecision {
   readonly action: RecoveryAction;
   readonly failure: OrchestratorFailure;
   readonly feeMultiplier?: number;
-  // for retry-with-seq-refresh: re-load the account before retrying.
+  // for retry-with-seq-refresh: re-load the account before retrying
   readonly refreshAccount?: boolean;
 }
 
@@ -36,8 +29,8 @@ export interface ClassifyFailureInput {
   readonly maxAttempts: number;
 }
 
-// classify into a RecoveryDecision. never throws. order: most-specific first.
-// once attempts >= maxAttempts the decision rewrites to escalate-fatal.
+// classify into a RecoveryDecision. never throws. order: most-specific first
+// once attempts >= maxAttempts the decision rewrites to escalate-fatal
 export function classifyFailure(input: ClassifyFailureInput): RecoveryDecision {
   const { error, stage, nodeId, attempts, maxAttempts } = input;
 
@@ -116,7 +109,7 @@ export function classifyFailure(input: ClassifyFailureInput): RecoveryDecision {
     );
   }
 
-  // default: unknown shape -> fatal.
+  // default: unknown shape -> fatal
   const message = error instanceof Error ? error.message : String(error);
   return {
     action: "escalate-fatal",
@@ -132,7 +125,7 @@ export function classifyFailure(input: ClassifyFailureInput): RecoveryDecision {
   };
 }
 
-// applies a fee bump fixup before retry. returns the next fee to use.
+// applies a fee bump fixup before retry. returns the next fee to use
 export interface ApplyFixupInput {
   readonly decision: RecoveryDecision;
   readonly previousFee: string;
@@ -152,7 +145,7 @@ export function applyFixup(input: ApplyFixupInput): { readonly nextFee: string }
   return { nextFee: previousFee };
 }
 
-// duck-types the NetworkError shape since `instanceof` is unreliable through mocks.
+// duck-types the NetworkError shape since `instanceof` is unreliable through mocks
 export function extractHorizonResultCode(
   err: unknown,
 ): Horizon.HorizonApi.TransactionFailedResultCodes | null {
@@ -177,7 +170,7 @@ function classifyHorizonCode(
 ): RecoveryDecision {
   switch (code) {
     case Horizon.HorizonApi.TransactionFailedResultCodes.TX_BAD_SEQ:
-      // sequence advanced under us: re-load and retry.
+      // sequence advanced under us: re-load and retry
       return {
         action: "retry-with-seq-refresh",
         refreshAccount: true,
@@ -192,7 +185,7 @@ function classifyHorizonCode(
         },
       };
     case Horizon.HorizonApi.TransactionFailedResultCodes.TX_INSUFFICIENT_FEE:
-      // fee too low: bump 2x and retry.
+      // fee too low: bump 2x and retry
       return {
         action: "retry-with-fee-bump",
         feeMultiplier: 2,
@@ -208,7 +201,7 @@ function classifyHorizonCode(
       };
     case Horizon.HorizonApi.TransactionFailedResultCodes.TX_TOO_LATE:
     case Horizon.HorizonApi.TransactionFailedResultCodes.TX_TOO_EARLY:
-      // time bounds out of window: retry with a fresh envelope.
+      // time bounds out of window: retry with a fresh envelope
       return {
         action: "retry",
         failure: {
@@ -245,7 +238,7 @@ export interface RpcSendErrorLike {
 function extractRpcSendError(err: unknown): RecoveryDecision | null {
   if (typeof err !== "object" || err === null) return null;
   const candidate = err as { status?: unknown; response?: { status?: unknown } } & RpcSendErrorLike;
-  // allow wrappers that hold the raw response on `.response`.
+  // allow wrappers that hold the raw response on `.response`
   const innerCandidate =
     typeof candidate.status === "undefined" && candidate.response !== undefined
       ? (candidate.response as RpcSendErrorLike)
@@ -254,12 +247,12 @@ function extractRpcSendError(err: unknown): RecoveryDecision | null {
   const status = inner.status as string;
   if (typeof status !== "string") return null;
   if (status === "PENDING" || status === "DUPLICATE") return null;
-  // FAILED belongs to getTransaction; yield to extractRpcGetFailure.
+  // FAILED belongs to getTransaction; yield to extractRpcGetFailure
   if (status === "FAILED") return null;
 
   const code = pickErrorResultCode(inner.errorResult, inner.errorResultXdr);
   if (code === "txSorobanInvalid" || code === "txInsufficientFee") {
-    // resource fee underrun: re-simulate with a bumped fee.
+    // resource fee underrun: re-simulate with a bumped fee
     return {
       action: "retry-with-fee-bump",
       feeMultiplier: 2,
@@ -300,7 +293,7 @@ function extractRpcSendError(err: unknown): RecoveryDecision | null {
       },
     };
   }
-  // ERROR with no recognizable code: fatal.
+  // ERROR with no recognizable code: fatal
   return {
     action: "escalate-fatal",
     failure: {
@@ -314,7 +307,7 @@ function extractRpcSendError(err: unknown): RecoveryDecision | null {
   };
 }
 
-// pull the switch.name out of a TransactionResult-shaped object; null on shape mismatch.
+// pull the switch.name out of a TransactionResult-shaped object; null on shape mismatch
 function pickErrorResultCode(
   errorResult: unknown,
   errorResultXdr: string | undefined,
@@ -334,7 +327,7 @@ function pickErrorResultCode(
       }
     }
   }
-  // some mocks put the code string directly.
+  // some mocks put the code string directly
   if (
     typeof errorResult === "object" &&
     errorResult !== null &&
@@ -344,7 +337,7 @@ function pickErrorResultCode(
     if (typeof code === "string") return code;
   }
   if (typeof errorResultXdr === "string" && errorResultXdr.length > 0) {
-    // raw xdr decode is deferred to the diagnostic panel.
+    // raw xdr decode is deferred to the diagnostic panel
     return null;
   }
   return null;
@@ -360,7 +353,7 @@ function extractRpcGetFailure(err: unknown): RecoveryDecision | null {
   const candidate = err as RpcGetFailedShapeLike;
   if (candidate.status !== rpc.Api.GetTransactionStatus.FAILED) return null;
   const tags = candidate.diagnosticTags ?? [];
-  // footprint/storage mismatch: re-simulate.
+  // footprint/storage mismatch: re-simulate
   if (tags.some((t) => /footprint|storage/i.test(t))) {
     return {
       action: "retry-with-resimulate",
@@ -375,7 +368,7 @@ function extractRpcGetFailure(err: unknown): RecoveryDecision | null {
       },
     };
   }
-  // slippage: surface for explicit user consent.
+  // slippage: surface for explicit user consent
   if (tags.some((t) => /InsufficientOutputAmount|slippage/i.test(t))) {
     return {
       action: "surface-consent",
@@ -390,7 +383,7 @@ function extractRpcGetFailure(err: unknown): RecoveryDecision | null {
       },
     };
   }
-  // no recoverable signal: fatal.
+  // no recoverable signal: fatal
   return {
     action: "escalate-fatal",
     failure: {
@@ -408,7 +401,7 @@ function extractSimulationFailure(err: unknown): RecoveryDecision | null {
   if (err instanceof SimulationFailedError) {
     const msg = err.upstreamError.toLowerCase();
     if (msg.includes("insufficient") && msg.includes("fee")) {
-      // fee underestimated by simulator: bump and retry.
+      // fee underestimated by simulator: bump and retry
       return {
         action: "retry-with-fee-bump",
         feeMultiplier: 2,
@@ -424,7 +417,7 @@ function extractSimulationFailure(err: unknown): RecoveryDecision | null {
       };
     }
     if (msg.includes("footprint") || msg.includes("storage")) {
-      // stale footprint: re-simulate.
+      // stale footprint: re-simulate
       return {
         action: "retry-with-resimulate",
         failure: {
@@ -439,7 +432,7 @@ function extractSimulationFailure(err: unknown): RecoveryDecision | null {
       };
     }
     if (msg.includes("slippage") || msg.includes("insufficientoutputamount")) {
-      // slippage triggered: needs user consent.
+      // slippage triggered: needs user consent
       return {
         action: "surface-consent",
         failure: {

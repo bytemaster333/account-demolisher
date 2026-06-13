@@ -1,9 +1,4 @@
-/**
- * zod schemas for the JSON wire shape orion/octopos are expected to publish.
- * numeric balances arrive as decimal strings (bigints don't survive JSON.stringify);
- * coerced via z.coerce.bigint. strict() so adapter tests fail loudly on drift.
- */
-
+// zod schemas for the JSON wire shape orion/octopos are expected to publish
 import { z } from "zod";
 
 import type { ProtocolPositions } from "./interface";
@@ -13,7 +8,7 @@ const BalanceSchema = z.coerce
   .bigint()
   .refine((v) => v >= 0n, { message: "balance must be non-negative" });
 
-// Record<string, bigint> on the wire, decoded into a ReadonlyMap
+// record<string, bigint> on the wire, decoded into a ReadonlyMap
 const BalanceMapSchema = z
   .record(z.string().min(1), BalanceSchema)
   .transform((rec) => new Map<string, bigint>(Object.entries(rec)) as ReadonlyMap<string, bigint>);
@@ -62,7 +57,7 @@ export const ProtocolErrorSchema = z
   })
   .strict();
 
-// top-level wire schema. every field required so upstream can't elide protocols silently.
+// top-level wire schema. every field required so upstream can't elide protocols silently
 export const ProtocolPositionsSchema = z
   .object({
     blend: z.array(BlendPositionSummarySchema),
@@ -73,7 +68,7 @@ export const ProtocolPositionsSchema = z
   })
   .strict();
 
-// decode an unknown into ProtocolPositions. caller wraps the error branch into ProviderSchemaMismatch.
+// decode an unknown into ProtocolPositions. caller wraps the error branch into ProviderSchemaMismatch
 export function parseProtocolPositions(
   raw: unknown,
 ): { ok: true; value: ProtocolPositions } | { ok: false; issues: string } {

@@ -2,21 +2,30 @@ import "server-only";
 
 import { z } from "zod";
 
-// server-only env vars. importing this from a client component triggers a
-// build-time error via `server-only`. validator runs lazily on first
-// access so the module is cheap to import at build time.
+// server-only env vars
+
+// empty-string values from .env are defined but unset in practice. coerce
+// them to undefined so .optional() schemas don't trip the constraint checks
+const emptyToUndefined = (v: unknown) => (v === "" ? undefined : v);
+
 const ServerEnvSchema = z.object({
-  MEDIATOR_SECRET: z
-    .string()
-    .startsWith("S", { message: "MEDIATOR_SECRET must be a Stellar seed" })
-    .length(56)
-    .optional(),
-  ORION_API_URL: z.string().url().optional(),
-  ORION_API_KEY: z.string().optional(),
-  OCTOPOS_API_URL: z.string().url().optional(),
-  OCTOPOS_API_KEY: z.string().optional(),
-  SOROSWAP_API_URL: z.string().url().default("https://api.soroswap.finance"),
-  SOROSWAP_API_KEY: z.string().optional(),
+  MEDIATOR_SECRET: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .startsWith("S", { message: "MEDIATOR_SECRET must be a Stellar seed" })
+      .length(56)
+      .optional(),
+  ),
+  ORION_API_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
+  ORION_API_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
+  OCTOPOS_API_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
+  OCTOPOS_API_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
+  SOROSWAP_API_URL: z.preprocess(
+    emptyToUndefined,
+    z.string().url().default("https://api.soroswap.finance"),
+  ),
+  SOROSWAP_API_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
 });
 
 export type ServerEnv = z.infer<typeof ServerEnvSchema>;
@@ -42,7 +51,7 @@ export function getServerEnv(): ServerEnv {
 }
 
 // require a specific server-only var to be set. throws clearly when the
-// deployment is misconfigured.
+// deployment is misconfigured
 export function requireServerEnv<K extends keyof ServerEnv>(key: K): NonNullable<ServerEnv[K]> {
   const value = getServerEnv()[key];
   if (value === undefined || value === null || value === "") {

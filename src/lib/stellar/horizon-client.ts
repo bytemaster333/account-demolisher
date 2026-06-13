@@ -1,7 +1,7 @@
 import { Horizon } from "@stellar/stellar-sdk";
 import type { NetworkConfig } from "@/lib/config/networks";
 
-// memoized horizon client per server url.
+// memoized horizon client per server url
 const cache = new Map<string, Horizon.Server>();
 
 export function getHorizon(network: NetworkConfig): Horizon.Server {
@@ -13,7 +13,7 @@ export function getHorizon(network: NetworkConfig): Horizon.Server {
   return server;
 }
 
-// test-only: clear the cached clients.
+// test-only: clear the cached clients
 export function _resetHorizonCacheForTests(): void {
   cache.clear();
 }

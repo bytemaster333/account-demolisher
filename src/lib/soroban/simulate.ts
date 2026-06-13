@@ -1,4 +1,4 @@
-// single entry point for simulateTransaction against an rpc.Server.
+// single entry point for simulateTransaction against an rpc.server
 
 import {
   Account,
@@ -12,7 +12,7 @@ import {
 } from "@stellar/stellar-sdk";
 import type { NetworkConfig } from "@/lib/config/networks";
 
-// success branch carries everything needed for read or assemble.
+// success branch carries everything needed for read or assemble
 export interface SimulationSuccess {
   readonly ok: true;
   readonly retval: xdr.ScVal | null;
@@ -20,7 +20,7 @@ export interface SimulationSuccess {
   readonly minResourceFee: string;
   readonly auth: readonly xdr.SorobanAuthorizationEntry[];
   readonly latestLedger: number;
-  // present when the simulation reports a restorePreamble.
+  // present when the simulation reports a restorePreamble
   readonly restorePreamble?: rpc.Api.SimulateTransactionRestoreResponse["restorePreamble"];
 }
 
@@ -33,7 +33,7 @@ export interface SimulationFailure {
 
 export type SimulationResult = SimulationSuccess | SimulationFailure;
 
-// normalize the sdk's union response into a discriminated result.
+// normalize the sdk's union response into a discriminated result
 export async function simulate(
   server: rpc.Server,
   tx: Transaction | FeeBumpTransaction,
@@ -49,7 +49,7 @@ export async function simulate(
     };
   }
 
-  // success or restore — both extend success.
+  // success or restore — both extend success
   const success = resp as rpc.Api.SimulateTransactionSuccessResponse;
   const retval = success.result?.retval ?? null;
   const auth = success.result?.auth ?? [];
@@ -66,7 +66,7 @@ export async function simulate(
   return out;
 }
 
-// wraps prepareTransaction. throws on simulation failure per sdk contract.
+// wraps prepareTransaction. throws on simulation failure per sdk contract
 export async function assembleSubmittable(
   server: rpc.Server,
   tx: Transaction | FeeBumpTransaction,
@@ -74,7 +74,7 @@ export async function assembleSubmittable(
   return server.prepareTransaction(tx);
 }
 
-// convenience for read-only contract calls. returns the retval scval.
+// convenience for read-only contract calls. returns the retval scval
 export async function simulateRead(
   server: rpc.Server,
   contractId: string,
@@ -83,7 +83,7 @@ export async function simulateRead(
   sourcePublicKey: string,
   network: NetworkConfig,
 ): Promise<{ retval: xdr.ScVal }> {
-  // sequence 0 is fine for read-only simulation.
+  // sequence 0 is fine for read-only simulation
   const account = new Account(sourcePublicKey, "0");
   const contract = new Contract(contractId);
 
@@ -113,7 +113,7 @@ export async function simulateRead(
   return { retval: sim.retval };
 }
 
-// carries the upstream error string and parsed diagnostic events.
+// carries the upstream error string and parsed diagnostic events
 export class SimulationError extends Error {
   public readonly errorCode: string;
   public readonly diagnostic: readonly xdr.DiagnosticEvent[];

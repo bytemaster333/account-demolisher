@@ -1,26 +1,21 @@
-// curated registry of known cex hot-wallet stellar addresses.
-//
-// every entry is verified against stellar.expert's directory
-// (api.stellar.expert/explorer/public/directory?tag[]=exchange). addresses
-// rotate, so each entry carries a verifiedAt iso date for periodic re-checks.
-// requiresMemo mirrors the directory's `memo-required` tag.
+// curated registry of known cex hot-wallet stellar addresses
 
 export type CexMemoType = "text" | "id" | "hash" | "return";
 
 export interface CexInfo {
-  // g... stellar account id of the cex hot wallet.
+  // g... stellar account id of the cex hot wallet
   readonly address: string;
-  // human-readable name shown to the user.
+  // human-readable name shown to the user
   readonly name: string;
-  // true if the cex requires a deposit memo.
+  // true if the cex requires a deposit memo
   readonly requiresMemo: boolean;
-  // memo encoding the cex expects, when memo is required.
+  // memo encoding the cex expects, when memo is required
   readonly memoType?: CexMemoType;
-  // decimal-string xlm minimum deposit, if the cex publishes one.
+  // decimal-string xlm minimum deposit, if the cex publishes one
   readonly minimumDeposit?: string;
-  // iso date this address+policy was verified.
+  // iso date this address+policy was verified
   readonly verifiedAt: string;
-  // citation for the address+policy.
+  // citation for the address+policy
   readonly source: string;
 }
 
@@ -130,15 +125,15 @@ export const KNOWN_CEXES: readonly CexInfo[] = [
 
 const BY_ADDRESS: ReadonlyMap<string, CexInfo> = new Map(KNOWN_CEXES.map((c) => [c.address, c]));
 
-// returns the registry entry or null if not a known cex hot wallet.
+// returns the registry entry or null if not a known cex hot wallet
 export function lookupCex(address: string): CexInfo | null {
   return BY_ADDRESS.get(address) ?? null;
 }
 
-// result of a memo-enforcement check.
+// result of a memo-enforcement check
 export type MemoEnforcementResult = { ok: true } | { ok: false; reason: string };
 
-// caller-supplied memo descriptor. dependency-free shape mirroring stellar-sdk.
+// caller-supplied memo descriptor. dependency-free shape mirroring stellar-sdk
 export interface MemoLike {
   readonly type: CexMemoType;
   readonly value: string;
@@ -149,7 +144,7 @@ const HASH_MEMO_HEX_LENGTH = 64; // 32 bytes
 const HASH_MEMO_BASE64_LENGTH = 44; // 32 bytes base64-encoded with padding
 
 // verify that a destination's cex memo requirement is satisfied by the
-// caller-supplied memo, if any. returns ok:true for non-cex destinations.
+// caller-supplied memo, if any. returns ok:true for non-cex destinations
 export function requireMemoEnforcement(
   destination: string,
   memo?: MemoLike,
@@ -185,7 +180,7 @@ export function requireMemoEnforcement(
   }
 
   // shape validation per memo type. we can't validate the memo's content
-  // against the user's cex account from the client.
+  // against the user's cex account from the client
   switch (memo.type) {
     case "id": {
       if (!/^\d+$/.test(value)) {
@@ -194,7 +189,7 @@ export function requireMemoEnforcement(
           reason: `${cex.name} expects a numeric memo (memo type "id"); got "${memo.value}".`,
         };
       }
-      // memo-id is uint64.
+      // memo-id is uint64
       let asBig: bigint;
       try {
         asBig = BigInt(value);

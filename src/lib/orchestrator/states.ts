@@ -1,5 +1,5 @@
-// state ids, event types, and context shapes for the orchestrator machine.
-// no client-side persistence; on resume the machine starts from idle and re-runs discovery.
+// state ids, event types, and context shapes for the orchestrator machine
+// no client-side persistence; on resume the machine starts from idle and re-runs discovery
 
 import type { Horizon } from "@stellar/stellar-sdk";
 
@@ -49,17 +49,17 @@ export interface ResetEvent {
   readonly type: "RESET";
 }
 
-// multisig coordination events emitted by the multisigCollection state's UI.
+// multisig coordination events emitted by the multisigCollection state's UI
 export interface MultisigRequiredEvent {
   readonly type: "MULTISIG_REQUIRED";
   readonly canonicalXdr: string;
   readonly sourceAccountId: string;
   readonly required: MultisigRequirement;
-  // signer key that produced canonicalXdr (already counted).
+  // signer key that produced canonicalXdr (already counted)
   readonly initialSignerKey: string;
 }
 
-// merge a new partial into the canonical and re-evaluate the threshold.
+// merge a new partial into the canonical and re-evaluate the threshold
 export interface AddSignatureEvent {
   readonly type: "ADD_SIGNATURE";
   readonly partialXdr: string;
@@ -67,7 +67,7 @@ export interface AddSignatureEvent {
 }
 
 // "here's the final envelope, skip ahead" — used by refractor and the
-// partial-xdr path once they know the envelope is complete.
+// partial-xdr path once they know the envelope is complete
 export interface MultisigCompleteEvent {
   readonly type: "MULTISIG_COMPLETE";
   readonly signedXdr: string;
@@ -113,7 +113,7 @@ export interface OrchestratorOptions {
   readonly maxRecoveryAttempts?: number;
 }
 
-// recoverable failures enter failed.recoverable; fatal is terminal.
+// recoverable failures enter failed.recoverable; fatal is terminal
 export interface OrchestratorFailure {
   readonly kind: "recoverable" | "fatal";
   readonly stage: "discovering" | "previewing" | "executing";
@@ -144,30 +144,30 @@ export interface OrchestratorContext {
   failure: OrchestratorFailure | null;
   attempts: number;
   receipts: Record<string, { txHash: string; ledger: number }>;
-  // multisig state while in (or having visited) multisigCollection.
+  // multisig state while in (or having visited) multisigCollection
   multisig: MultisigState | null;
 }
 
 export interface MultisigState {
   readonly sourceAccountId: string;
   readonly required: MultisigRequirement;
-  // current envelope (canonical + merged signatures).
+  // current envelope (canonical + merged signatures)
   readonly canonicalXdr: string;
   readonly gatheredSignerKeys: readonly string[];
-  // cumulative weight under required.
+  // cumulative weight under required
   readonly signaturesGathered: number;
-  // fully-signed envelope once threshold is met.
+  // fully-signed envelope once threshold is met
   readonly signedXdr: string | null;
 }
 
 export interface OrchestratorInput {
   readonly publicKey: string;
   readonly options: OrchestratorOptions;
-  // separated from auditAccount so between-node re-reads stay cheap.
+  // separated from auditAccount so between-node re-reads stay cheap
   readonly loadAccount: (publicKey: string) => Promise<Horizon.AccountResponse>;
 }
 
-// statuses that mean "this node is done".
+// statuses that mean "this node is done"
 export const TERMINAL_NODE_STATUSES = new Set<PlanNode["status"]>([
   "confirmed",
   "skipped",

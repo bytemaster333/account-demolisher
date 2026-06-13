@@ -1,10 +1,5 @@
-/**
- * shared blend exit-step types — the contract between the pool/client modules,
- * the exit builder, and the UI plan list. soroban envelope details aren't modeled here;
- * they belong on the exit-stream builder.
- */
-
-// minimal pool reference. UI renders name, falls back to truncated id.
+// shared blend exit-step types — the contract between the pool/client modules,
+// minimal pool reference. UI renders name, falls back to truncated id
 export interface BlendPoolRef {
   readonly id: string;
   readonly name: string;
@@ -13,7 +8,7 @@ export interface BlendPoolRef {
 // minimal asset reference for repay/withdraw amounts
 export interface BlendAssetRef {
   readonly code: string;
-  // classical issuer G-address; absent for native XLM
+  // classical issuer g-address; absent for native XLM
   readonly issuer?: string;
   // underlying token contract id (SAC for classical assets)
   readonly contractId: string;
@@ -25,7 +20,7 @@ interface BlendStepBase {
   readonly summary: string;
 }
 
-// repay an outstanding borrow. amount is display-decimal scaled.
+// repay an outstanding borrow. amount is display-decimal scaled
 export interface BlendRepayStep extends BlendStepBase {
   readonly kind: "repay";
   readonly asset: BlendAssetRef;
@@ -53,7 +48,7 @@ export interface BlendClaimEmissionsStep extends BlendStepBase {
   readonly rewardAsset: BlendAssetRef;
 }
 
-// initiate a backstop withdrawal. v2 queue is 17 days.
+// initiate a backstop withdrawal. v2 queue is 17 days
 export interface BlendBackstopQueueWithdrawStep extends BlendStepBase {
   readonly kind: "backstop_queue_withdraw";
   // ISO-8601 date (UTC), e.g. "2026-06-01"

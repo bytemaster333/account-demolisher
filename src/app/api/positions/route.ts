@@ -1,13 +1,4 @@
-// typed proxy to Orion / OctoPos position APIs. keeps the API keys server-side.
-//
-// browser-side adapters POST { provider, op, ... } here, we rate-limit, route
-// by provider to the upstream URL + key, and forward verbatim (auth headers
-// stripped on the way out and sanitized in error messages).
-//
-// two ops:
-//   "health"       -> probes upstream /health. never throws when upstream is
-//                     unconfigured — reports { available: false }.
-//   "getPositions" -> forwards userAddress + network to upstream /positions
+// typed proxy to orion / OctoPos position APIs
 
 import { getServerEnv } from "@/server/server-env";
 

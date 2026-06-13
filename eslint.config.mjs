@@ -13,6 +13,8 @@ const config = [
       "coverage/**",
       "playwright-report/**",
       "test-results/**",
+      "design/**",
+      "docs/**",
       "next-env.d.ts",
     ],
   },

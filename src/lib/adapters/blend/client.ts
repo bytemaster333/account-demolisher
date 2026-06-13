@@ -1,8 +1,4 @@
-/**
- * blend client wrapper. thin layer over the blend-sdk that handles v1/v2 dispatch
- * and reindexes positions by asset id instead of reserve index.
- */
-
+// blend client wrapper. thin layer over the blend-sdk that handles v1/v2 dispatch
 import {
   PoolV1,
   PoolV2,
@@ -14,10 +10,7 @@ import {
 
 import type { NetworkConfig } from "@/lib/config/networks";
 
-/**
- * one pool's user-positions snapshot, keyed by asset id (the SAC/SEP-41 token contract).
- * values are raw bToken/dToken amounts. exit adapter converts via Reserve.toAssetFrom*.
- */
+// one pool's user-positions snapshot, keyed by asset id (the SAC/SEP-41 token contract)
 export interface BlendUserPositions {
   readonly poolId: string;
   readonly poolName: string;
@@ -40,7 +33,7 @@ export interface LoadUserPositionsResult {
   readonly errors: readonly BlendPoolLoadError[];
 }
 
-// pluggable pool loader. tries v2 first then falls back to v1.
+// pluggable pool loader. tries v2 first then falls back to v1
 export interface BlendPoolLoader {
   load(network: BlendSdkNetwork, poolId: string): Promise<Pool>;
 }
@@ -62,7 +55,7 @@ export const defaultBlendPoolLoader: BlendPoolLoader = {
   },
 };
 
-// adapt our NetworkConfig to the SDK's Network shape
+// adapt our NetworkConfig to the SDK's network shape
 export function toBlendSdkNetwork(network: NetworkConfig): BlendSdkNetwork {
   return {
     rpc: network.rpc,
@@ -107,7 +100,7 @@ export async function loadUserPositionsForPool(
   };
 }
 
-// load positions across a set of pools in parallel. per-pool errors go to errors[].
+// load positions across a set of pools in parallel. per-pool errors go to errors[]
 export async function loadUserPositions(
   network: NetworkConfig,
   userPublicKey: string,

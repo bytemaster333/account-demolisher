@@ -1,5 +1,5 @@
 // domain types for the account audit. consumers downstream read AccountAudit
-// and don't hit horizon directly.
+// and don't hit horizon directly
 
 export type AssetIdentifier =
   | { readonly kind: "native" }
@@ -15,7 +15,7 @@ export type AssetIdentifier =
 
 export interface AuditBalance {
   readonly asset: AssetIdentifier;
-  // decimal string as returned by horizon. use BigInt for math.
+  // decimal string as returned by horizon. use BigInt for math
   readonly amount: string;
   readonly limit?: string;
   readonly buyingLiabilities: string;
@@ -57,7 +57,7 @@ export interface OfferEntry {
 
 export interface DataEntry {
   readonly name: string;
-  // base64-encoded value, per horizon.
+  // base64-encoded value, per horizon
   readonly value: string;
   readonly sponsor?: string;
 }
@@ -67,7 +67,7 @@ export interface ClaimableBalanceEntry {
   readonly asset: AssetIdentifier;
   readonly amount: string;
   readonly sponsor: string;
-  // encoded predicate. evaluated against ledger close time to decide claimability.
+  // encoded predicate. evaluated against ledger close time to decide claimability
   readonly predicate: unknown;
   readonly claimants: readonly string[];
 }
@@ -91,7 +91,7 @@ export interface SponsorshipInfo {
 }
 
 // whether the merge can proceed. mergeable:false → orchestrator surfaces
-// reason and refuses to build the merge.
+// reason and refuses to build the merge
 export type Mergeability =
   | { readonly mergeable: true }
   | {

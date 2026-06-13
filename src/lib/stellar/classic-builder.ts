@@ -1,8 +1,4 @@
-// classic-transaction builder.
-//
-// consumes a ClassicBatch from the batcher and assembles a real
-// TransactionBuilder into an unsigned Transaction. no network i/o, no
-// signing. fee = feeBase * ops.length, time bounds = now..now+5min.
+// classic-transaction builder
 
 import type { Horizon } from "@stellar/stellar-sdk";
 import {
@@ -59,7 +55,7 @@ export function buildClassicTransaction(
 }
 
 function computeFee(base: number, opCount: number): string {
-  // fee is u32 stroops; worst case 100 * 100 = 10000, well under the ceiling.
+  // fee is u32 stroops; worst case 100 * 100 = 10000, well under the ceiling
   return (base * opCount).toString();
 }
 
@@ -104,7 +100,7 @@ function addOperation(op: BatchedOperation): xdr.Operation {
         buying,
         amount: "0",
         // price must be a positive ratio even when amount=0; reuse the
-        // original priceR so the cancel mirrors the live offer.
+        // original priceR so the cancel mirrors the live offer
         price: { n: priceN || 1, d: priceD || 1 },
         offerId: requireString(op.metadata, "offerId"),
         ...(op.source ? { source: op.source } : {}),
@@ -226,8 +222,8 @@ function buildRevoke(op: BatchedOperation): xdr.Operation {
   }
 }
 
-// set_options for clearing a non-master signer OR resetting thresholds.
-// the batcher emits one op per case to respect the sdk's single-signer rule.
+// set_options for clearing a non-master signer OR resetting thresholds
+// the batcher emits one op per case to respect the sdk's single-signer rule
 function buildSetOptions(op: BatchedOperation): xdr.Operation {
   const signerKey = op.metadata["signerKey"];
   if (typeof signerKey === "string") {
@@ -259,7 +255,7 @@ function toAsset(id: AssetIdentifier): Asset {
 }
 
 // pool-share trustline removal needs the LiquidityPoolAsset, not just the
-// pool id. orchestrator hydrates metadata.poolAsset before this is called.
+// pool id. orchestrator hydrates metadata.poolAsset before this is called
 function toLiquidityPoolAsset(meta: Record<string, unknown>): LiquidityPoolAsset {
   const poolAsset = meta["poolAsset"];
   if (poolAsset && typeof poolAsset === "object") {

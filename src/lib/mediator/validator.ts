@@ -1,19 +1,13 @@
-// strict 2-op merge envelope validator. consumed by the mediator API route to
-// vet every envelope before co-signing. envelope-agnostic; no I/O, no secrets.
-//
-// merge shape:
-//   op[0] = accountMerge -> mediator
-//   op[1] = payment (XLM) | createAccount, source = mediator
-// plus a 1-hour maxTime upper bound.
+// strict 2-op merge envelope validator
 
 import { Asset, FeeBumpTransaction, Transaction, TransactionBuilder } from "@stellar/stellar-sdk";
 
-// callers must check ok before reading tx (success) or code/reason (failure).
+// callers must check ok before reading tx (success) or code/reason (failure)
 export type ValidationResult =
   | { readonly ok: true; readonly tx: Transaction }
   | { readonly ok: false; readonly code: ValidationFailureCode; readonly reason: string };
 
-// closed enum of rejection causes; surfaced verbatim in 400 responses.
+// closed enum of rejection causes; surfaced verbatim in 400 responses
 export type ValidationFailureCode =
   | "MALFORMED_XDR"
   | "FEE_BUMP_NOT_ALLOWED"
@@ -33,16 +27,16 @@ export type ValidationFailureCode =
   | "FORWARD_OP1_NOT_ACCOUNT_MERGE"
   | "FORWARD_OP1_SOURCE_NOT_MEDIATOR";
 
-// max maxTime horizon. shields against replay of a leaked envelope.
+// max maxTime horizon. shields against replay of a leaked envelope
 export const MAX_TIME_BOUND_SECONDS = 3600;
 
-// fail-fast: returns at the first failed rule.
+// fail-fast: returns at the first failed rule
 export function validateMergeEnvelope(
   envelopeXdr: string,
   networkPassphrase: string,
   mediatorPublicKey: string,
 ): ValidationResult {
-  // 1. inflate.
+  // 1. inflate
   let parsed: Transaction | FeeBumpTransaction;
   try {
     parsed = TransactionBuilder.fromXDR(envelopeXdr, networkPassphrase);
@@ -54,7 +48,7 @@ export function validateMergeEnvelope(
     };
   }
 
-  // 2. fee bumps disallowed — we'd be signing the outer envelope.
+  // 2. fee bumps disallowed — we'd be signing the outer envelope
   if (parsed instanceof FeeBumpTransaction) {
     return {
       ok: false,
@@ -64,7 +58,7 @@ export function validateMergeEnvelope(
   }
   const tx = parsed;
 
-  // 3. exactly two operations.
+  // 3. exactly two operations
   if (tx.operations.length !== 2) {
     return {
       ok: false,
@@ -76,7 +70,7 @@ export function validateMergeEnvelope(
   const op0 = tx.operations[0]!;
   const op1 = tx.operations[1]!;
 
-  // 4a. op[0] must be accountMerge.
+  // 4a. op[0] must be accountMerge
   if (op0.type !== "accountMerge") {
     return {
       ok: false,
@@ -84,7 +78,7 @@ export function validateMergeEnvelope(
       reason: `Operation 0 must be accountMerge; got "${op0.type}".`,
     };
   }
-  // 4b. destination must equal mediator.
+  // 4b. destination must equal mediator
   if (op0.destination !== mediatorPublicKey) {
     return {
       ok: false,
@@ -93,7 +87,7 @@ export function validateMergeEnvelope(
     };
   }
 
-  // 5. op[1] must be payment or createAccount.
+  // 5. op[1] must be payment or createAccount
   if (op1.type !== "payment" && op1.type !== "createAccount") {
     return {
       ok: false,
@@ -102,7 +96,7 @@ export function validateMergeEnvelope(
     };
   }
 
-  // 6. op[1].source must equal mediator (explicit, not inherited).
+  // 6. op[1].source must equal mediator (explicit, not inherited)
   if (op1.source !== mediatorPublicKey) {
     return {
       ok: false,
@@ -111,7 +105,7 @@ export function validateMergeEnvelope(
     };
   }
 
-  // 7. native-asset constraint applies to payment only.
+  // 7. native-asset constraint applies to payment only
   if (op1.type === "payment" && !op1.asset.equals(Asset.native())) {
     return {
       ok: false,
@@ -120,7 +114,7 @@ export function validateMergeEnvelope(
     };
   }
 
-  // 8. timeBounds present; maxTime <= now + 1h.
+  // 8. timeBounds present; maxTime <= now + 1h
   if (
     tx.timeBounds === undefined ||
     tx.timeBounds === null ||
@@ -158,9 +152,6 @@ export function validateMergeEnvelope(
 }
 
 // forward envelope shape:
-//   op[0] = payment       mediator -> destination     (native)
-//   op[1] = accountMerge  mediator -> userFallback
-// both ops source from the tx source (the mediator). same time-bound rule.
 export function validateMediatorForwardEnvelope(
   envelopeXdr: string,
   networkPassphrase: string,
@@ -216,7 +207,7 @@ export function validateMediatorForwardEnvelope(
       reason: "Forward payment asset must be native XLM.",
     };
   }
-  // op[0].source: undefined (inherits) or explicit mediator.
+  // op[0].source: undefined (inherits) or explicit mediator
   if (op0.source !== undefined && op0.source !== mediatorPublicKey) {
     return {
       ok: false,

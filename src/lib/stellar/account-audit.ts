@@ -17,7 +17,7 @@ import type {
 } from "@/lib/types/account";
 
 // read-only audit of a classic stellar account. no caching — every call
-// re-reads horizon.
+// re-reads horizon
 export async function auditAccount(
   publicKey: string,
   network: NetworkConfig,
@@ -91,7 +91,7 @@ function parseBalances(
 ): readonly AuditBalance[] {
   return balances.map((b) => {
     const asset = balanceLineToAsset(b);
-    // lp shares have no buying/selling liabilities.
+    // lp shares have no buying/selling liabilities
     const buyingLiabilities = "buying_liabilities" in b ? b.buying_liabilities : "0";
     const sellingLiabilities = "selling_liabilities" in b ? b.selling_liabilities : "0";
     const result: Record<string, unknown> = {
@@ -249,7 +249,7 @@ async function loadPoolShares(
   return out;
 }
 
-// horizon serializes assets either as an object or as "CODE:ISSUER"/"native".
+// horizon serializes assets either as an object or as "CODE:ISSUER"/"native"
 function serverAssetToIdentifier(asset: {
   asset_type: string;
   asset_code?: string;

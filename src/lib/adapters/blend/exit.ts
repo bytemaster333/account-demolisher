@@ -1,7 +1,4 @@
-/**
- * blend exit sequencer. produces an ordered, unsigned list of exit steps for one pool.
- */
-
+// blend exit sequencer. produces an ordered, unsigned list of exit steps for one pool
 import {
   Asset,
   BASE_FEE,
@@ -29,10 +26,7 @@ import {
   MAX_TIMEOUT_SECONDS,
 } from "./constants";
 
-/**
- * one unsigned soroban tx in the exit sequence, or a delegated acquire-asset marker.
- * acquire_repay_asset carries no transaction by design — orchestrator routes it through a swap.
- */
+// one unsigned soroban tx in the exit sequence, or a delegated acquire-asset marker
 export type BlendExitStep =
   | {
       readonly kind: "acquire_repay_asset";
@@ -69,11 +63,7 @@ export type BlendExitStep =
       readonly manualReturnRequired: true;
     };
 
-/**
- * optional context from the caller's full balance sheet.
- * holdsAtLeast gates the acquire step. backstopShares triggers the queue step.
- * claimReserveIds overrides the default claim list. now is a clock for queueEndsAt.
- */
+// optional context from the caller's full balance sheet
 export interface BuildExitSequenceDeps {
   readonly holdsAtLeast?: (asset: string, amount: bigint) => boolean;
   readonly resolveAssetIdentifier?: (asset: string) => AssetIdentifier;

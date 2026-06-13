@@ -1,10 +1,4 @@
-// fee-surge protection. reads horizon's /fee_stats and exposes a
-// {recommended, max, surge} advice triple plus a cap helper.
-//
-// cap policy: max(min_fee * 100, p99 * 2).
-// surge signal: p99 > min_fee * 10.
-// when /fee_stats is unavailable, we return BASE_FEE-derived defaults with
-// surge:false rather than fabricating data.
+// fee-surge protection
 
 import type { NetworkConfig } from "@/lib/config/networks";
 
@@ -15,15 +9,15 @@ const SURGE_THRESHOLD_MULTIPLIER = 10n;
 const RECOMMENDED_MULTIPLIER = 5n;
 
 export interface FeeAdvice {
-  // recommended per-op fee, in stroops (decimal-integer string).
+  // recommended per-op fee, in stroops (decimal-integer string)
   readonly recommended: string;
-  // maximum per-op fee the orchestrator should pay, in stroops.
+  // maximum per-op fee the orchestrator should pay, in stroops
   readonly max: string;
-  // true if the network is currently in a fee surge (p99 > min_fee * 10).
+  // true if the network is currently in a fee surge (p99 > min_fee * 10)
   readonly surge: boolean;
 }
 
-// partial /fee_stats shape — only fields we use.
+// partial /fee_stats shape — only fields we use
 export interface FeeStatsLike {
   readonly last_ledger_base_fee?: string;
   readonly fee_charged?: {
@@ -40,10 +34,7 @@ export interface FeeStatsLike {
   };
 }
 
-// pure derivation. computes the cap policy from a /fee_stats payload.
-// recommended = max(mode_of_fee_charged, last_ledger_base_fee * 5, last_ledger_base_fee)
-// max         = max(min_fee * 100, p99 * 2)
-// surge       = p99 > min_fee * 10
+// pure derivation
 export function feeAdviceFromStats(stats: FeeStatsLike | null | undefined): FeeAdvice {
   if (!stats) return defaultAdvice();
 
@@ -57,7 +48,7 @@ export function feeAdviceFromStats(stats: FeeStatsLike | null | undefined): FeeA
   const max = bigIntMax(capFromMin, capFromP99);
 
   // prefer the mode when present; else 5x the ledger base. floor at
-  // ledgerBase so we never undercut the published minimum.
+  // ledgerBase so we never undercut the published minimum
   const recommendedRaw = mode ?? ledgerBase * RECOMMENDED_MULTIPLIER;
   const recommended = bigIntMax(recommendedRaw, ledgerBase);
 
@@ -71,7 +62,7 @@ export function feeAdviceFromStats(stats: FeeStatsLike | null | undefined): FeeA
 }
 
 // cap an orchestrator-proposed fee at advice.max. malformed proposals are
-// coerced to advice.recommended rather than passed through.
+// coerced to advice.recommended rather than passed through
 export function applyFeeCap(proposed: string, advice: FeeAdvice): string {
   const max = parsePositive(advice.max) ?? BASE_FEE_STROOPS * MIN_FEE_CAP_MULTIPLIER;
   const p = parsePositive(proposed);
@@ -80,9 +71,7 @@ export function applyFeeCap(proposed: string, advice: FeeAdvice): string {
   return p.toString();
 }
 
-// fetch /fee_stats and derive the advice. on any network/parse error this
-// returns defaultAdvice() rather than crashing; surge is reported false
-// since we have no signal either way.
+// fetch /fee_stats and derive the advice
 export async function getCurrentFeeAdvice(
   network: NetworkConfig,
   fetchImpl: typeof fetch = fetch,
@@ -111,7 +100,7 @@ export async function getCurrentFeeAdvice(
   return feeAdviceFromStats(body);
 }
 
-// conservative fallback when /fee_stats is unavailable.
+// conservative fallback when /fee_stats is unavailable
 export function defaultAdvice(): FeeAdvice {
   return {
     recommended: (BASE_FEE_STROOPS * RECOMMENDED_MULTIPLIER).toString(),

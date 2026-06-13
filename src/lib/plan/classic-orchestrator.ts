@@ -1,5 +1,5 @@
 // classic demolition control loop: audit -> hydrate paths -> batch ->
-// sign-and-submit (with optional mediator co-sign + post-merge forward).
+// sign-and-submit (with optional mediator co-sign + post-merge forward)
 
 import {
   Asset,
@@ -60,7 +60,7 @@ export interface DemolishResult {
 }
 
 // runs the full classic flow; expected blockers return { ok: false }, only
-// unexpected SDK/network errors propagate.
+// unexpected SDK/network errors propagate
 export async function executeClassicDemolition(
   publicKey: string,
   network: NetworkConfig,
@@ -86,7 +86,7 @@ export async function executeClassicDemolition(
     return { ok: false, errors: [message] };
   }
 
-  // self-hosted + mediator isn't implemented yet; refuse explicitly.
+  // self-hosted + mediator isn't implemented yet; refuse explicitly
   if (options.useMediator && getPublicEnv().NEXT_PUBLIC_DEPLOYMENT_MODE === "self-hosted") {
     const message =
       "Self-hosted deployment with mediator routing is not yet implemented. " +
@@ -96,10 +96,10 @@ export async function executeClassicDemolition(
     return { ok: false, errors: [message] };
   }
 
-  // 2a. hydrate paths for credit balances.
+  // 2a. hydrate paths for credit balances
   const paths = await hydratePaths(audit, network);
 
-  // 2b. fetch mediator pubkey when routing through it.
+  // 2b. fetch mediator pubkey when routing through it
   let mediatorPublicKey: string | undefined;
   if (options.useMediator) {
     try {
@@ -114,7 +114,7 @@ export async function executeClassicDemolition(
     }
   }
 
-  // 3. batch.
+  // 3. batch
   const batches = batchClassicDemolition(
     audit,
     {
@@ -136,10 +136,10 @@ export async function executeClassicDemolition(
     return { ok: false, errors: [message] };
   }
 
-  // 2c. hydrate pool-share LP-asset metadata for the builder.
+  // 2c. hydrate pool-share LP-asset metadata for the builder
   await hydratePoolAssetMetadata(batches, network, audit);
 
-  // 4. per-batch sign-and-submit loop; re-audit between batches for fresh state.
+  // 4. per-batch sign-and-submit loop; re-audit between batches for fresh state
   const errors: string[] = [];
   let lastTxHash: string | undefined;
   let mergedTxHash: string | undefined;
@@ -155,18 +155,18 @@ export async function executeClassicDemolition(
       message: `Batch ${i + 1}/${batches.length} ready (${batch.operations.length} ops).`,
     });
 
-    // (a) build.
+    // (a) build
     const account = await loadAccountResponse(publicKey, network);
     const built = buildClassicTransaction(batch, account, network);
     const transaction = built.transaction as Transaction;
 
-    // (b) allow-list guard (no-op for pure classic).
+    // (b) allow-list guard (no-op for pure classic)
     assertTransactionAllowed(transaction, network);
 
-    // (c) wallet sign.
+    // (c) wallet sign
     const signed = await connector.signTransaction(transaction, network.passphrase);
 
-    // (d) mediator co-sign on the final batch when merging into the mediator.
+    // (d) mediator co-sign on the final batch when merging into the mediator
     let envelopeToSubmitXdr = signed.signedXdr;
     if (isFinal && options.useMediator && finalIsMergeToMediator(batch, mediatorPublicKey)) {
       onProgress({
@@ -185,7 +185,7 @@ export async function executeClassicDemolition(
       envelopeToSubmitXdr = mediatorResult.signedXdr;
     }
 
-    // (e) submit.
+    // (e) submit
     onProgress({
       kind: "submitting",
       batchIndex: i,
@@ -210,7 +210,7 @@ export async function executeClassicDemolition(
     if (isFinal) {
       mergedTxHash = txHash;
     } else {
-      // re-audit so the next iteration sees post-state shifts.
+      // re-audit so the next iteration sees post-state shifts
       onProgress({
         kind: "rebatching",
         batchIndex: i,
@@ -228,7 +228,7 @@ export async function executeClassicDemolition(
     }
   }
 
-  // 5. post-merge mediator forward (reference deployment only).
+  // 5. post-merge mediator forward (reference deployment only)
   let forwardTxHash: string | undefined;
   if (options.useMediator && mediatorPublicKey !== undefined) {
     const forwardResult = await postMergeMediatorForward(
@@ -259,7 +259,7 @@ export async function executeClassicDemolition(
   };
 }
 
-// re-export of the cex registry helper for the UI side.
+// re-export of the cex registry helper for the UI side
 export function destinationIsCex(destination: string): boolean {
   return lookupCex(destination) !== null;
 }
@@ -272,8 +272,8 @@ async function loadAccountResponse(
   return (await server.loadAccount(publicKey)) as HorizonAccountResponse;
 }
 
-// for each non-XLM credit balance, fetch a strictSendPaths route to native.
-// pool-shares and native skipped.
+// for each non-XLM credit balance, fetch a strictSendPaths route to native
+// pool-shares and native skipped
 async function hydratePaths(
   audit: AccountAudit,
   network: NetworkConfig,
@@ -286,7 +286,7 @@ async function hydratePaths(
     try {
       path = await findPathToXLM(balance.asset, balance.amount, network);
     } catch {
-      // path-finder outage: skip; batcher will use the return-to-issuer fallback.
+      // path-finder outage: skip; batcher will use the return-to-issuer fallback
       continue;
     }
     if (path !== null) {
@@ -296,7 +296,7 @@ async function hydratePaths(
   return out;
 }
 
-// loads pool reserve metadata for each change_trust_remove the batcher emitted.
+// loads pool reserve metadata for each change_trust_remove the batcher emitted
 async function hydratePoolAssetMetadata(
   batches: readonly ClassicBatch[],
   network: NetworkConfig,
@@ -314,7 +314,7 @@ async function hydratePoolAssetMetadata(
   if (poolIds.size === 0) return;
 
   const server = getHorizon(network);
-  // prefer the audit's reserves snapshot before hitting horizon again.
+  // prefer the audit's reserves snapshot before hitting horizon again
   const auditPools = new Map(audit.poolShares.map((p) => [p.poolId, p]));
 
   const metadataByPoolId = new Map<
@@ -349,7 +349,7 @@ async function hydratePoolAssetMetadata(
   }
 
   // metadata objects are plain records; splice in a new one to keep the
-  // frozen-shape promise.
+  // frozen-shape promise
   for (const batch of batches) {
     for (let i = 0; i < batch.operations.length; i += 1) {
       const op = batch.operations[i]!;
@@ -376,7 +376,7 @@ function serverAssetStringToIdentifier(asset: string): AssetIdentifier {
   return { kind: "credit", code: parts[0] ?? "", issuer: parts[1] ?? "" };
 }
 
-// reads the mediator pubkey from GET /api/mediator/sign. seed never leaves the server.
+// reads the mediator pubkey from GET /api/mediator/sign. seed never leaves the server
 async function fetchMediatorPublicKey(): Promise<string> {
   const response = await fetch("/api/mediator/sign", { method: "GET" });
   if (!response.ok) {
@@ -389,7 +389,7 @@ async function fetchMediatorPublicKey(): Promise<string> {
   return body.mediatorPublicKey;
 }
 
-// true iff the batch's last op merges into the configured mediator.
+// true iff the batch's last op merges into the configured mediator
 function finalIsMergeToMediator(batch: ClassicBatch, mediatorPublicKey?: string): boolean {
   if (mediatorPublicKey === undefined) return false;
   const last = batch.operations[batch.operations.length - 1];
@@ -399,8 +399,6 @@ function finalIsMergeToMediator(batch: ClassicBatch, mediatorPublicKey?: string)
 }
 
 // builds, co-signs and submits the post-merge forward envelope:
-//   op[0] payment       mediator -> destination          (native)
-//   op[1] accountMerge  mediator -> userFallbackAddress
 async function postMergeMediatorForward(
   _userPublicKey: string,
   mediatorPublicKey: string,
@@ -408,7 +406,7 @@ async function postMergeMediatorForward(
   network: NetworkConfig,
   onProgress: (event: DemolishProgressEvent) => void,
 ): Promise<{ ok: true; txHash: string } | { ok: false; error: string }> {
-  // 1. load mediator account.
+  // 1. load mediator account
   const server = getHorizon(network);
   let mediatorAccount: Awaited<ReturnType<typeof server.loadAccount>>;
   try {
@@ -429,7 +427,7 @@ async function postMergeMediatorForward(
     return { ok: false, error: reason };
   }
 
-  // keep 0.5 XLM for fee buffer; accountMerge reclaims the base reserve.
+  // keep 0.5 XLM for fee buffer; accountMerge reclaims the base reserve
   const forwardAmount = subtractDecimal(nativeBalance.balance, "0.5000000");
   if (compareAmounts(forwardAmount, "0") <= 0) {
     const reason = `Mediator balance ${nativeBalance.balance} XLM is too low to forward after fee buffer.`;
@@ -437,7 +435,7 @@ async function postMergeMediatorForward(
     return { ok: false, error: reason };
   }
 
-  // 2. build unsigned forward.
+  // 2. build unsigned forward
   const fallback = options.userFallbackAddress ?? options.destination;
   const builder = new TransactionBuilder(mediatorAccount, {
     fee: (Number.parseInt(BASE_FEE, 10) * 2).toString(),
@@ -456,7 +454,7 @@ async function postMergeMediatorForward(
   const unsignedTx = builder.build();
   const unsignedXdr = unsignedTx.toEnvelope().toXDR("base64");
 
-  // 3. mediator co-sign via the forward validator.
+  // 3. mediator co-sign via the forward validator
   onProgress({
     kind: "mediator-cosign",
     message: "Requesting mediator signature for the forward envelope...",
@@ -468,7 +466,7 @@ async function postMergeMediatorForward(
     return { ok: false, error: message };
   }
 
-  // 4. submit.
+  // 4. submit
   onProgress({ kind: "submitting", message: "Submitting the forward envelope..." });
   const signedTx = TransactionBuilder.fromXDR(result.signedXdr, network.passphrase);
   const submission = (await server.submitTransaction(signedTx as Transaction)) as {
@@ -496,7 +494,7 @@ function classicMemoToSdk(memo: ClassicMemo): Memo {
   }
 }
 
-// horizon balances come back as 7-decimal strings; treat as fixed-point stroops.
+// horizon balances come back as 7-decimal strings; treat as fixed-point stroops
 
 function decimalToStroops(s: string): bigint {
   const trimmed = s.trim();

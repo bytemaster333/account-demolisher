@@ -1,15 +1,4 @@
-// classic demolition batcher: pure function from AccountAudit to ClassicBatch[].
-// canonical op order:
-//   1. liquidity pool withdraw per pool-share trustline
-//   2. cancel each open offer (manage_sell_offer amount=0)
-//   3. claim opted-in claimable balances
-//   4. path payment per non-XLM credit balance (or return-to-issuer fallback)
-//   5. change_trust(limit=0) — pool-share first, then underlying
-//   6. delete each data entry
-//   7. revoke each held sponsorship
-//   8. clear non-master signers, reset thresholds
-//   9. account_merge (to mediator or destination)
-// splits across 100-op transactions; merge always lands in the final batch.
+// classic demolition batcher: pure function from AccountAudit to ClassicBatch[]
 
 import type { AccountAudit, AssetIdentifier } from "@/lib/types/account";
 import {
@@ -22,11 +11,11 @@ import {
 
 export const MAX_OPS_PER_TX = 100;
 
-// conservative 1% slippage.
+// conservative 1% slippage
 const SLIPPAGE_NUMERATOR = 99n;
 const SLIPPAGE_DENOMINATOR = 100n;
 
-// xlm seeded into the ephemeral mediator: base reserve + fee buffer.
+// xlm seeded into the ephemeral mediator: base reserve + fee buffer
 const MEDIATOR_FUNDING_XLM = "2";
 
 export function batchClassicDemolition(
@@ -40,7 +29,7 @@ export function batchClassicDemolition(
 
   const ops: BatchedOperation[] = [];
 
-  // 1. liquidity pool withdraws.
+  // 1. liquidity pool withdraws
   for (const pool of audit.poolShares) {
     if (!hasPositive(pool.shareBalance)) continue;
     const reserveA = pool.reserves[0];
@@ -63,7 +52,7 @@ export function batchClassicDemolition(
     });
   }
 
-  // 2. cancel open offers.
+  // 2. cancel open offers
   for (const offer of audit.offers) {
     ops.push({
       kind: "manage_sell_offer_cancel",
@@ -78,10 +67,11 @@ export function batchClassicDemolition(
     });
   }
 
-  // 3. claim opted-in claimable balances.
-  const optedIn = new Set(options.claimableBalanceIds ?? []);
+  // 3. claim claimable balances
+  const optedIn: ReadonlySet<string> | null =
+    options.claimableBalanceIds === undefined ? null : new Set(options.claimableBalanceIds);
   for (const cb of audit.claimableBalances) {
-    if (!optedIn.has(cb.id)) continue;
+    if (optedIn !== null && !optedIn.has(cb.id)) continue;
     ops.push({
       kind: "claim_claimable_balance",
       summary: `Claim claimable balance ${cb.id.slice(0, 12)}...`,
@@ -93,7 +83,7 @@ export function batchClassicDemolition(
     });
   }
 
-  // 4. convert credit balances via path payment, or fall back to return-to-issuer.
+  // 4. convert credit balances via path payment, or fall back to return-to-issuer
   for (const balance of audit.balances) {
     if (balance.asset.kind !== "credit") continue;
     if (!hasPositive(balance.amount)) continue;
@@ -126,7 +116,7 @@ export function batchClassicDemolition(
     }
   }
 
-  // 5. remove trustlines — pool-share first, then underlying.
+  // 5. remove trustlines — pool-share first, then underlying
   for (const balance of audit.balances) {
     if (balance.asset.kind !== "liquidity_pool_shares") continue;
     ops.push({
@@ -144,7 +134,7 @@ export function batchClassicDemolition(
     });
   }
 
-  // 6. delete data entries.
+  // 6. delete data entries
   for (const data of audit.data) {
     ops.push({
       kind: "manage_data_delete",
@@ -153,8 +143,16 @@ export function batchClassicDemolition(
     });
   }
 
-  // 7. revoke sponsorships; orchestrator hydrates subject keys before submit.
-  for (let i = 0; i < audit.sponsorship.numSponsoring; i += 1) {
+  // 7. revoke remaining sponsorships
+  const selfSponsoredCbsBeingClaimed = audit.claimableBalances.filter((cb) => {
+    if (cb.sponsor !== audit.accountId) return false;
+    return optedIn === null || optedIn.has(cb.id);
+  }).length;
+  const remainingToRevoke = Math.max(
+    0,
+    audit.sponsorship.numSponsoring - selfSponsoredCbsBeingClaimed,
+  );
+  for (let i = 0; i < remainingToRevoke; i += 1) {
     ops.push({
       kind: "revoke_sponsorship",
       summary: `Revoke sponsorship slot #${i + 1}`,
@@ -166,8 +164,8 @@ export function batchClassicDemolition(
     });
   }
 
-  // 8. one op per non-master signer + a threshold reset when needed.
-  // setOptions accepts one signer mutation per op.
+  // 8. one op per non-master signer + a threshold reset when needed
+  // setOptions accepts one signer mutation per op
   const nonMasterSigners = audit.signers.filter((s) => s.weight > 0 && s.key !== audit.accountId);
   for (const signer of nonMasterSigners) {
     ops.push({
@@ -189,7 +187,7 @@ export function batchClassicDemolition(
     });
   }
 
-  // 9. final account_merge.
+  // 9. final account_merge
   const mergeDestination = options.useMediator
     ? (options.mediatorPublicKey as string)
     : options.destination;
@@ -206,7 +204,7 @@ export function batchClassicDemolition(
     },
   });
 
-  // mediator funding op leads the first batch so it counts toward the op budget.
+  // mediator funding op leads the first batch so it counts toward the op budget
   const leading: BatchedOperation[] = [];
   if (options.useMediator && options.mediatorPublicKey) {
     leading.push({
@@ -227,14 +225,14 @@ function splitIntoBatches(
   options: BatchOptions,
 ): readonly ClassicBatch[] {
   if (ops.length === 0) {
-    // unreachable in practice; the merge op is always appended.
+    // unreachable in practice; the merge op is always appended
     return [];
   }
   if (ops.length <= MAX_OPS_PER_TX) {
     return [buildBatch(ops, options, /*isFinal*/ true)];
   }
   const batches: ClassicBatch[] = [];
-  // pack from the front; the merge naturally lands in the last chunk.
+  // pack from the front; the merge naturally lands in the last chunk
   let cursor = 0;
   while (cursor < ops.length) {
     const slice = ops.slice(cursor, cursor + MAX_OPS_PER_TX);
@@ -278,7 +276,7 @@ function mustResetThresholds(audit: AccountAudit): boolean {
   );
 }
 
-// string-level positive check that avoids float pitfalls.
+// string-level positive check that avoids float pitfalls
 function hasPositive(amountStr: string): boolean {
   for (const ch of amountStr) {
     if (ch >= "1" && ch <= "9") return true;
@@ -286,7 +284,7 @@ function hasPositive(amountStr: string): boolean {
   return false;
 }
 
-// 1% slippage haircut, truncated to 7 decimals.
+// 1% slippage haircut, truncated to 7 decimals
 export function applySlippage(amountStr: string): string {
   const stroops = decimalToStroops(amountStr);
   const adjusted = (stroops * SLIPPAGE_NUMERATOR) / SLIPPAGE_DENOMINATOR;

@@ -1,6 +1,4 @@
-// network constants for stellar mainnet/testnet/futurenet. endpoints are
-// overridable via NEXT_PUBLIC_HORIZON_URL / NEXT_PUBLIC_RPC_URL; the
-// passphrase is intrinsic to the network and never overridable.
+// network constants for stellar mainnet/testnet/futurenet
 
 import { Networks } from "@stellar/stellar-sdk";
 

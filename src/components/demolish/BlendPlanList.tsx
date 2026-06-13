@@ -1,4 +1,4 @@
-// numbered render of every BlendExitStep. each step is one soroban tx.
+// numbered render of every BlendExitStep. each step is one soroban tx
 
 import type { BlendExitStep, BlendStepStatus } from "@/lib/adapters/blend/types";
 import { cn } from "@/lib/utils";
@@ -110,7 +110,7 @@ function labelForKind(kind: BlendExitStep["kind"]): string {
   }
 }
 
-// pool name from registry, else a C...XXXX truncation of the contract id
+// pool name from registry, else a c...XXXX truncation of the contract id
 function poolDisplayName(pool: { readonly id: string; readonly name: string }): string {
   const trimmed = pool.name.trim();
   if (trimmed.length > 0) return trimmed;

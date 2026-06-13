@@ -1,30 +1,28 @@
-// sep-41 allowance enumeration via soroban rpc getEvents.
-// approve emits topics [Symbol("approve"), Address(from), Address(spender)]
-// and data (amount: i128, expiration_ledger: u32).
+// sep-41 allowance enumeration via soroban rpc getEvents
 
-import { rpc, type Horizon, type Transaction, type xdr } from "@stellar/stellar-sdk";
+import { Address, rpc, xdr, type Horizon, type Transaction } from "@stellar/stellar-sdk";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { fromScValAddress, fromScValI128, fromScValSymbol, fromScValU32 } from "./scval";
 import { buildApprove } from "./sep41";
 
-// one active sep-41 allowance attributable to the user.
+// one active sep-41 allowance attributable to the user
 export interface AllowanceRecord {
   readonly contractId: string;
   readonly spender: string;
   readonly amount: bigint;
   readonly live_until_ledger: number;
   readonly lastSeenLedger: number;
-  // true when live_until_ledger <= currentLedger at enumeration time.
+  // true when live_until_ledger <= currentLedger at enumeration time
   readonly expired: boolean;
 }
 
-// ~30 days of ledgers at 5s cadence.
+// ~30 days of ledgers at 5s cadence
 export const DEFAULT_SCAN_WINDOW_LEDGERS = 518_400;
 
-// per-page event cap on the rpc.
+// per-page event cap on the rpc
 const PAGE_LIMIT = 10_000;
 
-// enumerate active sep-41 allowances the user granted.
+// enumerate active sep-41 allowances the user granted
 export async function enumerateAllowances(
   server: rpc.Server,
   userAddress: string,
@@ -43,12 +41,24 @@ export async function enumerateAllowances(
   }
   let startLedger = Math.max(1, currentLedger - scanWindowLedgers);
 
-  // latest-state accumulator keyed by `${contractId}|${spender}`.
+  // rpc-level filter for sep-41 approve events
+  const approveSymbolXdr = xdr.ScVal.scvSymbol("approve").toXDR("base64");
+  const fromAddressXdr = new Address(userAddress).toScVal().toXDR("base64");
+  const eventFilter3: rpc.Api.EventFilter = {
+    type: "contract",
+    topics: [[approveSymbolXdr, fromAddressXdr, "*"]],
+  };
+  const eventFilter4: rpc.Api.EventFilter = {
+    type: "contract",
+    topics: [[approveSymbolXdr, fromAddressXdr, "*", "*"]],
+  };
+
+  // latest-state accumulator keyed by `${contractId}|${spender}`
   const latest = new Map<string, AllowanceRecord>();
 
-  // first page uses startLedger; subsequent pages use the returned cursor.
+  // first page uses startLedger; subsequent pages use the returned cursor
   let cursor: string | undefined;
-  // hard cap so a misbehaving rpc can't loop forever.
+  // hard cap so a misbehaving rpc can't loop forever
   const MAX_PAGES = 100;
 
   for (let page = 0; page < MAX_PAGES; page++) {
@@ -56,12 +66,12 @@ export async function enumerateAllowances(
       cursor === undefined
         ? {
             startLedger,
-            filters: [{ type: "contract" }],
+            filters: [eventFilter3, eventFilter4],
             limit: PAGE_LIMIT,
           }
         : {
             cursor,
-            filters: [{ type: "contract" }],
+            filters: [eventFilter3, eventFilter4],
             limit: PAGE_LIMIT,
           };
 
@@ -70,8 +80,6 @@ export async function enumerateAllowances(
       resp = await server.getEvents(request);
     } catch (err) {
       // testnet retention is ~7 days; if startLedger is before retention the
-      // rpc returns -32600 with "ledger range: <min> - <max>". parse the
-      // floor and retry once.
       const directMessage =
         typeof (err as { message?: unknown } | undefined)?.message === "string"
           ? (err as { message: string }).message
@@ -88,7 +96,7 @@ export async function enumerateAllowances(
           startLedger = floor;
           const retryRequest: rpc.Api.GetEventsRequest = {
             startLedger,
-            filters: [{ type: "contract" }],
+            filters: [eventFilter3, eventFilter4],
             limit: PAGE_LIMIT,
           };
           resp = await server.getEvents(retryRequest);
@@ -99,30 +107,28 @@ export async function enumerateAllowances(
         throw err;
       }
     }
-    if (resp.events.length === 0) {
-      break;
-    }
-
+    // process whatever events came back (might be 0 — a topic-filtered query
     for (const ev of resp.events) {
       const decoded = tryDecodeApproveEvent(ev, userAddress);
       if (decoded === null) continue;
 
       const key = `${decoded.contractId}|${decoded.spender}`;
       const prev = latest.get(key);
-      // compare ledgers explicitly in case of out-of-order pagination.
+      // compare ledgers explicitly in case of out-of-order pagination
       if (prev === undefined || ev.ledger > prev.lastSeenLedger) {
         latest.set(key, decoded);
       }
     }
 
-    // empty (or unchanged) cursor means end of results.
+    // end-of-results only when there's no forward cursor. an empty page with
+    // a cursor means "no matches in this slice, keep paging" — must NOT break
     if (!resp.cursor || resp.cursor === cursor) {
       break;
     }
     cursor = resp.cursor;
   }
 
-  // stamp each record with its expiry and filter by default.
+  // stamp each record with its expiry and filter by default
   const out: AllowanceRecord[] = [];
   for (const rec of latest.values()) {
     const expired = rec.live_until_ledger <= currentLedger;
@@ -133,7 +139,7 @@ export async function enumerateAllowances(
 }
 
 // returns null if the event isn't an approve emitted by userAddress, or
-// if its shape doesn't decode cleanly.
+// if its shape doesn't decode cleanly
 function tryDecodeApproveEvent(
   ev: rpc.Api.EventResponse,
   userAddress: string,
@@ -142,8 +148,9 @@ function tryDecodeApproveEvent(
   const contractId = ev.contractId.contractId();
 
   const topics = ev.topic;
-  // sep-41 approve emits exactly three topics.
-  if (topics.length !== 3) return null;
+  // sep-41 spec emits three topics: symbol("approve"), address(from), address(spender)
+  // tolerate the occasional 4-topic variant by reading from the start
+  if (topics.length < 3 || topics.length > 4) return null;
 
   let topicName: string;
   try {
@@ -163,11 +170,11 @@ function tryDecodeApproveEvent(
   }
   if (from !== userAddress) return null;
 
-  // data is the tuple (amount: i128, expiration_ledger: u32).
+  // data is the tuple (amount: i128, expiration_ledger: u32)
   const decoded = tryDecodeApproveData(ev.value);
   if (decoded === null) return null;
 
-  // expired is overwritten by the aggregator.
+  // expired is overwritten by the aggregator
   return {
     contractId,
     spender,
@@ -181,7 +188,7 @@ function tryDecodeApproveEvent(
 function tryDecodeApproveData(v: xdr.ScVal): { amount: bigint; live_until_ledger: number } | null {
   const kind = v.switch().name;
 
-  // primary path: tuple-as-vec (sep-41 reference encoding).
+  // primary path: tuple-as-vec (sep-41 reference encoding)
   if (kind === "scvVec") {
     const arr = v.vec();
     if (!arr || arr.length !== 2) return null;
@@ -195,7 +202,7 @@ function tryDecodeApproveData(v: xdr.ScVal): { amount: bigint; live_until_ledger
     }
   }
 
-  // fallback: some tokens emit a struct (scvMap) with the same keys.
+  // fallback: some tokens emit a struct (scvMap) with the same keys
   if (kind === "scvMap") {
     const entries = v.map();
     if (!entries) return null;
@@ -221,7 +228,7 @@ function tryDecodeApproveData(v: xdr.ScVal): { amount: bigint; live_until_ledger
   return null;
 }
 
-// builds a revoke by calling approve(from, spender, 0, currentLedger).
+// builds a revoke by calling approve(from, spender, 0, currentLedger)
 export async function buildRevoke(
   server: rpc.Server,
   contractId: string,

@@ -1,13 +1,4 @@
-/**
- * browser-side typed client for the soroswap aggregator.
- * MUST NOT import any server-only module — bundled into the client.
- * all calls go through POST /api/soroswap where the key is injected.
- *
- * we hand-roll instead of using @soroswap/sdk because the SDK takes apiKey in its
- * constructor and stamps Authorization: Bearer on every request — no clean way to
- * keep the key off the browser. we re-use the SDK's exported *types* but issue HTTP ourselves.
- */
-
+// browser-side typed client for the soroswap aggregator
 import type {
   BuildQuoteRequest,
   BuildQuoteResponse,
@@ -42,7 +33,7 @@ export class SoroswapProxyError extends Error {
   }
 }
 
-// mirrors the Op set the proxy route accepts. keep in sync with src/app/api/soroswap/route.ts.
+// mirrors the op set the proxy route accepts. keep in sync with src/app/api/soroswap/route.ts
 type Op = "getProtocols" | "quote" | "build" | "send";
 
 interface OpEnvelope {
@@ -106,7 +97,7 @@ export class SoroswapHttpClient implements SoroswapClient {
     }
   }
 
-  // POST { op, payload } to the proxy. throws SoroswapProxyError on non-2xx or parse failure.
+  // POST { op, payload } to the proxy. throws SoroswapProxyError on non-2xx or parse failure
   private async dispatch<TResult>(envelope: OpEnvelope): Promise<TResult> {
     let response: Response;
     try {
@@ -158,7 +149,7 @@ export class SoroswapHttpClient implements SoroswapClient {
     return this.dispatch<string[]>({ op: "getProtocols", payload: { network } });
   }
 
-  // POST /quote. caller specifies protocols explicitly — proxy doesn't default it.
+  // POST /quote. caller specifies protocols explicitly — proxy doesn't default it
   async quote(request: ClientQuoteRequest): Promise<QuoteResponse> {
     const payload = {
       assetIn: request.assetIn,
@@ -188,7 +179,7 @@ export class SoroswapHttpClient implements SoroswapClient {
     return this.dispatch<BuildQuoteResponse>({ op: "build", payload });
   }
 
-  // POST /send. caller signs the XDR elsewhere (wallet kit) and hands the base64 in here.
+  // POST /send. caller signs the XDR elsewhere (wallet kit) and hands the base64 in here
   async send(signedXdr: string, network?: SoroswapNetwork): Promise<SendTransactionResponse> {
     const payload = {
       xdr: signedXdr,

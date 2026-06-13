@@ -1,9 +1,4 @@
-// the in-house Connector abstraction — the only signing surface anything
-// else in the codebase imports.
-//
-// two implementations:
-//   - WalletKitConnector (this file): backed by stellar-wallets-kit.
-//   - SecretKeyConnector (./secret-key.ts): in-memory S... seed signer.
+// the in-house connector abstraction — the only signing surface anything
 import type { FeeBumpTransaction, Transaction } from "@stellar/stellar-sdk";
 
 import { getKit, type KitHandle } from "@/lib/wallet/kit";
@@ -27,8 +22,8 @@ export interface Connector {
   ): Promise<{ signedXdr: string; signerAddress: string }>;
 }
 
-// Connector backed by the shared StellarWalletsKit handle. construction is
-// cheap; the kit itself is the singleton.
+// connector backed by the shared StellarWalletsKit handle. construction is
+// cheap; the kit itself is the singleton
 export class WalletKitConnector implements Connector {
   public readonly kind: ConnectorKind = "kit";
 
@@ -39,7 +34,7 @@ export class WalletKitConnector implements Connector {
     this.kit = getKit(network);
   }
 
-  // opens the kit's authModal, returns the picked wallet's public key.
+  // opens the kit's authModal, returns the picked wallet's public key
   async connect(): Promise<{ publicKey: string }> {
     const { address } = await this.kit.authModal();
     this.cachedAddress = address;
@@ -59,7 +54,7 @@ export class WalletKitConnector implements Connector {
   }
 
   // sep-43 sign. maps the kit's { signedTxXdr, signerAddress } to our
-  // { signedXdr, signerPublicKey } shape so callers don't import kit types.
+  // { signedXdr, signerPublicKey } shape so callers don't import kit types
   async signTransaction(
     tx: Transaction | FeeBumpTransaction,
     networkPassphrase: string,
@@ -76,7 +71,7 @@ export class WalletKitConnector implements Connector {
   }
 
   // sep-43 soroban auth-entry sign. let underlying wallet errors propagate
-  // so the orchestrator can fall back.
+  // so the orchestrator can fall back
   async signAuthEntry(
     authEntryXdr: string,
     address: string,

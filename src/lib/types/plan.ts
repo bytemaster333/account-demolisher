@@ -1,9 +1,4 @@
-// plan domain types for the classic-demolition batcher and builder.
-//
-// the batcher consumes AccountAudit and produces a sequence of ClassicBatches
-// (one per tx, <= 100 ops each). the builder turns each batch into a
-// Transaction. metadata is loosely typed and checked inside the builder
-// switch — keeps the batcher/builder boundary clean.
+// plan domain types for the classic-demolition batcher and builder
 
 import type { FeeBumpTransaction, Transaction } from "@stellar/stellar-sdk";
 import type { AssetIdentifier } from "@/lib/types/account";
@@ -23,11 +18,11 @@ export type ClassicOpKind =
 
 export interface BatchedOperation {
   readonly kind: ClassicOpKind;
-  // human-readable summary surfaced in the plan tree ui.
+  // human-readable summary surfaced in the plan tree ui
   readonly summary: string;
-  // op-level source override; omitted when it matches the tx source.
+  // op-level source override; omitted when it matches the tx source
   readonly source?: string;
-  // kind-specific payload. see builder switch for accepted shapes.
+  // kind-specific payload. see builder switch for accepted shapes
   readonly metadata: Readonly<Record<string, unknown>>;
 }
 
@@ -40,13 +35,13 @@ export type ClassicMemo =
 export interface ClassicBatch {
   readonly operations: readonly BatchedOperation[];
   readonly mediator?: { readonly publicKey: string; readonly fundingXlm: string };
-  // final-destination address for the closure (cex or self-custody wallet).
+  // final-destination address for the closure (cex or self-custody wallet)
   readonly destination: string;
   readonly memo?: ClassicMemo;
 }
 
 // per-asset path map injected by the orchestrator. keys are "native" for
-// xlm or "<code>:<issuer>" for credit assets.
+// xlm or "<code>:<issuer>" for credit assets
 export interface PathResultRef {
   readonly destinationAmount: string;
   readonly path: readonly AssetIdentifier[];
@@ -57,23 +52,23 @@ export interface BatchOptions {
   readonly destination: string;
   readonly useMediator: boolean;
   readonly mediatorPublicKey?: string;
-  // user-opted-in cb ids. batcher emits a claim op for each id present in the audit.
+  // user-opted-in cb ids. batcher emits a claim op for each id present in the audit
   readonly claimableBalanceIds?: readonly string[];
-  // forwarded into the plan summary; the actual forward tx lives in the orchestrator.
+  // forwarded into the plan summary; the actual forward tx lives in the orchestrator
   readonly userFallbackAddress?: string;
   readonly memo?: ClassicMemo;
 }
 
 export interface TransactionBuildResult {
   readonly transaction: Transaction | FeeBumpTransaction;
-  // base64-encoded envelope xdr.
+  // base64-encoded envelope xdr
   readonly xdr: string;
-  // stroop-denominated string, stellar canonical fee.
+  // stroop-denominated string, stellar canonical fee
   readonly estimatedFee: string;
   readonly description: readonly BatchedOperation[];
 }
 
-// key used in the orchestrator's per-asset path map.
+// key used in the orchestrator's per-asset path map
 export function pathKey(asset: AssetIdentifier): string {
   switch (asset.kind) {
     case "native":

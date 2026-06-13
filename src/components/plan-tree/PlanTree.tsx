@@ -1,4 +1,4 @@
-// gantt-style timeline rendering of the plan tree. flat list in topological order.
+// gantt-style timeline rendering of the plan tree. flat list in topological order
 
 import { useMemo, useState, type ReactElement } from "react";
 

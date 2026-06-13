@@ -1,27 +1,4 @@
-/**
- *   idle
- *     │  DISCOVER
- *     ▼
- *   discovering ── auditAccount + getPositions + enumerateAllowances ──▶
- *     │                                                                │
- *     ▼ onDone                                                         ▼ onError
- *   previewing                                                       failed
- *     │ generatePlan + per-Soroban-node simulateNode                    │
- *     ▼                                                                 │
- *   awaitingConfirmation                                                │
- *     │ USER_CONFIRM                                                    │
- *     ▼                                                                 │
- *   executing  ── topo-walk: re-load → sign → submit → confirm ──▶ succeeded
- *     │ recoverable error                                               │
- *     ▼                                                                 │
- *   failed.recoverable                                                  │
- *     │ RETRY (or USER_CONSENT)                                         │
- *     ▶ executing                                                       │
- *     │ attempts ≥ max → escalate                                       │
- *     ▼                                                                 │
- *   failed.fatal ◀────────────────────────────────────────────────────  │
- */
-
+// idle
 import { assign, fromPromise, setup, type ActorRefFrom } from "xstate";
 import type { Horizon, rpc } from "@stellar/stellar-sdk";
 
@@ -58,10 +35,10 @@ export interface ConfirmationReceipt {
   readonly ledger: number;
 }
 
-// narrow subset of Horizon.Server the orchestrator touches.
+// narrow subset of horizon.server the orchestrator touches
 export type HorizonLike = Pick<Horizon.Server, "loadAccount">;
 
-// narrow subset of rpc.Server used during discovery.
+// narrow subset of rpc.server used during discovery
 export type RpcLike = Pick<
   rpc.Server,
   "getLatestLedger" | "getEvents" | "simulateTransaction" | "prepareTransaction"
@@ -100,9 +77,9 @@ interface ExecutionOutput {
   readonly tree: PlanTree;
 }
 
-// builds a typed xstate v5 machine bound to deps.
+// builds a typed xstate v5 machine bound to deps
 export function createOrchestratorMachine(deps: OrchestratorDeps) {
-  // discovery: parallel audit + positions + allowances reads.
+  // discovery: parallel audit + positions + allowances reads
   const defaultDiscover = async (publicKey: string): Promise<DiscoveryResult> => {
     const [audit, positions, ledger] = await Promise.all([
       auditAccount(publicKey, deps.network),
@@ -129,7 +106,7 @@ export function createOrchestratorMachine(deps: OrchestratorDeps) {
   });
 
   // preview: generatePlan + simulateNode in topo order; thrown errors flow
-  // through the machine's onError classifier.
+  // through the machine's onError classifier
   const previewActor = fromPromise<
     PreviewOutput,
     {
@@ -168,9 +145,7 @@ export function createOrchestratorMachine(deps: OrchestratorDeps) {
       generateOpts,
     );
 
-    // hydrate every soroban node. per-node failures set node.status = "failed"
-    // and node.error so the UI still shows them; the only legitimately
-    // transactionless nodes are FinalClassicTx / MediatorForward.
+    // hydrate every soroban node
     const hydrate = deps.hydratePlanFn ?? hydratePlanTransactions;
     await hydrate(tree, input.publicKey, {
       rpc: deps.rpc as unknown as rpc.Server,
@@ -182,11 +157,11 @@ export function createOrchestratorMachine(deps: OrchestratorDeps) {
 
     const simulator = deps.simulateNodeFn ?? simulateNode;
     for (const node of topologicalOrder(tree)) {
-      // skip nodes hydration already marked failed.
+      // skip nodes hydration already marked failed
       if (node.status === "failed") continue;
-      // classic-only nodes simulate via their batches.
+      // classic-only nodes simulate via their batches
       if (isSorobanNode(node) && !hasBuiltTransaction(node)) {
-        // hydrator silently skipped this node — surface it as failed.
+        // hydrator silently skipped this node — surface it as failed
         node.status = "failed";
         node.error = `hydration produced no transaction for ${node.kind} (id=${node.id})`;
         continue;
@@ -207,9 +182,7 @@ export function createOrchestratorMachine(deps: OrchestratorDeps) {
     return { tree };
   });
 
-  // execution: depth-first topo walk; re-loads the account between nodes.
-  // body lives in executePlanTreeOnChain so page-flow can reuse it without
-  // standing up the full machine.
+  // execution: depth-first topo walk; re-loads the account between nodes
   const executionActor = fromPromise<
     ExecutionOutput,
     {
@@ -293,11 +266,11 @@ export function createOrchestratorMachine(deps: OrchestratorDeps) {
         ): MultisigState | null => {
           const current = context.multisig;
           if (current === null) return null;
-          // de-dup signer keys.
+          // de-dup signer keys
           const nextKeys = current.gatheredSignerKeys.includes(params.signerKey)
             ? current.gatheredSignerKeys
             : [...current.gatheredSignerKeys, params.signerKey];
-          // merge the partial onto the canonical.
+          // merge the partial onto the canonical
           let mergedXdr = current.canonicalXdr;
           try {
             mergedXdr = mergeSignatures(
@@ -307,7 +280,7 @@ export function createOrchestratorMachine(deps: OrchestratorDeps) {
               { expectedSigners: current.required.signers.map((s) => s.key) },
             );
           } catch {
-            // bad signature: keep the prior canonical; UI layer surfaces the error.
+            // bad signature: keep the prior canonical; UI layer surfaces the error
           }
           const weight = tallyWeight(current.required, nextKeys);
           return {
@@ -353,7 +326,7 @@ export function createOrchestratorMachine(deps: OrchestratorDeps) {
       },
       canPlainRetry: ({ context }) => {
         const tag = context.failure?.tag;
-        // slippage and multisig require explicit consent.
+        // slippage and multisig require explicit consent
         return tag !== "slippage-exceeded" && tag !== "multisig-threshold";
       },
       multisigThresholdMet: ({ context }) =>
@@ -468,9 +441,6 @@ export function createOrchestratorMachine(deps: OrchestratorDeps) {
       },
 
       // multisig coordination: hold the canonical envelope + collected signers,
-      // recompute weight on every ADD_SIGNATURE, jump to executing when the
-      // threshold is met. MULTISIG_COMPLETE is the "I have the final envelope"
-      // shortcut used by refractor and the partial-xdr import path.
       multisigCollection: {
         always: [
           {
@@ -540,7 +510,7 @@ export function createOrchestratorMachine(deps: OrchestratorDeps) {
             target: "failed",
             actions: [
               // recordFailure runs before bumpAttempts so the classifier sees
-              // the pre-bump count.
+              // the pre-bump count
               {
                 type: "recordFailure",
                 params: ({ event, context }) =>
@@ -606,7 +576,7 @@ export function createOrchestratorMachine(deps: OrchestratorDeps) {
 
 export type OrchestratorActorRef = ActorRefFrom<ReturnType<typeof createOrchestratorMachine>>;
 
-// reads a node's pre-built transaction; undefined for classic-only kinds.
+// reads a node's pre-built transaction; undefined for classic-only kinds
 export function pickTransaction(node: PlanNode) {
   switch (node.kind) {
     case "RevokeAllowance":
@@ -633,7 +603,7 @@ function hasBuiltTransaction(node: PlanNode): boolean {
 }
 
 // cumulative weight of signerKeys under required.signers. duplicates and
-// unknown keys contribute zero.
+// unknown keys contribute zero
 export function tallyWeight(required: MultisigRequirement, signerKeys: Iterable<string>): number {
   const seen = new Set<string>();
   let total = 0;
@@ -650,14 +620,13 @@ export { applyFixup, classifyFailure };
 export type { RecoveryDecision };
 
 // shared executor used by both the orchestrator's execution actor and the
-// page-flow machine. walks the tree in topo order, re-loads the account
-// between nodes, dispatches by kind, idempotent across retries via
-// previousReceipts.
 export async function executePlanTreeOnChain(
   input: {
     publicKey: string;
     tree: PlanTree;
     previousReceipts: Record<string, ConfirmationReceipt>;
+    // fires after every node.status mutation so the ui can re-render with
+    onNodeUpdate?: (node: PlanNode) => void;
   },
   deps: Pick<
     OrchestratorDeps,
@@ -666,17 +635,26 @@ export async function executePlanTreeOnChain(
 ): Promise<ExecutionOutput> {
   const receipts: Record<string, ConfirmationReceipt> = { ...input.previousReceipts };
   const ordered = topologicalOrder(input.tree);
+  const notify = (node: PlanNode): void => {
+    try {
+      input.onNodeUpdate?.(node);
+    } catch {
+      // notifications must never abort execution
+    }
+  };
 
   for (const node of ordered) {
     if (receipts[node.id] !== undefined) {
       const prior = receipts[node.id]!;
       node.status = "confirmed";
       node.executed = { txHash: prior.txHash, ledger: prior.ledger };
+      notify(node);
       continue;
     }
     if (node.executed !== undefined) {
       node.status = "confirmed";
       receipts[node.id] = { txHash: node.executed.txHash, ledger: node.executed.ledger };
+      notify(node);
       continue;
     }
     if (node.status === "skipped" || node.status === "failed") continue;
@@ -684,16 +662,24 @@ export async function executePlanTreeOnChain(
     try {
       await deps.horizon.loadAccount(input.publicKey);
     } catch {
-      // transient horizon 5xx — continue; submit will surface a real failure.
+      // transient horizon 5xx — continue; submit will surface a real failure
     }
 
     if (node.kind === "FinalClassicTx") {
       // soroban exits shift classical balances, so the cached batches are
-      // stale. re-audit and re-batch against live state.
       const freshAudit = await auditAccount(input.publicKey, deps.network);
       const freshBatches = batchClassicDemolition(freshAudit, {
         destination: node.metadata.destination,
         useMediator: node.metadata.useMediator,
+        ...(node.metadata.claimableBalanceIds
+          ? { claimableBalanceIds: node.metadata.claimableBalanceIds }
+          : {}),
+        ...(node.metadata.userFallbackAddress
+          ? { userFallbackAddress: node.metadata.userFallbackAddress }
+          : {}),
+        ...(node.metadata.mediatorPublicKey
+          ? { mediatorPublicKey: node.metadata.mediatorPublicKey }
+          : {}),
       });
       if (freshBatches.length === 0) {
         throw new Error(`executing: node "${node.id}" produced no fresh batches`);
@@ -706,7 +692,12 @@ export async function executePlanTreeOnChain(
           built.transaction,
           deps.network.passphrase,
         );
+        node.status = "signed";
+        notify(node);
         lastReceipt = await deps.submitClassic(signed.signedXdr);
+        node.status = "submitted";
+        node.executed = { txHash: lastReceipt.txHash, ledger: lastReceipt.ledger };
+        notify(node);
       }
       if (lastReceipt === null) {
         throw new Error(`executing: node "${node.id}" produced no receipt`);
@@ -714,6 +705,7 @@ export async function executePlanTreeOnChain(
       node.status = "confirmed";
       node.executed = { txHash: lastReceipt.txHash, ledger: lastReceipt.ledger };
       receipts[node.id] = lastReceipt;
+      notify(node);
       continue;
     }
 
@@ -726,15 +718,19 @@ export async function executePlanTreeOnChain(
           ? { memo: { type: "text" as const, value: node.metadata.memo } }
           : {}),
       };
+      node.status = "signed";
+      notify(node);
       const forwardResult = await submitMediatorForward(forwardInput);
       if (!forwardResult.ok) {
         node.status = "failed";
         node.error = forwardResult.error;
+        notify(node);
         throw new Error(`MediatorForward failed: ${forwardResult.error}`);
       }
       node.status = "confirmed";
       node.executed = { txHash: forwardResult.txHash, ledger: 0 };
       receipts[node.id] = { txHash: forwardResult.txHash, ledger: 0 };
+      notify(node);
       continue;
     }
 
@@ -744,6 +740,7 @@ export async function executePlanTreeOnChain(
     }
     const signed = await deps.connector.signTransaction(tx, deps.network.passphrase);
     node.status = "signed";
+    notify(node);
 
     const submit = isSorobanNode(node) ? deps.submitSoroban : deps.submitClassic;
     const receipt = await submit(signed.signedXdr);
@@ -751,6 +748,7 @@ export async function executePlanTreeOnChain(
     node.status = "confirmed";
     node.executed = { txHash: receipt.txHash, ledger: receipt.ledger };
     receipts[node.id] = receipt;
+    notify(node);
     void TransactionBuilder;
   }
 

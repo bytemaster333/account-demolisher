@@ -1,5 +1,5 @@
 // per-node simulator: routes soroban nodes to rpc simulate and classic nodes
-// to a well-formedness build pass.
+// to a well-formedness build pass
 
 import { BASE_FEE, type Horizon, type Transaction, type rpc } from "@stellar/stellar-sdk";
 
@@ -16,7 +16,7 @@ export interface SimulationDeps {
   readonly simulateFn?: (server: rpc.Server, tx: Transaction) => Promise<SimulationResult>;
 }
 
-// simulate one node. throws on structural issues or simulation failure.
+// simulate one node. throws on structural issues or simulation failure
 export async function simulateNode(
   node: PlanNode,
   deps: SimulationDeps,
@@ -58,7 +58,7 @@ async function simulateSorobanNode(
   };
 }
 
-// returns undefined until hydration attaches the tx.
+// returns undefined until hydration attaches the tx
 function getSorobanTransaction(node: PlanNode): Transaction | undefined {
   switch (node.kind) {
     case "RevokeAllowance":
@@ -101,7 +101,7 @@ async function simulateClassicNode(
   if (node.kind === "MediatorForward") {
     return simulateMediatorForward(node, deps);
   }
-  // defensive: catches future union expansions.
+  // defensive: catches future union expansions
   throw new Error(
     `simulateNode: classic branch missing handler for kind "${(node as PlanNode).kind}"`,
   );
@@ -117,8 +117,8 @@ async function simulateFinalClassicTx(
   }
   const firstBatch = batches[0]!;
   const opCount = firstBatch.operations.length;
-  // the real envelope is built at submit time using the live account state.
-  // we report what we actually know: op count and the per-op fee floor.
+  // the real envelope is built at submit time using the live account state
+  // we report what we actually know: op count and the per-op fee floor
   return {
     kind: "classic",
     xdr: "",
@@ -132,7 +132,7 @@ async function simulateMediatorForward(
   _deps: SimulationDeps,
 ): Promise<SimulationOutcome> {
   // the mediator forward is one payment + one accountMerge built at submit time
-  // against the mediator's live sequence number.
+  // against the mediator's live sequence number
   return {
     kind: "classic",
     xdr: "",

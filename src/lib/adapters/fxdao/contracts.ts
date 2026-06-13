@@ -1,22 +1,5 @@
-/**
- * frozen snapshot of fxdao's mainnet soroban deployments.
- * source: fxdao.io/docs/addresses/ (verified 2026-05-15)
- *
- * fxdao ships a single VaultsContract that holds vaults for every supported denomination
- * (USD → USDx, EUR → EURx, GBP → GBPx). denomination is stored as a Symbol on the on-chain
- * Vault record — there is NOT a separate vault contract per stablecoin.
- *
- * the synthetic stablecoins (USDx/EURx/GBPx/FXG) are stellar asset contracts (SACs) — classical
- * stellar assets issued by GAVH5ZWACAY2PHPUG4FL3LHHJIYIHOFPSIUGM2KHK25CJWXHAV6QKDMN exposed as
- * SAC tokens. their IDs are pinned so vault pay_debt/redeem inner-invocations pass the allow-list.
- *
- * if upstream rotates any of these addresses, re-verify and update explicitly. do NOT mutate.
- */
-
-/**
- * one entry in the fxdao mainnet contract registry.
- * kind discriminates the role; allow-list filters by kind === "vaults".
- */
+// frozen snapshot of fxdao's mainnet soroban deployments
+// one entry in the fxdao mainnet contract registry
 export interface FxDAOContractEntry {
   readonly id: string;
   readonly name: string;
@@ -81,14 +64,11 @@ export const FXDAO_MAINNET_CONTRACTS: readonly FxDAOContractEntry[] = Object.fre
   } satisfies FxDAOContractEntry),
 ]);
 
-// mainnet stable-asset issuer (classical stellar account). classical trustlines for USDx/EURx/GBPx target this.
+// mainnet stable-asset issuer (classical stellar account). classical trustlines for USDx/EURx/GBPx target this
 export const FXDAO_MAINNET_STABLE_ISSUER =
   "GAVH5ZWACAY2PHPUG4FL3LHHJIYIHOFPSIUGM2KHK25CJWXHAV6QKDMN" as const;
 
-/**
- * canonical soroban Symbol denominations recognised by the on-chain VaultsContract.
- * user-facing asset codes are USDx/EURx/GBPx — i.e. the symbol with an x suffix.
- */
+// canonical soroban symbol denominations recognised by the on-chain VaultsContract
 export const FXDAO_KNOWN_DENOMINATIONS: readonly string[] = Object.freeze(["USD", "EUR", "GBP"]);
 
 // resolve the single mainnet VaultsContract id
@@ -102,7 +82,7 @@ export function getFxDAOVaultsContractId(): string {
   return entry.id;
 }
 
-// resolve the SAC contract id for a synthetic stablecoin. denomination is the on-chain symbol.
+// resolve the SAC contract id for a synthetic stablecoin. denomination is the on-chain symbol
 export function getFxDAOSyntheticSacId(denomination: string): string {
   const code = `${denomination}x (SAC)`;
   const entry = FXDAO_MAINNET_CONTRACTS.find((c) => c.kind === "synthetic_sac" && c.name === code);

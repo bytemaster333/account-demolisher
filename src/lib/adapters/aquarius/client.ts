@@ -1,8 +1,4 @@
-/**
- * aquarius router client. hand-rolled Contract.call against the router id
- * since aquarius doesn't ship a typescript sdk.
- */
-
+// aquarius router client. hand-rolled contract.call against the router id
 import {
   BASE_FEE,
   Contract,
@@ -129,7 +125,7 @@ export async function claim(args: ClaimArgs, deps: AquariusClientDeps): Promise<
   return buildAndAssemble(routerId, "claim", callArgs, args.sourceAccount, args.network, deps);
 }
 
-// build an unsigned swap_chained tx. throws AquariusBudgetError when too many hops.
+// build an unsigned swap_chained tx. throws AquariusBudgetError when too many hops
 export async function swapChained(
   args: SwapChainedArgs,
   deps: AquariusClientDeps,
@@ -258,7 +254,7 @@ function u128(n: bigint): xdr.ScVal {
   return nativeToScVal(n, { type: "u128" });
 }
 
-// encode a BytesN<32> ScVal via Buffer for node-side serializer compat
+// encode a BytesN<32> ScVal via buffer for node-side serializer compat
 function u128Bytes(buf: Uint8Array): xdr.ScVal {
   const asBuffer = Buffer.from(buf);
   return xdr.ScVal.scvBytes(asBuffer);

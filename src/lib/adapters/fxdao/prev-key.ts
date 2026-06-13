@@ -1,9 +1,4 @@
-// resolves the on-chain prev_key for a user's vault in fxdao's sorted linked list.
-//
-// fxdao stores open vaults as a singly-linked list per denomination, sorted by
-// collateral ratio ascending. pay_debt needs the vault's predecessor (the node
-// whose next_key points at the user's vault). resolving this requires walking
-// from the list head (vaults_info.lowest_key) forward via vault.next_key.
+// resolves the on-chain prev_key for a user's vault in fxdao's sorted linked list
 
 import {
   Account,
@@ -33,8 +28,6 @@ export interface FindPrevDeps {
 }
 
 // returns the predecessor VaultKey for the user's vault, or null if the user
-// is the head (or the list is empty). throws if the user's vault isn't found
-// in the list or if a contract read fails.
 export async function findPrevVaultKey(
   vaultsContractId: string,
   userPublicKey: string,
@@ -81,7 +74,7 @@ export async function findPrevVaultKey(
   throw new Error(`findPrevVaultKey: exceeded ${maxHops} hops without finding user`);
 }
 
-// encode Some(VaultKey) / None for an OptionalVaultKey contract argument.
+// encode some(VaultKey) / none for an OptionalVaultKey contract argument
 export function optionalVaultKeyScVal(key: VaultKey | null): xdr.ScVal {
   if (key === null) {
     return xdr.ScVal.scvVec([nativeToScVal("None", { type: "symbol" })]);
@@ -89,12 +82,9 @@ export function optionalVaultKeyScVal(key: VaultKey | null): xdr.ScVal {
   return xdr.ScVal.scvVec([nativeToScVal("Some", { type: "symbol" }), vaultKeyScVal(key)]);
 }
 
-// VaultKey on-chain is scvMap with fields in alphabetical order: account, denomination, index.
+// VaultKey on-chain is scvMap with fields in alphabetical order: account, denomination, index
 function vaultKeyScVal(key: VaultKey): xdr.ScVal {
   // denomination is intentionally omitted here because the host expects the
-  // tuple <account, index> as the key — actual on-chain encoding sorts the
-  // map alphabetically. we include the standard three-field shape; consumers
-  // that need just account+index drop the third.
   return xdr.ScVal.scvMap([
     new xdr.ScMapEntry({
       key: nativeToScVal("account", { type: "symbol" }),
@@ -160,9 +150,6 @@ async function readVaultRaw(
 
 function decodeOptionalVaultKey(v: unknown): VaultKey | null {
   // OptionalVaultKey is encoded as a tagged tuple (vec) with either ["None"]
-  // or ["Some", VaultKey]. scValToNative on a contract enum maps it to
-  // { tag: "None" | "Some", values?: [{account, denomination, index}] } or
-  // similar. handle both shapes defensively.
   if (v === null || v === undefined) return null;
   if (Array.isArray(v)) {
     const [tag, payload] = v;
@@ -198,14 +185,14 @@ function decodeVaultKey(o: Record<string, unknown>): VaultKey | null {
   return { account, index };
 }
 
-// build an unsigned read-only tx for get_vault / get_vaults_info simulation.
+// build an unsigned read-only tx for get_vault / get_vaults_info simulation
 function buildReadOnlyTx(
   contractId: string,
   fn: string,
   network: NetworkConfig,
   args: xdr.ScVal[],
 ): import("@stellar/stellar-sdk").Transaction {
-  // any well-formed source key works — simulation doesn't require funding.
+  // any well-formed source key works — simulation doesn't require funding
   const SYNTHETIC_SOURCE = "GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3";
   const source = new Account(SYNTHETIC_SOURCE, "0");
   const contract = new Contract(contractId);

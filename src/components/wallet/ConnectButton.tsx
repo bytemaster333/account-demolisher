@@ -1,20 +1,16 @@
 "use client";
 
-// wallet-kit entry point. opens the auth modal and pushes the address into the zustand store.
+// wallet-kit entry point. opens the auth modal and pushes the address into the zustand store
 
 import { useCallback, useEffect, useState } from "react";
 
 import { TESTNET, type NetworkConfig } from "@/lib/config/networks";
-import { cn } from "@/lib/utils";
 import { WalletKitConnector } from "@/lib/wallet/connector";
 import { useWalletStore } from "@/stores/wallet";
 
 export interface ConnectButtonProps {
-  // defaults to testnet
   network?: NetworkConfig;
-  // receives the live connector after connect, or null after disconnect
   onConnector?: (connector: WalletKitConnector | null) => void;
-  className?: string;
 }
 
 function truncate(publicKey: string): string {
@@ -25,7 +21,6 @@ function truncate(publicKey: string): string {
 export function ConnectButton({
   network = TESTNET,
   onConnector,
-  className,
 }: ConnectButtonProps): React.JSX.Element {
   const publicKey = useWalletStore((s) => s.publicKey);
   const connectorKind = useWalletStore((s) => s.connectorKind);
@@ -36,7 +31,6 @@ export function ConnectButton({
   const [error, setError] = useState<string | null>(null);
   const [connector, setConnectorLocal] = useState<WalletKitConnector | null>(null);
 
-  // keep the parent in sync with our local connector ref
   useEffect(() => {
     onConnector?.(connector);
   }, [connector, onConnector]);
@@ -50,7 +44,6 @@ export function ConnectButton({
       setConnectorLocal(next);
       setConnected(address, "kit");
     } catch (e: unknown) {
-      // kit rejects with { code, message } on modal-close; surface a readable line and let the user retry
       const message =
         e instanceof Error
           ? e.message
@@ -71,7 +64,7 @@ export function ConnectButton({
         await connector.disconnect();
       }
     } catch {
-      // disconnect failures (e.g. WalletConnect already torn down) shouldn't block clearing local state
+      // disconnect may already be torn down (e.g. WalletConnect); clear local state regardless
     } finally {
       setConnectorLocal(null);
       disconnectStore();
@@ -80,9 +73,16 @@ export function ConnectButton({
   }, [connector, disconnectStore]);
 
   const isConnected = publicKey !== null && connectorKind === "kit";
+  const label = pending
+    ? isConnected
+      ? "Disconnecting…"
+      : "Connecting…"
+    : isConnected
+      ? truncate(publicKey)
+      : "Connect wallet";
 
   return (
-    <div className={cn("flex flex-col items-start gap-2", className)}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <button
         type="button"
         onClick={isConnected ? onDisconnect : onConnect}
@@ -90,27 +90,51 @@ export function ConnectButton({
         aria-label={isConnected ? "Disconnect wallet" : "Connect wallet"}
         data-testid="connect-button"
         data-public-key={isConnected ? publicKey : ""}
-        className={cn(
-          "inline-flex items-center justify-center rounded-md px-4 py-2",
-          "text-sm font-medium transition-colors",
-          "bg-slate-900 text-white hover:bg-slate-800",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400",
-          "disabled:cursor-not-allowed disabled:opacity-50",
-        )}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 8,
+          alignSelf: "flex-start",
+          height: 38,
+          padding: "0 18px",
+          borderRadius: 9,
+          border: isConnected ? "1px solid var(--border-2)" : "none",
+          background: isConnected ? "var(--surface-2)" : "var(--accent)",
+          color: isConnected ? "var(--fg)" : "var(--accent-fg)",
+          fontWeight: 600,
+          fontSize: 13.5,
+          letterSpacing: "-0.01em",
+          cursor: pending ? "not-allowed" : "pointer",
+          opacity: pending ? 0.6 : 1,
+          fontFamily: isConnected ? '"Geist Mono", ui-monospace, monospace' : "inherit",
+          whiteSpace: "nowrap",
+        }}
       >
-        {pending
-          ? isConnected
-            ? "Disconnecting…"
-            : "Connecting…"
-          : isConnected
-            ? truncate(publicKey)
-            : "Connect wallet"}
+        {isConnected ? (
+          <span
+            style={{
+              width: 7,
+              height: 7,
+              borderRadius: "50%",
+              background: "var(--success)",
+            }}
+          />
+        ) : null}
+        {label}
       </button>
-      {error !== null && (
-        <p role="alert" className="text-xs text-red-600">
+      {error !== null ? (
+        <p
+          role="alert"
+          style={{
+            margin: 0,
+            fontSize: 12,
+            color: "var(--danger)",
+          }}
+        >
           {error}
         </p>
-      )}
+      ) : null}
     </div>
   );
 }

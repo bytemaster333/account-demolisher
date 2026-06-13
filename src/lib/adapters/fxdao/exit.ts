@@ -1,12 +1,4 @@
-// fxdao vault exit builder. produces two unsigned txs per vault:
-//   pay_debt(prev_key, vault_key, new_prev_key, amount): with amount == vault.debt
-//     and new_prev_key == None, burns the user's synthetic balance and returns all
-//     locked collateral. requires the user to hold vault.debt of the synthetic.
-//   redeem(caller, denomination, new_prev_key, amount): any synthetic holder can
-//     burn and pull collateral from the lowest-indexed vault. equivalent to pay_debt
-//     only when the user's vault is the lowest.
-//
-// prev_key is resolved by the hydrator via findPrevVaultKey before this is called.
+// fxdao vault exit builder
 
 import {
   BASE_FEE,
@@ -36,9 +28,7 @@ export interface FxDAOVaultExit {
   readonly redeem: Transaction;
 }
 
-// build the two-step unsigned exit for one vault.
-// prevKey must be supplied by the caller (resolved via findPrevVaultKey upstream);
-// null means the user's vault is the head of the sorted linked list.
+// build the two-step unsigned exit for one vault
 export async function buildVaultExit(
   vault: FxDAOVault,
   userPublicKey: string,
@@ -81,7 +71,7 @@ export async function buildVaultExit(
   return { payDebt, redeem };
 }
 
-// resolve the VaultsContract id for the target network. fxdao has no futurenet deployment.
+// resolve the VaultsContract id for the target network. fxdao has no futurenet deployment
 function resolveVaultsContractIdForNetwork(network: NetworkConfig): string {
   if (network.id === "mainnet") return getFxDAOVaultsContractId();
   if (network.id === "testnet") {
@@ -97,12 +87,12 @@ function resolveVaultsContractIdForNetwork(network: NetworkConfig): string {
   throw new Error(`FxDAO has no published ${network.id} deployment`);
 }
 
-// encode OptionalVaultKey::None — scvVec([Symbol("None")])
+// encode OptionalVaultKey::none — scvVec([symbol("None")])
 function optionalVaultKeyNone(): xdr.ScVal {
   return xdr.ScVal.scvVec([nativeToScVal("None", { type: "symbol" })]);
 }
 
-// encode a VaultKey struct as scvMap with fields ordered alphabetically (host invariant).
+// encode a VaultKey struct as scvMap with fields ordered alphabetically (host invariant)
 function vaultKeyScVal(account: string, denomination: string, index: bigint = 0n): xdr.ScVal {
   return xdr.ScVal.scvMap([
     new xdr.ScMapEntry({

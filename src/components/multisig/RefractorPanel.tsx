@@ -1,6 +1,6 @@
 "use client";
 
-// multisig coordination via Refractor.space. uploads the envelope, shows a shareable URL, polls status.
+// multisig coordination via refractor.space. uploads the envelope, shows a shareable URL, polls status
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 
@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import type { RequiredSigners } from "@/lib/multisig/inspector";
 
 export interface RefractorPanelProps {
-  // base64 envelope to coordinate. uploaded on first render when no hash exists.
+  // base64 envelope to coordinate. uploaded on first render when no hash exists
   readonly xdr: string;
   readonly networkPassphrase: string;
   // pre-existing refractor hash; supply when restoring a session so we skip the upload

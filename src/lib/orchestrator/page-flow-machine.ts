@@ -1,6 +1,4 @@
-// xstate machine driving /demolish. discovery -> preview -> execute via the
-// shared executePlanTreeOnChain helper. progress events are reflected back
-// onto plan-tree nodes so the ui shows live status.
+// xstate machine driving /demolish
 
 import { assign, fromPromise, setup } from "xstate";
 import { TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
@@ -19,7 +17,8 @@ import { getRpc } from "@/lib/soroban/rpc-client";
 import type { AccountAudit } from "@/lib/types/account";
 import type { ClassicMemo } from "@/lib/types/plan";
 import { EMPTY_POSITIONS, type ProtocolPositions } from "@/lib/adapters/positions/interface";
-import type { AllowanceRecord } from "@/lib/soroban/allowances";
+import { DirectContractProvider } from "@/lib/adapters/positions/direct";
+import { enumerateAllowances, type AllowanceRecord } from "@/lib/soroban/allowances";
 import type { Connector } from "@/lib/wallet/connector";
 
 export interface PageFlowInput {
@@ -52,7 +51,8 @@ export type PageFlowEvent =
   | { type: "CANCEL" }
   | { type: "RETRY" }
   | { type: "RESET" }
-  | { type: "_PROGRESS"; event: DemolishProgressEvent };
+  | { type: "_PROGRESS"; event: DemolishProgressEvent }
+  | { type: "_NODE_TICK" };
 
 interface DiscoverInput {
   readonly publicKey: string;
@@ -94,20 +94,77 @@ interface ExecuteInput {
   readonly selectedClaimableBalanceIds?: readonly string[];
   readonly positions: ProtocolPositions;
   readonly allowances: readonly AllowanceRecord[];
+  // tree from the preview pass — execute runs against this so the ui shows
+  readonly tree: PlanTree;
   readonly onProgress: (event: DemolishProgressEvent) => void;
+  // fires after every node.status mutation during execution so the page can
+  readonly onNodeTick: () => void;
+}
+
+interface ExecuteOutput {
+  readonly result: DemolishResult;
+  readonly tree: PlanTree;
+}
+
+// per-discovery-step ceiling so a hanging testnet rpc can't pin the ui in the
+const DISCOVERY_TIMEOUT_MS = 30_000;
+// matches the rpc's typical event-retention window
+const ALLOWANCE_SCAN_WINDOW_LEDGERS = 120_960;
+
+function withTimeout<T>(label: string, p: Promise<T>, ms: number): Promise<T> {
+  return Promise.race<T>([
+    p,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms),
+    ),
+  ]);
 }
 
 const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({ input }) => {
   const audit = await auditAccount(input.publicKey, input.network);
-  return {
-    audit,
-    positions: input.positions ?? EMPTY_POSITIONS,
-    allowances: input.allowances ?? [],
-  };
+
+  // allowances: best-effort sep-41 enumeration. wrapped in a hard timeout
+  // because rpc.getEvents pagination can stall on a flaky testnet endpoint
+  let allowances: readonly AllowanceRecord[] = input.allowances ?? [];
+  if (allowances.length === 0) {
+    try {
+      const rpc = getRpc(input.network);
+      const latest = await withTimeout(
+        "getLatestLedger",
+        rpc.getLatestLedger(),
+        DISCOVERY_TIMEOUT_MS,
+      );
+      allowances = await withTimeout(
+        "enumerateAllowances",
+        enumerateAllowances(rpc, input.publicKey, latest.sequence, ALLOWANCE_SCAN_WINDOW_LEDGERS),
+        DISCOVERY_TIMEOUT_MS,
+      );
+    } catch (e) {
+      // surface to the dev console; ui carries on with empty allowances
+      console.warn("[demolish] allowance enumeration skipped:", e);
+    }
+  }
+
+  // defi positions: direct-contract probing across blend/aquarius/soroswap/fxdao
+  let positions: ProtocolPositions = input.positions ?? EMPTY_POSITIONS;
+  if (positions === EMPTY_POSITIONS) {
+    try {
+      const provider = new DirectContractProvider();
+      positions = await withTimeout(
+        "getPositions",
+        provider.getPositions(input.publicKey, input.network),
+        DISCOVERY_TIMEOUT_MS,
+      );
+    } catch (e) {
+      console.warn("[demolish] position discovery skipped:", e);
+    }
+  }
+
+  return { audit, positions, allowances };
 });
 
 const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) => {
-  // build the real batches so FinalClassicTx carries the real op count.
+  // build the real batches so FinalClassicTx carries the real op count
   const batches = batchClassicDemolition(
     input.audit,
     {
@@ -122,8 +179,13 @@ const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) 
     new Map(),
   );
 
+  // demolition revokes every active allowance the user owns — the account is
+  // being closed, there's no "keep this defi protocol" outcome
+  const selectedAllowances = input.allowances.map((a) => `${a.contractId}|${a.spender}`);
+
   const tree = generatePlan(input.audit, input.positions, input.allowances, input.destination, {
     useMediator: input.useMediator,
+    selectedAllowances,
     ...(input.memo ? { memo: input.memo } : {}),
     ...(input.userFallbackAddress ? { userFallbackAddress: input.userFallbackAddress } : {}),
     ...(input.selectedClaimableBalanceIds
@@ -132,7 +194,7 @@ const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) 
   });
 
   // splice batches onto FinalClassicTx; metadata is readonly at the type
-  // level but documented as a hydration point.
+  // level but documented as a hydration point
   for (const node of tree.allNodes.values()) {
     if (node.kind === "FinalClassicTx") {
       const md = node.metadata as { batches: readonly (typeof batches)[number][] };
@@ -142,6 +204,22 @@ const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) 
 
   const rpcServer = getRpc(input.network);
   const horizon = getHorizon(input.network);
+
+  // hydrate soroban nodes so the simulator has a built transaction to inspect
+  try {
+    const previewLedger = await rpcServer.getLatestLedger();
+    await hydratePlanTransactions(tree, input.audit.accountId, {
+      rpc: rpcServer,
+      horizon,
+      network: input.network,
+      currentLedger: previewLedger.sequence,
+      fetchSourceAccount: (pk) => horizon.loadAccount(pk),
+    });
+  } catch (err) {
+    // hydration failures here are non-fatal — the simulate loop below will
+    console.warn("[preview] hydratePlanTransactions:", err);
+  }
+
   for (const node of topologicalOrder(tree)) {
     try {
       const outcome = await simulateNode(node, {
@@ -156,7 +234,7 @@ const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) 
         node.status = "failed";
         node.error = err.upstreamError;
       } else if (err instanceof Error && err.message.includes("has no built transaction")) {
-        // unhydrated soroban node: mark skipped so the UI tells the truth.
+        // unhydrated soroban node: mark skipped so the UI tells the truth
         node.status = "skipped";
         node.error = `Adapter integration for ${node.kind} is not yet wired; skipping.`;
       } else {
@@ -169,24 +247,13 @@ const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) 
   return { tree };
 });
 
-const executeActor = fromPromise<DemolishResult, ExecuteInput>(async ({ input }) => {
-  // re-discover so hydration sees accurate sequence numbers.
-  const audit = await auditAccount(input.publicKey, input.network);
+const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ input }) => {
+  // execute the SAME tree the preview pass produced
   const rpc = getRpc(input.network);
   const horizon = getHorizon(input.network);
+  const tree = input.tree;
 
-  const positions: ProtocolPositions = input.positions;
-  const allowances: readonly AllowanceRecord[] = input.allowances;
-
-  const tree = generatePlan(audit, positions, allowances, input.destination, {
-    useMediator: input.useMediator,
-    ...(input.memo ? { memo: input.memo } : {}),
-    ...(input.userFallbackAddress ? { userFallbackAddress: input.userFallbackAddress } : {}),
-    ...(input.selectedClaimableBalanceIds
-      ? { selectedClaimableBalanceIds: input.selectedClaimableBalanceIds }
-      : {}),
-  });
-
+  // re-hydrate the tree against fresh sequence numbers / ledger state
   const ledger = await rpc.getLatestLedger();
   await hydratePlanTransactions(tree, input.publicKey, {
     rpc,
@@ -232,7 +299,12 @@ const executeActor = fromPromise<DemolishResult, ExecuteInput>(async ({ input })
 
   try {
     const output = await executePlanTreeOnChain(
-      { publicKey: input.publicKey, tree, previousReceipts: {} },
+      {
+        publicKey: input.publicKey,
+        tree,
+        previousReceipts: {},
+        onNodeUpdate: () => input.onNodeTick(),
+      },
       {
         network: input.network,
         connector: input.connector,
@@ -241,7 +313,7 @@ const executeActor = fromPromise<DemolishResult, ExecuteInput>(async ({ input })
         submitSoroban,
       },
     );
-    // final receipt = FinalClassicTx merge, else last confirmed.
+    // final receipt = FinalClassicTx merge, else last confirmed
     const finalNode = output.tree.allNodes.get("final-classic-tx");
     const mergedTxHash = finalNode?.executed?.txHash;
     const forwardNode = output.tree.allNodes.get("mediator-forward");
@@ -252,15 +324,18 @@ const executeActor = fromPromise<DemolishResult, ExecuteInput>(async ({ input })
       ...(mergedTxHash ? { txHash: mergedTxHash } : {}),
     });
     return {
-      ok: true,
-      errors: [],
-      ...(mergedTxHash ? { mergedTxHash } : {}),
-      ...(forwardTxHash ? { forwardTxHash } : {}),
+      result: {
+        ok: true,
+        errors: [],
+        ...(mergedTxHash ? { mergedTxHash } : {}),
+        ...(forwardTxHash ? { forwardTxHash } : {}),
+      },
+      tree: output.tree,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     input.onProgress({ kind: "blocked", message });
-    return { ok: false, errors: [message] };
+    return { result: { ok: false, errors: [message] }, tree };
   }
 });
 
@@ -375,6 +450,7 @@ export const pageFlowMachine = setup({
         input: ({ context, self }): ExecuteInput => {
           const i = context.input;
           if (!i) throw new Error("executing: missing input");
+          if (!context.tree) throw new Error("executing: missing tree from preview");
           return {
             publicKey: i.publicKey,
             network: i.network,
@@ -383,6 +459,7 @@ export const pageFlowMachine = setup({
             useMediator: i.useMediator,
             positions: context.positions,
             allowances: context.allowances,
+            tree: context.tree,
             ...(i.memo ? { memo: i.memo } : {}),
             ...(i.userFallbackAddress ? { userFallbackAddress: i.userFallbackAddress } : {}),
             ...(i.selectedClaimableBalanceIds
@@ -391,23 +468,27 @@ export const pageFlowMachine = setup({
             onProgress: (event: DemolishProgressEvent) => {
               self.send({ type: "_PROGRESS", event });
             },
+            onNodeTick: () => {
+              self.send({ type: "_NODE_TICK" });
+            },
           };
         },
         onDone: [
           {
             target: "succeeded",
-            guard: ({ event }) => event.output.ok,
+            guard: ({ event }) => event.output.result.ok,
             actions: assign({
-              result: ({ event }) => event.output,
-              tree: ({ context }) => markFinalNode(context.tree, "confirmed"),
+              result: ({ event }) => event.output.result,
+              // executor mutated nodes in place; re-assign tree to a new
+              tree: ({ event }) => ({ ...event.output.tree }),
             }),
           },
           {
             target: "failed",
             actions: assign({
-              result: ({ event }) => event.output,
-              error: ({ event }) => event.output.errors.join("; "),
-              tree: ({ context }) => markFinalNode(context.tree, "failed"),
+              result: ({ event }) => event.output.result,
+              error: ({ event }) => event.output.result.errors.join("; "),
+              tree: ({ event }) => ({ ...event.output.tree }),
             }),
           },
         ],
@@ -424,6 +505,12 @@ export const pageFlowMachine = setup({
           actions: assign({
             progress: ({ context, event }) => [...context.progress, event.event],
             tree: ({ context, event }) => applyProgressToTree(context.tree, event.event),
+          }),
+        },
+        // executor mutates node.status in place on the shared tree
+        _NODE_TICK: {
+          actions: assign({
+            tree: ({ context }) => (context.tree ? { ...context.tree } : null),
           }),
         },
       },
@@ -452,25 +539,12 @@ function describeError(err: unknown): string {
   return String(err);
 }
 
-// reflect progress events onto the final-classic-tx / mediator-forward nodes.
-// shallow-clones the tree so react notices a new reference.
+// reflect progress events onto the final-classic-tx / mediator-forward nodes
 function applyProgressToTree(tree: PlanTree | null, event: DemolishProgressEvent): PlanTree | null {
   if (!tree) return tree;
   const finalNode = tree.allNodes.get("final-classic-tx");
   if (finalNode) {
     switch (event.kind) {
-      case "batch-built":
-        finalNode.status = "simulated";
-        break;
-      case "submitting":
-        finalNode.status = "signed";
-        break;
-      case "submitted":
-        if (!finalNode.executed) {
-          finalNode.status = "submitted";
-          if (event.txHash) finalNode.executed = { txHash: event.txHash, ledger: 0 };
-        }
-        break;
       case "complete":
         if (finalNode.status !== "failed") finalNode.status = "confirmed";
         break;
@@ -478,10 +552,8 @@ function applyProgressToTree(tree: PlanTree | null, event: DemolishProgressEvent
         finalNode.status = "failed";
         finalNode.error = event.message;
         break;
-      case "mediator-cosign":
-        finalNode.status = "signed";
-        break;
       default:
+        // batch-built / submitting / submitted / mediator-cosign are now no-ops
         break;
     }
   }
