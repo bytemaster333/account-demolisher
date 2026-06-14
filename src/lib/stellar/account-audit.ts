@@ -1,5 +1,6 @@
 import { Horizon } from "@stellar/stellar-sdk";
 import { getHorizon } from "@/lib/stellar/horizon-client";
+import { filterClaimableNow } from "@/lib/stellar/claimable-balances";
 import type { NetworkConfig } from "@/lib/config/networks";
 import type {
   AccountAudit,
@@ -36,22 +37,47 @@ export async function auditAccount(
 
   const balances = parseBalances(account.balances);
   const signers = parseSigners(account.signers);
-  const thresholds = parseThresholds(account.thresholds, signers);
+  const thresholds = parseThresholds(account.thresholds, signers, account.account_id);
   const flags = parseFlags(account.flags);
-  const sponsorship: SponsorshipInfo = {
-    numSponsoring: account.num_sponsoring,
-    numSponsored: account.num_sponsored,
-    ...(account.sponsor !== undefined ? { sponsoredBy: account.sponsor } : {}),
-  };
   const data = parseData(account.data_attr);
 
-  const [offers, claimableBalances, poolShares] = await Promise.all([
+  const [offers, rawClaimableBalances, poolShares] = await Promise.all([
     loadOffers(server, publicKey),
     loadClaimableBalances(server, publicKey),
     loadPoolShares(server, balances),
   ]);
 
-  const requiresMultisig = computeRequiresMultisig(signers, thresholds);
+  // mark which CBs this account can actually claim right now, so the UI and
+  // the batcher never attempt an unclaimable balance (which would fail on-chain
+  // and, if self-sponsored, would leave the merge blocked).
+  const claimableIds = new Set(
+    filterClaimableNow(rawClaimableBalances, publicKey, new Date()).map((c) => c.id),
+  );
+  const claimableBalances: readonly ClaimableBalanceEntry[] = rawClaimableBalances.map((cb) => ({
+    ...cb,
+    claimableNow: claimableIds.has(cb.id),
+  }));
+
+  // sponsorships the demolition can release itself: the account's OWN entries
+  // that it self-sponsors (removed/cancelled/cleared on close) plus claimable
+  // self-sponsored CBs. Anything beyond this in num_sponsoring is a foreign
+  // sponsorship the user must resolve before the account can merge.
+  const accountId = account.account_id;
+  const coverableSponsorships = computeCoverableSponsorships(accountId, {
+    balances,
+    offers,
+    signers,
+    claimableBalances,
+  });
+
+  const sponsorship: SponsorshipInfo = {
+    numSponsoring: account.num_sponsoring,
+    numSponsored: account.num_sponsored,
+    coverable: Math.min(coverableSponsorships, account.num_sponsoring),
+    ...(account.sponsor !== undefined ? { sponsoredBy: account.sponsor } : {}),
+  };
+
+  const requiresMultisig = computeRequiresMultisig(thresholds);
   const mergeability = computeMergeability(flags, sponsorship);
 
   return {
@@ -152,8 +178,11 @@ function parseSigners(
 function parseThresholds(
   t: Horizon.HorizonApi.AccountThresholds,
   signers: readonly AuditSigner[],
+  accountId: string,
 ): AuditThresholds {
-  const master = signers.find((s) => s.type === "ed25519_public_key");
+  // the master key is the signer whose key equals the account id — NOT merely
+  // the first ed25519 signer (added co-signers are ed25519 too).
+  const master = signers.find((s) => s.key === accountId);
   return {
     low: t.low_threshold,
     medium: t.med_threshold,
@@ -269,29 +298,49 @@ function serverAssetStringToIdentifier(asset: string): AssetIdentifier {
   return { kind: "credit", code: parts[0] ?? "", issuer: parts[1] ?? "" };
 }
 
-function computeRequiresMultisig(
-  signers: readonly AuditSigner[],
-  thresholds: AuditThresholds,
-): boolean {
-  const masterWeight = thresholds.masterWeight;
-  const nonMasterTotal = signers
-    .filter((s) => (s.type !== "ed25519_public_key" || s.weight === 0 ? false : true))
-    .filter((s) => s.weight > 0)
-    .filter((s, _, arr) => arr.length > 1 || s.weight !== masterWeight)
-    .reduce((sum, s) => sum + s.weight, 0);
-  if (nonMasterTotal === 0) return false;
-  return masterWeight < thresholds.high;
+// account_merge and set_options (clearing signers / resetting thresholds) are
+// HIGH-threshold operations. The connected master key can complete the merge on
+// its own only if its weight meets the high threshold; otherwise additional
+// signers are required and the merge must go through multisig coordination.
+export function computeRequiresMultisig(thresholds: AuditThresholds): boolean {
+  const { masterWeight, high } = thresholds;
+  return masterWeight === 0 || masterWeight < high;
 }
 
-function computeMergeability(flags: AuditFlags, sponsorship: SponsorshipInfo): Mergeability {
+// count of the account's OWN self-sponsored entries the demolition will release
+// on close. Only claimable self-sponsored CBs count (unclaimable ones aren't
+// released). num_sponsoring beyond this is foreign sponsorship that blocks.
+export function computeCoverableSponsorships(
+  accountId: string,
+  entries: {
+    readonly balances: readonly AuditBalance[];
+    readonly offers: readonly OfferEntry[];
+    readonly signers: readonly AuditSigner[];
+    readonly claimableBalances: readonly ClaimableBalanceEntry[];
+  },
+): number {
+  return (
+    entries.balances.filter((b) => b.sponsor === accountId).length +
+    entries.offers.filter((o) => o.sponsor === accountId).length +
+    entries.signers.filter((s) => s.sponsor === accountId).length +
+    entries.claimableBalances.filter((cb) => cb.sponsor === accountId && cb.claimableNow).length
+  );
+}
+
+export function computeMergeability(flags: AuditFlags, sponsorship: SponsorshipInfo): Mergeability {
   if (flags.authImmutable) {
     return { mergeable: false, reason: "AUTH_IMMUTABLE" };
   }
-  if (sponsorship.numSponsoring > 0) {
+  // only FOREIGN sponsorships block: the account's self-sponsored entries are
+  // released automatically when the demolition removes/claims them.
+  const foreign = sponsorship.numSponsoring - sponsorship.coverable;
+  if (foreign > 0) {
     return {
       mergeable: false,
       reason: "IS_SPONSOR",
-      detail: `Account sponsors ${sponsorship.numSponsoring} ledger entries for other accounts.`,
+      detail: `Account sponsors ${foreign} ledger ${
+        foreign === 1 ? "entry" : "entries"
+      } for other accounts that must be resolved before it can be merged.`,
     };
   }
   return { mergeable: true };

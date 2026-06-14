@@ -38,6 +38,7 @@ export interface PageFlowContext {
   readonly audit: AccountAudit | null;
   readonly positions: ProtocolPositions;
   readonly allowances: readonly AllowanceRecord[];
+  readonly discoveryWarnings: readonly string[];
   readonly tree: PlanTree | null;
   readonly progress: readonly DemolishProgressEvent[];
   readonly result: DemolishResult | null;
@@ -64,6 +65,9 @@ interface DiscoverOutput {
   readonly audit: AccountAudit;
   readonly positions: ProtocolPositions;
   readonly allowances: readonly AllowanceRecord[];
+  // non-fatal discovery failures (allowance scan / position probe) surfaced so
+  // the UI can warn that the plan may be incomplete instead of hiding them.
+  readonly discoveryWarnings: readonly string[];
 }
 
 interface PreviewInput {
@@ -121,6 +125,7 @@ function withTimeout<T>(label: string, p: Promise<T>, ms: number): Promise<T> {
 
 const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({ input }) => {
   const audit = await auditAccount(input.publicKey, input.network);
+  const discoveryWarnings: string[] = [];
 
   // allowances: best-effort sep-41 enumeration. wrapped in a hard timeout
   // because rpc.getEvents pagination can stall on a flaky testnet endpoint
@@ -139,8 +144,10 @@ const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({ input 
         DISCOVERY_TIMEOUT_MS,
       );
     } catch (e) {
-      // surface to the dev console; ui carries on with empty allowances
       console.warn("[demolish] allowance enumeration skipped:", e);
+      discoveryWarnings.push(
+        `Token-allowance scan failed, so any active SEP-41 approvals won't appear in this plan. Review them separately on the Allowances page. (${describeError(e)})`,
+      );
     }
   }
 
@@ -156,10 +163,13 @@ const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({ input 
       );
     } catch (e) {
       console.warn("[demolish] position discovery skipped:", e);
+      discoveryWarnings.push(
+        `DeFi position discovery failed, so any Blend / Aquarius / Soroswap / FxDAO positions may be missing from this plan. (${describeError(e)})`,
+      );
     }
   }
 
-  return { audit, positions, allowances };
+  return { audit, positions, allowances, discoveryWarnings };
 });
 
 const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) => {
@@ -343,6 +353,7 @@ const initialContext: PageFlowContext = {
   audit: null,
   positions: EMPTY_POSITIONS,
   allowances: [],
+  discoveryWarnings: [],
   tree: null,
   progress: [],
   result: null,
@@ -371,6 +382,7 @@ export const pageFlowMachine = setup({
           actions: assign({
             input: ({ event }) => event.input,
             audit: null,
+            discoveryWarnings: [],
             tree: null,
             progress: [],
             result: null,
@@ -398,6 +410,7 @@ export const pageFlowMachine = setup({
             audit: ({ event }) => event.output.audit,
             positions: ({ event }) => event.output.positions,
             allowances: ({ event }) => event.output.allowances,
+            discoveryWarnings: ({ event }) => event.output.discoveryWarnings,
           }),
         },
         onError: {

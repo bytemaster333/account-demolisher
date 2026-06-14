@@ -72,6 +72,9 @@ export function batchClassicDemolition(
     options.claimableBalanceIds === undefined ? null : new Set(options.claimableBalanceIds);
   for (const cb of audit.claimableBalances) {
     if (optedIn !== null && !optedIn.has(cb.id)) continue;
+    // never attempt a balance the account can't claim yet — the op would fail
+    // on-chain. undefined (fixtures/legacy) is treated as claimable.
+    if (cb.claimableNow === false) continue;
     ops.push({
       kind: "claim_claimable_balance",
       summary: `Claim claimable balance ${cb.id.slice(0, 12)}...`,
@@ -143,26 +146,12 @@ export function batchClassicDemolition(
     });
   }
 
-  // 7. revoke remaining sponsorships
-  const selfSponsoredCbsBeingClaimed = audit.claimableBalances.filter((cb) => {
-    if (cb.sponsor !== audit.accountId) return false;
-    return optedIn === null || optedIn.has(cb.id);
-  }).length;
-  const remainingToRevoke = Math.max(
-    0,
-    audit.sponsorship.numSponsoring - selfSponsoredCbsBeingClaimed,
-  );
-  for (let i = 0; i < remainingToRevoke; i += 1) {
-    ops.push({
-      kind: "revoke_sponsorship",
-      summary: `Revoke sponsorship slot #${i + 1}`,
-      metadata: {
-        subjectKind: "account",
-        account: audit.accountId,
-        slotIndex: i,
-      },
-    });
-  }
+  // 7. self-sponsored entries need no explicit revoke: removing/cancelling/
+  // clearing them (trustlines, offers, signers) or claiming their CBs releases
+  // the sponsorship automatically, dropping num_sponsoring so the merge passes.
+  // Foreign sponsorships (entries this account sponsors for OTHERS) can't be
+  // enumerated from this account's Horizon record and are blocked upstream in
+  // computeMergeability rather than papered over with a wrong revoke op.
 
   // 8. one op per non-master signer + a threshold reset when needed
   // setOptions accepts one signer mutation per op

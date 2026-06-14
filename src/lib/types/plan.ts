@@ -11,7 +11,6 @@ export type ClassicOpKind =
   | "return_residue_to_issuer"
   | "change_trust_remove"
   | "manage_data_delete"
-  | "revoke_sponsorship"
   | "set_options_clear_signers"
   | "account_merge"
   | "create_account_mediator";

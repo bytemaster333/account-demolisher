@@ -70,6 +70,9 @@ export interface ClaimableBalanceEntry {
   // encoded predicate. evaluated against ledger close time to decide claimability
   readonly predicate: unknown;
   readonly claimants: readonly string[];
+  // whether the auditing account can claim this balance right now (predicate
+  // evaluated against wall-clock time at audit). undefined in fixtures/legacy.
+  readonly claimableNow?: boolean;
 }
 
 export interface PoolShareEntry {
@@ -88,6 +91,11 @@ export interface SponsorshipInfo {
   readonly numSponsoring: number;
   readonly numSponsored: number;
   readonly sponsoredBy?: string;
+  // count of the account's OWN self-sponsored entries that the demolition will
+  // release on close (self-sponsored trustlines/offers/signers + claimable
+  // self-sponsored CBs). numSponsoring beyond this are foreign sponsorships
+  // that block the merge and must be resolved by the user first.
+  readonly coverable: number;
 }
 
 // whether the merge can proceed. mergeable:false → orchestrator surfaces

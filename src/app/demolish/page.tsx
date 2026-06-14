@@ -12,7 +12,11 @@ import { AppShell } from "@/components/layout/AppShell";
 import { HighValueWarning } from "@/components/confirmations/HighValueWarning";
 import { TypedConfirmation } from "@/components/confirmations/TypedConfirmation";
 import { AuthImmutableBlock } from "@/components/warnings/AuthImmutableBlock";
-import { PendingClaimableBalances } from "@/components/warnings/PendingClaimableBalances";
+import { DiscoveryWarnings } from "@/components/warnings/DiscoveryWarnings";
+import {
+  PendingClaimableBalances,
+  type PendingClaimableBalanceEntry,
+} from "@/components/warnings/PendingClaimableBalances";
 import { SponsoringBlock } from "@/components/warnings/SponsoringBlock";
 import { ConnectButton } from "@/components/wallet/ConnectButton";
 import { CreateTestAccountButton } from "@/components/wallet/CreateTestAccountButton";
@@ -25,7 +29,7 @@ import { pageFlowMachine } from "@/lib/orchestrator/page-flow-machine";
 import { lookupCex, type CexInfo } from "@/lib/safety/cex-registry";
 import { requireMemoEnforcement } from "@/lib/safety/memo-enforcement";
 import { topologicalOrder, type PlanNode } from "@/lib/plan/tree";
-import type { AccountAudit } from "@/lib/types/account";
+import type { AccountAudit, ClaimableBalanceEntry } from "@/lib/types/account";
 import type { ClassicMemo } from "@/lib/types/plan";
 import type { Connector } from "@/lib/wallet/connector";
 import { WalletKitConnector } from "@/lib/wallet/connector";
@@ -66,6 +70,19 @@ const INITIAL_FORM: FormState = {
 function shortPk(pk: string): string {
   if (pk.length <= 12) return pk;
   return `${pk.slice(0, 6)}…${pk.slice(-4)}`;
+}
+
+// map an audited claimable balance to the notice row, flagging any that the
+// account can't claim right now (left in place rather than attempted).
+function toPendingCb(cb: ClaimableBalanceEntry): PendingClaimableBalanceEntry {
+  const assetLabel =
+    cb.asset.kind === "native" ? "XLM" : cb.asset.kind === "credit" ? cb.asset.code : "POOL";
+  return {
+    id: cb.id,
+    amount: cb.amount,
+    assetLabel,
+    ...(cb.claimableNow === false ? { reason: "not claimable yet — left in place" } : {}),
+  };
 }
 
 function sumNativeBalance(audit: AccountAudit): string {
@@ -250,11 +267,9 @@ function DemolishFlow(): React.JSX.Element {
   const isIdle = isMachineIdle && publicKey === null;
   const authImmutable = audit?.flags.authImmutable === true;
   const numSponsoring = audit?.sponsorship.numSponsoring ?? 0;
-  const numCoverable = useMemo(() => {
-    if (!audit) return 0;
-    return audit.claimableBalances.filter((cb) => cb.sponsor === audit.accountId).length;
-    // future: also count self-sponsored data entries / signers when those flows land
-  }, [audit]);
+  // self-sponsored entries the demolition releases on its own (trustlines,
+  // offers, signers + claimable CBs), computed once in the audit.
+  const numCoverable = audit?.sponsorship.coverable ?? 0;
   // hard-block only when at least one sponsorship is foreign (sponsoring entries
   const isSponsorBlock = !authImmutable && numSponsoring > numCoverable;
   const isImmutableBlock = authImmutable;
@@ -356,7 +371,9 @@ function DemolishFlow(): React.JSX.Element {
     };
   }, []);
 
-  // pre-select all claimable balances by default so the demo flow "just works"
+  // pre-select the claimable balances by default so the demo flow "just works".
+  // only balances claimable NOW are pre-checked — an unclaimable one would fail
+  // on-chain, so the user must consciously leave it out (or wait).
   const [prefilledAuditId, setPrefilledAuditId] = useState<string | null>(null);
   if (
     audit &&
@@ -364,8 +381,10 @@ function DemolishFlow(): React.JSX.Element {
     prefilledAuditId !== audit.accountId &&
     form.selectedCbIds.length === 0
   ) {
-    const allIds = audit.claimableBalances.map((cb) => cb.id);
-    setForm((f) => ({ ...f, selectedCbIds: allIds }));
+    const claimableIds = audit.claimableBalances
+      .filter((cb) => cb.claimableNow !== false)
+      .map((cb) => cb.id);
+    setForm((f) => ({ ...f, selectedCbIds: claimableIds }));
     setPrefilledAuditId(audit.accountId);
   }
 
@@ -491,21 +510,13 @@ function DemolishFlow(): React.JSX.Element {
                     <div>
                       {isConfiguring && !(isDiscovering || isPreviewing) ? (
                         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                          <DiscoveryWarnings warnings={ctx.discoveryWarnings} />
                           {audit && numCoverable > 0 ? (
                             <SponsorshipAutoRevokeNotice count={numCoverable} />
                           ) : null}
                           {audit && audit.claimableBalances.length > 0 ? (
                             <PendingClaimableBalances
-                              pending={audit.claimableBalances.map((cb) => ({
-                                id: cb.id,
-                                amount: cb.amount,
-                                assetLabel:
-                                  cb.asset.kind === "native"
-                                    ? "XLM"
-                                    : cb.asset.kind === "credit"
-                                      ? cb.asset.code
-                                      : "POOL",
-                              }))}
+                              pending={audit.claimableBalances.map(toPendingCb)}
                             />
                           ) : null}
                           <ConfigurePanel
@@ -551,20 +562,7 @@ function DemolishFlow(): React.JSX.Element {
                               selfSponsoredCount === cbs.length &&
                               numCoverable === selfSponsoredCount;
                             if (merged) {
-                              return (
-                                <PendingClaimableBalances
-                                  pending={cbs.map((cb) => ({
-                                    id: cb.id,
-                                    amount: cb.amount,
-                                    assetLabel:
-                                      cb.asset.kind === "native"
-                                        ? "XLM"
-                                        : cb.asset.kind === "credit"
-                                          ? cb.asset.code
-                                          : "POOL",
-                                  }))}
-                                />
-                              );
+                              return <PendingClaimableBalances pending={cbs.map(toPendingCb)} />;
                             }
                             return (
                               <>
@@ -572,18 +570,7 @@ function DemolishFlow(): React.JSX.Element {
                                   <SponsorshipAutoRevokeNotice count={numCoverable} />
                                 ) : null}
                                 {cbs.length > 0 ? (
-                                  <PendingClaimableBalances
-                                    pending={cbs.map((cb) => ({
-                                      id: cb.id,
-                                      amount: cb.amount,
-                                      assetLabel:
-                                        cb.asset.kind === "native"
-                                          ? "XLM"
-                                          : cb.asset.kind === "credit"
-                                            ? cb.asset.code
-                                            : "POOL",
-                                    }))}
-                                  />
+                                  <PendingClaimableBalances pending={cbs.map(toPendingCb)} />
                                 ) : null}
                               </>
                             );

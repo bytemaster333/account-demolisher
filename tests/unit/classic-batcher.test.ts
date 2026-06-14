@@ -34,7 +34,7 @@ function makeAudit(over: Partial<AccountAudit> = {}): AccountAudit {
     data: [],
     claimableBalances: [],
     poolShares: [],
-    sponsorship: { numSponsoring: 0, numSponsored: 0 },
+    sponsorship: { numSponsoring: 0, numSponsored: 0, coverable: 0 },
     requiresMultisig: false,
     mergeability: { mergeable: true },
     ...over,
@@ -57,7 +57,6 @@ const PHASE: Record<ClassicOpKind, number> = {
   return_residue_to_issuer: 4,
   change_trust_remove: 5,
   manage_data_delete: 6,
-  revoke_sponsorship: 7,
   set_options_clear_signers: 8,
   account_merge: 9,
 };
@@ -156,8 +155,8 @@ describe("batchClassicDemolition — canonical ordering", () => {
       { key: OTHER, type: "ed25519_public_key", weight: 1 },
       { key: ACC, type: "ed25519_public_key", weight: 1 },
     ],
-    // 2 sponsorships; 1 self-sponsored CB is claimed => 1 remains to revoke
-    sponsorship: { numSponsoring: 2, numSponsored: 0 },
+    // 1 self-sponsored, claimable CB — released by its claim op, not a revoke
+    sponsorship: { numSponsoring: 1, numSponsored: 0, coverable: 1 },
   });
 
   const ops = allOps(batchClassicDemolition(richAudit, directOptions));
@@ -188,12 +187,13 @@ describe("batchClassicDemolition — canonical ordering", () => {
     expect(signerClears[0]!.metadata.signerKey).toBe(OTHER);
   });
 
-  it("discounts self-sponsored claimed CBs from the sponsorship-revoke count", () => {
-    // numSponsoring=2, one self-sponsored CB claimed => exactly 1 revoke op.
-    // (NB: the revoke op's semantics themselves are corrected in Phase 2; here
-    // we only lock in the count arithmetic, which is the stable behavior.)
-    const revokes = ops.filter((o) => o.kind === "revoke_sponsorship");
-    expect(revokes).toHaveLength(1);
+  it("releases self-sponsored CBs via their claim op, emitting no revoke op", () => {
+    // the self-sponsored, claimable CB is claimed, which releases its
+    // sponsorship on-chain; there is no separate/bogus revoke_sponsorship op.
+    const kinds = ops.map((o) => o.kind);
+    expect(kinds.filter((k) => k === "claim_claimable_balance")).toHaveLength(1);
+    expect(kinds).not.toContain("revoke_sponsorship");
+    expect(kinds).toContain("account_merge");
   });
 });
 
@@ -239,6 +239,26 @@ describe("batchClassicDemolition — claimable-balance opt-in", () => {
     ).filter((o) => o.kind === "claim_claimable_balance");
     expect(claims).toHaveLength(1);
     expect(claims[0]!.metadata.balanceId).toBe("cbB");
+  });
+
+  it("never claims a CB that is not claimable now, even if opted in", () => {
+    const locked = makeAudit({
+      claimableBalances: [
+        {
+          id: "cbLocked",
+          asset: { kind: "native" },
+          amount: "1",
+          sponsor: OTHER,
+          predicate: {},
+          claimants: [ACC],
+          claimableNow: false,
+        },
+      ],
+    });
+    const claims = allOps(
+      batchClassicDemolition(locked, { ...directOptions, claimableBalanceIds: ["cbLocked"] }),
+    ).filter((o) => o.kind === "claim_claimable_balance");
+    expect(claims).toHaveLength(0);
   });
 });
 

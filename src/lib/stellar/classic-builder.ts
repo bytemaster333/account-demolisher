@@ -159,9 +159,6 @@ function addOperation(op: BatchedOperation): xdr.Operation {
         ...(op.source ? { source: op.source } : {}),
       });
 
-    case "revoke_sponsorship":
-      return buildRevoke(op);
-
     case "set_options_clear_signers":
       return buildSetOptions(op);
 
@@ -170,55 +167,6 @@ function addOperation(op: BatchedOperation): xdr.Operation {
         destination: requireString(op.metadata, "destination"),
         ...(op.source ? { source: op.source } : {}),
       });
-  }
-}
-
-function buildRevoke(op: BatchedOperation): xdr.Operation {
-  const subjectKind = requireString(op.metadata, "subjectKind");
-  switch (subjectKind) {
-    case "account":
-      return Operation.revokeAccountSponsorship({
-        account: requireString(op.metadata, "account"),
-        ...(op.source ? { source: op.source } : {}),
-      });
-    case "trustline": {
-      const asset = requireAsset(op.metadata, "asset");
-      return Operation.revokeTrustlineSponsorship({
-        account: requireString(op.metadata, "account"),
-        asset: toAsset(asset),
-        ...(op.source ? { source: op.source } : {}),
-      });
-    }
-    case "offer":
-      return Operation.revokeOfferSponsorship({
-        seller: requireString(op.metadata, "seller"),
-        offerId: requireString(op.metadata, "offerId"),
-        ...(op.source ? { source: op.source } : {}),
-      });
-    case "data":
-      return Operation.revokeDataSponsorship({
-        account: requireString(op.metadata, "account"),
-        name: requireString(op.metadata, "name"),
-        ...(op.source ? { source: op.source } : {}),
-      });
-    case "claimable_balance":
-      return Operation.revokeClaimableBalanceSponsorship({
-        balanceId: requireString(op.metadata, "balanceId"),
-        ...(op.source ? { source: op.source } : {}),
-      });
-    case "liquidity_pool":
-      return Operation.revokeLiquidityPoolSponsorship({
-        liquidityPoolId: requireString(op.metadata, "liquidityPoolId"),
-        ...(op.source ? { source: op.source } : {}),
-      });
-    case "signer":
-      return Operation.revokeSignerSponsorship({
-        account: requireString(op.metadata, "account"),
-        signer: { ed25519PublicKey: requireString(op.metadata, "signerKey") },
-        ...(op.source ? { source: op.source } : {}),
-      });
-    default:
-      throw new Error(`Unknown revoke subject: ${subjectKind}`);
   }
 }
 
