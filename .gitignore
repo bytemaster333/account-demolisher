@@ -45,9 +45,6 @@ playwright-report/
 playwright/.cache/
 blob-report/
 
-# tests
-tests/
-
 # docs / research / planning
 docs/
 researches/

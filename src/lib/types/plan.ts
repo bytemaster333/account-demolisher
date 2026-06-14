@@ -79,3 +79,28 @@ export function pathKey(asset: AssetIdentifier): string {
       return `pool:${asset.poolId}`;
   }
 }
+
+// progress + result shapes for the on-chain demolition run, emitted by the
+// orchestrator's execute path and consumed by the page-flow machine / ui
+export interface DemolishProgressEvent {
+  readonly kind:
+    | "audit"
+    | "batch-built"
+    | "submitting"
+    | "submitted"
+    | "rebatching"
+    | "mediator-cosign"
+    | "complete"
+    | "blocked";
+  readonly batchIndex?: number;
+  readonly totalBatches?: number;
+  readonly txHash?: string;
+  readonly message: string;
+}
+
+export interface DemolishResult {
+  readonly ok: boolean;
+  readonly mergedTxHash?: string;
+  readonly forwardTxHash?: string;
+  readonly errors: readonly string[];
+}

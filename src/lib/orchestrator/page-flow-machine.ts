@@ -4,7 +4,6 @@ import { assign, fromPromise, setup } from "xstate";
 import { TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
-import { type DemolishProgressEvent, type DemolishResult } from "@/lib/plan/classic-orchestrator";
 import { generatePlan } from "@/lib/plan/generator";
 import { simulateNode, SimulationFailedError } from "@/lib/plan/simulator";
 import { topologicalOrder, type PlanNodeStatus, type PlanTree } from "@/lib/plan/tree";
@@ -15,7 +14,7 @@ import { auditAccount } from "@/lib/stellar/account-audit";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import type { AccountAudit } from "@/lib/types/account";
-import type { ClassicMemo } from "@/lib/types/plan";
+import type { ClassicMemo, DemolishProgressEvent, DemolishResult } from "@/lib/types/plan";
 import { EMPTY_POSITIONS, type ProtocolPositions } from "@/lib/adapters/positions/interface";
 import { DirectContractProvider } from "@/lib/adapters/positions/direct";
 import { enumerateAllowances, type AllowanceRecord } from "@/lib/soroban/allowances";

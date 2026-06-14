@@ -1,0 +1,280 @@
+import { describe, it, expect } from "vitest";
+import { Keypair } from "@stellar/stellar-sdk";
+import {
+  applySlippage,
+  batchClassicDemolition,
+  isResidueOp,
+  MAX_OPS_PER_TX,
+} from "@/lib/plan/classic-batcher";
+import type { AccountAudit } from "@/lib/types/account";
+import type { BatchOptions, BatchedOperation, ClassicOpKind } from "@/lib/types/plan";
+
+const ACC = Keypair.random().publicKey();
+const OTHER = Keypair.random().publicKey();
+const ISSUER = Keypair.random().publicKey();
+const MED = Keypair.random().publicKey();
+const DEST = Keypair.random().publicKey();
+const POOL_ID = "a".repeat(64);
+
+function makeAudit(over: Partial<AccountAudit> = {}): AccountAudit {
+  return {
+    accountId: ACC,
+    sequence: "1",
+    subentryCount: 0,
+    thresholds: { low: 0, medium: 0, high: 0, masterWeight: 1 },
+    flags: {
+      authImmutable: false,
+      authRequired: false,
+      authRevocable: false,
+      authClawbackEnabled: false,
+    },
+    balances: [],
+    signers: [],
+    offers: [],
+    data: [],
+    claimableBalances: [],
+    poolShares: [],
+    sponsorship: { numSponsoring: 0, numSponsored: 0 },
+    requiresMultisig: false,
+    mergeability: { mergeable: true },
+    ...over,
+  };
+}
+
+const directOptions: BatchOptions = { destination: DEST, useMediator: false };
+
+function allOps(batches: readonly { readonly operations: readonly BatchedOperation[] }[]) {
+  return batches.flatMap((b) => b.operations);
+}
+
+// canonical 9-phase order the batcher documents
+const PHASE: Record<ClassicOpKind, number> = {
+  create_account_mediator: 0,
+  liquidity_pool_withdraw: 1,
+  manage_sell_offer_cancel: 2,
+  claim_claimable_balance: 3,
+  path_payment_strict_send: 4,
+  return_residue_to_issuer: 4,
+  change_trust_remove: 5,
+  manage_data_delete: 6,
+  revoke_sponsorship: 7,
+  set_options_clear_signers: 8,
+  account_merge: 9,
+};
+
+describe("applySlippage", () => {
+  it("applies a 1% haircut with 7-decimal precision", () => {
+    expect(applySlippage("100")).toBe("99.0000000");
+    expect(applySlippage("0")).toBe("0.0000000");
+    expect(applySlippage("1.2345678")).toBe("1.2222221");
+  });
+});
+
+describe("isResidueOp", () => {
+  it("identifies only the return-to-issuer op", () => {
+    const residue = {
+      kind: "return_residue_to_issuer",
+      summary: "",
+      metadata: {},
+    } as BatchedOperation;
+    const merge = { kind: "account_merge", summary: "", metadata: {} } as BatchedOperation;
+    expect(isResidueOp(residue)).toBe(true);
+    expect(isResidueOp(merge)).toBe(false);
+  });
+});
+
+describe("batchClassicDemolition — guards", () => {
+  it("throws when useMediator is set without a mediator public key", () => {
+    expect(() =>
+      batchClassicDemolition(makeAudit(), { destination: DEST, useMediator: true }),
+    ).toThrow();
+  });
+});
+
+describe("batchClassicDemolition — minimal account", () => {
+  it("emits a single account_merge to the destination and nothing else", () => {
+    const batches = batchClassicDemolition(makeAudit(), directOptions);
+    const ops = allOps(batches);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]!.kind).toBe("account_merge");
+    expect(ops[0]!.metadata.destination).toBe(DEST);
+    expect(batches).toHaveLength(1);
+  });
+});
+
+describe("batchClassicDemolition — canonical ordering", () => {
+  const richAudit = makeAudit({
+    thresholds: { low: 1, medium: 2, high: 3, masterWeight: 1 },
+    poolShares: [
+      {
+        poolId: POOL_ID,
+        poolType: "constant_product",
+        shareBalance: "10",
+        shareLimit: "1000",
+        fee: 30,
+        reserves: [
+          { asset: { kind: "native" }, amount: "5" },
+          { asset: { kind: "credit", code: "USDC", issuer: ISSUER }, amount: "5" },
+        ],
+      },
+    ],
+    offers: [
+      {
+        id: "1",
+        selling: { kind: "native" },
+        buying: { kind: "credit", code: "USDC", issuer: ISSUER },
+        amount: "10",
+        priceR: { n: 1, d: 2 },
+      },
+    ],
+    claimableBalances: [
+      {
+        id: "cb" + "0".repeat(60),
+        asset: { kind: "native" },
+        amount: "5",
+        sponsor: ACC,
+        predicate: { unconditional: true },
+        claimants: [ACC],
+      },
+    ],
+    balances: [
+      {
+        asset: { kind: "credit", code: "USDC", issuer: ISSUER },
+        amount: "100",
+        buyingLiabilities: "0",
+        sellingLiabilities: "0",
+      },
+      {
+        asset: { kind: "liquidity_pool_shares", poolId: POOL_ID },
+        amount: "10",
+        buyingLiabilities: "0",
+        sellingLiabilities: "0",
+      },
+    ],
+    data: [{ name: "key1", value: "dmFs" }],
+    signers: [
+      { key: OTHER, type: "ed25519_public_key", weight: 1 },
+      { key: ACC, type: "ed25519_public_key", weight: 1 },
+    ],
+    // 2 sponsorships; 1 self-sponsored CB is claimed => 1 remains to revoke
+    sponsorship: { numSponsoring: 2, numSponsored: 0 },
+  });
+
+  const ops = allOps(batchClassicDemolition(richAudit, directOptions));
+
+  it("emits ops in non-decreasing phase order and merges last", () => {
+    const phases = ops.map((o) => PHASE[o.kind]);
+    for (let i = 1; i < phases.length; i += 1) {
+      expect(phases[i]!).toBeGreaterThanOrEqual(phases[i - 1]!);
+    }
+    expect(ops[ops.length - 1]!.kind).toBe("account_merge");
+  });
+
+  it("covers every phase exactly where expected", () => {
+    const kinds = ops.map((o) => o.kind);
+    expect(kinds).toContain("liquidity_pool_withdraw");
+    expect(kinds).toContain("manage_sell_offer_cancel");
+    expect(kinds).toContain("claim_claimable_balance");
+    expect(kinds).toContain("return_residue_to_issuer"); // no path supplied => residue fallback
+    expect(kinds.filter((k) => k === "change_trust_remove")).toHaveLength(2); // pool-share + credit
+    expect(kinds).toContain("manage_data_delete");
+    expect(kinds).toContain("set_options_clear_signers");
+  });
+
+  it("clears only the non-master signer", () => {
+    const clears = ops.filter((o) => o.kind === "set_options_clear_signers");
+    const signerClears = clears.filter((o) => o.metadata.signerKey !== undefined);
+    expect(signerClears).toHaveLength(1);
+    expect(signerClears[0]!.metadata.signerKey).toBe(OTHER);
+  });
+
+  it("discounts self-sponsored claimed CBs from the sponsorship-revoke count", () => {
+    // numSponsoring=2, one self-sponsored CB claimed => exactly 1 revoke op.
+    // (NB: the revoke op's semantics themselves are corrected in Phase 2; here
+    // we only lock in the count arithmetic, which is the stable behavior.)
+    const revokes = ops.filter((o) => o.kind === "revoke_sponsorship");
+    expect(revokes).toHaveLength(1);
+  });
+});
+
+describe("batchClassicDemolition — claimable-balance opt-in", () => {
+  const twoCbs = makeAudit({
+    claimableBalances: [
+      {
+        id: "cbA",
+        asset: { kind: "native" },
+        amount: "1",
+        sponsor: OTHER,
+        predicate: {},
+        claimants: [ACC],
+      },
+      {
+        id: "cbB",
+        asset: { kind: "native" },
+        amount: "1",
+        sponsor: OTHER,
+        predicate: {},
+        claimants: [ACC],
+      },
+    ],
+  });
+
+  it("claims all CBs when the opt-in list is undefined", () => {
+    const claims = allOps(batchClassicDemolition(twoCbs, directOptions)).filter(
+      (o) => o.kind === "claim_claimable_balance",
+    );
+    expect(claims).toHaveLength(2);
+  });
+
+  it("claims no CBs when the opt-in list is empty", () => {
+    const claims = allOps(
+      batchClassicDemolition(twoCbs, { ...directOptions, claimableBalanceIds: [] }),
+    ).filter((o) => o.kind === "claim_claimable_balance");
+    expect(claims).toHaveLength(0);
+  });
+
+  it("claims only the opted-in CB", () => {
+    const claims = allOps(
+      batchClassicDemolition(twoCbs, { ...directOptions, claimableBalanceIds: ["cbB"] }),
+    ).filter((o) => o.kind === "claim_claimable_balance");
+    expect(claims).toHaveLength(1);
+    expect(claims[0]!.metadata.balanceId).toBe("cbB");
+  });
+});
+
+describe("batchClassicDemolition — MAX_OPS splitting", () => {
+  const manyOffers = makeAudit({
+    offers: Array.from({ length: 150 }, (_, i) => ({
+      id: String(i + 1),
+      selling: { kind: "native" as const },
+      buying: { kind: "credit" as const, code: "USDC", issuer: ISSUER },
+      amount: "1",
+      priceR: { n: 1, d: 1 },
+    })),
+  });
+
+  it("splits into batches of at most MAX_OPS_PER_TX with the merge in the final batch", () => {
+    const batches = batchClassicDemolition(manyOffers, directOptions);
+    expect(batches.length).toBeGreaterThan(1);
+    for (const b of batches) expect(b.operations.length).toBeLessThanOrEqual(MAX_OPS_PER_TX);
+    const flat = allOps(batches);
+    expect(flat).toHaveLength(151); // 150 cancels + 1 merge
+    const last = batches[batches.length - 1]!;
+    expect(last.operations[last.operations.length - 1]!.kind).toBe("account_merge");
+  });
+});
+
+describe("batchClassicDemolition — mediator", () => {
+  const opts: BatchOptions = { destination: DEST, useMediator: true, mediatorPublicKey: MED };
+
+  it("funds the mediator first, merges into the mediator, and tags the batch", () => {
+    const batches = batchClassicDemolition(makeAudit(), opts);
+    const ops = allOps(batches);
+    expect(ops[0]!.kind).toBe("create_account_mediator");
+    expect(ops[0]!.metadata.destination).toBe(MED);
+    const merge = ops.find((o) => o.kind === "account_merge")!;
+    expect(merge.metadata.destination).toBe(MED); // merges into mediator, not the final dest
+    expect(merge.metadata.ultimateDestination).toBe(DEST);
+    expect(batches[batches.length - 1]!.mediator?.publicKey).toBe(MED);
+  });
+});
