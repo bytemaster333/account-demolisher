@@ -180,6 +180,12 @@ const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({ input 
     }
   }
 
+  // per-protocol discovery failures (e.g. Soroswap has no position index) were
+  // previously invisible; surface them so the user knows the plan may be partial
+  for (const e of positions.errors) {
+    discoveryWarnings.push(`${e.protocol}: ${e.message}`);
+  }
+
   return { audit, positions, allowances, discoveryWarnings };
 });
 
@@ -267,9 +273,12 @@ const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) 
         node.status = "failed";
         node.error = err.upstreamError;
       } else if (err instanceof Error && err.message.includes("has no built transaction")) {
-        // unhydrated soroban node: mark skipped so the UI tells the truth
+        // the node's transaction never got built during hydration. The adapters
+        // ARE wired, so this is a real upstream failure (RPC error, or the
+        // contract's state is archived and needs a restore/bump) — say so
+        // instead of implying the integration is missing.
         node.status = "skipped";
-        node.error = `Adapter integration for ${node.kind} is not yet wired; skipping.`;
+        node.error = `Could not build the ${node.kind} transaction (RPC error or archived contract state). This step was skipped; close the position manually if it persists.`;
       } else {
         node.status = "failed";
         node.error = err instanceof Error ? err.message : String(err);

@@ -14,6 +14,7 @@ import {
   MAINNET_ALLOWLIST,
   type AllowedContract,
 } from "@/lib/config/contracts";
+import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { address as scvAddress, i128 as scvI128 } from "@/lib/soroban/scval";
 import { assembleSubmittable } from "@/lib/soroban/simulate";
@@ -121,6 +122,9 @@ export async function removeLiquidityByContractIds(
       "removeLiquidity: prepareTransaction returned a FeeBumpTransaction unexpectedly",
     );
   }
+  // parity with the other adapters: verify the assembled tx only invokes
+  // allow-listed contracts before it can ever be signed.
+  assertTransactionAllowed(prepared, args.network);
   return prepared;
 }
 

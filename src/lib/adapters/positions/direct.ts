@@ -192,16 +192,19 @@ export class DirectContractProvider implements IDeFiPositionProvider {
     return pools.map(aquariusPoolToSummary);
   }
 
-  // soroswap on-chain discovery isn't implemented
+  // Soroswap has no per-user position index and LP tokens are one contract per
+  // pair, so auto-discovery would mean enumerating every pair via the factory
+  // and probing each user balance — impractical on-chain and unverifiable
+  // without live liquidity. Rather than throw an opaque error every run, we
+  // report the limitation honestly (surfaced as a discovery warning) and return
+  // no positions. A configured DeFi position API (D2) would supply these; a
+  // known Soroswap LP can still be closed via the WithdrawSoroswapLp exit path.
   private async discoverSoroswap(
     _server: rpc.Server,
     _network: NetworkConfig,
     _userAddress: string,
   ): Promise<readonly SoroswapPositionSummary[]> {
-    throw new Error(
-      "discoverSoroswap: not implemented. users with soroswap lp positions must " +
-        "close them manually before merging.",
-    );
+    throw new SoroswapDiscoveryUnavailable();
   }
 
   private async discoverFxDAO(
@@ -214,6 +217,18 @@ export class DirectContractProvider implements IDeFiPositionProvider {
 }
 
 export { EMPTY_POSITIONS };
+
+// distinct error type so the UI can recognize the "known limitation" case and
+// phrase it as guidance rather than a failure.
+export class SoroswapDiscoveryUnavailable extends Error {
+  constructor() {
+    super(
+      "Soroswap LP positions can't be auto-discovered (no position index available). " +
+        "If this account holds Soroswap LP shares, withdraw them before closing.",
+    );
+    this.name = "SoroswapDiscoveryUnavailable";
+  }
+}
 
 // drop a pool entry if every balance map is empty or all-zero
 function hasAnyNonZeroBlendBalance(p: BlendUserPositions): boolean {
