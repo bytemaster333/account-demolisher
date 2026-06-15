@@ -1,7 +1,7 @@
 // pure plan generator: audit + positions + allowances -> deterministic PlanTree
 
 import type { AccountAudit } from "@/lib/types/account";
-import type { BatchOptions, ClassicBatch, ClassicMemo } from "@/lib/types/plan";
+import type { BatchOptions, ClassicBatch, ClassicMemo, PathResultRef } from "@/lib/types/plan";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import type {
   AquariusPositionSummary,
@@ -20,6 +20,10 @@ export interface GeneratePlanOptions {
   // allowance pairs opted in for revocation, keyed `${contractId}|${spender}`
   readonly selectedAllowances?: readonly string[];
   readonly selectedClaimableBalanceIds?: readonly string[];
+  // resolved XLM-conversion paths per credit asset (pathKey -> path)
+  readonly paths?: ReadonlyMap<string, PathResultRef>;
+  // credit assets the user consented to return to their issuer when un-routable
+  readonly returnToIssuerAssetKeys?: readonly string[];
   readonly memo?: ClassicMemo;
   // fallback address if the CEX rejects the deposit
   readonly userFallbackAddress?: string;
@@ -245,10 +249,13 @@ export function generatePlan(
     ...(opts.selectedClaimableBalanceIds
       ? { claimableBalanceIds: opts.selectedClaimableBalanceIds }
       : {}),
+    ...(opts.returnToIssuerAssetKeys
+      ? { returnToIssuerAssetKeys: opts.returnToIssuerAssetKeys }
+      : {}),
     ...(opts.userFallbackAddress ? { userFallbackAddress: opts.userFallbackAddress } : {}),
     ...(opts.memo ? { memo: opts.memo } : {}),
   };
-  const batches: readonly ClassicBatch[] = batchClassicDemolition(audit, batchOptions);
+  const batches: readonly ClassicBatch[] = batchClassicDemolition(audit, batchOptions, opts.paths);
 
   // every soroban node must complete before the merge
   const sorobanDeps: string[] = nodes
@@ -268,6 +275,9 @@ export function generatePlan(
       useMediator,
       ...(opts.selectedClaimableBalanceIds
         ? { claimableBalanceIds: opts.selectedClaimableBalanceIds }
+        : {}),
+      ...(opts.returnToIssuerAssetKeys
+        ? { returnToIssuerAssetKeys: opts.returnToIssuerAssetKeys }
         : {}),
       ...(opts.userFallbackAddress ? { userFallbackAddress: opts.userFallbackAddress } : {}),
       ...(useMediator && opts.mediatorPublicKey

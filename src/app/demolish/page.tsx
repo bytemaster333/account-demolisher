@@ -13,6 +13,7 @@ import { HighValueWarning } from "@/components/confirmations/HighValueWarning";
 import { TypedConfirmation } from "@/components/confirmations/TypedConfirmation";
 import { AuthImmutableBlock } from "@/components/warnings/AuthImmutableBlock";
 import { DiscoveryWarnings } from "@/components/warnings/DiscoveryWarnings";
+import { ResidueConsent } from "@/components/warnings/ResidueConsent";
 import {
   PendingClaimableBalances,
   type PendingClaimableBalanceEntry,
@@ -53,6 +54,9 @@ const FORM_SCHEMA = z.object({
   memoValue: z.string(),
   fallback: z.string(),
   selectedCbIds: z.array(z.string()),
+  // pathKey()s of un-routable credit assets the user consented to return to
+  // their issuer so the account can close
+  returnToIssuer: z.array(z.string()),
 });
 
 type FormState = z.infer<typeof FORM_SCHEMA>;
@@ -63,6 +67,7 @@ const INITIAL_FORM: FormState = {
   memoValue: "",
   fallback: "",
   selectedCbIds: [],
+  returnToIssuer: [],
 };
 
 // ─── derived helpers ────────────────────────────────────────────────────────
@@ -349,6 +354,7 @@ function DemolishFlow(): React.JSX.Element {
         ...(form.selectedCbIds.length > 0
           ? { selectedClaimableBalanceIds: form.selectedCbIds }
           : {}),
+        ...(form.returnToIssuer.length > 0 ? { returnToIssuerAssetKeys: form.returnToIssuer } : {}),
       },
     });
   }, [form, publicKey, network, useMediator, cex, send]);
@@ -364,6 +370,14 @@ function DemolishFlow(): React.JSX.Element {
     send({ type: "RESET" });
   }, [send]);
   const onRetry = useCallback(() => send({ type: "RETRY" }), [send]);
+  const onToggleResidue = useCallback((key: string, consent: boolean) => {
+    setForm((f) => {
+      const set = new Set(f.returnToIssuer);
+      if (consent) set.add(key);
+      else set.delete(key);
+      return { ...f, returnToIssuer: [...set] };
+    });
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -575,11 +589,23 @@ function DemolishFlow(): React.JSX.Element {
                               </>
                             );
                           })()}
+                          <ResidueConsent
+                            credits={ctx.unroutableCredits}
+                            consented={form.returnToIssuer}
+                            onToggle={onToggleResidue}
+                            onRebuild={onStart}
+                          />
                           <PreviewPanel
                             totalXlm={totalXlm}
                             activeCount={activeCount}
                             onBack={onCancel}
                             onContinue={() => setConfirmStage(isHighValue ? "highvalue" : "typed")}
+                            {...(ctx.unroutableCredits.length > 0
+                              ? {
+                                  blockReason:
+                                    "Some balances have no XLM conversion path. Resolve them above (or return them to their issuer) before closing the account.",
+                                }
+                              : {})}
                           />
                         </div>
                       ) : null}
@@ -2568,12 +2594,17 @@ function PreviewPanel({
   activeCount,
   onBack,
   onContinue,
+  blockReason,
 }: {
   readonly totalXlm: string;
   readonly activeCount: number;
   readonly onBack: () => void;
   readonly onContinue: () => void;
+  // when set, the account can't be closed yet (e.g. un-routable balances); the
+  // continue button is disabled and the reason is shown.
+  readonly blockReason?: string;
 }): React.JSX.Element {
+  const blocked = blockReason !== undefined;
   return (
     <div
       style={{
@@ -2670,9 +2701,11 @@ function PreviewPanel({
         </button>
         <button
           type="button"
-          onClick={onContinue}
+          onClick={blocked ? undefined : onContinue}
+          disabled={blocked}
           data-testid="demolish-confirm"
           aria-label="Open final demolition confirmation"
+          title={blockReason}
           style={{
             flex: 1,
             display: "inline-flex",
@@ -2686,7 +2719,8 @@ function PreviewPanel({
             color: "var(--accent-fg)",
             fontWeight: 600,
             fontSize: 14,
-            cursor: "pointer",
+            cursor: blocked ? "not-allowed" : "pointer",
+            opacity: blocked ? 0.5 : 1,
           }}
         >
           Looks good, continue
@@ -2704,6 +2738,11 @@ function PreviewPanel({
           </svg>
         </button>
       </div>
+      {blocked ? (
+        <p style={{ margin: "12px 0 0", fontSize: 12.5, color: "var(--warning)", lineHeight: 1.5 }}>
+          {blockReason}
+        </p>
+      ) : null}
     </div>
   );
 }

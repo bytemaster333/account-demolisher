@@ -7,10 +7,15 @@ import type { NetworkConfig } from "@/lib/config/networks";
 import { generatePlan } from "@/lib/plan/generator";
 import { simulateNode, SimulationFailedError } from "@/lib/plan/simulator";
 import { topologicalOrder, type PlanNodeStatus, type PlanTree } from "@/lib/plan/tree";
-import { batchClassicDemolition } from "@/lib/plan/classic-batcher";
+import {
+  batchClassicDemolition,
+  unroutableCredits,
+  type UnroutableCredit,
+} from "@/lib/plan/classic-batcher";
 import { hydratePlanTransactions } from "@/lib/plan/hydration";
 import { executePlanTreeOnChain, type ConfirmationReceipt } from "@/lib/orchestrator/machine";
 import { auditAccount } from "@/lib/stellar/account-audit";
+import { resolveCreditPaths } from "@/lib/stellar/path-finder";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import type { AccountAudit } from "@/lib/types/account";
@@ -29,6 +34,7 @@ export interface PageFlowInput {
   readonly memo?: ClassicMemo;
   readonly userFallbackAddress?: string;
   readonly selectedClaimableBalanceIds?: readonly string[];
+  readonly returnToIssuerAssetKeys?: readonly string[];
   readonly positions?: ProtocolPositions;
   readonly allowances?: readonly AllowanceRecord[];
 }
@@ -39,6 +45,7 @@ export interface PageFlowContext {
   readonly positions: ProtocolPositions;
   readonly allowances: readonly AllowanceRecord[];
   readonly discoveryWarnings: readonly string[];
+  readonly unroutableCredits: readonly UnroutableCredit[];
   readonly tree: PlanTree | null;
   readonly progress: readonly DemolishProgressEvent[];
   readonly result: DemolishResult | null;
@@ -80,10 +87,14 @@ interface PreviewInput {
   readonly memo?: ClassicMemo;
   readonly userFallbackAddress?: string;
   readonly selectedClaimableBalanceIds?: readonly string[];
+  readonly returnToIssuerAssetKeys?: readonly string[];
 }
 
 interface PreviewOutput {
   readonly tree: PlanTree;
+  // positive credit balances with no XLM path and no return-to-issuer consent;
+  // while any exist the account can't fully merge (surfaced in the UI).
+  readonly unroutableCredits: readonly UnroutableCredit[];
 }
 
 interface ExecuteInput {
@@ -173,6 +184,12 @@ const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({ input 
 });
 
 const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) => {
+  // resolve real XLM-conversion paths so credit balances convert via path
+  // payment; anything without a path (and without return-to-issuer consent) is
+  // reported as un-routable rather than silently paid to the issuer.
+  const paths = await resolveCreditPaths(input.audit, input.network);
+  const unroutable = unroutableCredits(input.audit, paths, input.returnToIssuerAssetKeys);
+
   // build the real batches so FinalClassicTx carries the real op count
   const batches = batchClassicDemolition(
     input.audit,
@@ -182,10 +199,13 @@ const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) 
       ...(input.selectedClaimableBalanceIds
         ? { claimableBalanceIds: input.selectedClaimableBalanceIds }
         : {}),
+      ...(input.returnToIssuerAssetKeys
+        ? { returnToIssuerAssetKeys: input.returnToIssuerAssetKeys }
+        : {}),
       ...(input.userFallbackAddress ? { userFallbackAddress: input.userFallbackAddress } : {}),
       ...(input.memo ? { memo: input.memo } : {}),
     },
-    new Map(),
+    paths,
   );
 
   // demolition revokes every active allowance the user owns — the account is
@@ -195,10 +215,14 @@ const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) 
   const tree = generatePlan(input.audit, input.positions, input.allowances, input.destination, {
     useMediator: input.useMediator,
     selectedAllowances,
+    paths,
     ...(input.memo ? { memo: input.memo } : {}),
     ...(input.userFallbackAddress ? { userFallbackAddress: input.userFallbackAddress } : {}),
     ...(input.selectedClaimableBalanceIds
       ? { selectedClaimableBalanceIds: input.selectedClaimableBalanceIds }
+      : {}),
+    ...(input.returnToIssuerAssetKeys
+      ? { returnToIssuerAssetKeys: input.returnToIssuerAssetKeys }
       : {}),
   });
 
@@ -253,7 +277,7 @@ const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) 
     }
   }
 
-  return { tree };
+  return { tree, unroutableCredits: unroutable };
 });
 
 const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ input }) => {
@@ -354,6 +378,7 @@ const initialContext: PageFlowContext = {
   positions: EMPTY_POSITIONS,
   allowances: [],
   discoveryWarnings: [],
+  unroutableCredits: [],
   tree: null,
   progress: [],
   result: null,
@@ -383,6 +408,7 @@ export const pageFlowMachine = setup({
             input: ({ event }) => event.input,
             audit: null,
             discoveryWarnings: [],
+            unroutableCredits: [],
             tree: null,
             progress: [],
             result: null,
@@ -438,11 +464,17 @@ export const pageFlowMachine = setup({
             ...(i.selectedClaimableBalanceIds
               ? { selectedClaimableBalanceIds: i.selectedClaimableBalanceIds }
               : {}),
+            ...(i.returnToIssuerAssetKeys
+              ? { returnToIssuerAssetKeys: i.returnToIssuerAssetKeys }
+              : {}),
           };
         },
         onDone: {
           target: "awaiting_confirmation",
-          actions: assign({ tree: ({ event }) => event.output.tree }),
+          actions: assign({
+            tree: ({ event }) => event.output.tree,
+            unroutableCredits: ({ event }) => event.output.unroutableCredits,
+          }),
         },
         onError: {
           target: "failed",

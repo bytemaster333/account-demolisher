@@ -53,6 +53,11 @@ export interface BatchOptions {
   readonly mediatorPublicKey?: string;
   // user-opted-in cb ids. batcher emits a claim op for each id present in the audit
   readonly claimableBalanceIds?: readonly string[];
+  // pathKey()s of credit assets the user has explicitly consented to send back
+  // to their issuer when no XLM conversion path exists. Without consent, an
+  // un-routable balance is left in place (and blocks the merge) rather than
+  // being silently paid to the issuer.
+  readonly returnToIssuerAssetKeys?: readonly string[];
   // forwarded into the plan summary; the actual forward tx lives in the orchestrator
   readonly userFallbackAddress?: string;
   readonly memo?: ClassicMemo;

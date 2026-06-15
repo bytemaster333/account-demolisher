@@ -3,7 +3,8 @@
 import { Asset } from "@stellar/stellar-sdk";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import type { NetworkConfig } from "@/lib/config/networks";
-import type { AssetIdentifier } from "@/lib/types/account";
+import type { AccountAudit, AssetIdentifier } from "@/lib/types/account";
+import { pathKey, type PathResultRef } from "@/lib/types/plan";
 
 export interface PathResult {
   // output amount of native xlm as horizon-decimal string (e.g. "12.3456789")
@@ -49,6 +50,35 @@ export async function findPathToXLM(
   }
 
   return best;
+}
+
+// resolve a best XLM-conversion path for every positive credit balance the
+// account holds, keyed by pathKey(asset). Assets with no market path are simply
+// absent from the map (the caller treats those as un-routable). A network error
+// propagates rather than being silently treated as "no path".
+export async function resolveCreditPaths(
+  audit: AccountAudit,
+  network: NetworkConfig,
+): Promise<Map<string, PathResultRef>> {
+  const credits = audit.balances.filter(
+    (b) => b.asset.kind === "credit" && hasPositiveAmount(b.amount),
+  );
+  const resolved = await Promise.all(
+    credits.map(async (b) => ({
+      key: pathKey(b.asset),
+      res: await findPathToXLM(b.asset, b.amount, network),
+    })),
+  );
+  const map = new Map<string, PathResultRef>();
+  for (const { key, res } of resolved) {
+    if (res) map.set(key, res);
+  }
+  return map;
+}
+
+function hasPositiveAmount(s: string): boolean {
+  for (const ch of s) if (ch >= "1" && ch <= "9") return true;
+  return false;
 }
 
 function isNative(a: AssetIdentifier): boolean {

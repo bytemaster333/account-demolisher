@@ -12,6 +12,7 @@ import { isSorobanNode, topologicalOrder, type PlanNode, type PlanTree } from "@
 import { auditAccount } from "@/lib/stellar/account-audit";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
 import { batchClassicDemolition } from "@/lib/plan/classic-batcher";
+import { resolveCreditPaths } from "@/lib/stellar/path-finder";
 import { submitMediatorForward } from "@/lib/mediator/forward";
 import { TransactionBuilder } from "@stellar/stellar-sdk";
 import type { AccountAudit } from "@/lib/types/account";
@@ -667,20 +668,30 @@ export async function executePlanTreeOnChain(
 
     if (node.kind === "FinalClassicTx") {
       // soroban exits shift classical balances, so the cached batches are
+      // rebuilt against fresh state — including freshly-resolved XLM paths so
+      // credit balances convert via path payment instead of routing to issuer.
       const freshAudit = await auditAccount(input.publicKey, deps.network);
-      const freshBatches = batchClassicDemolition(freshAudit, {
-        destination: node.metadata.destination,
-        useMediator: node.metadata.useMediator,
-        ...(node.metadata.claimableBalanceIds
-          ? { claimableBalanceIds: node.metadata.claimableBalanceIds }
-          : {}),
-        ...(node.metadata.userFallbackAddress
-          ? { userFallbackAddress: node.metadata.userFallbackAddress }
-          : {}),
-        ...(node.metadata.mediatorPublicKey
-          ? { mediatorPublicKey: node.metadata.mediatorPublicKey }
-          : {}),
-      });
+      const freshPaths = await resolveCreditPaths(freshAudit, deps.network);
+      const freshBatches = batchClassicDemolition(
+        freshAudit,
+        {
+          destination: node.metadata.destination,
+          useMediator: node.metadata.useMediator,
+          ...(node.metadata.claimableBalanceIds
+            ? { claimableBalanceIds: node.metadata.claimableBalanceIds }
+            : {}),
+          ...(node.metadata.returnToIssuerAssetKeys
+            ? { returnToIssuerAssetKeys: node.metadata.returnToIssuerAssetKeys }
+            : {}),
+          ...(node.metadata.userFallbackAddress
+            ? { userFallbackAddress: node.metadata.userFallbackAddress }
+            : {}),
+          ...(node.metadata.mediatorPublicKey
+            ? { mediatorPublicKey: node.metadata.mediatorPublicKey }
+            : {}),
+        },
+        freshPaths,
+      );
       if (freshBatches.length === 0) {
         throw new Error(`executing: node "${node.id}" produced no fresh batches`);
       }

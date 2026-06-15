@@ -163,6 +163,7 @@ export interface FinalClassicTxMetadata {
   readonly useMediator: boolean;
   // forwarded into batchClassicDemolition during execute-time re-batching
   readonly claimableBalanceIds?: readonly string[];
+  readonly returnToIssuerAssetKeys?: readonly string[];
   readonly userFallbackAddress?: string;
   readonly mediatorPublicKey?: string;
 }

@@ -86,7 +86,10 @@ export function batchClassicDemolition(
     });
   }
 
-  // 4. convert credit balances via path payment, or fall back to return-to-issuer
+  // 4. convert credit balances to XLM via path payment. When no market path
+  // exists the balance is EITHER returned to its issuer (only with explicit
+  // per-asset consent) OR left untouched — never silently sent to the issuer.
+  const consentedResidue: ReadonlySet<string> = new Set(options.returnToIssuerAssetKeys ?? []);
   for (const balance of audit.balances) {
     if (balance.asset.kind !== "credit") continue;
     if (!hasPositive(balance.amount)) continue;
@@ -106,7 +109,7 @@ export function batchClassicDemolition(
           path: path.path,
         },
       });
-    } else {
+    } else if (consentedResidue.has(key)) {
       ops.push({
         kind: "return_residue_to_issuer",
         summary: `Return ${balance.amount} ${balance.asset.code} to issuer`,
@@ -117,9 +120,14 @@ export function batchClassicDemolition(
         },
       });
     }
+    // else: un-routable, unconsented — leave the balance in place. Its trustline
+    // is kept (below), which blocks the merge until the user resolves it. The UI
+    // surfaces this rather than the plan quietly forfeiting the funds.
   }
 
-  // 5. remove trustlines — pool-share first, then underlying
+  // 5. remove trustlines — pool-share first, then underlying. A credit trustline
+  // is only removed once its balance is handled (zero, converted, or consented
+  // to issuer); otherwise change_trust would fail on a non-zero balance.
   for (const balance of audit.balances) {
     if (balance.asset.kind !== "liquidity_pool_shares") continue;
     ops.push({
@@ -130,6 +138,7 @@ export function batchClassicDemolition(
   }
   for (const balance of audit.balances) {
     if (balance.asset.kind !== "credit") continue;
+    if (!isCreditHandled(balance.asset, balance.amount, paths, consentedResidue)) continue;
     ops.push({
       kind: "change_trust_remove",
       summary: `Remove trustline ${balance.asset.code}`,
@@ -302,4 +311,44 @@ function stroopsToDecimal(stroops: bigint): string {
 
 export function isResidueOp(op: BatchedOperation): boolean {
   return op.kind === "return_residue_to_issuer";
+}
+
+// a credit trustline can be removed only once its balance is dealt with: zero,
+// converted via a path, or consented to return to the issuer.
+function isCreditHandled(
+  asset: AssetIdentifier,
+  amount: string,
+  paths: ReadonlyMap<string, PathResultRef> | undefined,
+  consentedResidue: ReadonlySet<string>,
+): boolean {
+  if (!hasPositive(amount)) return true;
+  const key = pathKey(asset);
+  return Boolean(paths?.has(key)) || consentedResidue.has(key);
+}
+
+export interface UnroutableCredit {
+  readonly key: string;
+  readonly code: string;
+  readonly issuer: string;
+  readonly amount: string;
+}
+
+// positive credit balances with no XLM conversion path and no return-to-issuer
+// consent. While any of these exist the account cannot fully merge, since their
+// trustlines can't be removed with a live balance.
+export function unroutableCredits(
+  audit: AccountAudit,
+  paths: ReadonlyMap<string, PathResultRef> | undefined,
+  returnToIssuerAssetKeys?: readonly string[],
+): readonly UnroutableCredit[] {
+  const consent = new Set(returnToIssuerAssetKeys ?? []);
+  const out: UnroutableCredit[] = [];
+  for (const b of audit.balances) {
+    if (b.asset.kind !== "credit") continue;
+    if (!hasPositive(b.amount)) continue;
+    const key = pathKey(b.asset);
+    if (paths?.has(key) || consent.has(key)) continue;
+    out.push({ key, code: b.asset.code, issuer: b.asset.issuer, amount: b.amount });
+  }
+  return out;
 }

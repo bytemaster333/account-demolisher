@@ -5,9 +5,15 @@ import {
   batchClassicDemolition,
   isResidueOp,
   MAX_OPS_PER_TX,
+  unroutableCredits,
 } from "@/lib/plan/classic-batcher";
 import type { AccountAudit } from "@/lib/types/account";
-import type { BatchOptions, BatchedOperation, ClassicOpKind } from "@/lib/types/plan";
+import type {
+  BatchOptions,
+  BatchedOperation,
+  ClassicOpKind,
+  PathResultRef,
+} from "@/lib/types/plan";
 
 const ACC = Keypair.random().publicKey();
 const OTHER = Keypair.random().publicKey();
@@ -159,7 +165,11 @@ describe("batchClassicDemolition — canonical ordering", () => {
     sponsorship: { numSponsoring: 1, numSponsored: 0, coverable: 1 },
   });
 
-  const ops = allOps(batchClassicDemolition(richAudit, directOptions));
+  // supply an XLM path for the USDC balance so it converts via path payment
+  const richPaths = new Map<string, PathResultRef>([
+    [`USDC:${ISSUER}`, { destinationAmount: "95", path: [], sourceAmount: "100" }],
+  ]);
+  const ops = allOps(batchClassicDemolition(richAudit, directOptions, richPaths));
 
   it("emits ops in non-decreasing phase order and merges last", () => {
     const phases = ops.map((o) => PHASE[o.kind]);
@@ -174,8 +184,9 @@ describe("batchClassicDemolition — canonical ordering", () => {
     expect(kinds).toContain("liquidity_pool_withdraw");
     expect(kinds).toContain("manage_sell_offer_cancel");
     expect(kinds).toContain("claim_claimable_balance");
-    expect(kinds).toContain("return_residue_to_issuer"); // no path supplied => residue fallback
-    expect(kinds.filter((k) => k === "change_trust_remove")).toHaveLength(2); // pool-share + credit
+    expect(kinds).toContain("path_payment_strict_send"); // USDC converts via the supplied path
+    expect(kinds).not.toContain("return_residue_to_issuer");
+    expect(kinds.filter((k) => k === "change_trust_remove")).toHaveLength(2); // pool-share + USDC
     expect(kinds).toContain("manage_data_delete");
     expect(kinds).toContain("set_options_clear_signers");
   });
@@ -259,6 +270,65 @@ describe("batchClassicDemolition — claimable-balance opt-in", () => {
       batchClassicDemolition(locked, { ...directOptions, claimableBalanceIds: ["cbLocked"] }),
     ).filter((o) => o.kind === "claim_claimable_balance");
     expect(claims).toHaveLength(0);
+  });
+});
+
+describe("batchClassicDemolition — un-routable credit handling", () => {
+  const key = `USDC:${ISSUER}`;
+  const withCredit = makeAudit({
+    balances: [
+      {
+        asset: { kind: "credit", code: "USDC", issuer: ISSUER },
+        amount: "100",
+        buyingLiabilities: "0",
+        sellingLiabilities: "0",
+      },
+    ],
+  });
+
+  it("leaves an un-routable, unconsented balance untouched — no residue, trustline kept", () => {
+    const kinds = allOps(batchClassicDemolition(withCredit, directOptions)).map((o) => o.kind);
+    expect(kinds).not.toContain("return_residue_to_issuer");
+    expect(kinds).not.toContain("path_payment_strict_send");
+    expect(kinds).not.toContain("change_trust_remove"); // live balance => trustline stays
+    expect(unroutableCredits(withCredit, undefined, undefined)).toHaveLength(1);
+  });
+
+  it("returns to issuer only with explicit consent, then removes the trustline", () => {
+    const opts: BatchOptions = { ...directOptions, returnToIssuerAssetKeys: [key] };
+    const kinds = allOps(batchClassicDemolition(withCredit, opts)).map((o) => o.kind);
+    expect(kinds.filter((k) => k === "return_residue_to_issuer")).toHaveLength(1);
+    expect(kinds.filter((k) => k === "change_trust_remove")).toHaveLength(1);
+    expect(unroutableCredits(withCredit, undefined, [key])).toHaveLength(0);
+  });
+
+  it("converts via path payment when a path exists, then removes the trustline", () => {
+    const paths = new Map<string, PathResultRef>([
+      [key, { destinationAmount: "95", path: [], sourceAmount: "100" }],
+    ]);
+    const kinds = allOps(batchClassicDemolition(withCredit, directOptions, paths)).map(
+      (o) => o.kind,
+    );
+    expect(kinds.filter((k) => k === "path_payment_strict_send")).toHaveLength(1);
+    expect(kinds).not.toContain("return_residue_to_issuer");
+    expect(kinds.filter((k) => k === "change_trust_remove")).toHaveLength(1);
+    expect(unroutableCredits(withCredit, paths, undefined)).toHaveLength(0);
+  });
+
+  it("treats a zero-balance credit line as removable, not un-routable", () => {
+    const zero = makeAudit({
+      balances: [
+        {
+          asset: { kind: "credit", code: "ZERO", issuer: ISSUER },
+          amount: "0",
+          buyingLiabilities: "0",
+          sellingLiabilities: "0",
+        },
+      ],
+    });
+    const kinds = allOps(batchClassicDemolition(zero, directOptions)).map((o) => o.kind);
+    expect(kinds.filter((k) => k === "change_trust_remove")).toHaveLength(1);
+    expect(unroutableCredits(zero, undefined, undefined)).toHaveLength(0);
   });
 });
 
