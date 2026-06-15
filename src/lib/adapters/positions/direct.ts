@@ -13,6 +13,7 @@ import {
   type AquariusPoolProvider,
 } from "@/lib/adapters/aquarius/pools";
 import { getUserVaults, type FxDAOVault } from "@/lib/adapters/fxdao/client";
+import { discoverSoroswapPositions } from "@/lib/adapters/soroswap/discovery";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import type { rpc } from "@stellar/stellar-sdk";
 import type { NetworkConfig } from "@/lib/config/networks";
@@ -192,19 +193,14 @@ export class DirectContractProvider implements IDeFiPositionProvider {
     return pools.map(aquariusPoolToSummary);
   }
 
-  // Soroswap has no per-user position index and LP tokens are one contract per
-  // pair, so auto-discovery would mean enumerating every pair via the factory
-  // and probing each user balance — impractical on-chain and unverifiable
-  // without live liquidity. Rather than throw an opaque error every run, we
-  // report the limitation honestly (surfaced as a discovery warning) and return
-  // no positions. A configured DeFi position API (D2) would supply these; a
-  // known Soroswap LP can still be closed via the WithdrawSoroswapLp exit path.
+  // our own on-chain Soroswap LP discovery — walks the factory's pair list and
+  // probes the user's LP balance on each pair. No third-party position API.
   private async discoverSoroswap(
-    _server: rpc.Server,
-    _network: NetworkConfig,
-    _userAddress: string,
+    server: rpc.Server,
+    network: NetworkConfig,
+    userAddress: string,
   ): Promise<readonly SoroswapPositionSummary[]> {
-    throw new SoroswapDiscoveryUnavailable();
+    return discoverSoroswapPositions(server, network, userAddress);
   }
 
   private async discoverFxDAO(
@@ -217,18 +213,6 @@ export class DirectContractProvider implements IDeFiPositionProvider {
 }
 
 export { EMPTY_POSITIONS };
-
-// distinct error type so the UI can recognize the "known limitation" case and
-// phrase it as guidance rather than a failure.
-export class SoroswapDiscoveryUnavailable extends Error {
-  constructor() {
-    super(
-      "Soroswap LP positions can't be auto-discovered (no position index available). " +
-        "If this account holds Soroswap LP shares, withdraw them before closing.",
-    );
-    this.name = "SoroswapDiscoveryUnavailable";
-  }
-}
 
 // drop a pool entry if every balance map is empty or all-zero
 function hasAnyNonZeroBlendBalance(p: BlendUserPositions): boolean {
