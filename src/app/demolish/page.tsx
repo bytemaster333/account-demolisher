@@ -4,7 +4,7 @@
 // wires the page-flow xstate machine and the plan tree
 
 import { useMachine } from "@xstate/react";
-import { StrKey } from "@stellar/stellar-sdk";
+import { Keypair, StrKey } from "@stellar/stellar-sdk";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
 
@@ -21,20 +21,23 @@ import {
 import { SponsoringBlock } from "@/components/warnings/SponsoringBlock";
 import { ConnectButton } from "@/components/wallet/ConnectButton";
 import { CreateTestAccountButton } from "@/components/wallet/CreateTestAccountButton";
+import { MultisigSigners, type AddedSigner } from "@/components/wallet/MultisigSigners";
 import { SecretKeyFallback } from "@/components/wallet/SecretKeyFallback";
 import { explorerTxUrl } from "@/lib/wallet/demo-account";
 import Link from "next/link";
 import { getPublicEnv } from "@/lib/config/env";
 import { resolveNetwork, type NetworkConfig } from "@/lib/config/networks";
 import { pageFlowMachine } from "@/lib/orchestrator/page-flow-machine";
+import { auditAccount } from "@/lib/stellar/account-audit";
 import { lookupCex, type CexInfo } from "@/lib/safety/cex-registry";
 import { requireMemoEnforcement } from "@/lib/safety/memo-enforcement";
 import { topologicalOrder, type PlanNode } from "@/lib/plan/tree";
-import type { AccountAudit, ClaimableBalanceEntry } from "@/lib/types/account";
+import type { AccountAudit, AuditSigner, ClaimableBalanceEntry } from "@/lib/types/account";
 import type { ClassicMemo } from "@/lib/types/plan";
 import type { Connector } from "@/lib/wallet/connector";
 import { WalletKitConnector } from "@/lib/wallet/connector";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
+import { MultiSignerConnector, type MultiSignerMember } from "@/lib/wallet/multi-signer";
 import { useWalletStore } from "@/stores/wallet";
 
 const HIGH_VALUE_THRESHOLD_XLM = 1000;
@@ -248,6 +251,77 @@ function DemolishFlow(): React.JSX.Element {
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
   const [formError, setFormError] = useState<string | null>(null);
 
+  // multisig: preflight the connected account for its signature threshold, then
+  // collect additional signer secret keys until the combined weight meets it.
+  const [multisig, setMultisig] = useState<{
+    readonly required: boolean;
+    readonly threshold: number;
+    readonly signers: readonly AuditSigner[];
+  } | null>(null);
+  const [extraSigners, setExtraSigners] = useState<
+    readonly {
+      readonly publicKey: string;
+      readonly weight: number;
+      readonly connector: Connector;
+    }[]
+  >([]);
+
+  // preflight the connected account so the configure step knows up-front whether
+  // it needs multiple signatures (a lightweight, read-only audit). Disconnect
+  // resets are handled in setConnector, so the effect only does the async load.
+  useEffect(() => {
+    if (!publicKey) return;
+    let cancelled = false;
+    auditAccount(publicKey, network)
+      .then((a) => {
+        if (cancelled) return;
+        setMultisig({
+          required: a.requiresMultisig,
+          threshold: a.thresholds.high,
+          signers: a.signers,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setMultisig(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [publicKey, network]);
+
+  const primaryWeight = useMemo(() => {
+    if (!multisig || !publicKey) return 0;
+    return multisig.signers.find((s) => s.key === publicKey)?.weight ?? 0;
+  }, [multisig, publicKey]);
+  const collectedWeight = primaryWeight + extraSigners.reduce((sum, s) => sum + s.weight, 0);
+  const multisigRequired = publicKey !== null && multisig?.required === true;
+  const multisigReady = !multisigRequired || collectedWeight >= (multisig?.threshold ?? 0);
+
+  const onAddSecretSigner = useCallback(
+    (secret: string): string | null => {
+      if (!multisig || !publicKey) return "Connect an account first.";
+      if (!StrKey.isValidEd25519SecretSeed(secret)) return "Not a valid Stellar secret key (S…).";
+      let pk: string;
+      try {
+        pk = Keypair.fromSecret(secret).publicKey();
+      } catch {
+        return "Could not derive a public key from that secret.";
+      }
+      if (pk === publicKey) return "That is the already-connected signer.";
+      if (extraSigners.some((s) => s.publicKey === pk)) return "That signer is already added.";
+      const signer = multisig.signers.find((s) => s.key === pk && s.weight > 0);
+      if (!signer) return "That key is not an authorized signer on this account.";
+      const connector = new SecretKeyConnector(secret);
+      setExtraSigners((prev) => [...prev, { publicKey: pk, weight: signer.weight, connector }]);
+      return null;
+    },
+    [multisig, publicKey, extraSigners],
+  );
+
+  const onRemoveSigner = useCallback((pk: string) => {
+    setExtraSigners((prev) => prev.filter((s) => s.publicKey !== pk));
+  }, []);
+
   // two-stage confirm: highvalue first (if balance > threshold), then typed. typed is never bypassable
   type ConfirmStage = "idle" | "highvalue" | "typed";
   const [confirmStage, setConfirmStage] = useState<ConfirmStage>("idle");
@@ -311,6 +385,9 @@ function DemolishFlow(): React.JSX.Element {
   const setConnector = useCallback((c: Connector | null) => {
     connectorRef.current = c;
     setHasConnector(c !== null);
+    // a new/cleared connection invalidates any collected multisig signers
+    setMultisig(null);
+    setExtraSigners([]);
   }, []);
 
   const onStart = useCallback(() => {
@@ -341,12 +418,33 @@ function DemolishFlow(): React.JSX.Element {
       }
     }
 
+    // for a multisig account, gather every collected signer into one connector
+    // that signs each transaction with all of them (meeting the threshold).
+    let connector: Connector = connectorRef.current;
+    if (multisigRequired) {
+      if (!multisigReady) {
+        setFormError(
+          `This account needs signing weight ${multisig?.threshold ?? 0}; you have ${collectedWeight}. Add more signer keys.`,
+        );
+        return;
+      }
+      const members: MultiSignerMember[] = [
+        { connector: connectorRef.current, publicKey, weight: primaryWeight },
+        ...extraSigners.map((s) => ({
+          connector: s.connector,
+          publicKey: s.publicKey,
+          weight: s.weight,
+        })),
+      ];
+      connector = new MultiSignerConnector(publicKey, members);
+    }
+
     send({
       type: "START",
       input: {
         publicKey,
         network,
-        connector: connectorRef.current,
+        connector,
         destination: parsed.data.destination,
         useMediator,
         ...(memo ? { memo } : {}),
@@ -357,7 +455,20 @@ function DemolishFlow(): React.JSX.Element {
         ...(form.returnToIssuer.length > 0 ? { returnToIssuerAssetKeys: form.returnToIssuer } : {}),
       },
     });
-  }, [form, publicKey, network, useMediator, cex, send]);
+  }, [
+    form,
+    publicKey,
+    network,
+    useMediator,
+    cex,
+    send,
+    multisigRequired,
+    multisigReady,
+    multisig,
+    collectedWeight,
+    primaryWeight,
+    extraSigners,
+  ]);
 
   const onCancel = useCallback(() => {
     setConfirmStage("idle");
@@ -525,6 +636,17 @@ function DemolishFlow(): React.JSX.Element {
                       {isConfiguring && !(isDiscovering || isPreviewing) ? (
                         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
                           <DiscoveryWarnings warnings={ctx.discoveryWarnings} />
+                          {multisigRequired && multisig ? (
+                            <MultisigSigners
+                              threshold={multisig.threshold}
+                              currentWeight={collectedWeight}
+                              added={extraSigners.map(
+                                (s): AddedSigner => ({ publicKey: s.publicKey, weight: s.weight }),
+                              )}
+                              onAddSecret={onAddSecretSigner}
+                              onRemove={onRemoveSigner}
+                            />
+                          ) : null}
                           {audit && numCoverable > 0 ? (
                             <SponsorshipAutoRevokeNotice count={numCoverable} />
                           ) : null}
@@ -540,7 +662,7 @@ function DemolishFlow(): React.JSX.Element {
                             hasMemo={hasMemo}
                             formError={formError}
                             isBusy={false}
-                            canStart={publicKey !== null && hasConnector}
+                            canStart={publicKey !== null && hasConnector && multisigReady}
                             onGeneratePlan={onStart}
                             audit={audit}
                             isDemo={isDemo}
