@@ -96,13 +96,16 @@ export function evaluateScamHeuristics(subject: TokenSubject): readonly ScamFlag
       }
     }
 
-    // suspicious character class — runs regardless of tier-1 status so a
-    // collision + suspicious-character combo (e.g. cyrillic usdс) both fire
-    if (!/^[A-Z0-9]+$/.test(rawSymbol)) {
+    // suspicious character class — flags non-ASCII-alphanumeric symbols
+    // (homoglyphs, cyrillic, accents). Lowercase ASCII is a valid (if unusual)
+    // Stellar asset code, so it must NOT trip this — otherwise every lowercase
+    // code is a false positive. Case impersonation is caught by the collision /
+    // lookalike checks above, which compare upper-cased.
+    if (!/^[A-Za-z0-9]+$/.test(rawSymbol)) {
       flags.push({
         id: "suspicious_character",
         severity: "critical",
-        message: `Symbol "${rawSymbol}" contains characters outside [A-Z0-9]. Legitimate SEP-1 issuers do not use homoglyphs or accents.`,
+        message: `Symbol "${rawSymbol}" contains characters outside [A-Za-z0-9]. Legitimate SEP-1 issuers do not use homoglyphs or accents.`,
         detail: { symbol: rawSymbol },
       });
     }

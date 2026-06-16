@@ -14,6 +14,7 @@ import { TypedConfirmation } from "@/components/confirmations/TypedConfirmation"
 import { AuthImmutableBlock } from "@/components/warnings/AuthImmutableBlock";
 import { DiscoveryWarnings } from "@/components/warnings/DiscoveryWarnings";
 import { ResidueConsent } from "@/components/warnings/ResidueConsent";
+import { ScamTokenNotice } from "@/components/warnings/ScamTokenNotice";
 import {
   PendingClaimableBalances,
   type PendingClaimableBalanceEntry,
@@ -29,8 +30,8 @@ import { getPublicEnv } from "@/lib/config/env";
 import { resolveNetwork, type NetworkConfig } from "@/lib/config/networks";
 import { pageFlowMachine } from "@/lib/orchestrator/page-flow-machine";
 import { auditAccount } from "@/lib/stellar/account-audit";
-import { lookupCex, type CexInfo } from "@/lib/safety/cex-registry";
-import { requireMemoEnforcement } from "@/lib/safety/memo-enforcement";
+import { lookupCex, requireMemoEnforcement, type CexInfo } from "@/lib/safety/cex-registry";
+import { runScamHeuristics } from "@/lib/safety/scam-heuristics";
 import { topologicalOrder, type PlanNode } from "@/lib/plan/tree";
 import type { AccountAudit, AuditSigner, ClaimableBalanceEntry } from "@/lib/types/account";
 import type { ClassicMemo } from "@/lib/types/plan";
@@ -333,6 +334,10 @@ function DemolishFlow(): React.JSX.Element {
   const audit = ctx.audit;
   const tree = ctx.tree;
 
+  // scam heuristics over the account's held credit balances (look-alike symbols,
+  // homoglyphs, off-allowlist contracts) — surfaced as an informational notice.
+  const scamFindings = useMemo(() => (audit ? runScamHeuristics(audit.balances) : []), [audit]);
+
   const isMachineIdle = state === "idle";
   const isDiscovering = state === "discovering";
   const isPreviewing = state === "previewing";
@@ -409,13 +414,12 @@ function DemolishFlow(): React.JSX.Element {
 
     const memo = parseMemo(form);
 
-    // hard refusal when destination is a CEX requiring a memo and the memo is missing or wrong type
-    if (cex !== null) {
-      const check = requireMemoEnforcement(cex, memo);
-      if (!check.ok) {
-        setFormError(check.reason);
-        return;
-      }
+    // hard refusal when the destination is a CEX and the memo is missing, the
+    // wrong type, or malformed (strict value validation, not just presence)
+    const memoCheck = requireMemoEnforcement(parsed.data.destination, memo);
+    if (!memoCheck.ok) {
+      setFormError(memoCheck.reason);
+      return;
     }
 
     // for a multisig account, gather every collected signer into one connector
@@ -460,7 +464,6 @@ function DemolishFlow(): React.JSX.Element {
     publicKey,
     network,
     useMediator,
-    cex,
     send,
     multisigRequired,
     multisigReady,
@@ -636,6 +639,7 @@ function DemolishFlow(): React.JSX.Element {
                       {isConfiguring && !(isDiscovering || isPreviewing) ? (
                         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
                           <DiscoveryWarnings warnings={ctx.discoveryWarnings} />
+                          <ScamTokenNotice findings={scamFindings} />
                           {multisigRequired && multisig ? (
                             <MultisigSigners
                               threshold={multisig.threshold}

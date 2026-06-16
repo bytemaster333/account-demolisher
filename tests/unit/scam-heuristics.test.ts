@@ -153,10 +153,11 @@ describe("evaluateScamHeuristics — suspicious_character", () => {
   });
 
   it("flags any lowercase symbol because the class check is case-sensitive", () => {
-    // the [A-Z0-9] class is applied to the RAW (non-uppercased) symbol, so
-    // lowercase letters count as 'suspicious'. documenting real behavior.
+    // lowercase ASCII is a valid (if unusual) Stellar asset code and must NOT
+    // trip suspicious_character — case impersonation is caught by the lookalike
+    // / collision checks instead.
     const flags = evaluateScamHeuristics({ symbol: "usdt" });
-    expect(ids(flags)).toContain("suspicious_character");
+    expect(ids(flags)).not.toContain("suspicious_character");
   });
 
   it("flags punctuation / whitespace inside a non-empty symbol", () => {
@@ -229,8 +230,9 @@ describe("runScamHeuristics", () => {
   });
 
   it("emits multiple findings for a single asset that trips several heuristics", () => {
-    // lowercase lookalike -> suspicious_character + lookalike_symbol.
-    const findings = runScamHeuristics([credit("usdt", IMPOSTOR)]);
+    // "USD" + cyrillic С (U+0421): a homoglyph (suspicious_character) that is
+    // also one edit away from USDC (lookalike_symbol).
+    const findings = runScamHeuristics([credit("USDС", IMPOSTOR)]);
     const flagIds = findings.map((f) => f.flag.id);
     expect(flagIds).toContain("suspicious_character");
     expect(flagIds).toContain("lookalike_symbol");
