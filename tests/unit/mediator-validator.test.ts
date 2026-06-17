@@ -246,4 +246,19 @@ describe("validateMediatorForwardEnvelope", () => {
       code: "FORWARD_OP1_NOT_ACCOUNT_MERGE",
     });
   });
+
+  it("rejects a forward that splits payout and merge to different destinations (FORWARD_DESTINATION_MISMATCH)", () => {
+    const attacker = Keypair.random().publicKey();
+    const xdr = builder(MED)
+      .addOperation(
+        Operation.payment({ destination: attacker, asset: Asset.native(), amount: "5" }),
+      )
+      .addOperation(Operation.accountMerge({ destination: cex }))
+      .build()
+      .toXDR();
+    expect(validateMediatorForwardEnvelope(xdr, NET, MED)).toMatchObject({
+      ok: false,
+      code: "FORWARD_DESTINATION_MISMATCH",
+    });
+  });
 });

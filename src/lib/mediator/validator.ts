@@ -25,7 +25,8 @@ export type ValidationFailureCode =
   | "FORWARD_OP0_ASSET_NOT_NATIVE"
   | "FORWARD_OP0_SOURCE_NOT_MEDIATOR"
   | "FORWARD_OP1_NOT_ACCOUNT_MERGE"
-  | "FORWARD_OP1_SOURCE_NOT_MEDIATOR";
+  | "FORWARD_OP1_SOURCE_NOT_MEDIATOR"
+  | "FORWARD_DESTINATION_MISMATCH";
 
 // max maxTime horizon. shields against replay of a leaked envelope
 export const MAX_TIME_BOUND_SECONDS = 3600;
@@ -227,6 +228,16 @@ export function validateMediatorForwardEnvelope(
       ok: false,
       code: "FORWARD_OP1_SOURCE_NOT_MEDIATOR",
       reason: "Forward accountMerge source must be the mediator (or omitted to inherit it).",
+    };
+  }
+  // the payout (op0) and the reserve-reclaiming merge (op1) must go to the SAME
+  // final destination. Without this, a crafted envelope could pay the mediator's
+  // balance to an attacker while merging the reserve elsewhere.
+  if (op0.destination !== op1.destination) {
+    return {
+      ok: false,
+      code: "FORWARD_DESTINATION_MISMATCH",
+      reason: "Forward payment and accountMerge must target the same destination.",
     };
   }
 
