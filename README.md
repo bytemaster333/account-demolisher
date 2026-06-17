@@ -32,9 +32,10 @@ Optional:
 - `NEXT_PUBLIC_STELLAR_NETWORK` — `mainnet` | `testnet` | `futurenet` (default `testnet`)
 - `NEXT_PUBLIC_HORIZON_URL` — override Horizon endpoint
 - `NEXT_PUBLIC_RPC_URL` — override Soroban RPC endpoint
-- `SOROSWAP_API_KEY` — for the swap aggregator
-- `ORION_API_URL`, `ORION_API_KEY` — DeFi positions provider
-- `OCTOPOS_API_URL`, `OCTOPOS_API_KEY` — DeFi positions provider (fallback)
+- `SOROSWAP_API_KEY` — for the swap aggregator (converting non-XLM balances to XLM)
+
+DeFi positions (Blend / Aquarius / Soroswap / FxDAO) are discovered on-chain — no
+third-party position API or key is required.
 
 ## Scripts
 

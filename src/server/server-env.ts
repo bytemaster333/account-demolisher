@@ -17,10 +17,6 @@ const ServerEnvSchema = z.object({
       .length(56)
       .optional(),
   ),
-  ORION_API_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
-  ORION_API_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
-  OCTOPOS_API_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
-  OCTOPOS_API_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
   SOROSWAP_API_URL: z.preprocess(
     emptyToUndefined,
     z.string().url().default("https://api.soroswap.finance"),
@@ -36,10 +32,6 @@ export function getServerEnv(): ServerEnv {
   if (cached) return cached;
   const parsed = ServerEnvSchema.safeParse({
     MEDIATOR_SECRET: process.env.MEDIATOR_SECRET,
-    ORION_API_URL: process.env.ORION_API_URL,
-    ORION_API_KEY: process.env.ORION_API_KEY,
-    OCTOPOS_API_URL: process.env.OCTOPOS_API_URL,
-    OCTOPOS_API_KEY: process.env.OCTOPOS_API_KEY,
     SOROSWAP_API_URL: process.env.SOROSWAP_API_URL,
     SOROSWAP_API_KEY: process.env.SOROSWAP_API_KEY,
   });

@@ -43,39 +43,17 @@ export interface ProtocolPositions {
   readonly errors: readonly { protocol: string; message: string }[];
 }
 
-export type DeFiPositionProviderName = "orion" | "octopos" | "direct";
+// only one provider now: our own on-chain discovery. (OctoPos/Orion REST shells
+// were removed — the chain doesn't index positions, so we probe contracts.)
+export type DeFiPositionProviderName = "direct";
 
 // common shape every position-discovery adapter implements
 export interface IDeFiPositionProvider {
   readonly name: DeFiPositionProviderName;
-  // lightweight probe; MUST NOT throw. returns false when source isn't reachable or configured
+  // lightweight probe; MUST NOT throw. returns false when source isn't reachable
   isAvailable(): Promise<boolean>;
-  // throws ProviderUnavailable when the source isn't reachable
+  // per-protocol failures are collected into ProtocolPositions.errors, not thrown
   getPositions(userAddress: string, network: NetworkConfig): Promise<ProtocolPositions>;
-}
-
-// thrown when a provider's backing source isn't reachable. selector catches and falls over
-export class ProviderUnavailable extends Error {
-  readonly provider: DeFiPositionProviderName;
-  override readonly cause: unknown;
-  constructor(provider: DeFiPositionProviderName, message: string, cause?: unknown) {
-    super(message);
-    this.name = "ProviderUnavailable";
-    this.provider = provider;
-    this.cause = cause;
-  }
-}
-
-// thrown when an upstream's response shape doesn't match the contract. hard failure
-export class ProviderSchemaMismatch extends Error {
-  readonly provider: DeFiPositionProviderName;
-  readonly issues: string;
-  constructor(provider: DeFiPositionProviderName, issues: string) {
-    super(`Provider "${provider}" returned an invalid response: ${issues}`);
-    this.name = "ProviderSchemaMismatch";
-    this.provider = provider;
-    this.issues = issues;
-  }
 }
 
 // empty constant for the "nothing to report" case
