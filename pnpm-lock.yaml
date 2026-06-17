@@ -17,9 +17,6 @@ importers:
       '@soroswap/sdk':
         specifier: 0.4.0
         version: 0.4.0
-      '@stellar-expert/tx-signers-inspector':
-        specifier: 1.8.2
-        version: 1.8.2(@stellar/stellar-sdk@14.4.3)
       '@stellar/stellar-sdk':
         specifier: 14.4.3
         version: 14.4.3
@@ -1540,12 +1537,6 @@ packages:
 
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
-
-  '@stellar-expert/tx-signers-inspector@1.8.2':
-    resolution: {integrity: sha512-ScWB9eyXJYrs1FijMcP6H4m8H07SXufXj+8LJQaLXBipNyRNriMMq39APzQ1IG5c9kk/M5VHSiij3Xwt7yz7dw==}
-    engines: {node: '>=18'}
-    peerDependencies:
-      '@stellar/stellar-sdk': '>11'
 
   '@stellar/freighter-api@6.0.0':
     resolution: {integrity: sha512-8CTQcKQmTq/wL715ZUzn1x1POpR0eYhYPKEiaeA7AT0WYBOauOGTxfWPFtSidX3ohAlJZP5HFXy1kG29cVjqxw==}
@@ -6987,10 +6978,6 @@ snapshots:
       - supports-color
 
   '@standard-schema/spec@1.1.0': {}
-
-  '@stellar-expert/tx-signers-inspector@1.8.2(@stellar/stellar-sdk@14.4.3)':
-    dependencies:
-      '@stellar/stellar-sdk': 14.4.3
 
   '@stellar/freighter-api@6.0.0':
     dependencies:

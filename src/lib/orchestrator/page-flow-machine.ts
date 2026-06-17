@@ -13,7 +13,7 @@ import {
   type UnroutableCredit,
 } from "@/lib/plan/classic-batcher";
 import { hydratePlanTransactions } from "@/lib/plan/hydration";
-import { executePlanTreeOnChain, type ConfirmationReceipt } from "@/lib/orchestrator/machine";
+import { executePlanTreeOnChain, type ConfirmationReceipt } from "@/lib/orchestrator/executor";
 import { auditAccount } from "@/lib/stellar/account-audit";
 import { resolveCreditPaths } from "@/lib/stellar/path-finder";
 import { getHorizon } from "@/lib/stellar/horizon-client";

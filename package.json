@@ -26,7 +26,6 @@
     "@blend-capital/blend-sdk": "3.2.2",
     "@creit.tech/stellar-wallets-kit": "2.3.0",
     "@soroswap/sdk": "0.4.0",
-    "@stellar-expert/tx-signers-inspector": "1.8.2",
     "@stellar/stellar-sdk": "14.4.3",
     "@xstate/react": "6.1.0",
     "clsx": "2.1.1",
