@@ -1,0 +1,13 @@
+# Convenience wrapper: `docker compose up --build`
+# Reads server-only secrets from a .env file (not committed). Public config is
+# baked at build time and defaults to testnet.
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      # server-only; leave unset to run without the CEX mediator / swap key
+      MEDIATOR_SECRET: ${MEDIATOR_SECRET:-}
+      SOROSWAP_API_KEY: ${SOROSWAP_API_KEY:-}
+    restart: unless-stopped

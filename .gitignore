@@ -67,6 +67,8 @@ design/
 # os
 Thumbs.db
 
-# all markdown by default except README
+# all markdown by default except the tracked deliverable docs
 *.md
 !README.md
+!SECURITY.md
+!ARCHITECTURE.md
