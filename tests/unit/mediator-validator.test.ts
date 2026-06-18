@@ -9,15 +9,13 @@ import {
   Transaction,
   TransactionBuilder,
 } from "@stellar/stellar-sdk";
-import {
-  MAX_TIME_BOUND_SECONDS,
-  validateMediatorForwardEnvelope,
-  validateMergeEnvelope,
-} from "@/lib/mediator/validator";
+import { MAX_TIME_BOUND_SECONDS, validateMediatorForwardEnvelope } from "@/lib/mediator/validator";
 
 // The mediator co-signing validator is the primary server-side security
-// boundary: it decides which 2-op envelopes the mediator key will sign. These
-// tests lock in the exact shape it accepts and every reason it rejects.
+// boundary. The mediator ONLY signs the forward envelope: a mediator-sourced
+// native payout + accountMerge, both to the same destination. (The old "merge"
+// variant left op1's amount/destination unbounded — a mediator-siphon surface —
+// and was removed, so there is nothing else to accept.)
 
 const NET = Networks.TESTNET;
 const mediator = Keypair.random();
@@ -35,163 +33,44 @@ function builder(sourcePk: string, maxTimeOffset: number = 1800): TransactionBui
   });
 }
 
-// canonical, valid merge envelope: user merges into mediator, mediator funds
-function validMergeTx(): Transaction {
-  return builder(user)
-    .addOperation(Operation.accountMerge({ destination: MED }))
-    .addOperation(
-      Operation.payment({ source: MED, destination: user, asset: Asset.native(), amount: "1" }),
-    )
-    .build();
-}
-
 // canonical, valid forward envelope: mediator pays out then merges to the cex
-function validForwardXdr(): string {
+function validForwardTx(): Transaction {
   return builder(MED)
     .addOperation(Operation.payment({ destination: cex, asset: Asset.native(), amount: "5" }))
     .addOperation(Operation.accountMerge({ destination: cex }))
-    .build()
-    .toXDR();
+    .build();
 }
 
-describe("validateMergeEnvelope", () => {
-  it("accepts a well-formed 2-op merge envelope", () => {
-    const res = validateMergeEnvelope(validMergeTx().toXDR(), NET, MED);
+describe("validateMediatorForwardEnvelope", () => {
+  it("accepts a well-formed forward envelope", () => {
+    const res = validateMediatorForwardEnvelope(validForwardTx().toXDR(), NET, MED);
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.tx.operations).toHaveLength(2);
   });
 
-  it("rejects unparseable XDR with MALFORMED_XDR", () => {
-    const res = validateMergeEnvelope("definitely-not-xdr", NET, MED);
-    expect(res).toMatchObject({ ok: false, code: "MALFORMED_XDR" });
-  });
-
-  it("rejects fee-bump envelopes with FEE_BUMP_NOT_ALLOWED", () => {
-    const fb = TransactionBuilder.buildFeeBumpTransaction(mediator, "10000", validMergeTx(), NET);
-    const res = validateMergeEnvelope(fb.toXDR(), NET, MED);
-    expect(res).toMatchObject({ ok: false, code: "FEE_BUMP_NOT_ALLOWED" });
-  });
-
-  it("rejects a wrong operation count with WRONG_OPERATION_COUNT", () => {
-    const xdr = builder(user)
-      .addOperation(Operation.accountMerge({ destination: MED }))
-      .build()
-      .toXDR();
-    const res = validateMergeEnvelope(xdr, NET, MED);
-    expect(res).toMatchObject({ ok: false, code: "WRONG_OPERATION_COUNT" });
-  });
-
-  it("rejects when op0 is not accountMerge (OP0_NOT_ACCOUNT_MERGE)", () => {
-    const xdr = builder(user)
-      .addOperation(Operation.payment({ destination: MED, asset: Asset.native(), amount: "1" }))
-      .addOperation(
-        Operation.payment({ source: MED, destination: user, asset: Asset.native(), amount: "1" }),
-      )
-      .build()
-      .toXDR();
-    const res = validateMergeEnvelope(xdr, NET, MED);
-    expect(res).toMatchObject({ ok: false, code: "OP0_NOT_ACCOUNT_MERGE" });
-  });
-
-  it("rejects when merge destination is not the mediator (OP0_DESTINATION_NOT_MEDIATOR)", () => {
-    const xdr = builder(user)
-      .addOperation(Operation.accountMerge({ destination: cex }))
-      .addOperation(
-        Operation.payment({ source: MED, destination: user, asset: Asset.native(), amount: "1" }),
-      )
-      .build()
-      .toXDR();
-    const res = validateMergeEnvelope(xdr, NET, MED);
-    expect(res).toMatchObject({ ok: false, code: "OP0_DESTINATION_NOT_MEDIATOR" });
-  });
-
-  it("rejects when op1 is neither payment nor createAccount (OP1_NOT_PAYMENT_OR_CREATE_ACCOUNT)", () => {
-    const xdr = builder(user)
-      .addOperation(Operation.accountMerge({ destination: MED }))
-      .addOperation(Operation.bumpSequence({ source: MED, bumpTo: "2" }))
-      .build()
-      .toXDR();
-    const res = validateMergeEnvelope(xdr, NET, MED);
-    expect(res).toMatchObject({ ok: false, code: "OP1_NOT_PAYMENT_OR_CREATE_ACCOUNT" });
-  });
-
-  it("accepts createAccount as op1", () => {
-    const xdr = builder(user)
-      .addOperation(Operation.accountMerge({ destination: MED }))
-      .addOperation(
-        Operation.createAccount({ source: MED, destination: user, startingBalance: "1" }),
-      )
-      .build()
-      .toXDR();
-    expect(validateMergeEnvelope(xdr, NET, MED).ok).toBe(true);
-  });
-
-  it("rejects when op1 source is not the mediator (OP1_SOURCE_NOT_MEDIATOR)", () => {
-    const xdr = builder(user)
-      .addOperation(Operation.accountMerge({ destination: MED }))
-      .addOperation(Operation.payment({ destination: user, asset: Asset.native(), amount: "1" }))
-      .build()
-      .toXDR();
-    const res = validateMergeEnvelope(xdr, NET, MED);
-    expect(res).toMatchObject({ ok: false, code: "OP1_SOURCE_NOT_MEDIATOR" });
-  });
-
-  it("rejects a non-native op1 payment asset (OP1_ASSET_NOT_NATIVE)", () => {
-    const xdr = builder(user)
-      .addOperation(Operation.accountMerge({ destination: MED }))
-      .addOperation(
-        Operation.payment({
-          source: MED,
-          destination: user,
-          asset: new Asset("USD", otherIssuer),
-          amount: "1",
-        }),
-      )
-      .build()
-      .toXDR();
-    const res = validateMergeEnvelope(xdr, NET, MED);
-    expect(res).toMatchObject({ ok: false, code: "OP1_ASSET_NOT_NATIVE" });
-  });
-
-  it("rejects an envelope with no maxTime (MISSING_TIME_BOUNDS)", () => {
-    const xdr = new TransactionBuilder(new Account(user, "1"), {
-      fee: BASE_FEE,
-      networkPassphrase: NET,
-      timebounds: { minTime: 0, maxTime: 0 },
-    })
-      .addOperation(Operation.accountMerge({ destination: MED }))
-      .addOperation(
-        Operation.payment({ source: MED, destination: user, asset: Asset.native(), amount: "1" }),
-      )
-      .build()
-      .toXDR();
-    const res = validateMergeEnvelope(xdr, NET, MED);
-    expect(res).toMatchObject({ ok: false, code: "MISSING_TIME_BOUNDS" });
-  });
-
-  it("rejects a maxTime further than the allowed horizon (TIME_BOUNDS_EXCESSIVE)", () => {
-    const xdr = builder(user, MAX_TIME_BOUND_SECONDS + 3600)
-      .addOperation(Operation.accountMerge({ destination: MED }))
-      .addOperation(
-        Operation.payment({ source: MED, destination: user, asset: Asset.native(), amount: "1" }),
-      )
-      .build()
-      .toXDR();
-    const res = validateMergeEnvelope(xdr, NET, MED);
-    expect(res).toMatchObject({ ok: false, code: "TIME_BOUNDS_EXCESSIVE" });
-  });
-});
-
-describe("validateMediatorForwardEnvelope", () => {
-  it("accepts a well-formed forward envelope", () => {
-    const res = validateMediatorForwardEnvelope(validForwardXdr(), NET, MED);
-    expect(res.ok).toBe(true);
-  });
-
-  it("rejects unparseable XDR with MALFORMED_XDR", () => {
+  it("rejects unparseable XDR (MALFORMED_XDR)", () => {
     expect(validateMediatorForwardEnvelope("nope", NET, MED)).toMatchObject({
       ok: false,
       code: "MALFORMED_XDR",
+    });
+  });
+
+  it("rejects fee-bump envelopes (FEE_BUMP_NOT_ALLOWED)", () => {
+    const fb = TransactionBuilder.buildFeeBumpTransaction(mediator, "10000", validForwardTx(), NET);
+    expect(validateMediatorForwardEnvelope(fb.toXDR(), NET, MED)).toMatchObject({
+      ok: false,
+      code: "FEE_BUMP_NOT_ALLOWED",
+    });
+  });
+
+  it("rejects a wrong operation count (WRONG_OPERATION_COUNT)", () => {
+    const xdr = builder(MED)
+      .addOperation(Operation.accountMerge({ destination: cex }))
+      .build()
+      .toXDR();
+    expect(validateMediatorForwardEnvelope(xdr, NET, MED)).toMatchObject({
+      ok: false,
+      code: "WRONG_OPERATION_COUNT",
     });
   });
 
@@ -247,7 +126,7 @@ describe("validateMediatorForwardEnvelope", () => {
     });
   });
 
-  it("rejects a forward that splits payout and merge to different destinations (FORWARD_DESTINATION_MISMATCH)", () => {
+  it("rejects splitting payout and merge to different destinations (FORWARD_DESTINATION_MISMATCH)", () => {
     const attacker = Keypair.random().publicKey();
     const xdr = builder(MED)
       .addOperation(
@@ -259,6 +138,34 @@ describe("validateMediatorForwardEnvelope", () => {
     expect(validateMediatorForwardEnvelope(xdr, NET, MED)).toMatchObject({
       ok: false,
       code: "FORWARD_DESTINATION_MISMATCH",
+    });
+  });
+
+  it("rejects a missing/zero maxTime (MISSING_TIME_BOUNDS)", () => {
+    const xdr = new TransactionBuilder(new Account(MED, "1"), {
+      fee: BASE_FEE,
+      networkPassphrase: NET,
+      timebounds: { minTime: 0, maxTime: 0 },
+    })
+      .addOperation(Operation.payment({ destination: cex, asset: Asset.native(), amount: "5" }))
+      .addOperation(Operation.accountMerge({ destination: cex }))
+      .build()
+      .toXDR();
+    expect(validateMediatorForwardEnvelope(xdr, NET, MED)).toMatchObject({
+      ok: false,
+      code: "MISSING_TIME_BOUNDS",
+    });
+  });
+
+  it("rejects a maxTime beyond the allowed horizon (TIME_BOUNDS_EXCESSIVE)", () => {
+    const xdr = builder(MED, MAX_TIME_BOUND_SECONDS + 3600)
+      .addOperation(Operation.payment({ destination: cex, asset: Asset.native(), amount: "5" }))
+      .addOperation(Operation.accountMerge({ destination: cex }))
+      .build()
+      .toXDR();
+    expect(validateMediatorForwardEnvelope(xdr, NET, MED)).toMatchObject({
+      ok: false,
+      code: "TIME_BOUNDS_EXCESSIVE",
     });
   });
 });

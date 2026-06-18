@@ -2,7 +2,7 @@
 
 import { getPublicEnv } from "@/lib/config/env";
 import { resolveNetwork } from "@/lib/config/networks";
-import { validateMediatorForwardEnvelope, validateMergeEnvelope } from "@/lib/mediator/validator";
+import { validateMediatorForwardEnvelope } from "@/lib/mediator/validator";
 import { getMediatorKeypair } from "@/server/mediator-secret";
 
 // node runtime: getMediatorKeypair() and the validator pull in stellar-sdk, which isn't edge-compatible
@@ -140,7 +140,6 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   let envelopeXdr: string;
-  let kind: "merge" | "forward" = "merge";
   try {
     const raw = (await request.json()) as unknown;
     if (typeof raw !== "object" || raw === null || !("envelopeXdr" in raw)) {
@@ -167,15 +166,14 @@ export async function POST(request: Request): Promise<Response> {
       );
     }
     envelopeXdr = candidate;
+    // the mediator only co-signs the forward envelope; reject anything else
     const rawKind = (raw as { kind?: unknown }).kind;
-    if (rawKind === "merge" || rawKind === "forward") {
-      kind = rawKind;
-    } else if (rawKind !== undefined) {
+    if (rawKind !== undefined && rawKind !== "forward") {
       return jsonResponse(
         {
           ok: false,
           code: "BAD_REQUEST",
-          reason: '`kind` must be either "merge" or "forward" when supplied.',
+          reason: 'Only the "forward" envelope shape is accepted.',
         },
         400,
         cors,
@@ -208,11 +206,11 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  // forward = mediator-source payment + accountMerge envelope; everything else uses the user-side merge shape
-  const result =
-    kind === "forward"
-      ? validateMediatorForwardEnvelope(envelopeXdr, networkPassphrase, mediatorPublicKey)
-      : validateMergeEnvelope(envelopeXdr, networkPassphrase, mediatorPublicKey);
+  // the mediator only ever co-signs the forward envelope: a mediator-sourced
+  // native payout + accountMerge, BOTH to the same destination (validated). The
+  // old "merge" variant left op1's amount/destination unbounded and had no live
+  // caller, so it was removed — it was a pure mediator-siphon surface.
+  const result = validateMediatorForwardEnvelope(envelopeXdr, networkPassphrase, mediatorPublicKey);
   if (!result.ok) {
     return jsonResponse({ ok: false, code: result.code, reason: result.reason }, 400, cors);
   }

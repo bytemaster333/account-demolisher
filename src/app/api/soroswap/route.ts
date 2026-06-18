@@ -83,10 +83,16 @@ export function __resetRateLimiterForTests(): void {
 }
 
 function getRemoteIp(request: Request): string {
+  // trust the RIGHTMOST x-forwarded-for hop (appended by our trusted reverse
+  // proxy); the client-controllable left side must not seed the rate-limit key.
   const xff = request.headers.get("x-forwarded-for");
   if (xff !== null && xff.length > 0) {
-    const first = xff.split(",")[0]?.trim();
-    if (first !== undefined && first.length > 0) return first;
+    const hops = xff
+      .split(",")
+      .map((p) => p.trim())
+      .filter((p) => p.length > 0);
+    const last = hops[hops.length - 1];
+    if (last !== undefined && last.length > 0) return last;
   }
   const xRealIp = request.headers.get("x-real-ip");
   if (xRealIp !== null && xRealIp.length > 0) return xRealIp;

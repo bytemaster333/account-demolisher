@@ -6,6 +6,7 @@ import type { Horizon } from "@stellar/stellar-sdk";
 import type { NetworkConfig } from "@/lib/config/networks";
 import type { Connector } from "@/lib/wallet/connector";
 import { auditAccount } from "@/lib/stellar/account-audit";
+import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
 import { batchClassicDemolition } from "@/lib/plan/classic-batcher";
 import { resolveCreditPaths } from "@/lib/stellar/path-finder";
@@ -179,6 +180,14 @@ export async function executePlanTreeOnChain(
     const tx = pickTransaction(node);
     if (!tx) {
       throw new Error(`executing: node "${node.id}" (${node.kind}) has no transaction attached`);
+    }
+    // Pre-sign allow-list gate (defense-in-depth on top of each adapter's own
+    // build-time check): every DeFi-protocol node must invoke only allow-listed
+    // contracts. RevokeAllowance is the deliberate exception — it targets the
+    // user's own token contracts (chosen from an RPC allowance scan, not the DeFi
+    // allow-list) and only ever builds a safe approve(0) sourced from the user.
+    if (node.kind !== "RevokeAllowance") {
+      assertTransactionAllowed(tx, deps.network);
     }
     const signed = await deps.connector.signTransaction(tx, deps.network.passphrase);
     node.status = "signed";

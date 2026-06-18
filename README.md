@@ -66,9 +66,9 @@ Server-only (never exposed to the client):
 Public:
 
 - `NEXT_PUBLIC_STELLAR_NETWORK` — `mainnet` | `testnet` | `futurenet` (default `testnet`)
-- `NEXT_PUBLIC_HORIZON_URL`, `NEXT_PUBLIC_RPC_URL` — override endpoints
 
-DeFi positions are discovered on-chain, so no position-API key is required.
+Horizon / Soroban RPC endpoints are pinned per network. DeFi positions are
+discovered on-chain, so no position-API key is required.
 
 ## Testing
 
