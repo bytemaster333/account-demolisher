@@ -173,7 +173,11 @@ export class AquariusAPIPoolProvider implements AquariusPoolProvider {
     this.network = opts.network;
     this.baseUrl = (opts.baseUrl ?? AQUARIUS_API_MAINNET_BASE_URL).replace(/\/+$/, "");
     this.routerId = getAquariusRouterIdFromAllowlist(opts.network);
-    const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
+    // the browser's fetch must be invoked with `this === window`; stored on the
+    // instance and called as `this.fetchImpl(...)` it would otherwise throw
+    // "Illegal invocation". Bind the global default; a caller-supplied mock is
+    // used as-is.
+    const fetchImpl = opts.fetchImpl ?? globalThis.fetch?.bind(globalThis);
     if (fetchImpl === undefined) {
       throw new Error("AquariusAPIPoolProvider: no fetch implementation available");
     }

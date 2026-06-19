@@ -13,6 +13,7 @@ import {
 } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
+import { errorMessage } from "@/lib/errors";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { buildApprove } from "@/lib/soroban/sep41";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
@@ -746,12 +747,4 @@ async function submitAndPollSoroban(
     }
   }
   throw new Error(`${stepLabel} tx ${hash.slice(0, 8)}… stayed PENDING after 30s`);
-}
-
-function errorMessage(e: unknown): string {
-  if (e instanceof Error) return e.message;
-  if (typeof e === "object" && e !== null && "message" in e) {
-    return String((e as { message: unknown }).message);
-  }
-  return String(e);
 }

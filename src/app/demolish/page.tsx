@@ -390,9 +390,12 @@ function DemolishFlow(): React.JSX.Element {
   const setConnector = useCallback((c: Connector | null) => {
     connectorRef.current = c;
     setHasConnector(c !== null);
-    // a new/cleared connection invalidates any collected multisig signers
-    setMultisig(null);
-    setExtraSigners([]);
+    // a new/cleared connection invalidates any collected multisig signers.
+    // Use functional updates that return the SAME reference when already reset —
+    // ConnectButton re-notifies every render, so a fresh `[]`/`null` here would
+    // create a new reference each time and spin an infinite render loop.
+    setMultisig((prev) => (prev === null ? prev : null));
+    setExtraSigners((prev) => (prev.length === 0 ? prev : []));
   }, []);
 
   const onStart = useCallback(() => {
@@ -638,8 +641,6 @@ function DemolishFlow(): React.JSX.Element {
                     <div>
                       {isConfiguring && !(isDiscovering || isPreviewing) ? (
                         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                          <DiscoveryWarnings warnings={ctx.discoveryWarnings} />
-                          <ScamTokenNotice findings={scamFindings} />
                           {multisigRequired && multisig ? (
                             <MultisigSigners
                               threshold={multisig.threshold}
@@ -687,6 +688,8 @@ function DemolishFlow(): React.JSX.Element {
                               claimable={acctClaimable}
                             />
                           ) : null}
+                          <DiscoveryWarnings warnings={ctx.discoveryWarnings} />
+                          <ScamTokenNotice findings={scamFindings} />
                           {/* consolidate notices when the CB and the self-sponsorship
                               are the same entry (very common case: demo created a CB,
                               became its sponsor). show only the CB notice with

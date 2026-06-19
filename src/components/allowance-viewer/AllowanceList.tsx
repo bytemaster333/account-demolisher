@@ -4,6 +4,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import { errorMessage } from "@/lib/errors";
 import type { NetworkConfig } from "@/lib/config/networks";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import { getRpc } from "@/lib/soroban/rpc-client";
@@ -170,7 +171,7 @@ function AllowanceRow({
         }
       } catch (e: unknown) {
         if (!cancelled) {
-          setTokenError(e instanceof Error ? e.message : "Failed to load token metadata");
+          setTokenError(errorMessage(e, "Failed to load token metadata"));
         }
       }
     })();

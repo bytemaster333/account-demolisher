@@ -9,6 +9,7 @@ import { z } from "zod";
 import { AllowanceList } from "@/components/allowance-viewer/AllowanceList";
 import { AppShell } from "@/components/layout/AppShell";
 import { getPublicEnv } from "@/lib/config/env";
+import { errorMessage } from "@/lib/errors";
 import { resolveNetwork, type NetworkConfig } from "@/lib/config/networks";
 import { enumerateAllowances, type AllowanceRecord } from "@/lib/soroban/allowances";
 import { getRpc } from "@/lib/soroban/rpc-client";
@@ -82,7 +83,7 @@ export default function AllowancesPage(): React.JSX.Element {
       setCurrentLedger(ledger);
       setViewedAddress(target);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to load allowances.");
+      setError(errorMessage(e, "Failed to load allowances."));
     } finally {
       setLoading(false);
     }

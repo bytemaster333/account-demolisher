@@ -4,6 +4,7 @@ import { assign, fromPromise, setup } from "xstate";
 import { TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
+import { errorMessage } from "@/lib/errors";
 import { generatePlan } from "@/lib/plan/generator";
 import { simulateNode, SimulationFailedError } from "@/lib/plan/simulator";
 import { topologicalOrder, type PlanNodeStatus, type PlanTree } from "@/lib/plan/tree";
@@ -493,6 +494,21 @@ export const pageFlowMachine = setup({
     },
     awaiting_confirmation: {
       on: {
+        // re-run discovery + preview with updated input (e.g. after the user
+        // toggles return-to-issuer consent and hits "Rebuild plan").
+        START: {
+          target: "discovering",
+          actions: assign({
+            input: ({ event }) => event.input,
+            audit: null,
+            discoveryWarnings: [],
+            unroutableCredits: [],
+            tree: null,
+            progress: [],
+            result: null,
+            error: null,
+          }),
+        },
         CONFIRM: "executing",
         CANCEL: "cancelled",
       },
@@ -588,8 +604,10 @@ export const pageFlowMachine = setup({
 });
 
 function describeError(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return String(err);
+  // Soroban RPC rejects with a plain `{ code, message }` object, not an Error,
+  // so delegate to the shared extractor rather than falling straight through to
+  // String(err) (which would surface "[object Object]" for a failed RPC exit).
+  return errorMessage(err);
 }
 
 // reflect progress events onto the final-classic-tx / mediator-forward nodes

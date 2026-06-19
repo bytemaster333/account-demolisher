@@ -6,6 +6,7 @@ import { TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
 import { useCallback, useState } from "react";
 
 import type { NetworkConfig } from "@/lib/config/networks";
+import { errorMessage } from "@/lib/errors";
 import { buildRevoke, type AllowanceRecord } from "@/lib/soroban/allowances";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { getHorizon } from "@/lib/stellar/horizon-client";
@@ -82,7 +83,7 @@ export function RevokeButton({
       setPhase("confirmed");
       onRevoked?.(record, submitHash);
     } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : "Revoke failed.";
+      const message = errorMessage(e, "Revoke failed.");
       setError(message);
       setPhase("failed");
     }
