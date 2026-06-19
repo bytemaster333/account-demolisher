@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { TESTNET, type NetworkConfig } from "@/lib/config/networks";
 import { WalletKitConnector } from "@/lib/wallet/connector";
+import { setActiveConnector } from "@/lib/wallet/active-connector";
 import { useWalletStore } from "@/stores/wallet";
 
 export interface ConnectButtonProps {
@@ -42,6 +43,9 @@ export function ConnectButton({
       const next = new WalletKitConnector(network);
       const { publicKey: address } = await next.connect();
       setConnectorLocal(next);
+      // share the live connector app-wide so other pages (e.g. /allowances) can
+      // sign with it after a client-side navigation
+      setActiveConnector(next);
       setConnected(address, "kit");
     } catch (e: unknown) {
       const message =
@@ -67,6 +71,7 @@ export function ConnectButton({
       // disconnect may already be torn down (e.g. WalletConnect); clear local state regardless
     } finally {
       setConnectorLocal(null);
+      setActiveConnector(null);
       disconnectStore();
       setPending(false);
     }

@@ -15,6 +15,7 @@ import { enumerateAllowances, type AllowanceRecord } from "@/lib/soroban/allowan
 import { getRpc } from "@/lib/soroban/rpc-client";
 import type { Connector } from "@/lib/wallet/connector";
 import { WalletKitConnector } from "@/lib/wallet/connector";
+import { getActiveConnector } from "@/lib/wallet/active-connector";
 import { useWalletStore } from "@/stores/wallet";
 
 const STELLAR_ADDRESS = z
@@ -29,6 +30,7 @@ export default function AllowancesPage(): React.JSX.Element {
   // so the ref never participates in render
   const connectorRef = useRef<Connector | null>(null);
   const publicKey = useWalletStore((s) => s.publicKey);
+  const connectorKind = useWalletStore((s) => s.connectorKind);
 
   const network = useMemo<NetworkConfig>(() => {
     return resolveNetwork(getPublicEnv().NEXT_PUBLIC_STELLAR_NETWORK);
@@ -42,16 +44,25 @@ export default function AllowancesPage(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [showExpired, setShowExpired] = useState(false);
 
-  // mint a WalletKitConnector lazily whenever the store has a connected wallet so that
+  // resolve the live signing connector for the connected wallet. Prefer the
+  // app-wide active connector (set at connect time, survives client-side
+  // navigation) — this is the ONLY way a pasted-seed connection can sign here,
+  // since its seed is never persisted. Fall back to reconstructing a
+  // WalletKitConnector for a "kit" connection whose live object was lost (the
+  // kit reads its own persisted selection). A "secret" connection with no live
+  // connector stays unsignable, so revoke is correctly gated off below.
   useEffect(() => {
     if (publicKey === null) {
       connectorRef.current = null;
       return;
     }
-    if (connectorRef.current === null) {
-      connectorRef.current = new WalletKitConnector(network);
+    const active = getActiveConnector();
+    if (active !== null) {
+      connectorRef.current = active;
+      return;
     }
-  }, [publicKey, network]);
+    connectorRef.current = connectorKind === "kit" ? new WalletKitConnector(network) : null;
+  }, [publicKey, connectorKind, network]);
 
   const onUseWallet = useCallback(() => {
     if (publicKey !== null) {
@@ -94,8 +105,15 @@ export default function AllowancesPage(): React.JSX.Element {
     void onLoad();
   }, [onLoad]);
 
-  // revoke needs the connected wallet to own the viewed address (SEP-41 requires source == from)
-  const canRevoke = publicKey !== null && viewedAddress !== null && publicKey === viewedAddress;
+  // revoke needs the connected wallet to own the viewed address (SEP-41 requires
+  // source == from) AND a live connector that can actually sign here — a
+  // pasted-seed session whose connector didn't survive to this page cannot, so
+  // don't present an actionable Revoke we can't fulfill.
+  const canRevoke =
+    publicKey !== null &&
+    viewedAddress !== null &&
+    publicKey === viewedAddress &&
+    (getActiveConnector() !== null || connectorKind === "kit");
 
   const hasWallet = publicKey !== null;
   const allowInput = records === null && !loading && error === null;

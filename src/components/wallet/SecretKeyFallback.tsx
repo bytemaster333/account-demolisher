@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
+import { setActiveConnector } from "@/lib/wallet/active-connector";
 import { useWalletStore } from "@/stores/wallet";
 
 export interface SecretKeyFallbackProps {
@@ -38,6 +39,10 @@ export function SecretKeyFallback({ onConnector }: SecretKeyFallbackProps): Reac
       try {
         const connector = new SecretKeyConnector(current);
         const publicKey = await connector.getPublicKey();
+        // share the live connector app-wide so other pages (e.g. /allowances)
+        // can sign with it after a client-side navigation. The seed stays inside
+        // the connector; nothing serializable leaves this module.
+        setActiveConnector(connector);
         setConnected(publicKey, "secret");
         onConnector?.(connector);
       } catch (err: unknown) {
