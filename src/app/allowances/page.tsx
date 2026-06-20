@@ -134,7 +134,7 @@ export default function AllowancesPage(): React.JSX.Element {
 
   return (
     <AppShell>
-      <PageContainer width={980}>
+      <PageContainer width={1080}>
         <PageHeader
           kicker="Allowance viewer"
           title="Active token allowances"

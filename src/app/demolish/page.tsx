@@ -557,7 +557,7 @@ function DemolishFlow(): React.JSX.Element {
   // ────────────────────────────────────────────────────────────────────────────
 
   return (
-    <main style={{ maxWidth: 1180, margin: "0 auto", padding: "34px 28px 96px" }}>
+    <main style={{ maxWidth: 1080, margin: "0 auto", padding: "40px 24px 96px" }}>
       {/* IDLE — connect */}
       {isIdle ? (
         <IdleConnect
@@ -633,7 +633,7 @@ function DemolishFlow(): React.JSX.Element {
                         : "minmax(0, 640px)",
                       gap: 28,
                       alignItems: "start",
-                      maxWidth: hasSideContent ? 1180 : 640,
+                      maxWidth: hasSideContent ? 1032 : 640,
                       margin: "0 auto",
                       justifyContent: "center",
                     }}

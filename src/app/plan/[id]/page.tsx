@@ -47,7 +47,7 @@ export default async function PlanPage({ params }: PlanPageProps): Promise<React
 
   return (
     <AppShell>
-      <PageContainer width={760}>
+      <PageContainer width={1080}>
         <PageHeader
           kicker={`Multisig · /plan/${shortId(id)}`}
           title="Collect signatures to merge"
