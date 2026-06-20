@@ -1,17 +1,19 @@
 import type { ReactNode } from "react";
-import { RADIUS, TONE_FG, TONE_SOFT, toneBorder, type Tone } from "./tokens";
+import { RADIUS, TONE_FG, toneBorder, type Tone } from "./tokens";
 
+// flat chip — no tinted fill. A neutral surface with a tone-tinted border and
+// tone-colored text/dot carries the meaning.
 export function Badge({
   children,
   tone = "neutral",
   mono = false,
   dot = false,
-  bordered = false,
 }: {
   readonly children: ReactNode;
   readonly tone?: Tone;
   readonly mono?: boolean;
   readonly dot?: boolean;
+  // kept for API compat; borders are always drawn now
   readonly bordered?: boolean;
 }): React.JSX.Element {
   return (
@@ -20,10 +22,10 @@ export function Badge({
         display: "inline-flex",
         alignItems: "center",
         gap: 6,
-        padding: dot ? "5px 11px 5px 9px" : "4px 9px",
+        padding: dot ? "4px 10px 4px 8px" : "3px 9px",
         borderRadius: RADIUS.pill,
-        background: TONE_SOFT[tone],
-        border: bordered ? toneBorder(tone) : "1px solid transparent",
+        background: "transparent",
+        border: toneBorder(tone),
         color: TONE_FG[tone],
         font: mono ? '600 10.5px/1 "Geist Mono", monospace' : "600 11px/1 Geist, sans-serif",
         letterSpacing: mono ? "0.04em" : "0.01em",

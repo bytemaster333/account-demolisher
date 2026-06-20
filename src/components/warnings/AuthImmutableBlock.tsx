@@ -44,7 +44,7 @@ export function AuthImmutableBlock({
           height: 72,
           margin: "0 auto 24px",
           borderRadius: 20,
-          background: "var(--danger-soft)",
+          background: "var(--surface-2)",
           border: "1px solid color-mix(in srgb, var(--danger) 30%, transparent)",
           display: "grid",
           placeItems: "center",

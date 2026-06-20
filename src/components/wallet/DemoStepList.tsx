@@ -270,7 +270,7 @@ function StatusIndicator({ status }: { readonly status: DemoStepRowStatus }) {
         aria-label="Done"
         style={{
           ...baseStyle,
-          background: "var(--success-soft)",
+          background: "var(--surface-2)",
           color: "var(--success)",
           animation: "pop .35s ease-out",
         }}
@@ -296,7 +296,7 @@ function StatusIndicator({ status }: { readonly status: DemoStepRowStatus }) {
         aria-label="Failed"
         style={{
           ...baseStyle,
-          background: "var(--danger-soft)",
+          background: "var(--surface-2)",
           color: "var(--danger)",
         }}
       >
@@ -321,7 +321,7 @@ function StatusIndicator({ status }: { readonly status: DemoStepRowStatus }) {
         aria-label="Skipped"
         style={{
           ...baseStyle,
-          background: "var(--warning-soft)",
+          background: "var(--surface-2)",
           color: "var(--warning)",
         }}
       >

@@ -153,15 +153,7 @@ export function TypedConfirmation({
           }}
         >
           <span style={{ color: "var(--fg-2)" }}>{destHead || "(empty)"}</span>
-          <span
-            style={{
-              color: "var(--accent)",
-              background: "var(--accent-soft)",
-              padding: "1px 3px",
-              borderRadius: 4,
-              fontWeight: 600,
-            }}
-          >
+          <span style={{ color: "var(--accent)", fontWeight: 700, textDecoration: "underline" }}>
             {destTail}
           </span>
         </div>
@@ -217,13 +209,12 @@ export function TypedConfirmation({
               gap: 9,
               padding: 15,
               borderRadius: 12,
-              border: "none",
-              background: "var(--danger)",
-              color: "var(--accent-fg)",
+              border: "1px solid color-mix(in srgb, var(--danger) 55%, transparent)",
+              background: "transparent",
+              color: "var(--danger)",
               fontWeight: 600,
               fontSize: 15,
               cursor: "pointer",
-              boxShadow: "0 6px 20px var(--danger-soft)",
             }}
           >
             <svg
@@ -261,7 +252,7 @@ export function TypedConfirmation({
                 top: 0,
                 bottom: 0,
                 width: `${timerPct}%`,
-                background: "var(--accent-soft)",
+                background: "var(--surface-3)",
                 transition: "width .1s linear",
               }}
             />

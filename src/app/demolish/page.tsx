@@ -27,7 +27,7 @@ import { MultisigSigners, type AddedSigner } from "@/components/wallet/MultisigS
 import { SecretKeyFallback } from "@/components/wallet/SecretKeyFallback";
 import { explorerTxUrl } from "@/lib/wallet/demo-account";
 import Link from "next/link";
-import { getPublicEnv } from "@/lib/config/env";
+import { useNetworkStore } from "@/stores/network";
 import { resolveNetwork, type NetworkConfig } from "@/lib/config/networks";
 import { pageFlowMachine } from "@/lib/orchestrator/page-flow-machine";
 import { auditAccount } from "@/lib/stellar/account-audit";
@@ -245,9 +245,8 @@ function DemolishFlow(): React.JSX.Element {
   const publicKey = useWalletStore((s) => s.publicKey);
   const isDemo = useWalletStore((s) => s.isDemo);
 
-  const network = useMemo<NetworkConfig>(() => {
-    return resolveNetwork(getPublicEnv().NEXT_PUBLIC_STELLAR_NETWORK);
-  }, []);
+  const networkId = useNetworkStore((s) => s.networkId);
+  const network = useMemo<NetworkConfig>(() => resolveNetwork(networkId), [networkId]);
 
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
@@ -831,8 +830,10 @@ function IdleConnect({
   readonly onSecretConnector: (c: SecretKeyConnector) => void;
 }): React.JSX.Element {
   const isTestnetLike = network.friendbot !== null;
+  const netLabel =
+    network.id === "mainnet" ? "Mainnet" : network.id === "futurenet" ? "Futurenet" : "Testnet";
   return (
-    <div style={{ maxWidth: 720, margin: "36px auto 0" }}>
+    <div style={{ maxWidth: 720, margin: "8px auto 0" }}>
       <div
         style={{
           display: "inline-flex",
@@ -840,19 +841,12 @@ function IdleConnect({
           gap: 8,
           padding: "5px 11px",
           borderRadius: 999,
-          border: "1px solid var(--border)",
-          background: "var(--surface)",
+          border: "1px solid var(--border-2)",
+          background: "transparent",
           marginBottom: 22,
         }}
       >
-        <span
-          style={{
-            width: 6,
-            height: 6,
-            borderRadius: "50%",
-            background: "var(--accent)",
-          }}
-        />
+        <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)" }} />
         <span
           style={{
             font: "600 11px/1 Geist, sans-serif",
@@ -873,7 +867,7 @@ function IdleConnect({
           color: "var(--fg)",
         }}
       >
-        Try it on a demo account
+        Close a Stellar account
       </h1>
       <p
         style={{
@@ -881,40 +875,18 @@ function IdleConnect({
           fontSize: 16,
           lineHeight: 1.55,
           color: "var(--fg-2)",
-          maxWidth: 540,
+          maxWidth: 560,
         }}
       >
-        The demolisher is irreversible. Start with a throwaway {network.id} account loaded with
-        trustlines, data, offers, signers, and a SEP-41 allowance — so you can see the whole flow
-        without risking real funds. Real-wallet paths are below if you actually need to close an
-        account.
+        Connect the account you want to close. The demolisher unwinds every trustline, offer, data
+        entry, signer, and Soroban position, then merges the reserve to a destination you choose —
+        all signed on your device, nothing auto-submitted.
+        {isTestnetLike
+          ? " New here? Spin up a throwaway demo account at the bottom to see the whole flow first."
+          : ""}
       </p>
 
-      {/* primary: demo account (testnet/futurenet only) */}
-      <CreateTestAccountButton network={network} onConnector={onSecretConnector} />
-
-      {/* divider */}
-      {isTestnetLike ? (
-        <div
-          style={{
-            margin: "24px 0 16px",
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-            color: "var(--fg-3)",
-            fontSize: 11.5,
-            letterSpacing: "0.06em",
-            textTransform: "uppercase",
-            fontWeight: 600,
-          }}
-        >
-          <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
-          <span>or use a real account</span>
-          <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
-        </div>
-      ) : null}
-
-      {/* secondary: real wallet via stellar-wallets-kit */}
+      {/* primary: connect a real wallet */}
       <div
         style={{
           padding: 18,
@@ -925,20 +897,21 @@ function IdleConnect({
           alignItems: "center",
           justifyContent: "space-between",
           gap: 12,
+          flexWrap: "wrap",
         }}
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--fg)" }}>
-            Connect a real wallet
+          <span style={{ fontSize: 15, fontWeight: 600, color: "var(--fg)" }}>
+            Connect a wallet
           </span>
-          <span style={{ fontSize: 12, color: "var(--fg-3)" }}>
+          <span style={{ fontSize: 12.5, color: "var(--fg-3)" }}>
             Freighter, xBull, Albedo, Rabet, Lobstr, Hana, WalletConnect.
           </span>
         </div>
         <ConnectButton network={network} onConnector={onKitConnector} />
       </div>
 
-      {/* tertiary, collapsed: legacy/advanced seed paste */}
+      {/* collapsed: legacy/advanced seed paste */}
       <div
         style={{
           marginTop: 14,
@@ -998,6 +971,30 @@ function IdleConnect({
           </div>
         ) : null}
       </div>
+
+      {/* testnet-only: try it on a throwaway demo account */}
+      {isTestnetLike ? (
+        <>
+          <div
+            style={{
+              margin: "30px 0 16px",
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              color: "var(--fg-3)",
+              fontSize: 11.5,
+              letterSpacing: "0.06em",
+              textTransform: "uppercase",
+              fontWeight: 600,
+            }}
+          >
+            <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
+            <span>or explore on {netLabel} first</span>
+            <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
+          </div>
+          <CreateTestAccountButton network={network} onConnector={onSecretConnector} />
+        </>
+      ) : null}
     </div>
   );
 }
@@ -1023,8 +1020,8 @@ function StepIndicator({ steps }: { readonly steps: readonly FlowStep[] }): Reac
               gap: 9,
               padding: "7px 13px 7px 8px",
               borderRadius: 999,
-              border: st.isActive ? "1px solid var(--accent-line)" : "1px solid var(--border)",
-              background: st.isActive ? "var(--accent-soft)" : "var(--surface)",
+              border: st.isActive ? "1px solid var(--accent)" : "1px solid var(--border)",
+              background: "transparent",
             }}
           >
             {st.isDone ? (
@@ -1033,7 +1030,7 @@ function StepIndicator({ steps }: { readonly steps: readonly FlowStep[] }): Reac
                   width: 20,
                   height: 20,
                   borderRadius: "50%",
-                  background: "var(--success)",
+                  border: "1px solid var(--success)",
                   display: "grid",
                   placeItems: "center",
                 }}
@@ -1043,8 +1040,8 @@ function StepIndicator({ steps }: { readonly steps: readonly FlowStep[] }): Reac
                   height="11"
                   viewBox="0 0 24 24"
                   fill="none"
-                  stroke="#fff"
-                  strokeWidth={3.5}
+                  stroke="var(--success)"
+                  strokeWidth={3}
                   strokeLinecap="round"
                   strokeLinejoin="round"
                 >
@@ -1058,8 +1055,8 @@ function StepIndicator({ steps }: { readonly steps: readonly FlowStep[] }): Reac
                   width: 20,
                   height: 20,
                   borderRadius: "50%",
-                  background: "var(--accent)",
-                  color: "var(--accent-fg)",
+                  border: "1px solid var(--accent)",
+                  color: "var(--accent)",
                   display: "grid",
                   placeItems: "center",
                   font: "600 10px/1 Geist, sans-serif",
@@ -1240,7 +1237,7 @@ function SponsorshipAutoRevokeNotice({ count }: { readonly count: number }): Rea
         gap: 12,
         padding: "12px 14px",
         borderRadius: 11,
-        background: "color-mix(in srgb, var(--warning-soft) 55%, transparent)",
+        background: "var(--surface-2)",
         border: "1px solid color-mix(in srgb, var(--warning) 14%, transparent)",
         color: "var(--fg)",
       }}
@@ -1251,7 +1248,7 @@ function SponsorshipAutoRevokeNotice({ count }: { readonly count: number }): Rea
           width: 28,
           height: 28,
           borderRadius: 8,
-          background: "color-mix(in srgb, var(--warning) 18%, transparent)",
+          background: "var(--surface-2)",
           display: "grid",
           placeItems: "center",
           flexShrink: 0,
@@ -1365,8 +1362,9 @@ function LeftLoadingCard({ message }: { readonly message: string }): React.JSX.E
             width: 108,
             height: 108,
             borderRadius: 28,
-            background: "var(--accent)",
-            color: "var(--accent-fg)",
+            background: "var(--surface-2)",
+            border: "1px solid var(--accent-line)",
+            color: "var(--accent)",
             display: "grid",
             placeItems: "center",
             animation: "pulse 2.2s ease-in-out infinite",
@@ -1497,10 +1495,10 @@ function DemolishStatusWidget({
         : "var(--accent)";
   const accentSoft =
     state === "succeeded"
-      ? "var(--success-soft)"
+      ? "var(--surface-2)"
       : state === "failed"
-        ? "var(--danger-soft)"
-        : "var(--accent-soft)";
+        ? "var(--surface-2)"
+        : "var(--surface-2)";
 
   const parsed = state === "failed" ? parseDemolishError(error) : null;
 
@@ -1532,8 +1530,9 @@ function DemolishStatusWidget({
               width: 42,
               height: 42,
               borderRadius: 12,
-              background: accent,
-              color: "var(--accent-fg, #fff)",
+              background: "var(--surface-2)",
+              border: `1px solid ${accent}`,
+              color: accent,
               display: "grid",
               placeItems: "center",
               flexShrink: 0,
@@ -1699,7 +1698,7 @@ function DemolishStatusWidget({
                   borderRadius: 6,
                   font: "600 10.5px/1 'Geist Mono', monospace",
                   color: "var(--danger)",
-                  background: "var(--danger-soft)",
+                  background: "var(--surface-2)",
                   border: "1px solid color-mix(in srgb, var(--danger) 25%, transparent)",
                 }}
               >
@@ -1717,7 +1716,7 @@ function DemolishStatusWidget({
                     borderRadius: 6,
                     font: "600 10.5px/1 'Geist Mono', monospace",
                     color: isFail ? "var(--danger)" : "var(--success)",
-                    background: isFail ? "var(--danger-soft)" : "var(--success-soft)",
+                    background: isFail ? "var(--surface-2)" : "var(--surface-2)",
                     border: `1px solid color-mix(in srgb, var(${isFail ? "--danger" : "--success"}) 25%, transparent)`,
                   }}
                 >
@@ -1800,8 +1799,8 @@ function DemolishStatusWidget({
                   padding: "0 16px",
                   borderRadius: 10,
                   border: "1px solid var(--accent-line)",
-                  background: "var(--accent)",
-                  color: "var(--accent-fg)",
+                  background: "transparent",
+                  color: "var(--accent)",
                   fontWeight: 600,
                   fontSize: 13.5,
                   cursor: "pointer",
@@ -1820,8 +1819,8 @@ function DemolishStatusWidget({
                 padding: "0 16px",
                 borderRadius: 10,
                 border: "1px solid var(--accent-line)",
-                background: "var(--accent)",
-                color: "var(--accent-fg)",
+                background: "transparent",
+                color: "var(--accent)",
                 fontWeight: 600,
                 fontSize: 13.5,
                 cursor: "pointer",
@@ -1994,7 +1993,7 @@ function PlanRow({
                 position: "absolute",
                 inset: 0,
                 borderRadius: "50%",
-                background: "var(--success-soft)",
+                background: "var(--surface-2)",
                 display: "grid",
                 placeItems: "center",
               }}
@@ -2041,7 +2040,7 @@ function PlanRow({
                 position: "absolute",
                 inset: 0,
                 borderRadius: "50%",
-                background: "var(--warning-soft)",
+                background: "var(--surface-2)",
                 display: "grid",
                 placeItems: "center",
               }}
@@ -2067,7 +2066,7 @@ function PlanRow({
                 position: "absolute",
                 inset: 0,
                 borderRadius: "50%",
-                background: "var(--danger-soft)",
+                background: "var(--surface-2)",
                 display: "grid",
                 placeItems: "center",
               }}
@@ -2110,7 +2109,7 @@ function PlanRow({
                 style={{
                   padding: "2px 6px",
                   borderRadius: 5,
-                  background: "var(--warning-soft)",
+                  background: "var(--surface-2)",
                   font: "600 9.5px/1.2 Geist, sans-serif",
                   color: "var(--warning)",
                   textTransform: "uppercase",
@@ -2273,7 +2272,7 @@ function ConfigurePanel({
                   width: 28,
                   height: 28,
                   borderRadius: 8,
-                  background: "var(--warning-soft)",
+                  background: "var(--surface-2)",
                   display: "grid",
                   placeItems: "center",
                   flexShrink: 0,
@@ -2442,7 +2441,7 @@ function ConfigurePanel({
                 padding: "5px 9px",
                 borderRadius: 7,
                 border: "1px solid var(--accent-line)",
-                background: "var(--accent-soft)",
+                background: "var(--surface-2)",
                 color: "var(--accent)",
                 cursor: "pointer",
                 whiteSpace: "nowrap",
@@ -2486,7 +2485,7 @@ function ConfigurePanel({
               marginTop: 13,
               padding: "11px 13px",
               borderRadius: 11,
-              background: "var(--warning-soft)",
+              background: "var(--surface-2)",
               border: "1px solid color-mix(in srgb, var(--warning) 30%, transparent)",
             }}
           >
@@ -2588,7 +2587,7 @@ function ConfigurePanel({
               marginTop: 13,
               padding: "11px 13px",
               borderRadius: 11,
-              background: "var(--accent-soft)",
+              background: "var(--surface-2)",
               border: "1px solid var(--accent-line)",
             }}
           >
@@ -2872,9 +2871,9 @@ function CancelledPanel({ onResume }: { readonly onResume: () => void }): React.
         style={{
           padding: "12px 18px",
           borderRadius: 11,
-          border: "none",
-          background: "var(--accent)",
-          color: "var(--accent-fg)",
+          border: "1px solid var(--accent-line)",
+          background: "transparent",
+          color: "var(--accent)",
           fontWeight: 600,
           fontSize: 14,
           cursor: "pointer",

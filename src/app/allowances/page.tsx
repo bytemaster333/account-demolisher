@@ -20,7 +20,6 @@ import {
   SearchGlyph,
   Spinner,
 } from "@/components/ui";
-import { getPublicEnv } from "@/lib/config/env";
 import { errorMessage } from "@/lib/errors";
 import { resolveNetwork, type NetworkConfig } from "@/lib/config/networks";
 import { enumerateAllowances, type AllowanceRecord } from "@/lib/soroban/allowances";
@@ -28,6 +27,7 @@ import { getRpc } from "@/lib/soroban/rpc-client";
 import type { Connector } from "@/lib/wallet/connector";
 import { WalletKitConnector } from "@/lib/wallet/connector";
 import { getActiveConnector } from "@/lib/wallet/active-connector";
+import { useNetworkStore } from "@/stores/network";
 import { useWalletStore } from "@/stores/wallet";
 
 const STELLAR_ADDRESS = z
@@ -44,9 +44,8 @@ export default function AllowancesPage(): React.JSX.Element {
   const publicKey = useWalletStore((s) => s.publicKey);
   const connectorKind = useWalletStore((s) => s.connectorKind);
 
-  const network = useMemo<NetworkConfig>(() => {
-    return resolveNetwork(getPublicEnv().NEXT_PUBLIC_STELLAR_NETWORK);
-  }, []);
+  const networkId = useNetworkStore((s) => s.networkId);
+  const network = useMemo<NetworkConfig>(() => resolveNetwork(networkId), [networkId]);
 
   const [address, setAddress] = useState<string>("");
   const [viewedAddress, setViewedAddress] = useState<string | null>(null);

@@ -72,7 +72,7 @@ export function Progress({
             height: "100%",
             width: `${pct}%`,
             borderRadius: RADIUS.pill,
-            background: "linear-gradient(90deg, var(--accent), var(--accent-2))",
+            background: "var(--fg-2)",
             transition: "width .4s ease",
           }}
         />

@@ -72,7 +72,7 @@ export function SecretKeyFallback({ onConnector }: SecretKeyFallbackProps): Reac
         style={{
           borderRadius: 11,
           border: "1px solid color-mix(in srgb, var(--danger) 38%, transparent)",
-          background: "var(--danger-soft)",
+          background: "var(--surface-2)",
           padding: "14px 16px",
           color: "var(--danger)",
           display: "flex",
@@ -175,7 +175,7 @@ export function SecretKeyFallback({ onConnector }: SecretKeyFallbackProps): Reac
             padding: "0 16px",
             borderRadius: 9,
             border: "1px solid color-mix(in srgb, var(--danger) 55%, transparent)",
-            background: "color-mix(in srgb, var(--danger) 22%, transparent)",
+            background: "transparent",
             color: "var(--danger)",
             fontWeight: 600,
             fontSize: 13.5,

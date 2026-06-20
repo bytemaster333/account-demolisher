@@ -30,19 +30,21 @@ const SIZES: Record<Size, CSSProperties> = {
   lg: { height: 50, padding: "0 22px", fontSize: 15, borderRadius: RADIUS.md, gap: 9 },
 };
 
+// flat / outline aesthetic — no colored fills anywhere. Emphasis comes from
+// border strength and text color, not a tinted background.
 function surfaceFor(variant: Variant, hover: boolean): CSSProperties {
   switch (variant) {
     case "primary":
       return {
-        background: hover ? "var(--accent-2)" : "var(--accent)",
-        color: "var(--accent-fg)",
-        border: "1px solid var(--accent-line)",
+        background: hover ? "var(--surface-2)" : "transparent",
+        color: "var(--accent)",
+        border: `1px solid ${hover ? "var(--accent)" : "var(--accent-line)"}`,
       };
     case "danger":
       return {
-        background: hover ? "var(--danger-soft)" : "var(--surface)",
+        background: hover ? "var(--surface-2)" : "transparent",
         color: "var(--danger)",
-        border: "1px solid color-mix(in srgb, var(--danger) 40%, transparent)",
+        border: `1px solid color-mix(in srgb, var(--danger) ${hover ? "60%" : "40%"}, transparent)`,
       };
     case "ghost":
       return {
@@ -53,9 +55,9 @@ function surfaceFor(variant: Variant, hover: boolean): CSSProperties {
     case "secondary":
     default:
       return {
-        background: hover ? "var(--surface-2)" : "var(--surface)",
+        background: hover ? "var(--surface-2)" : "transparent",
         color: "var(--fg)",
-        border: "1px solid var(--border-2)",
+        border: `1px solid ${hover ? "var(--fg-3)" : "var(--border-2)"}`,
       };
   }
 }

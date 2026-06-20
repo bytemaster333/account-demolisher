@@ -174,12 +174,12 @@ function PlanStatusView({
                   gap: 9,
                   height: 48,
                   borderRadius: 12,
-                  background: "var(--accent)",
-                  color: "var(--accent-fg)",
+                  background: "transparent",
+                  border: "1px solid var(--accent-line)",
+                  color: "var(--accent)",
                   fontWeight: 600,
                   fontSize: 15,
                   textDecoration: "none",
-                  boxShadow: "0 6px 18px var(--accent-soft)",
                 }}
               >
                 <svg

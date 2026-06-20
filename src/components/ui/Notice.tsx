@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { RADIUS, TONE_FG, TONE_SOFT, toneBorder, type Tone } from "./tokens";
+import { RADIUS, TONE_FG, toneBorder, type Tone } from "./tokens";
 
 // icon glyphs (stroke paths) per tone — the app's Feather-style vocabulary
 const ICONS: Record<Tone, string> = {
@@ -64,8 +64,10 @@ export function Notice({
         gap: 13,
         padding: "15px 17px",
         borderRadius: RADIUS.lg,
-        background: TONE_SOFT[tone],
+        // flat: neutral surface, tone carried by the tinted border + icon/title
+        background: "var(--surface)",
         border: toneBorder(tone),
+        borderLeft: `3px solid ${TONE_FG[tone]}`,
         color: "var(--fg)",
       }}
     >

@@ -50,12 +50,7 @@ export function HighValueWarning({
           <Button variant="secondary" onClick={onCancel} data-testid="high-value-warning-cancel">
             Cancel
           </Button>
-          <Button
-            variant="primary"
-            onClick={onConfirm}
-            data-testid="high-value-warning-confirm"
-            style={{ background: "var(--warning)", borderColor: "transparent" }}
-          >
+          <Button variant="primary" onClick={onConfirm} data-testid="high-value-warning-confirm">
             I understand, continue
           </Button>
         </>

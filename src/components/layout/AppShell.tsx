@@ -2,7 +2,11 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect } from "react";
 import { useTheme } from "./ThemeProvider";
+import type { StellarNetwork } from "@/lib/config/networks";
+import { setActiveConnector } from "@/lib/wallet/active-connector";
+import { useNetworkStore } from "@/stores/network";
 import { useWalletStore } from "@/stores/wallet";
 
 export function AppShell({ children }: { readonly children: React.ReactNode }) {
@@ -125,7 +129,7 @@ function Navbar() {
         <div style={{ flex: 1 }} />
 
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <NetworkBadge />
+          <NetworkSwitcher />
           <a
             href="https://github.com/bytemaster333/account-demolisher"
             target="_blank"
@@ -220,9 +224,9 @@ function Navbar() {
                 height: 34,
                 padding: "0 14px",
                 borderRadius: 8,
-                border: "none",
-                background: "var(--accent)",
-                color: "var(--accent-fg)",
+                border: "1px solid var(--accent-line)",
+                background: "transparent",
+                color: "var(--accent)",
                 cursor: "pointer",
                 fontWeight: 600,
                 fontSize: 13,
@@ -266,11 +270,38 @@ function NavLink({
   );
 }
 
-function NetworkBadge() {
-  // pulls from NEXT_PUBLIC_STELLAR_NETWORK at runtime via env. defaults to testnet
-  const net = (process.env.NEXT_PUBLIC_STELLAR_NETWORK ?? "testnet").toUpperCase();
-  const dotColor =
-    net === "MAINNET" ? "var(--success)" : net === "FUTURENET" ? "var(--accent)" : "var(--warning)";
+const NETWORK_STORAGE_KEY = "demolisher.network";
+
+function NetworkSwitcher() {
+  const networkId = useNetworkStore((s) => s.networkId);
+  const setNetwork = useNetworkStore((s) => s.setNetwork);
+  const disconnect = useWalletStore((s) => s.disconnect);
+
+  // hydrate the saved choice on the client (store initialises from env for SSR)
+  useEffect(() => {
+    const stored = window.localStorage.getItem(NETWORK_STORAGE_KEY);
+    if ((stored === "mainnet" || stored === "testnet") && stored !== networkId) {
+      setNetwork(stored);
+    }
+    // run once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const onChange = (id: StellarNetwork): void => {
+    if (id === networkId) return;
+    setNetwork(id);
+    try {
+      window.localStorage.setItem(NETWORK_STORAGE_KEY, id);
+    } catch {
+      // storage disabled — selection still applies for this session
+    }
+    // a connected account is network-scoped; changing network invalidates it
+    disconnect();
+    setActiveConnector(null);
+  };
+
+  const dotColor = networkId === "mainnet" ? "var(--success)" : "var(--warning)";
+
   return (
     <div
       title="Active network"
@@ -279,22 +310,49 @@ function NetworkBadge() {
         alignItems: "center",
         gap: 7,
         height: 32,
-        padding: "0 12px",
+        padding: "0 6px 0 11px",
         borderRadius: 8,
-        background: "var(--surface-2)",
-        border: "1px solid var(--border)",
+        background: "transparent",
+        border: "1px solid var(--border-2)",
       }}
     >
-      <span style={{ width: 7, height: 7, borderRadius: "50%", background: dotColor }} />
       <span
+        aria-hidden
+        style={{ width: 7, height: 7, borderRadius: "50%", background: dotColor, flexShrink: 0 }}
+      />
+      <select
+        aria-label="Select network"
+        value={networkId === "mainnet" ? "mainnet" : "testnet"}
+        onChange={(e) => onChange(e.currentTarget.value as StellarNetwork)}
         style={{
-          font: "600 12px/1 Geist, sans-serif",
+          appearance: "none",
+          WebkitAppearance: "none",
+          border: "none",
+          background: "transparent",
           color: "var(--fg-2)",
+          font: "600 12px/1 Geist, sans-serif",
           letterSpacing: "0.04em",
+          cursor: "pointer",
+          paddingRight: 16,
+          outline: "none",
         }}
       >
-        {net}
-      </span>
+        <option value="testnet">TESTNET</option>
+        <option value="mainnet">MAINNET</option>
+      </select>
+      <svg
+        width="12"
+        height="12"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="var(--fg-3)"
+        strokeWidth={2.2}
+        strokeLinecap="round"
+        aria-hidden
+        style={{ marginLeft: -14, pointerEvents: "none" }}
+      >
+        <path d="M6 9l6 6 6-6" />
+      </svg>
     </div>
   );
 }

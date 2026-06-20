@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, type ReactNode } from "react";
-import { RADIUS, TONE_FG, TONE_SOFT, type Tone } from "./tokens";
+import { RADIUS, TONE_FG, type Tone } from "./tokens";
 
 // Centered dialog over a scrim. Esc closes; focus-trap is intentionally light
 // (these are short, deliberate-friction dialogs). Never uses window.confirm.
@@ -70,7 +70,8 @@ export function Modal({
                 width: 38,
                 height: 38,
                 borderRadius: RADIUS.md,
-                background: TONE_SOFT[tone],
+                background: "var(--surface-2)",
+                border: `1px solid ${TONE_FG[tone]}`,
                 color: TONE_FG[tone],
                 display: "grid",
                 placeItems: "center",
