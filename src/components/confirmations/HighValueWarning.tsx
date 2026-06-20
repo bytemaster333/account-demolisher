@@ -1,9 +1,8 @@
 "use client";
 
 // secondary confirmation modal shown before the typed confirmation when balance > threshold
-// styled to match the dc design (lines 957-975)
 
-import { useEffect, useId, useRef } from "react";
+import { Button, Modal } from "@/components/ui";
 
 export interface HighValueWarningProps {
   // total XLM balance, decimal string
@@ -14,7 +13,6 @@ export interface HighValueWarningProps {
   readonly dollarEstimate?: string;
   readonly onConfirm: () => void;
   readonly onCancel: () => void;
-  readonly className?: string;
 }
 
 const DEFAULT_THRESHOLD_XLM = 1000;
@@ -25,176 +23,85 @@ export function HighValueWarning({
   dollarEstimate,
   onConfirm,
   onCancel,
-  className,
 }: HighValueWarningProps): React.JSX.Element {
-  const titleId = useId();
-  const descriptionId = useId();
-  const cancelRef = useRef<HTMLButtonElement | null>(null);
-
-  useEffect(() => {
-    cancelRef.current?.focus();
-  }, []);
-
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby={titleId}
-      aria-describedby={descriptionId}
+    <Modal
+      title="High-value account"
+      tone="warning"
+      onClose={onCancel}
       data-testid="high-value-warning"
-      className={className}
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 80,
-        background: "rgba(0,0,0,0.55)",
-        backdropFilter: "blur(4px)",
-        display: "grid",
-        placeItems: "center",
-        padding: 20,
-        animation: "fadeIn .15s both",
-      }}
+      icon={
+        <svg
+          width="20"
+          height="20"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+        </svg>
+      }
+      footer={
+        <>
+          <Button variant="secondary" onClick={onCancel} data-testid="high-value-warning-cancel">
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            onClick={onConfirm}
+            data-testid="high-value-warning-confirm"
+            style={{ background: "var(--warning)", borderColor: "transparent" }}
+          >
+            I understand, continue
+          </Button>
+        </>
+      }
     >
+      This account holds a significant balance ({threshold} XLM threshold). Once merged, the action
+      is irreversible — there is no way to recover the account or reverse the transfer.
       <div
         style={{
-          width: "100%",
-          maxWidth: 480,
-          background: "var(--surface)",
-          border: "1px solid var(--border-2)",
-          borderRadius: 20,
-          padding: "34px 32px",
-          boxShadow: "var(--shadow)",
-          animation: "fadeUp .2s both",
+          display: "flex",
+          alignItems: "baseline",
+          gap: 8,
+          padding: "16px 18px",
+          borderRadius: 14,
+          background: "var(--surface-2)",
+          border: "1px solid var(--border)",
+          marginTop: 16,
         }}
       >
-        <div
+        <span
+          data-testid="high-value-warning-xlm"
           style={{
-            width: 54,
-            height: 54,
-            borderRadius: 15,
-            background: "var(--warning-soft)",
-            border: "1px solid color-mix(in srgb, var(--warning) 30%, transparent)",
-            display: "grid",
-            placeItems: "center",
-            marginBottom: 20,
-          }}
-        >
-          <svg
-            width="26"
-            height="26"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="var(--warning)"
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
-          </svg>
-        </div>
-        <h2
-          id={titleId}
-          style={{
-            margin: 0,
-            fontSize: 24,
+            fontSize: 30,
             fontWeight: 600,
-            letterSpacing: "-0.02em",
+            letterSpacing: "-0.03em",
+            fontFamily: "'Geist Mono', monospace",
             color: "var(--fg)",
           }}
         >
-          High-value account
-        </h2>
-        <p
-          id={descriptionId}
-          style={{
-            margin: "12px 0 22px",
-            fontSize: 14.5,
-            lineHeight: 1.6,
-            color: "var(--fg-2)",
-          }}
-        >
-          This account holds a significant balance ({threshold} XLM threshold). Once merged, the
-          action is irreversible, there is no way to recover the account or reverse the transfer.
-        </p>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "baseline",
-            gap: 8,
-            padding: "18px 20px",
-            borderRadius: 14,
-            background: "var(--surface-2)",
-            border: "1px solid var(--border)",
-            marginBottom: 24,
-          }}
-        >
+          {totalXlm}
+        </span>
+        <span style={{ fontSize: 15, color: "var(--fg-3)", fontWeight: 500 }}>XLM</span>
+        {dollarEstimate !== undefined ? (
           <span
-            data-testid="high-value-warning-xlm"
+            data-testid="high-value-warning-usd"
             style={{
-              fontSize: 32,
-              fontWeight: 600,
-              letterSpacing: "-0.03em",
+              marginLeft: "auto",
+              fontSize: 13,
+              color: "var(--fg-3)",
               fontFamily: "'Geist Mono', monospace",
-              color: "var(--fg)",
             }}
           >
-            {totalXlm}
+            ≈ {dollarEstimate}
           </span>
-          <span style={{ fontSize: 16, color: "var(--fg-3)", fontWeight: 500 }}>XLM</span>
-          {dollarEstimate !== undefined ? (
-            <span
-              data-testid="high-value-warning-usd"
-              style={{
-                marginLeft: "auto",
-                fontSize: 13,
-                color: "var(--fg-3)",
-                fontFamily: "'Geist Mono', monospace",
-              }}
-            >
-              ≈ {dollarEstimate}
-            </span>
-          ) : null}
-        </div>
-        <div style={{ display: "flex", gap: 11 }}>
-          <button
-            ref={cancelRef}
-            type="button"
-            onClick={onCancel}
-            data-testid="high-value-warning-cancel"
-            style={{
-              flex: 1,
-              padding: 13,
-              borderRadius: 11,
-              border: "1px solid var(--border-2)",
-              background: "var(--surface)",
-              color: "var(--fg)",
-              fontWeight: 600,
-              fontSize: 14,
-              cursor: "pointer",
-            }}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            data-testid="high-value-warning-confirm"
-            style={{
-              flex: 1,
-              padding: 13,
-              borderRadius: 11,
-              border: "none",
-              background: "var(--warning)",
-              color: "var(--accent-fg)",
-              fontWeight: 600,
-              fontSize: 14,
-              cursor: "pointer",
-            }}
-          >
-            I understand, continue
-          </button>
-        </div>
+        ) : null}
       </div>
-    </div>
+    </Modal>
   );
 }

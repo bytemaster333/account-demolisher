@@ -5,6 +5,8 @@
 // balance). The user must either handle them off-app, or explicitly consent to
 // return each to its issuer — an irreversible transfer we never do silently.
 
+import { Button, CopyableAddress, Notice } from "@/components/ui";
+
 export interface ResidueConsentCredit {
   readonly key: string;
   readonly code: string;
@@ -20,11 +22,6 @@ export interface ResidueConsentProps {
   readonly onRebuild: () => void;
 }
 
-function shortIssuer(issuer: string): string {
-  if (issuer.length <= 12) return issuer;
-  return `${issuer.slice(0, 4)}…${issuer.slice(-4)}`;
-}
-
 export function ResidueConsent({
   credits,
   consented,
@@ -35,38 +32,24 @@ export function ResidueConsent({
   const consentedSet = new Set(consented);
 
   return (
-    <div
+    <Notice
+      tone="warning"
       role="alert"
       data-testid="residue-consent"
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 12,
-        padding: "14px 16px",
-        borderRadius: 12,
-        background: "color-mix(in srgb, var(--warning-soft) 60%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--warning) 26%, transparent)",
-        color: "var(--fg)",
-      }}
+      title={
+        credits.length === 1
+          ? "1 balance can't be converted to XLM"
+          : `${credits.length} balances can't be converted to XLM`
+      }
     >
-      <div>
-        <div style={{ fontSize: 13.5, fontWeight: 600 }}>
-          {credits.length === 1
-            ? "1 balance can't be converted to XLM"
-            : `${credits.length} balances can't be converted to XLM`}
-        </div>
-        <div style={{ marginTop: 3, fontSize: 12.5, lineHeight: 1.5, color: "var(--fg-2)" }}>
-          No market path to XLM was found for these assets, so the account cannot be closed while it
-          holds them. Sell or move them yourself first, or tick “return to issuer” to send a balance
-          back to the asset that issued it — this is irreversible and most issuers will not credit
-          anything in return.
-        </div>
-      </div>
-
+      No market path to XLM was found for these assets, so the account can&apos;t be closed while it
+      holds them. Sell or move them yourself first, or tick “return to issuer” to send a balance
+      back to the asset that issued it — this is irreversible and most issuers credit nothing in
+      return.
       <ul
         style={{
           listStyle: "none",
-          margin: 0,
+          margin: "12px 0 0",
           padding: 0,
           display: "flex",
           flexDirection: "column",
@@ -80,10 +63,11 @@ export function ResidueConsent({
               display: "flex",
               alignItems: "center",
               gap: 10,
-              padding: "8px 11px",
-              borderRadius: 8,
+              padding: "9px 11px",
+              borderRadius: 9,
               background: "var(--surface)",
               border: "1px solid var(--border)",
+              flexWrap: "wrap",
             }}
           >
             <span
@@ -95,23 +79,16 @@ export function ResidueConsent({
             >
               {c.amount} {c.code}
             </span>
-            <span
-              style={{
-                flex: 1,
-                font: "500 11.5px/1 'Geist Mono', monospace",
-                color: "var(--fg-3)",
-                whiteSpace: "nowrap",
-              }}
-              title={c.issuer}
-            >
-              {shortIssuer(c.issuer)}
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <CopyableAddress value={c.issuer} label="Issuer" head={4} tail={4} size={11.5} />
             </span>
             <label
               style={{
                 display: "inline-flex",
                 alignItems: "center",
-                gap: 6,
+                gap: 7,
                 fontSize: 12,
+                fontWeight: 600,
                 color: "var(--warning)",
                 cursor: "pointer",
                 whiteSpace: "nowrap",
@@ -121,31 +98,18 @@ export function ResidueConsent({
                 type="checkbox"
                 checked={consentedSet.has(c.key)}
                 onChange={(e) => onToggle(c.key, e.target.checked)}
+                style={{ width: 15, height: 15, accentColor: "var(--warning)" }}
               />
               return to issuer
             </label>
           </li>
         ))}
       </ul>
-
-      <button
-        type="button"
-        onClick={onRebuild}
-        data-testid="residue-rebuild"
-        style={{
-          alignSelf: "flex-start",
-          padding: "9px 14px",
-          borderRadius: 9,
-          border: "1px solid var(--border-2)",
-          background: "var(--surface)",
-          color: "var(--fg)",
-          fontWeight: 600,
-          fontSize: 13,
-          cursor: "pointer",
-        }}
-      >
-        Rebuild plan with these choices
-      </button>
-    </div>
+      <div style={{ marginTop: 12 }}>
+        <Button variant="secondary" size="sm" onClick={onRebuild} data-testid="residue-rebuild">
+          Rebuild plan with these choices
+        </Button>
+      </div>
+    </Notice>
   );
 }

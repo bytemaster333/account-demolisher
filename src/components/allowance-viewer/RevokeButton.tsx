@@ -5,6 +5,7 @@
 import { TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
 import { useCallback, useState } from "react";
 
+import { Button, Spinner } from "@/components/ui";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import { buildRevoke, type AllowanceRecord } from "@/lib/soroban/allowances";
@@ -34,7 +35,6 @@ export function RevokeButton({
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
-  const [hover, setHover] = useState(false);
 
   const onClick = useCallback(async () => {
     setError(null);
@@ -89,16 +89,16 @@ export function RevokeButton({
     }
   }, [connectorRef, network, record, userAddress, onRevoked]);
 
-  // render-safe disabled signal — parent passes null when no wallet or wrong wallet
   const noConnector = connectorRef === null;
   const inFlight = phase === "building" || phase === "signing" || phase === "submitting";
+  const testId = `revoke-button-${record.contractId}-${record.spender}`;
 
   // confirmed: green check + "Revoked"
   if (phase === "confirmed") {
     return (
       <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
         <span
-          data-testid={`revoke-button-${record.contractId}-${record.spender}`}
+          data-testid={testId}
           style={{
             display: "inline-flex",
             alignItems: "center",
@@ -117,6 +117,7 @@ export function RevokeButton({
             strokeWidth={2.6}
             strokeLinecap="round"
             strokeLinejoin="round"
+            aria-hidden
           >
             <path d="M20 6L9 17l-5-5" />
           </svg>
@@ -124,11 +125,7 @@ export function RevokeButton({
         </span>
         {txHash !== null && (
           <span
-            style={{
-              fontSize: 11,
-              color: "var(--success)",
-              fontFamily: "'Geist Mono', monospace",
-            }}
+            style={{ fontSize: 11, color: "var(--success)", fontFamily: '"Geist Mono", monospace' }}
           >
             tx {txHash.slice(0, 10)}…
           </span>
@@ -137,11 +134,11 @@ export function RevokeButton({
     );
   }
 
-  // in-flight: spinner + "Revoking…"
+  // in-flight: spinner + label
   if (inFlight) {
     return (
       <span
-        data-testid={`revoke-button-${record.contractId}-${record.spender}`}
+        data-testid={testId}
         style={{
           display: "inline-flex",
           alignItems: "center",
@@ -151,16 +148,7 @@ export function RevokeButton({
           color: "var(--fg-2)",
         }}
       >
-        <span
-          style={{
-            width: 13,
-            height: 13,
-            borderRadius: "50%",
-            border: "2px solid var(--border-2)",
-            borderTopColor: "var(--accent)",
-            animation: "spin .8s linear infinite",
-          }}
-        />
+        <Spinner size={13} />
         Revoking…
       </span>
     );
@@ -169,53 +157,24 @@ export function RevokeButton({
   // disabled (no wallet connected, or wallet doesn't own this address)
   if (noConnector) {
     return (
-      <span
-        title="Connect a wallet to revoke"
-        data-testid={`revoke-button-${record.contractId}-${record.spender}`}
-        style={{
-          padding: "8px 14px",
-          borderRadius: 9,
-          border: "1px solid var(--border)",
-          background: "var(--surface-2)",
-          color: "var(--fg-3)",
-          fontWeight: 600,
-          fontSize: 13,
-          cursor: "not-allowed",
-          display: "inline-block",
-        }}
+      <Button
+        variant="secondary"
+        size="sm"
+        disabled
+        disabledReason="Connect the wallet that owns this address to revoke"
+        data-testid={testId}
       >
         Revoke
-      </span>
+      </Button>
     );
   }
 
-  const label = phase === "failed" ? "Retry revoke" : "Revoke";
-
-  // idle / failed: clickable button
+  // idle / failed: clickable danger button
   return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
-      <button
-        type="button"
-        onClick={onClick}
-        onMouseEnter={() => setHover(true)}
-        onMouseLeave={() => setHover(false)}
-        onFocus={() => setHover(true)}
-        onBlur={() => setHover(false)}
-        data-testid={`revoke-button-${record.contractId}-${record.spender}`}
-        style={{
-          padding: "8px 14px",
-          borderRadius: 9,
-          border: `1px solid ${hover ? "var(--danger)" : "var(--border-2)"}`,
-          background: "var(--surface)",
-          color: hover ? "var(--danger)" : "var(--fg)",
-          fontWeight: 600,
-          fontSize: 13,
-          cursor: "pointer",
-          transition: "border-color .12s, color .12s",
-        }}
-      >
-        {label}
-      </button>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 }}>
+      <Button variant="danger" size="sm" onClick={() => void onClick()} data-testid={testId}>
+        {phase === "failed" ? "Retry revoke" : "Revoke"}
+      </Button>
       {error !== null && (
         <p
           role="alert"

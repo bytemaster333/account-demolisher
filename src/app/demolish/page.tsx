@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
 
 import { AppShell } from "@/components/layout/AppShell";
+import { Badge, Button, Card, Notice, StatGrid } from "@/components/ui";
 import { HighValueWarning } from "@/components/confirmations/HighValueWarning";
 import { TypedConfirmation } from "@/components/confirmations/TypedConfirmation";
 import { AuthImmutableBlock } from "@/components/warnings/AuthImmutableBlock";
@@ -2621,10 +2622,7 @@ function ConfigurePanel({
             color: "var(--fg)",
           }}
         >
-          Fallback address{" "}
-          <span style={{ color: "var(--fg-3)", fontWeight: 400 }}>
-            , optional for mediator route
-          </span>
+          Recovery address <span style={{ color: "var(--fg-3)", fontWeight: 400 }}>· optional</span>
         </label>
         <input
           type="text"
@@ -2648,6 +2646,10 @@ function ConfigurePanel({
             boxSizing: "border-box",
           }}
         />
+        <p style={{ margin: "7px 0 0", fontSize: 12, color: "var(--fg-3)", lineHeight: 1.5 }}>
+          If an exchange (mediator) transfer can&apos;t be delivered, funds are sent here instead.
+          Leave blank to fall back to the destination above.
+        </p>
 
         {formError ? (
           <p
@@ -2664,44 +2666,37 @@ function ConfigurePanel({
           </p>
         ) : null}
 
-        <button
-          type="button"
-          onClick={onGeneratePlan}
-          disabled={!canStart || isBusy}
-          data-testid="demolish-start"
-          style={{
-            marginTop: 20,
-            width: "100%",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 9,
-            padding: 14,
-            borderRadius: 12,
-            border: "none",
-            background: "var(--accent)",
-            color: "var(--accent-fg)",
-            fontWeight: 600,
-            fontSize: 15,
-            cursor: canStart && !isBusy ? "pointer" : "not-allowed",
-            opacity: canStart && !isBusy ? 1 : 0.6,
-            boxShadow: "0 6px 20px var(--accent-soft)",
-          }}
-        >
-          {isBusy ? "Building plan…" : "Build & simulate plan"}
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2.2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
+        <div style={{ marginTop: 20 }}>
+          <Button
+            variant="primary"
+            size="lg"
+            onClick={onGeneratePlan}
+            disabled={!canStart || isBusy}
+            loading={isBusy}
+            disabledReason="Connect an account and meet any signing threshold first"
+            data-testid="demolish-start"
+            style={{ width: "100%" }}
+            iconRight={
+              isBusy ? undefined : (
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2.2}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <path d="M5 12h14M13 6l6 6-6 6" />
+                </svg>
+              )
+            }
           >
-            <path d="M5 12h14M13 6l6 6-6 6" />
-          </svg>
-        </button>
+            {isBusy ? "Building plan…" : "Build & simulate plan"}
+          </Button>
+        </div>
         <p
           style={{
             margin: "12px 0 0",
@@ -2730,52 +2725,18 @@ function PreviewPanel({
   readonly onBack: () => void;
   readonly onContinue: () => void;
   // when set, the account can't be closed yet (e.g. un-routable balances); the
-  // continue button is disabled and the reason is shown.
+  // continue button is disabled and the reason is surfaced prominently.
   readonly blockReason?: string;
 }): React.JSX.Element {
   const blocked = blockReason !== undefined;
   return (
-    <div
-      style={{
-        background: "var(--surface)",
-        border: "1px solid var(--border)",
-        borderRadius: 16,
-        padding: 24,
-        boxShadow: "var(--shadow-sm)",
-      }}
-    >
-      <div
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 8,
-          padding: "5px 11px",
-          borderRadius: 999,
-          background: "var(--success-soft)",
-          border: "1px solid color-mix(in srgb, var(--success) 26%, transparent)",
-          marginBottom: 16,
-        }}
-      >
-        <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--success)" }} />
-        <span
-          style={{
-            font: "600 11px/1 Geist, sans-serif",
-            color: "var(--success)",
-            letterSpacing: "0.03em",
-          }}
-        >
+    <Card padding={24}>
+      <div style={{ marginBottom: 14 }}>
+        <Badge tone="success" dot>
           PLAN SIMULATED
-        </span>
+        </Badge>
       </div>
-      <h2
-        style={{
-          margin: "0 0 6px",
-          fontSize: 22,
-          fontWeight: 600,
-          letterSpacing: "-0.02em",
-          color: "var(--fg)",
-        }}
-      >
+      <h2 style={{ margin: "0 0 6px", fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em" }}>
         Review before you commit
       </h2>
       <p
@@ -2787,117 +2748,62 @@ function PreviewPanel({
           maxWidth: 520,
         }}
       >
-        The full plan is on the left, <strong>{activeCount}</strong>{" "}
+        The full plan is on the right, <strong>{activeCount}</strong>{" "}
         {activeCount === 1 ? "transaction" : "transactions"} across discovery, DeFi unwinding,
         liquidation, cleanup and the final merge. Expand any step to inspect its simulation.
       </p>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr 1fr",
-          gap: 1,
-          background: "var(--border)",
-          border: "1px solid var(--border)",
-          borderRadius: 12,
-          overflow: "hidden",
-          marginBottom: 22,
-        }}
-      >
-        <PreviewStat label="Reserve recovered" value="+1.0 XLM" />
-        <PreviewStat label="Plan steps" value={String(activeCount)} />
-        <PreviewStat label="Forwarded to dest." value={`${totalXlm} XLM`} />
+
+      <div style={{ marginBottom: blocked ? 16 : 22 }}>
+        <StatGrid
+          stats={[
+            { label: "Reserve recovered", value: "+1.0 XLM", tone: "accent" },
+            { label: "Plan steps", value: String(activeCount) },
+            { label: "Forwarded to dest.", value: `${totalXlm} XLM` },
+          ]}
+        />
       </div>
+
+      {/* the blocker is the emphasized next step — not a tiny caption */}
+      {blocked ? (
+        <div style={{ marginBottom: 18 }}>
+          <Notice tone="warning" title="One step left before you can close" role="alert">
+            {blockReason}
+          </Notice>
+        </div>
+      ) : null}
+
       <div style={{ display: "flex", gap: 11 }}>
-        <button
-          type="button"
-          onClick={onBack}
-          data-testid="demolish-cancel"
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 7,
-            padding: "13px 18px",
-            borderRadius: 11,
-            border: "1px solid var(--border-2)",
-            background: "var(--surface)",
-            color: "var(--fg)",
-            fontWeight: 600,
-            fontSize: 14,
-            cursor: "pointer",
-          }}
-        >
+        <Button variant="secondary" onClick={onBack} data-testid="demolish-cancel">
           Back
-        </button>
-        <button
-          type="button"
-          onClick={blocked ? undefined : onContinue}
+        </Button>
+        <Button
+          variant="primary"
+          onClick={onContinue}
           disabled={blocked}
+          disabledReason={blockReason}
           data-testid="demolish-confirm"
           aria-label="Open final demolition confirmation"
-          title={blockReason}
-          style={{
-            flex: 1,
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 9,
-            padding: "13px 20px",
-            borderRadius: 11,
-            border: "1px solid var(--accent-line)",
-            background: "var(--accent)",
-            color: "var(--accent-fg)",
-            fontWeight: 600,
-            fontSize: 14,
-            cursor: blocked ? "not-allowed" : "pointer",
-            opacity: blocked ? 0.5 : 1,
-          }}
+          style={{ flex: 1 }}
+          iconRight={
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2.2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="M5 12h14M13 6l6 6-6 6" />
+            </svg>
+          }
         >
           Looks good, continue
-          <svg
-            width="15"
-            height="15"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2.2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M5 12h14M13 6l6 6-6 6" />
-          </svg>
-        </button>
+        </Button>
       </div>
-      {blocked ? (
-        <p style={{ margin: "12px 0 0", fontSize: 12.5, color: "var(--warning)", lineHeight: 1.5 }}>
-          {blockReason}
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
-function PreviewStat({
-  label,
-  value,
-}: {
-  readonly label: string;
-  readonly value: string;
-}): React.JSX.Element {
-  return (
-    <div style={{ background: "var(--surface)", padding: "15px 16px" }}>
-      <div style={{ fontSize: 11, color: "var(--fg-3)" }}>{label}</div>
-      <div
-        style={{
-          fontWeight: 600,
-          fontSize: 17,
-          fontFamily: "'Geist Mono', monospace",
-          marginTop: 4,
-          color: "var(--fg)",
-        }}
-      >
-        {value}
-      </div>
-    </div>
+    </Card>
   );
 }
 

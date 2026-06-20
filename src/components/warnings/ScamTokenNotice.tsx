@@ -5,6 +5,7 @@
 // demolition removes these anyway; this just makes sure the user recognizes
 // what they held. Not a blocker — the typed confirmation is the safety net.
 
+import { Notice } from "@/components/ui";
 import type { ScamFinding } from "@/lib/safety/scam-heuristics";
 import type { AssetIdentifier } from "@/lib/types/account";
 
@@ -38,29 +39,20 @@ export function ScamTokenNotice({ findings }: ScamTokenNoticeProps): React.JSX.E
   if (findings.length === 0) return null;
 
   return (
-    <div
+    <Notice
+      tone="danger"
       role="alert"
       data-testid="scam-token-notice"
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 8,
-        padding: "12px 14px",
-        borderRadius: 11,
-        background: "color-mix(in srgb, var(--danger-soft) 70%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--danger) 30%, transparent)",
-        color: "var(--fg)",
-      }}
-    >
-      <div style={{ fontSize: 13.5, fontWeight: 600 }}>
-        {findings.length === 1
+      title={
+        findings.length === 1
           ? "1 token looks suspicious"
-          : `${findings.length} tokens look suspicious`}
-      </div>
+          : `${findings.length} tokens look suspicious`
+      }
+    >
       <ul
         style={{
           listStyle: "none",
-          margin: 0,
+          margin: "0 0 8px",
           padding: 0,
           display: "flex",
           flexDirection: "column",
@@ -68,10 +60,7 @@ export function ScamTokenNotice({ findings }: ScamTokenNoticeProps): React.JSX.E
         }}
       >
         {findings.map((f) => (
-          <li
-            key={`${assetKey(f.asset)}-${f.flag.id}`}
-            style={{ fontSize: 12.5, lineHeight: 1.45, color: "var(--fg-2)" }}
-          >
+          <li key={`${assetKey(f.asset)}-${f.flag.id}`} style={{ lineHeight: 1.45 }}>
             <span style={{ font: "600 12px/1 'Geist Mono', monospace", color: "var(--fg)" }}>
               {assetLabel(f.asset)}
             </span>{" "}
@@ -79,9 +68,9 @@ export function ScamTokenNotice({ findings }: ScamTokenNoticeProps): React.JSX.E
           </li>
         ))}
       </ul>
-      <div style={{ fontSize: 12, color: "var(--fg-3)" }}>
+      <span style={{ color: "var(--fg-3)", fontSize: 12 }}>
         These are removed as part of the close-out. Make sure you recognize them before proceeding.
-      </div>
-    </div>
+      </span>
+    </Notice>
   );
 }
