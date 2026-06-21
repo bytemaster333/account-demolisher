@@ -212,13 +212,6 @@ export default function AllowancesPage(): React.JSX.Element {
               data-testid="allowance-initial-empty"
               icon={<SearchGlyph />}
               title="Enter an address to scan"
-              body={
-                <>
-                  A live RPC scan of{" "}
-                  <code style={{ fontFamily: '"Geist Mono", monospace' }}>approve</code> events
-                  typically takes 5–15 seconds.
-                </>
-              }
             />
           ) : null}
 
@@ -228,16 +221,6 @@ export default function AllowancesPage(): React.JSX.Element {
                 <Spinner size={38} />
               </div>
               <div style={{ fontWeight: 600, fontSize: 15 }}>Scanning approve events…</div>
-              <div
-                style={{
-                  fontSize: 12.5,
-                  color: "var(--fg-3)",
-                  marginTop: 6,
-                  fontFamily: '"Geist Mono", monospace',
-                }}
-              >
-                retention-clamped to the last 30 days
-              </div>
             </Card>
           ) : null}
 

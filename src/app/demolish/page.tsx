@@ -1367,16 +1367,6 @@ function LeftLoadingCard({ message }: { readonly message: string }): React.JSX.E
         >
           {message}
         </div>
-        <div
-          style={{
-            fontSize: 12.5,
-            color: "var(--fg-3)",
-            maxWidth: 260,
-            lineHeight: 1.5,
-          }}
-        >
-          Reading on-chain state — trustlines, signers, soroban positions, allowances.
-        </div>
       </div>
     </div>
   );
@@ -1986,17 +1976,6 @@ function SignOffPanel({
           {delayElapsed ? "Demolish account" : `Demolish account · ${secsLeft}s`}
         </Button>
       </div>
-      <p
-        style={{
-          margin: 0,
-          fontSize: 11.5,
-          color: "var(--fg-3)",
-          textAlign: "center",
-          lineHeight: 1.5,
-        }}
-      >
-        This is irreversible. The delay and re-typing are intentional friction.
-      </p>
     </Card>
   );
 }
@@ -2748,17 +2727,6 @@ function ConfigurePanel({
             {isBusy ? "Building plan…" : "Build & simulate plan"}
           </Button>
         </div>
-        <p
-          style={{
-            margin: "12px 0 0",
-            fontSize: 11.5,
-            color: "var(--fg-3)",
-            textAlign: "center",
-            lineHeight: 1.5,
-          }}
-        >
-          Building the plan reads the account and runs real simulations. Nothing is signed yet.
-        </p>
       </div>
     </div>
   );

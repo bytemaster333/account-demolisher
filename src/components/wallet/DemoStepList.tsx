@@ -17,16 +17,19 @@ export interface DemoStepRow {
 
 export function DemoStepList({
   rows,
+  bare = false,
 }: {
   readonly rows: readonly DemoStepRow[];
+  // when embedded inside another card, drop the own border/background
+  readonly bare?: boolean;
 }): React.JSX.Element {
   return (
     <div
       style={{
-        background: "var(--surface)",
-        border: "1px solid var(--border)",
-        borderRadius: 13,
-        boxShadow: "var(--shadow-sm)",
+        background: bare ? "transparent" : "var(--surface)",
+        border: bare ? "none" : "1px solid var(--border)",
+        borderRadius: bare ? 0 : 13,
+        boxShadow: bare ? "none" : "var(--shadow-sm)",
         padding: "4px 8px",
         display: "flex",
         flexDirection: "column",

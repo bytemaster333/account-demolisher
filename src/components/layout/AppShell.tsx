@@ -15,6 +15,8 @@ export function AppShell({ children }: { readonly children: React.ReactNode }) {
     <div
       style={{
         minHeight: "100vh",
+        display: "flex",
+        flexDirection: "column",
         background: "var(--bg)",
         backgroundImage: "var(--ambient)",
         backgroundAttachment: "fixed",
@@ -24,7 +26,9 @@ export function AppShell({ children }: { readonly children: React.ReactNode }) {
       }}
     >
       <Navbar />
-      <main>{children}</main>
+      {/* flex:1 pins the footer to the viewport bottom so it doesn't float at a
+          different height on short vs tall steps */}
+      <main style={{ flex: 1 }}>{children}</main>
       <Footer />
     </div>
   );

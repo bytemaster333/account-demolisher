@@ -159,24 +159,24 @@ export function CreateTestAccountButton({
         </p>
       </div>
 
-      <Card padding={6}>
-        <DemoStepList rows={rows} />
+      <Card padding={0} style={{ overflow: "hidden" }}>
+        <DemoStepList rows={rows} bare />
+
+        {phase === "done" && ready !== null ? (
+          <ReadyPanel
+            publicKey={ready.publicKey}
+            explorerUrl={ready.explorerUrl}
+            successfulCount={successfulCount}
+            skippedCount={skippedCount}
+            failedCount={failedCount}
+            onContinue={onContinue}
+          />
+        ) : null}
+
+        {phase === "failed" ? (
+          <FailurePanel error={fatal ?? "Unknown failure"} onRetry={onRun} />
+        ) : null}
       </Card>
-
-      {phase === "done" && ready !== null ? (
-        <ReadyPanel
-          publicKey={ready.publicKey}
-          explorerUrl={ready.explorerUrl}
-          successfulCount={successfulCount}
-          skippedCount={skippedCount}
-          failedCount={failedCount}
-          onContinue={onContinue}
-        />
-      ) : null}
-
-      {phase === "failed" ? (
-        <FailurePanel error={fatal ?? "Unknown failure"} onRetry={onRun} />
-      ) : null}
     </div>
   );
 }
@@ -253,10 +253,6 @@ function IdleBody({ onRun }: { readonly onRun: () => void }) {
           Create demo account &amp; continue
         </Button>
       </div>
-      <p style={{ margin: 0, fontSize: 11.5, color: "var(--fg-3)" }}>
-        About 15 seconds. You&apos;ll get an explorer link to verify on-chain before signing
-        anything.
-      </p>
     </div>
   );
 }
@@ -279,10 +275,9 @@ function ReadyPanel({
   return (
     <div
       style={{
-        padding: 16,
-        borderRadius: 12,
+        padding: 20,
         background: "var(--surface-2)",
-        border: "1px solid color-mix(in srgb, var(--success) 32%, transparent)",
+        borderTop: "1px solid var(--border)",
         display: "flex",
         flexDirection: "column",
         gap: 12,
@@ -425,10 +420,9 @@ function FailurePanel({
     <div
       role="alert"
       style={{
-        padding: 14,
-        borderRadius: 11,
-        background: "var(--surface)",
-        border: "1px solid color-mix(in srgb, var(--danger) 35%, transparent)",
+        padding: 20,
+        background: "var(--surface-2)",
+        borderTop: "1px solid color-mix(in srgb, var(--danger) 35%, transparent)",
         display: "flex",
         flexDirection: "column",
         gap: 10,
