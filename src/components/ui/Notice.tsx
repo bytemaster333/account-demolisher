@@ -67,7 +67,6 @@ export function Notice({
         // flat: neutral surface, tone carried by the tinted border + icon/title
         background: "var(--surface)",
         border: toneBorder(tone),
-        borderLeft: `3px solid ${TONE_FG[tone]}`,
         color: "var(--fg)",
       }}
     >

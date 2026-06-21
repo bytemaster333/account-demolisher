@@ -16,6 +16,8 @@ export { Badge, Dot } from "./Badge";
 export { Notice } from "./Notice";
 export { Field, Checkbox } from "./Field";
 export type { FieldProps } from "./Field";
+export { Select } from "./Select";
+export type { SelectOption } from "./Select";
 export { CopyableAddress } from "./Address";
 export { Modal } from "./Modal";
 export { Spinner, Progress, EmptyState, SearchGlyph } from "./feedback";

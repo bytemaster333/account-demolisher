@@ -5,7 +5,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 
-import { Badge, Button, CopyableAddress } from "@/components/ui";
+import { Badge, Button, Card, CopyableAddress } from "@/components/ui";
 import { DemoStepList, type DemoStepRow } from "@/components/wallet/DemoStepList";
 import type { NetworkConfig } from "@/lib/config/networks";
 import {
@@ -21,6 +21,9 @@ import { useWalletStore } from "@/stores/wallet";
 export interface CreateTestAccountButtonProps {
   readonly network: NetworkConfig;
   readonly onConnector: (connector: SecretKeyConnector) => void;
+  // fires true when setup starts, so the connect screen can hand the page over
+  // to this as a dedicated step
+  readonly onActiveChange?: (active: boolean) => void;
 }
 
 type Phase = "idle" | "running" | "done" | "failed";
@@ -34,6 +37,7 @@ interface ReadyAccount {
 export function CreateTestAccountButton({
   network,
   onConnector,
+  onActiveChange,
 }: CreateTestAccountButtonProps): React.JSX.Element | null {
   const setConnected = useWalletStore((s) => s.setConnected);
 
@@ -73,6 +77,7 @@ export function CreateTestAccountButton({
 
   const onRun = useCallback(async () => {
     setPhase("running");
+    onActiveChange?.(true);
     setFatal(null);
     setResults(new Map());
     setActiveId(null);
@@ -99,7 +104,7 @@ export function CreateTestAccountButton({
       setFatal(e instanceof Error ? e.message : String(e));
       setPhase("failed");
     }
-  }, [network]);
+  }, [network, onActiveChange]);
 
   const onContinue = useCallback(() => {
     if (ready === null) return;
@@ -113,22 +118,50 @@ export function CreateTestAccountButton({
   const skippedCount = Array.from(results.values()).filter((r) => r.status === "skipped").length;
   const failedCount = Array.from(results.values()).filter((r) => r.status === "failed").length;
 
-  return (
-    <section
-      data-testid="create-test-account-card"
-      style={{
-        padding: 22,
-        borderRadius: 14,
-        border: "1px solid var(--border)",
-        background: "var(--surface)",
-        display: "flex",
-        flexDirection: "column",
-        gap: 16,
-      }}
-    >
-      <Header network={network} />
+  // idle: a compact pitch card (secondary path on the connect screen)
+  if (phase === "idle") {
+    return (
+      <section
+        data-testid="create-test-account-card"
+        style={{
+          padding: 22,
+          borderRadius: 14,
+          border: "1px solid var(--border)",
+          background: "var(--surface)",
+          display: "flex",
+          flexDirection: "column",
+          gap: 16,
+        }}
+      >
+        <Header network={network} />
+        <IdleBody onRun={onRun} />
+      </section>
+    );
+  }
 
-      {phase === "idle" ? <IdleBody onRun={onRun} /> : <DemoStepList rows={rows} />}
+  // running / done / failed: a dedicated step that takes over the screen
+  return (
+    <div
+      data-testid="create-test-account-card"
+      style={{ display: "flex", flexDirection: "column", gap: 18 }}
+    >
+      <div>
+        <h1 style={{ margin: 0, fontSize: 28, fontWeight: 600, letterSpacing: "-0.03em" }}>
+          {phase === "failed"
+            ? "Demo setup failed"
+            : phase === "done"
+              ? "Demo account ready"
+              : "Setting up your demo account"}
+        </h1>
+        <p style={{ margin: "10px 0 0", fontSize: 14.5, color: "var(--fg-2)", lineHeight: 1.55 }}>
+          Populating a fresh {network.id} account with the trustlines, offers, signers, and Soroban
+          positions the demolisher knows how to clean up — so you can walk the whole flow first.
+        </p>
+      </div>
+
+      <Card padding={6}>
+        <DemoStepList rows={rows} />
+      </Card>
 
       {phase === "done" && ready !== null ? (
         <ReadyPanel
@@ -144,7 +177,7 @@ export function CreateTestAccountButton({
       {phase === "failed" ? (
         <FailurePanel error={fatal ?? "Unknown failure"} onRetry={onRun} />
       ) : null}
-    </section>
+    </div>
   );
 }
 
@@ -250,7 +283,6 @@ function ReadyPanel({
         borderRadius: 12,
         background: "var(--surface-2)",
         border: "1px solid color-mix(in srgb, var(--success) 32%, transparent)",
-        borderLeft: "3px solid var(--success)",
         display: "flex",
         flexDirection: "column",
         gap: 12,
@@ -397,7 +429,6 @@ function FailurePanel({
         borderRadius: 11,
         background: "var(--surface)",
         border: "1px solid color-mix(in srgb, var(--danger) 35%, transparent)",
-        borderLeft: "3px solid var(--danger)",
         display: "flex",
         flexDirection: "column",
         gap: 10,

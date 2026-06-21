@@ -9,9 +9,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
 
 import { AppShell } from "@/components/layout/AppShell";
-import { Badge, Button, Card, Notice, StatGrid } from "@/components/ui";
-import { HighValueWarning } from "@/components/confirmations/HighValueWarning";
-import { TypedConfirmation } from "@/components/confirmations/TypedConfirmation";
+import {
+  Badge,
+  Button,
+  Card,
+  Checkbox,
+  Field,
+  Notice,
+  SectionLabel,
+  Select,
+  StatGrid,
+} from "@/components/ui";
 import { AuthImmutableBlock } from "@/components/warnings/AuthImmutableBlock";
 import { DiscoveryWarnings } from "@/components/warnings/DiscoveryWarnings";
 import { ResidueConsent } from "@/components/warnings/ResidueConsent";
@@ -207,7 +215,7 @@ function buildFlowSteps(args: {
   readonly isSucceeded: boolean;
 }): readonly FlowStep[] {
   const { connected, hasAudit, hasTree, isConfirming, isExecuting, isSucceeded } = args;
-  const labels = ["Connect", "Configure", "Preview", "Confirm", "Execute"];
+  const labels = ["Connect", "Configure", "Review", "Sign off", "Execute"];
 
   // determine the active index
   let activeIdx = 0;
@@ -324,7 +332,8 @@ function DemolishFlow(): React.JSX.Element {
   }, []);
 
   // two-stage confirm: highvalue first (if balance > threshold), then typed. typed is never bypassable
-  type ConfirmStage = "idle" | "highvalue" | "typed";
+  // "idle" = the Review step; "signoff" = the human QA sign-off step
+  type ConfirmStage = "idle" | "signoff";
   const [confirmStage, setConfirmStage] = useState<ConfirmStage>("idle");
 
   const [snapshot, send] = useMachine(pageFlowMachine);
@@ -618,186 +627,123 @@ function DemolishFlow(): React.JSX.Element {
             </div>
           ) : null}
 
-          {/* stable two-column layout — only for idle/configure/preview. */}
-          {!(isDiscovering || isPreviewing) && !isExecuting && !isSucceeded && !isFailed
-            ? (() => {
-                // tree is the trigger for "do we need the side rail?"
-                const hasSideContent = tree !== null;
-                return (
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: hasSideContent
-                        ? "minmax(0, 1fr) 360px"
-                        : "minmax(0, 640px)",
-                      gap: 28,
-                      alignItems: "start",
-                      maxWidth: hasSideContent ? 1032 : 640,
-                      margin: "0 auto",
-                      justifyContent: "center",
-                    }}
-                  >
-                    {/* MAIN panel (form / loading-transition / preview / executing / outcome) */}
-                    <div>
-                      {isConfiguring && !(isDiscovering || isPreviewing) ? (
-                        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                          {multisigRequired && multisig ? (
-                            <MultisigSigners
-                              threshold={multisig.threshold}
-                              currentWeight={collectedWeight}
-                              added={extraSigners.map(
-                                (s): AddedSigner => ({ publicKey: s.publicKey, weight: s.weight }),
-                              )}
-                              onAddSecret={onAddSecretSigner}
-                              onRemove={onRemoveSigner}
-                            />
-                          ) : null}
-                          {audit && numCoverable > 0 ? (
-                            <SponsorshipAutoRevokeNotice count={numCoverable} />
-                          ) : null}
-                          {audit && audit.claimableBalances.length > 0 ? (
-                            <PendingClaimableBalances
-                              pending={audit.claimableBalances.map(toPendingCb)}
-                            />
-                          ) : null}
-                          <ConfigurePanel
-                            form={form}
-                            setForm={setForm}
-                            cex={cex}
-                            hasMemo={hasMemo}
-                            formError={formError}
-                            isBusy={false}
-                            canStart={publicKey !== null && hasConnector && multisigReady}
-                            onGeneratePlan={onStart}
-                            audit={audit}
-                            isDemo={isDemo}
-                          />
-                        </div>
-                      ) : null}
+          {/* single-column flow content — configure / review / sign-off / cancelled.
+              No side rail and no modals: the plan detail lives in the sign-off step. */}
+          {!(isDiscovering || isPreviewing) && !isExecuting && !isSucceeded && !isFailed ? (
+            <div style={{ maxWidth: isConfiguring ? 640 : 760, margin: "0 auto" }}>
+              {isConfiguring ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                  {multisigRequired && multisig ? (
+                    <MultisigSigners
+                      threshold={multisig.threshold}
+                      currentWeight={collectedWeight}
+                      added={extraSigners.map(
+                        (s): AddedSigner => ({ publicKey: s.publicKey, weight: s.weight }),
+                      )}
+                      onAddSecret={onAddSecretSigner}
+                      onRemove={onRemoveSigner}
+                    />
+                  ) : null}
+                  {audit && numCoverable > 0 ? (
+                    <SponsorshipAutoRevokeNotice count={numCoverable} />
+                  ) : null}
+                  {audit && audit.claimableBalances.length > 0 ? (
+                    <PendingClaimableBalances pending={audit.claimableBalances.map(toPendingCb)} />
+                  ) : null}
+                  <ConfigurePanel
+                    form={form}
+                    setForm={setForm}
+                    cex={cex}
+                    hasMemo={hasMemo}
+                    formError={formError}
+                    isBusy={false}
+                    canStart={publicKey !== null && hasConnector && multisigReady}
+                    onGeneratePlan={onStart}
+                    audit={audit}
+                    isDemo={isDemo}
+                  />
+                </div>
+              ) : null}
 
-                      {isPreview ? (
-                        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                          {audit ? (
-                            <CompactAuditBar
-                              pkShort={acctPkShort}
-                              xlm={totalXlm}
-                              sub={acctSub}
-                              trustlines={acctTrustlines}
-                              offers={acctOffers}
-                              data={acctData}
-                              claimable={acctClaimable}
-                            />
-                          ) : null}
-                          <DiscoveryWarnings warnings={ctx.discoveryWarnings} />
-                          <ScamTokenNotice findings={scamFindings} />
-                          {/* consolidate notices when the CB and the self-sponsorship
-                              are the same entry (very common case: demo created a CB,
-                              became its sponsor). show only the CB notice with
-                              extended copy that mentions the sponsorship revoke. */}
-                          {(() => {
-                            if (!audit) return null;
-                            const cbs = audit.claimableBalances;
-                            const selfSponsoredCount = cbs.filter(
-                              (cb) => cb.sponsor === audit.accountId,
-                            ).length;
-                            const merged =
-                              cbs.length > 0 &&
-                              selfSponsoredCount === cbs.length &&
-                              numCoverable === selfSponsoredCount;
-                            if (merged) {
-                              return <PendingClaimableBalances pending={cbs.map(toPendingCb)} />;
-                            }
-                            return (
-                              <>
-                                {numCoverable > 0 ? (
-                                  <SponsorshipAutoRevokeNotice count={numCoverable} />
-                                ) : null}
-                                {cbs.length > 0 ? (
-                                  <PendingClaimableBalances pending={cbs.map(toPendingCb)} />
-                                ) : null}
-                              </>
-                            );
-                          })()}
-                          <ResidueConsent
-                            credits={ctx.unroutableCredits}
-                            consented={form.returnToIssuer}
-                            onToggle={onToggleResidue}
-                            onRebuild={onStart}
-                          />
-                          <PreviewPanel
-                            totalXlm={totalXlm}
-                            activeCount={activeCount}
-                            onBack={onCancel}
-                            onContinue={() => setConfirmStage(isHighValue ? "highvalue" : "typed")}
-                            {...(ctx.unroutableCredits.length > 0
-                              ? {
-                                  blockReason:
-                                    "Some balances have no XLM conversion path. Resolve them above (or return them to their issuer) before closing the account.",
-                                }
-                              : {})}
-                          />
-                        </div>
-                      ) : null}
-
-                      {/* executing / succeeded / failed are handled by the
-                          centered DemolishStatusWidget above this grid; the
-                          grid only renders idle/configure/preview content. */}
-
-                      {isCancelled ? (
-                        <CancelledPanel onResume={() => send({ type: "RESET" })} />
-                      ) : null}
-                    </div>
-
-                    {/* SIDE rail (plan tree) — only mounted when there's tree
-                        content. otherwise the layout above collapses to a
-                        single centered column and we don't render a second
-                        track at all. */}
-                    {hasSideContent ? (
-                      <div
-                        style={{
-                          position: "sticky",
-                          top: 80,
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 16,
-                        }}
-                      >
-                        {tree !== null ? (
-                          <LeftPlanList
-                            planGroups={planGroups}
-                            doneCount={doneCount}
-                            activeCount={activeCount}
-                            network={network}
-                          />
+              {isPreview ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                  {audit ? (
+                    <CompactAuditBar
+                      pkShort={acctPkShort}
+                      xlm={totalXlm}
+                      sub={acctSub}
+                      trustlines={acctTrustlines}
+                      offers={acctOffers}
+                      data={acctData}
+                      claimable={acctClaimable}
+                    />
+                  ) : null}
+                  <DiscoveryWarnings warnings={ctx.discoveryWarnings} />
+                  <ScamTokenNotice findings={scamFindings} />
+                  {(() => {
+                    if (!audit) return null;
+                    const cbs = audit.claimableBalances;
+                    const selfSponsoredCount = cbs.filter(
+                      (cb) => cb.sponsor === audit.accountId,
+                    ).length;
+                    const merged =
+                      cbs.length > 0 &&
+                      selfSponsoredCount === cbs.length &&
+                      numCoverable === selfSponsoredCount;
+                    if (merged) {
+                      return <PendingClaimableBalances pending={cbs.map(toPendingCb)} />;
+                    }
+                    return (
+                      <>
+                        {numCoverable > 0 ? (
+                          <SponsorshipAutoRevokeNotice count={numCoverable} />
                         ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-                );
-              })()
-            : null}
-        </>
-      ) : null}
+                        {cbs.length > 0 ? (
+                          <PendingClaimableBalances pending={cbs.map(toPendingCb)} />
+                        ) : null}
+                      </>
+                    );
+                  })()}
+                  <ResidueConsent
+                    credits={ctx.unroutableCredits}
+                    consented={form.returnToIssuer}
+                    onToggle={onToggleResidue}
+                    onRebuild={onStart}
+                  />
+                  <PreviewPanel
+                    totalXlm={totalXlm}
+                    activeCount={activeCount}
+                    onBack={onCancel}
+                    onContinue={() => setConfirmStage("signoff")}
+                    {...(ctx.unroutableCredits.length > 0
+                      ? {
+                          blockReason:
+                            "Some balances have no XLM conversion path. Resolve them above (or return them to their issuer) before continuing.",
+                        }
+                      : {})}
+                  />
+                </div>
+              ) : null}
 
-      {/* MODALS — two-stage confirm */}
-      {confirmStage === "highvalue" && isHighValue && audit ? (
-        <HighValueWarning
-          totalXlm={totalXlm}
-          threshold={HIGH_VALUE_THRESHOLD_XLM}
-          onConfirm={() => setConfirmStage("typed")}
-          onCancel={() => setConfirmStage("idle")}
-        />
-      ) : null}
-      {confirmStage === "typed" ? (
-        <TypedConfirmation
-          destination={form.destination}
-          onConfirm={() => {
-            // last gate — typed input already matched and the delay elapsed
-            send({ type: "CONFIRM" });
-            setConfirmStage("idle");
-          }}
-          onCancel={() => setConfirmStage("idle")}
-        />
+              {confirmStage === "signoff" ? (
+                <SignOffPanel
+                  planGroups={planGroups}
+                  totalXlm={totalXlm}
+                  destination={form.destination}
+                  network={network}
+                  isHighValue={isHighValue}
+                  onBack={() => setConfirmStage("idle")}
+                  onConfirm={() => {
+                    send({ type: "CONFIRM" });
+                    setConfirmStage("idle");
+                  }}
+                />
+              ) : null}
+
+              {isCancelled ? <CancelledPanel onResume={() => send({ type: "RESET" })} /> : null}
+            </div>
+          ) : null}
+        </>
       ) : null}
 
       {/* hidden inputs preserved for E2E selectors */}
@@ -832,168 +778,184 @@ function IdleConnect({
   const isTestnetLike = network.friendbot !== null;
   const netLabel =
     network.id === "mainnet" ? "Mainnet" : network.id === "futurenet" ? "Futurenet" : "Testnet";
+  // once demo setup starts it takes over the screen as a dedicated step
+  const [demoActive, setDemoActive] = useState(false);
   return (
-    <div style={{ maxWidth: 720, margin: "8px auto 0" }}>
-      <div
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 8,
-          padding: "5px 11px",
-          borderRadius: 999,
-          border: "1px solid var(--border-2)",
-          background: "transparent",
-          marginBottom: 22,
-        }}
-      >
-        <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)" }} />
-        <span
-          style={{
-            font: "600 11px/1 Geist, sans-serif",
-            color: "var(--fg-2)",
-            letterSpacing: "0.04em",
-            whiteSpace: "nowrap",
-          }}
-        >
-          STEP 1 OF 5
-        </span>
-      </div>
-      <h1
-        style={{
-          margin: 0,
-          fontSize: 36,
-          fontWeight: 600,
-          letterSpacing: "-0.03em",
-          color: "var(--fg)",
-        }}
-      >
-        Close a Stellar account
-      </h1>
-      <p
-        style={{
-          margin: "13px 0 30px",
-          fontSize: 16,
-          lineHeight: 1.55,
-          color: "var(--fg-2)",
-          maxWidth: 560,
-        }}
-      >
-        Connect the account you want to close. The demolisher unwinds every trustline, offer, data
-        entry, signer, and Soroban position, then merges the reserve to a destination you choose —
-        all signed on your device, nothing auto-submitted.
-        {isTestnetLike
-          ? " New here? Spin up a throwaway demo account at the bottom to see the whole flow first."
-          : ""}
-      </p>
-
-      {/* primary: connect a real wallet */}
-      <div
-        style={{
-          padding: 18,
-          borderRadius: 13,
-          border: "1px solid var(--border)",
-          background: "var(--surface)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 12,
-          flexWrap: "wrap",
-        }}
-      >
-        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          <span style={{ fontSize: 15, fontWeight: 600, color: "var(--fg)" }}>
-            Connect a wallet
-          </span>
-          <span style={{ fontSize: 12.5, color: "var(--fg-3)" }}>
-            Freighter, xBull, Albedo, Rabet, Lobstr, Hana, WalletConnect.
-          </span>
-        </div>
-        <ConnectButton network={network} onConnector={onKitConnector} />
-      </div>
-
-      {/* collapsed: legacy/advanced seed paste */}
-      <div
-        style={{
-          marginTop: 14,
-          border: "1px solid var(--border)",
-          borderRadius: 13,
-          overflow: "hidden",
-          background: "var(--surface)",
-        }}
-      >
-        <button
-          type="button"
-          onClick={onToggleAdvanced}
-          style={{
-            width: "100%",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 10,
-            padding: "15px 17px",
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-            color: "var(--fg)",
-          }}
-        >
-          <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <svg
-              width="15"
-              height="15"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="var(--fg-3)"
-              strokeWidth={2}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
-            </svg>
-            <span style={{ fontWeight: 600, fontSize: 13.5 }}>Advanced, paste a secret key</span>
-          </span>
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="var(--fg-3)"
-            strokeWidth={2.2}
-            strokeLinecap="round"
-            style={{ transform: advancedOpen ? "rotate(180deg)" : "none" }}
-          >
-            <path d="M6 9l6 6 6-6" />
-          </svg>
-        </button>
-        {advancedOpen ? (
-          <div style={{ padding: "0 17px 17px" }}>
-            <SecretKeyFallback onConnector={onSecretConnector} />
-          </div>
-        ) : null}
-      </div>
-
-      {/* testnet-only: try it on a throwaway demo account */}
-      {isTestnetLike ? (
+    <div style={{ maxWidth: demoActive ? 640 : 720, margin: "8px auto 0" }}>
+      {!demoActive ? (
         <>
           <div
             style={{
-              margin: "30px 0 16px",
-              display: "flex",
+              display: "inline-flex",
               alignItems: "center",
-              gap: 12,
-              color: "var(--fg-3)",
-              fontSize: 11.5,
-              letterSpacing: "0.06em",
-              textTransform: "uppercase",
-              fontWeight: 600,
+              gap: 8,
+              padding: "5px 11px",
+              borderRadius: 999,
+              border: "1px solid var(--border-2)",
+              background: "transparent",
+              marginBottom: 22,
             }}
           >
-            <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
-            <span>or explore on {netLabel} first</span>
-            <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
+            <span
+              style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)" }}
+            />
+            <span
+              style={{
+                font: "600 11px/1 Geist, sans-serif",
+                color: "var(--fg-2)",
+                letterSpacing: "0.04em",
+                whiteSpace: "nowrap",
+              }}
+            >
+              STEP 1 OF 5
+            </span>
           </div>
-          <CreateTestAccountButton network={network} onConnector={onSecretConnector} />
+          <h1
+            style={{
+              margin: 0,
+              fontSize: 36,
+              fontWeight: 600,
+              letterSpacing: "-0.03em",
+              color: "var(--fg)",
+            }}
+          >
+            Close a Stellar account
+          </h1>
+          <p
+            style={{
+              margin: "13px 0 30px",
+              fontSize: 16,
+              lineHeight: 1.55,
+              color: "var(--fg-2)",
+              maxWidth: 560,
+            }}
+          >
+            Connect the account you want to close. The demolisher unwinds every trustline, offer,
+            data entry, signer, and Soroban position, then merges the reserve to a destination you
+            choose — all signed on your device, nothing auto-submitted.
+            {isTestnetLike
+              ? " New here? Spin up a throwaway demo account at the bottom to see the whole flow first."
+              : ""}
+          </p>
+
+          {/* primary: connect a real wallet */}
+          <div
+            style={{
+              padding: 18,
+              borderRadius: 13,
+              border: "1px solid var(--border)",
+              background: "var(--surface)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+              flexWrap: "wrap",
+            }}
+          >
+            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              <span style={{ fontSize: 15, fontWeight: 600, color: "var(--fg)" }}>
+                Connect a wallet
+              </span>
+              <span style={{ fontSize: 12.5, color: "var(--fg-3)" }}>
+                Freighter, xBull, Albedo, Rabet, Lobstr, Hana, WalletConnect.
+              </span>
+            </div>
+            <ConnectButton network={network} onConnector={onKitConnector} />
+          </div>
+
+          {/* collapsed: legacy/advanced seed paste */}
+          <div
+            style={{
+              marginTop: 14,
+              border: "1px solid var(--border)",
+              borderRadius: 13,
+              overflow: "hidden",
+              background: "var(--surface)",
+            }}
+          >
+            <button
+              type="button"
+              onClick={onToggleAdvanced}
+              style={{
+                width: "100%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+                padding: "15px 17px",
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                color: "var(--fg)",
+              }}
+            >
+              <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <svg
+                  width="15"
+                  height="15"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="var(--fg-3)"
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+                </svg>
+                <span style={{ fontWeight: 600, fontSize: 13.5 }}>
+                  Advanced, paste a secret key
+                </span>
+              </span>
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="var(--fg-3)"
+                strokeWidth={2.2}
+                strokeLinecap="round"
+                style={{ transform: advancedOpen ? "rotate(180deg)" : "none" }}
+              >
+                <path d="M6 9l6 6 6-6" />
+              </svg>
+            </button>
+            {advancedOpen ? (
+              <div style={{ padding: "0 17px 17px" }}>
+                <SecretKeyFallback onConnector={onSecretConnector} />
+              </div>
+            ) : null}
+          </div>
+
+          {/* testnet-only divider before the demo step */}
+          {isTestnetLike ? (
+            <div
+              style={{
+                margin: "30px 0 16px",
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                color: "var(--fg-3)",
+                fontSize: 11.5,
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+                fontWeight: 600,
+              }}
+            >
+              <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
+              <span>or explore on {netLabel} first</span>
+              <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
+            </div>
+          ) : null}
         </>
+      ) : null}
+
+      {/* demo setup — takes over as a dedicated step once it starts */}
+      {isTestnetLike ? (
+        <CreateTestAccountButton
+          network={network}
+          onConnector={onSecretConnector}
+          onActiveChange={setDemoActive}
+        />
       ) : null}
     </div>
   );
@@ -1416,49 +1378,6 @@ function LeftLoadingCard({ message }: { readonly message: string }): React.JSX.E
           Reading on-chain state — trustlines, signers, soroban positions, allowances.
         </div>
       </div>
-
-      {/* shimmer skeleton lines for visual rhythm */}
-      <div
-        aria-hidden
-        style={{
-          width: "100%",
-          maxWidth: 240,
-          display: "flex",
-          flexDirection: "column",
-          gap: 9,
-          position: "relative",
-        }}
-      >
-        {[68, 84, 52].map((w, i) => (
-          <span
-            key={i}
-            style={{
-              height: 9,
-              width: `${w}%`,
-              borderRadius: 5,
-              background: "var(--surface-2)",
-              border: "1px solid var(--border)",
-              position: "relative",
-              overflow: "hidden",
-              alignSelf: i % 2 === 0 ? "flex-start" : "flex-end",
-            }}
-          >
-            <span
-              style={{
-                position: "absolute",
-                top: 0,
-                left: 0,
-                bottom: 0,
-                width: "40%",
-                background:
-                  "linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 35%, transparent), transparent)",
-                animation: "shimmer 1.8s linear infinite",
-                animationDelay: `${i * 0.18}s`,
-              }}
-            />
-          </span>
-        ))}
-      </div>
     </div>
   );
 }
@@ -1879,65 +1798,206 @@ function DemolishStatusWidget({
   );
 }
 
-function LeftPlanList({
+// Human QA sign-off — the dedicated step before anything executes. Lists every
+// operation to be run, requires an explicit acknowledgment and a typed
+// last-4-char confirmation (with a short unlock delay), then triggers execution.
+// This replaces the old stacked high-value + typed-confirmation modals.
+const SIGNOFF_DELAY_MS = 3000;
+
+function SignOffPanel({
   planGroups,
-  doneCount,
-  activeCount,
+  totalXlm,
+  destination,
   network,
+  isHighValue,
+  onBack,
+  onConfirm,
 }: {
   readonly planGroups: ReadonlyArray<{ phase: string; nodes: readonly PlanNode[] }>;
-  readonly doneCount: number;
-  readonly activeCount: number;
+  readonly totalXlm: string;
+  readonly destination: string;
   readonly network: NetworkConfig;
+  readonly isHighValue: boolean;
+  readonly onBack: () => void;
+  readonly onConfirm: () => void;
 }): React.JSX.Element {
+  const required = destination.length >= 4 ? destination.slice(-4) : destination;
+  const destHead = destination.length > 4 ? destination.slice(0, -4) : "";
+  const [typed, setTyped] = useState("");
+  const [ack, setAck] = useState(false);
+  const [elapsedMs, setElapsedMs] = useState(0);
+
+  useEffect(() => {
+    const start = Date.now();
+    const h = setInterval(() => {
+      const next = Math.min(SIGNOFF_DELAY_MS, Date.now() - start);
+      setElapsedMs(next);
+      if (next >= SIGNOFF_DELAY_MS) clearInterval(h);
+    }, 100);
+    return () => clearInterval(h);
+  }, []);
+
+  const delayElapsed = elapsedMs >= SIGNOFF_DELAY_MS;
+  const matches = typed.trim() === required && required.length > 0;
+  const canConfirm = ack && matches && delayElapsed;
+  const secsLeft = Math.max(0, Math.ceil((SIGNOFF_DELAY_MS - elapsedMs) / 1000));
+  const opCount = planGroups.reduce((n, g) => n + g.nodes.length, 0);
+  const disabledReason = !ack
+    ? "Acknowledge the review first"
+    : !matches
+      ? "Type the last 4 characters of the destination"
+      : !delayElapsed
+        ? `Unlocks in ${secsLeft}s`
+        : undefined;
+
   return (
-    <div
-      style={{
-        background: "var(--surface)",
-        border: "1px solid var(--border)",
-        borderRadius: 16,
-        boxShadow: "var(--shadow-sm)",
-        maxHeight: "calc(100vh - 120px)",
-        display: "flex",
-        flexDirection: "column",
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "15px 17px",
-          borderBottom: "1px solid var(--border)",
-        }}
-      >
-        <span style={{ fontWeight: 600, fontSize: 14, color: "var(--fg)" }}>Demolition plan</span>
-        <span style={{ font: "600 11px/1 Geist, sans-serif", color: "var(--fg-3)" }}>
-          {doneCount}/{activeCount}
-        </span>
+    <Card padding={24} style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div>
+        <div style={{ marginBottom: 12 }}>
+          <Badge tone="warning" dot>
+            Final sign-off
+          </Badge>
+        </div>
+        <h2 style={{ margin: 0, fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em" }}>
+          Review every operation, then sign
+        </h2>
+        <p style={{ margin: "8px 0 0", fontSize: 14, lineHeight: 1.55, color: "var(--fg-2)" }}>
+          These {opCount} {opCount === 1 ? "transaction" : "transactions"} run in dependency order
+          and change account state. Some are irreversible — check each one before you sign.
+        </p>
       </div>
-      <div style={{ overflowY: "auto", padding: "8px 8px 12px" }}>
-        {planGroups.map((g) => (
-          <div key={g.phase}>
-            <div style={{ padding: "10px 9px 3px" }}>
-              <span
+
+      {/* every operation, grouped */}
+      <div style={{ border: "1px solid var(--border)", borderRadius: 14, overflow: "hidden" }}>
+        {planGroups.map((g, gi) => {
+          const irreversible = g.phase === "Merge" || g.phase === "Mediator forward";
+          return (
+            <div
+              key={g.phase}
+              style={{ borderTop: gi > 0 ? "1px solid var(--border)" : undefined }}
+            >
+              <div
                 style={{
-                  font: "600 10px/1 Geist, sans-serif",
-                  color: "var(--fg-3)",
-                  letterSpacing: "0.07em",
-                  textTransform: "uppercase",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "11px 14px 5px",
                 }}
               >
-                {g.phase}
-              </span>
+                <SectionLabel>{g.phase}</SectionLabel>
+                {irreversible ? <Badge tone="danger">Irreversible</Badge> : null}
+              </div>
+              <div style={{ padding: "0 6px 6px" }}>
+                {g.nodes.map((n) => (
+                  <PlanRow key={n.id} node={n} network={network} />
+                ))}
+              </div>
             </div>
-            {g.nodes.map((n) => (
-              <PlanRow key={n.id} node={n} network={network} />
-            ))}
-          </div>
-        ))}
+          );
+        })}
       </div>
-    </div>
+
+      {/* destination + amount */}
+      <div
+        style={{
+          padding: "14px 16px",
+          borderRadius: 12,
+          background: "var(--surface-2)",
+          border: "1px solid var(--border)",
+        }}
+      >
+        <div style={{ fontSize: 12, color: "var(--fg-3)", marginBottom: 6 }}>MERGES TO</div>
+        <div style={{ font: "600 13.5px/1.5 'Geist Mono', monospace", wordBreak: "break-all" }}>
+          <span style={{ color: "var(--fg-2)" }}>{destHead}</span>
+          <span style={{ color: "var(--accent)", fontWeight: 700, textDecoration: "underline" }}>
+            {required}
+          </span>
+        </div>
+        <div style={{ marginTop: 9, fontSize: 13, color: "var(--fg-2)" }}>
+          Forwarding{" "}
+          <span style={{ font: "600 13px 'Geist Mono', monospace", color: "var(--fg)" }}>
+            {totalXlm} XLM
+          </span>{" "}
+          and permanently closing the account.
+        </div>
+      </div>
+
+      {isHighValue ? (
+        <Notice tone="warning" title="High-value account">
+          This account holds {totalXlm} XLM (over {HIGH_VALUE_THRESHOLD_XLM} XLM). Once merged it
+          cannot be recovered.
+        </Notice>
+      ) : null}
+
+      {/* explicit acknowledgment */}
+      <div
+        style={{
+          padding: "13px 15px",
+          borderRadius: 12,
+          border: "1px solid var(--border-2)",
+          background: "var(--surface-2)",
+        }}
+      >
+        <Checkbox
+          checked={ack}
+          onChange={setAck}
+          data-testid="signoff-ack"
+          label="I've reviewed every operation above and understand that merging permanently closes this account and can't be undone."
+        />
+      </div>
+
+      {/* typed confirmation */}
+      <Field
+        label={`Type the last 4 characters of the destination (${required}) to confirm`}
+        value={typed}
+        onChange={setTyped}
+        mono
+        placeholder="••••"
+        data-testid="signoff-typed"
+      />
+
+      <div style={{ display: "flex", gap: 11 }}>
+        <Button variant="secondary" onClick={onBack} data-testid="signoff-back">
+          Back
+        </Button>
+        <Button
+          variant="danger"
+          onClick={onConfirm}
+          disabled={!canConfirm}
+          disabledReason={disabledReason}
+          data-testid="signoff-demolish"
+          style={{ flex: 1 }}
+          iconLeft={
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+            </svg>
+          }
+        >
+          {delayElapsed ? "Demolish account" : `Demolish account · ${secsLeft}s`}
+        </Button>
+      </div>
+      <p
+        style={{
+          margin: 0,
+          fontSize: 11.5,
+          color: "var(--fg-3)",
+          textAlign: "center",
+          lineHeight: 1.5,
+        }}
+      >
+        This is irreversible. The delay and re-typing are intentional friction.
+      </p>
+    </Card>
   );
 }
 
@@ -2528,29 +2588,21 @@ function ConfigurePanel({
           </span>
         </label>
         <div style={{ display: "flex", gap: 10 }}>
-          <select
-            value={form.memoType}
-            onChange={(e) => {
-              const v = e.currentTarget.value as FormState["memoType"];
-              setForm((f) => ({ ...f, memoType: v }));
-            }}
-            data-testid="memo-type-select"
-            aria-label="Memo type"
-            style={{
-              padding: "13px 12px",
-              borderRadius: 11,
-              border: "1px solid var(--border-2)",
-              background: "var(--surface-2)",
-              color: "var(--fg)",
-              font: "500 13px/1.3 Geist, sans-serif",
-            }}
-          >
-            <option value="none">none</option>
-            <option value="text">text</option>
-            <option value="id">id</option>
-            <option value="hash">hash</option>
-            <option value="return">return</option>
-          </select>
+          <div style={{ minWidth: 130 }}>
+            <Select
+              value={form.memoType}
+              onChange={(v) => setForm((f) => ({ ...f, memoType: v as FormState["memoType"] }))}
+              ariaLabel="Memo type"
+              data-testid="memo-type-select"
+              options={[
+                { value: "none", label: "None" },
+                { value: "text", label: "Text" },
+                { value: "id", label: "ID" },
+                { value: "hash", label: "Hash" },
+                { value: "return", label: "Return" },
+              ]}
+            />
+          </div>
           <input
             type="text"
             value={form.memoValue}
@@ -2747,9 +2799,10 @@ function PreviewPanel({
           maxWidth: 520,
         }}
       >
-        The full plan is on the right, <strong>{activeCount}</strong>{" "}
+        The plan simulated cleanly — <strong>{activeCount}</strong>{" "}
         {activeCount === 1 ? "transaction" : "transactions"} across discovery, DeFi unwinding,
-        liquidation, cleanup and the final merge. Expand any step to inspect its simulation.
+        liquidation, cleanup and the final merge. You&apos;ll review every operation on the next
+        step before signing.
       </p>
 
       <div style={{ marginBottom: blocked ? 16 : 22 }}>
@@ -2799,7 +2852,7 @@ function PreviewPanel({
             </svg>
           }
         >
-          Looks good, continue
+          Continue to sign-off
         </Button>
       </div>
     </Card>

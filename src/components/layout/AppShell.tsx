@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect } from "react";
+import { Select } from "@/components/ui";
 import { useTheme } from "./ThemeProvider";
 import type { StellarNetwork } from "@/lib/config/networks";
 import { setActiveConnector } from "@/lib/wallet/active-connector";
@@ -300,60 +301,35 @@ function NetworkSwitcher() {
     setActiveConnector(null);
   };
 
-  const dotColor = networkId === "mainnet" ? "var(--success)" : "var(--warning)";
-
-  return (
-    <div
-      title="Active network"
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 7,
-        height: 32,
-        padding: "0 6px 0 11px",
-        borderRadius: 8,
-        background: "transparent",
-        border: "1px solid var(--border-2)",
-      }}
-    >
+  const label = (net: StellarNetwork): React.JSX.Element => (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
       <span
         aria-hidden
-        style={{ width: 7, height: 7, borderRadius: "50%", background: dotColor, flexShrink: 0 }}
-      />
-      <select
-        aria-label="Select network"
-        value={networkId === "mainnet" ? "mainnet" : "testnet"}
-        onChange={(e) => onChange(e.currentTarget.value as StellarNetwork)}
         style={{
-          appearance: "none",
-          WebkitAppearance: "none",
-          border: "none",
-          background: "transparent",
-          color: "var(--fg-2)",
-          font: "600 12px/1 Geist, sans-serif",
-          letterSpacing: "0.04em",
-          cursor: "pointer",
-          paddingRight: 16,
-          outline: "none",
+          width: 7,
+          height: 7,
+          borderRadius: "50%",
+          background: net === "mainnet" ? "var(--success)" : "var(--warning)",
+          flexShrink: 0,
         }}
-      >
-        <option value="testnet">TESTNET</option>
-        <option value="mainnet">MAINNET</option>
-      </select>
-      <svg
-        width="12"
-        height="12"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="var(--fg-3)"
-        strokeWidth={2.2}
-        strokeLinecap="round"
-        aria-hidden
-        style={{ marginLeft: -14, pointerEvents: "none" }}
-      >
-        <path d="M6 9l6 6 6-6" />
-      </svg>
-    </div>
+      />
+      <span style={{ letterSpacing: "0.04em", fontWeight: 600, fontSize: 12 }}>
+        {net === "mainnet" ? "MAINNET" : "TESTNET"}
+      </span>
+    </span>
+  );
+
+  return (
+    <Select
+      size="sm"
+      ariaLabel="Select network"
+      value={networkId === "mainnet" ? "mainnet" : "testnet"}
+      onChange={(v) => onChange(v as StellarNetwork)}
+      options={[
+        { value: "testnet", label: label("testnet") },
+        { value: "mainnet", label: label("mainnet") },
+      ]}
+    />
   );
 }
 

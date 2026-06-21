@@ -90,33 +90,11 @@ export function SecretKeyFallback({ onConnector }: SecretKeyFallbackProps): Reac
             letterSpacing: "-0.005em",
           }}
         >
-          Legacy / Advanced multisig — NOT recommended
+          Not recommended
         </h2>
-        <p
-          style={{
-            margin: 0,
-            fontSize: 13,
-            lineHeight: 1.55,
-            color: "var(--danger)",
-            opacity: 0.92,
-          }}
-        >
-          Pasting your secret seed gives this page direct signing authority. Use a wallet extension
-          (Freighter, xBull, Albedo, Rabet, Lobstr, Hana) or WalletConnect whenever possible. Only
-          use this path if you understand the risks: a malicious page, a compromised browser
-          extension, or a clipboard-monitoring tool can capture your seed.
-        </p>
-        <p
-          style={{
-            margin: 0,
-            fontSize: 12.5,
-            lineHeight: 1.55,
-            color: "var(--danger)",
-            opacity: 0.78,
-          }}
-        >
-          Your seed stays in this tab&apos;s memory only. It is never stored, transmitted, or shared
-          with our server. Closing the tab discards it.
+        <p style={{ margin: 0, fontSize: 12.5, lineHeight: 1.55, color: "var(--fg-2)" }}>
+          Pasting a seed gives this page direct signing authority — prefer a wallet extension. The
+          seed stays in this tab&apos;s memory only; it is never stored or sent anywhere.
         </p>
       </div>
 
