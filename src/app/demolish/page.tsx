@@ -667,59 +667,44 @@ function DemolishFlow(): React.JSX.Element {
 
               {isPreview ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                  {audit ? (
-                    <CompactAuditBar
-                      pkShort={acctPkShort}
-                      xlm={totalXlm}
-                      sub={acctSub}
-                      trustlines={acctTrustlines}
-                      offers={acctOffers}
-                      data={acctData}
-                      claimable={acctClaimable}
-                    />
-                  ) : null}
-                  <DiscoveryWarnings warnings={ctx.discoveryWarnings} />
-                  <ScamTokenNotice findings={scamFindings} />
-                  {(() => {
-                    if (!audit) return null;
-                    const cbs = audit.claimableBalances;
-                    const selfSponsoredCount = cbs.filter(
-                      (cb) => cb.sponsor === audit.accountId,
-                    ).length;
-                    const merged =
-                      cbs.length > 0 &&
-                      selfSponsoredCount === cbs.length &&
-                      numCoverable === selfSponsoredCount;
-                    if (merged) {
-                      return <PendingClaimableBalances pending={cbs.map(toPendingCb)} />;
-                    }
-                    return (
-                      <>
-                        {numCoverable > 0 ? (
-                          <SponsorshipAutoRevokeNotice count={numCoverable} />
-                        ) : null}
-                        {cbs.length > 0 ? (
-                          <PendingClaimableBalances pending={cbs.map(toPendingCb)} />
-                        ) : null}
-                      </>
-                    );
-                  })()}
+                  {/* 1. blockers — must be resolved before the merge can run */}
                   <ResidueConsent
                     credits={ctx.unroutableCredits}
                     consented={form.returnToIssuer}
                     onToggle={onToggleResidue}
                     onRebuild={onStart}
                   />
+                  {/* 2. safety warnings */}
+                  <ScamTokenNotice findings={scamFindings} />
+                  <DiscoveryWarnings warnings={ctx.discoveryWarnings} />
+                  {/* 3. auto-handled — folded into one compact line */}
+                  {audit ? (
+                    <AutoHandledNotice
+                      claimableCount={audit.claimableBalances.length}
+                      sponsorshipCount={numCoverable}
+                    />
+                  ) : null}
+                  {/* 4. the plan overview + account snapshot + continue */}
                   <PreviewPanel
                     totalXlm={totalXlm}
                     activeCount={activeCount}
+                    destination={form.destination}
+                    snapshot={
+                      audit
+                        ? {
+                            pkShort: acctPkShort,
+                            sub: acctSub,
+                            trustlines: acctTrustlines,
+                            offers: acctOffers,
+                            data: acctData,
+                            claimable: acctClaimable,
+                          }
+                        : null
+                    }
                     onBack={onCancel}
                     onContinue={() => setConfirmStage("signoff")}
                     {...(ctx.unroutableCredits.length > 0
-                      ? {
-                          blockReason:
-                            "Some balances have no XLM conversion path. Resolve them above (or return them to their issuer) before continuing.",
-                        }
+                      ? { blockReason: "Resolve the balances above to continue." }
                       : {})}
                   />
                 </div>
@@ -1050,139 +1035,6 @@ function StepIndicator({ steps }: { readonly steps: readonly FlowStep[] }): Reac
           ) : null}
         </div>
       ))}
-    </div>
-  );
-}
-
-// compact horizontal account-stat strip used in preview
-function CompactAuditBar({
-  pkShort,
-  xlm,
-  sub,
-  trustlines,
-  offers,
-  data,
-  claimable,
-}: {
-  readonly pkShort: string;
-  readonly xlm: string;
-  readonly sub: number;
-  readonly trustlines: number;
-  readonly offers: number;
-  readonly data: number;
-  readonly claimable: number;
-}): React.JSX.Element {
-  const stats: ReadonlyArray<{ label: string; value: string | number }> = [
-    { label: "subentries", value: sub },
-    { label: "trustlines", value: trustlines },
-    { label: "offers", value: offers },
-    { label: "data", value: data },
-    { label: "claimable", value: claimable },
-  ];
-  return (
-    <div
-      data-testid="compact-audit-bar"
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 18,
-        padding: "12px 16px",
-        borderRadius: 12,
-        background: "var(--surface)",
-        border: "1px solid var(--border)",
-        flexWrap: "wrap",
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: 2,
-          paddingRight: 14,
-          borderRight: "1px solid var(--border)",
-        }}
-      >
-        <span
-          style={{
-            fontSize: 10.5,
-            color: "var(--fg-3)",
-            letterSpacing: "0.06em",
-            textTransform: "uppercase",
-            fontWeight: 600,
-          }}
-        >
-          Account
-        </span>
-        <span
-          style={{
-            font: "500 12.5px/1 'Geist Mono', monospace",
-            color: "var(--fg-2)",
-          }}
-        >
-          {pkShort}
-        </span>
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-        <span
-          style={{
-            fontSize: 10.5,
-            color: "var(--fg-3)",
-            letterSpacing: "0.06em",
-            textTransform: "uppercase",
-            fontWeight: 600,
-          }}
-        >
-          Balance
-        </span>
-        <span style={{ display: "flex", alignItems: "baseline", gap: 5 }}>
-          <span
-            style={{
-              font: "600 16px/1 'Geist Mono', monospace",
-              color: "var(--fg)",
-              letterSpacing: "-0.01em",
-            }}
-          >
-            {xlm}
-          </span>
-          <span style={{ fontSize: 11, color: "var(--fg-3)" }}>XLM</span>
-        </span>
-      </div>
-      <div style={{ flex: 1 }} />
-      <div
-        style={{
-          display: "flex",
-          gap: 18,
-          alignItems: "center",
-          flexWrap: "wrap",
-        }}
-      >
-        {stats.map((s) => (
-          <div
-            key={s.label}
-            style={{ display: "flex", flexDirection: "column", gap: 2, alignItems: "flex-start" }}
-          >
-            <span
-              style={{
-                fontSize: 10.5,
-                color: "var(--fg-3)",
-                letterSpacing: "0.06em",
-                textTransform: "uppercase",
-                fontWeight: 600,
-              }}
-            >
-              {s.label}
-            </span>
-            <span
-              style={{
-                font: "600 14px/1 'Geist Mono', monospace",
-                color: "var(--fg)",
-              }}
-            >
-              {s.value}
-            </span>
-          </div>
-        ))}
-      </div>
     </div>
   );
 }
@@ -2732,15 +2584,82 @@ function ConfigurePanel({
   );
 }
 
+// consolidated "handled automatically, no action needed" line — replaces the
+// separate claimable + sponsorship notices that used to stack in Review.
+function AutoHandledNotice({
+  claimableCount,
+  sponsorshipCount,
+}: {
+  readonly claimableCount: number;
+  readonly sponsorshipCount: number;
+}): React.JSX.Element | null {
+  if (claimableCount === 0 && sponsorshipCount === 0) return null;
+  const parts: string[] = [];
+  if (claimableCount > 0)
+    parts.push(`${claimableCount} claimable balance${claimableCount === 1 ? "" : "s"} claimed`);
+  if (sponsorshipCount > 0)
+    parts.push(`${sponsorshipCount} sponsorship${sponsorshipCount === 1 ? "" : "s"} released`);
+  return (
+    <Notice tone="neutral" role="status" data-testid="auto-handled-notice">
+      Handled automatically during close-out, no action needed — {parts.join(" and ")}.
+    </Notice>
+  );
+}
+
+function SnapStat({
+  label,
+  value,
+  mono = false,
+}: {
+  readonly label: string;
+  readonly value: string | number;
+  readonly mono?: boolean;
+}): React.JSX.Element {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+      <span
+        style={{
+          fontSize: 10,
+          color: "var(--fg-3)",
+          letterSpacing: "0.06em",
+          textTransform: "uppercase",
+          fontWeight: 600,
+        }}
+      >
+        {label}
+      </span>
+      <span
+        style={{
+          font: mono ? "500 12px/1 'Geist Mono', monospace" : "600 14px/1 'Geist Mono', monospace",
+          color: "var(--fg)",
+        }}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
 function PreviewPanel({
   totalXlm,
   activeCount,
+  destination,
+  snapshot,
   onBack,
   onContinue,
   blockReason,
 }: {
   readonly totalXlm: string;
   readonly activeCount: number;
+  readonly destination: string;
+  readonly snapshot: {
+    readonly pkShort: string;
+    readonly sub: number;
+    readonly trustlines: number;
+    readonly offers: number;
+    readonly data: number;
+    readonly claimable: number;
+  } | null;
   readonly onBack: () => void;
   readonly onContinue: () => void;
   // when set, the account can't be closed yet (e.g. un-routable balances); the
@@ -2748,6 +2667,8 @@ function PreviewPanel({
   readonly blockReason?: string;
 }): React.JSX.Element {
   const blocked = blockReason !== undefined;
+  const destShort =
+    destination.length > 14 ? `${destination.slice(0, 8)}…${destination.slice(-8)}` : destination;
   return (
     <Card padding={24}>
       <div style={{ marginBottom: 14 }}>
@@ -2756,7 +2677,7 @@ function PreviewPanel({
         </Badge>
       </div>
       <h2 style={{ margin: "0 0 6px", fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em" }}>
-        Review before you commit
+        Review the close-out
       </h2>
       <p
         style={{
@@ -2764,29 +2685,69 @@ function PreviewPanel({
           fontSize: 14,
           lineHeight: 1.55,
           color: "var(--fg-2)",
-          maxWidth: 520,
+          maxWidth: 540,
         }}
       >
-        The plan simulated cleanly — <strong>{activeCount}</strong>{" "}
-        {activeCount === 1 ? "transaction" : "transactions"} across discovery, DeFi unwinding,
-        liquidation, cleanup and the final merge. You&apos;ll review every operation on the next
-        step before signing.
+        The plan simulated cleanly. You&apos;ll see every one of these operations on the next step
+        before you sign.
       </p>
 
-      <div style={{ marginBottom: blocked ? 16 : 22 }}>
+      <div style={{ marginBottom: 16 }}>
         <StatGrid
           stats={[
+            { label: "Operations", value: String(activeCount) },
             { label: "Reserve recovered", value: "+1.0 XLM", tone: "accent" },
-            { label: "Plan steps", value: String(activeCount) },
-            { label: "Forwarded to dest.", value: `${totalXlm} XLM` },
+            { label: "Forwarded", value: `${totalXlm} XLM` },
           ]}
         />
       </div>
 
-      {/* the blocker is the emphasized next step — not a tiny caption */}
+      {/* destination + account snapshot in one framed block */}
+      <div
+        style={{
+          border: "1px solid var(--border)",
+          borderRadius: 12,
+          overflow: "hidden",
+          marginBottom: blocked ? 16 : 22,
+        }}
+      >
+        <div
+          style={{
+            padding: "12px 16px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
+          <SnapStat label="Destination" value={destShort} mono />
+          <span style={{ fontSize: 12, color: "var(--fg-3)" }}>reserve + balance merged here</span>
+        </div>
+        {snapshot ? (
+          <div
+            style={{
+              padding: "12px 16px",
+              borderTop: "1px solid var(--border)",
+              display: "flex",
+              gap: 22,
+              flexWrap: "wrap",
+              alignItems: "flex-start",
+            }}
+          >
+            <SnapStat label="Account" value={snapshot.pkShort} mono />
+            <SnapStat label="Subentries" value={snapshot.sub} />
+            <SnapStat label="Trustlines" value={snapshot.trustlines} />
+            <SnapStat label="Offers" value={snapshot.offers} />
+            <SnapStat label="Data" value={snapshot.data} />
+            <SnapStat label="Claimable" value={snapshot.claimable} />
+          </div>
+        ) : null}
+      </div>
+
       {blocked ? (
         <div style={{ marginBottom: 18 }}>
-          <Notice tone="warning" title="One step left before you can close" role="alert">
+          <Notice tone="warning" title="Resolve before continuing" role="alert">
             {blockReason}
           </Notice>
         </div>
@@ -2802,7 +2763,7 @@ function PreviewPanel({
           disabled={blocked}
           disabledReason={blockReason}
           data-testid="demolish-confirm"
-          aria-label="Open final demolition confirmation"
+          aria-label="Continue to sign-off"
           style={{ flex: 1 }}
           iconRight={
             <svg
