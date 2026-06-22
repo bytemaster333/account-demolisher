@@ -4,13 +4,20 @@
 // probe) failed. The plan can still run, but it may be incomplete — so we say
 // so plainly instead of hiding the failure in the console.
 
+import type { ReactNode } from "react";
+
 import { Notice } from "@/components/ui";
 
 export interface DiscoveryWarningsProps {
   readonly warnings: readonly string[];
+  // optional acknowledgment region rendered inside the notice (Resolve step)
+  readonly footer?: ReactNode;
 }
 
-export function DiscoveryWarnings({ warnings }: DiscoveryWarningsProps): React.JSX.Element | null {
+export function DiscoveryWarnings({
+  warnings,
+  footer,
+}: DiscoveryWarningsProps): React.JSX.Element | null {
   if (warnings.length === 0) return null;
 
   return (
@@ -18,6 +25,7 @@ export function DiscoveryWarnings({ warnings }: DiscoveryWarningsProps): React.J
       tone="warning"
       role="alert"
       data-testid="discovery-warnings"
+      {...(footer !== undefined ? { footer } : {})}
       title="Discovery was incomplete — this plan may be missing some entries"
     >
       <ul

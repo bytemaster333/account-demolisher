@@ -20,6 +20,7 @@ export function Notice({
   title,
   children,
   icon,
+  footer,
   "data-testid": testId,
   role = "note",
 }: {
@@ -27,6 +28,9 @@ export function Notice({
   readonly title?: ReactNode;
   readonly children?: ReactNode;
   readonly icon?: ReactNode;
+  // optional acknowledgment / action region rendered below the body, divided
+  // by a top border on a slightly recessed surface (used by the Resolve step)
+  readonly footer?: ReactNode;
   readonly "data-testid"?: string;
   readonly role?: "note" | "alert" | "status";
 }): React.JSX.Element {
@@ -60,34 +64,45 @@ export function Notice({
       role={role === "note" ? undefined : role}
       data-testid={testId}
       style={{
-        display: "flex",
-        gap: 13,
-        padding: "15px 17px",
         borderRadius: RADIUS.lg,
         // flat: neutral surface, tone carried by the tinted border + icon/title
         background: "var(--surface)",
         border: toneBorder(tone),
         color: "var(--fg)",
+        overflow: "hidden",
       }}
     >
-      <span style={{ flexShrink: 0, marginTop: 1 }}>{iconNode}</span>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        {title ? (
-          <div style={{ fontSize: 13.5, fontWeight: 600, color: TONE_FG[tone] }}>{title}</div>
-        ) : null}
-        {children ? (
-          <div
-            style={{
-              fontSize: 13,
-              lineHeight: 1.55,
-              color: "var(--fg-2)",
-              marginTop: title ? 5 : 0,
-            }}
-          >
-            {children}
-          </div>
-        ) : null}
+      <div style={{ display: "flex", gap: 13, padding: "15px 17px" }}>
+        <span style={{ flexShrink: 0, marginTop: 1 }}>{iconNode}</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {title ? (
+            <div style={{ fontSize: 13.5, fontWeight: 600, color: TONE_FG[tone] }}>{title}</div>
+          ) : null}
+          {children ? (
+            <div
+              style={{
+                fontSize: 13,
+                lineHeight: 1.55,
+                color: "var(--fg-2)",
+                marginTop: title ? 5 : 0,
+              }}
+            >
+              {children}
+            </div>
+          ) : null}
+        </div>
       </div>
+      {footer ? (
+        <div
+          style={{
+            padding: "11px 17px",
+            borderTop: "1px solid var(--border)",
+            background: "var(--surface-2)",
+          }}
+        >
+          {footer}
+        </div>
+      ) : null}
     </div>
   );
 }

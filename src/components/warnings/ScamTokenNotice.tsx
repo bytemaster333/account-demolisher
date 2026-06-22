@@ -5,12 +5,16 @@
 // demolition removes these anyway; this just makes sure the user recognizes
 // what they held. Not a blocker — the typed confirmation is the safety net.
 
+import type { ReactNode } from "react";
+
 import { Notice } from "@/components/ui";
 import type { ScamFinding } from "@/lib/safety/scam-heuristics";
 import type { AssetIdentifier } from "@/lib/types/account";
 
 export interface ScamTokenNoticeProps {
   readonly findings: readonly ScamFinding[];
+  // optional acknowledgment region rendered inside the notice (Resolve step)
+  readonly footer?: ReactNode;
 }
 
 function assetLabel(asset: AssetIdentifier): string {
@@ -35,7 +39,10 @@ function assetKey(asset: AssetIdentifier): string {
   }
 }
 
-export function ScamTokenNotice({ findings }: ScamTokenNoticeProps): React.JSX.Element | null {
+export function ScamTokenNotice({
+  findings,
+  footer,
+}: ScamTokenNoticeProps): React.JSX.Element | null {
   if (findings.length === 0) return null;
 
   return (
@@ -43,6 +50,7 @@ export function ScamTokenNotice({ findings }: ScamTokenNoticeProps): React.JSX.E
       tone="danger"
       role="alert"
       data-testid="scam-token-notice"
+      {...(footer !== undefined ? { footer } : {})}
       title={
         findings.length === 1
           ? "1 token looks suspicious"

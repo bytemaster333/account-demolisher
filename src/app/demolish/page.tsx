@@ -14,15 +14,15 @@ import {
   Button,
   Card,
   Checkbox,
-  Field,
   Notice,
   SectionLabel,
   Select,
   StatGrid,
 } from "@/components/ui";
+import { TypedConfirmation } from "@/components/confirmations/TypedConfirmation";
 import { AuthImmutableBlock } from "@/components/warnings/AuthImmutableBlock";
 import { DiscoveryWarnings } from "@/components/warnings/DiscoveryWarnings";
-import { ResidueConsent } from "@/components/warnings/ResidueConsent";
+import { ResidueConsent, type ResidueConsentCredit } from "@/components/warnings/ResidueConsent";
 import { ScamTokenNotice } from "@/components/warnings/ScamTokenNotice";
 import {
   PendingClaimableBalances,
@@ -40,7 +40,7 @@ import { resolveNetwork, type NetworkConfig } from "@/lib/config/networks";
 import { pageFlowMachine } from "@/lib/orchestrator/page-flow-machine";
 import { auditAccount } from "@/lib/stellar/account-audit";
 import { lookupCex, requireMemoEnforcement, type CexInfo } from "@/lib/safety/cex-registry";
-import { runScamHeuristics } from "@/lib/safety/scam-heuristics";
+import { runScamHeuristics, type ScamFinding } from "@/lib/safety/scam-heuristics";
 import { topologicalOrder, type PlanNode } from "@/lib/plan/tree";
 import type { AccountAudit, AuditSigner, ClaimableBalanceEntry } from "@/lib/types/account";
 import type { ClassicMemo } from "@/lib/types/plan";
@@ -206,26 +206,33 @@ interface FlowStep {
   readonly notLast: boolean;
 }
 
+type FlowPhase = "connect" | "configure" | "resolve" | "review" | "execute";
+
 function buildFlowSteps(args: {
-  readonly connected: boolean;
-  readonly hasAudit: boolean;
-  readonly hasTree: boolean;
-  readonly isConfirming: boolean;
-  readonly isExecuting: boolean;
+  readonly phase: FlowPhase;
+  // whether the built plan surfaced anything to resolve/acknowledge. When false
+  // the Resolve step is omitted entirely (Connect → Configure → Review → Execute)
+  readonly hasResolution: boolean;
   readonly isSucceeded: boolean;
 }): readonly FlowStep[] {
-  const { connected, hasAudit, hasTree, isConfirming, isExecuting, isSucceeded } = args;
-  const labels = ["Connect", "Configure", "Review", "Sign off", "Execute"];
+  const { phase, hasResolution, isSucceeded } = args;
+  const labels = hasResolution
+    ? ["Connect", "Configure", "Resolve", "Review", "Execute"]
+    : ["Connect", "Configure", "Review", "Execute"];
 
-  // determine the active index
-  let activeIdx = 0;
-  if (!connected) activeIdx = 0;
-  else if (!hasAudit) activeIdx = 1;
-  else if (!hasTree) activeIdx = 1;
-  else if (!isConfirming && !isExecuting && !isSucceeded) activeIdx = 2;
-  else if (isConfirming && !isExecuting) activeIdx = 3;
-  else if (isExecuting) activeIdx = 4;
-  else if (isSucceeded) activeIdx = 4;
+  const activeLabel =
+    phase === "connect"
+      ? "Connect"
+      : phase === "configure"
+        ? "Configure"
+        : phase === "resolve"
+          ? "Resolve"
+          : phase === "review"
+            ? "Review"
+            : "Execute";
+  // a "resolve" phase with no resolution items (shouldn't happen) falls back to Review
+  let activeIdx = labels.indexOf(activeLabel);
+  if (activeIdx < 0) activeIdx = labels.indexOf("Review");
 
   return labels.map((label, i) => {
     const num = String(i + 1).padStart(2, "0");
@@ -331,10 +338,15 @@ function DemolishFlow(): React.JSX.Element {
     setExtraSigners((prev) => prev.filter((s) => s.publicKey !== pk));
   }, []);
 
-  // two-stage confirm: highvalue first (if balance > threshold), then typed. typed is never bypassable
-  // "idle" = the Review step; "signoff" = the human QA sign-off step
-  type ConfirmStage = "idle" | "signoff";
-  const [confirmStage, setConfirmStage] = useState<ConfirmStage>("idle");
+  // the awaiting_confirmation phase has two stages:
+  //  "resolve" — acknowledge/resolve every caution, warning, info and blocker
+  //  "review"  — the clean "here is what will happen" plan review + demolish
+  // the stage is initialised per built plan (below): "resolve" if the plan has
+  // anything to resolve, otherwise straight to "review".
+  type ConfirmStage = "resolve" | "review";
+  const [confirmStage, setConfirmStage] = useState<ConfirmStage>("review");
+  // the final typed-confirmation dialog, opened from the review step
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
 
   const [snapshot, send] = useMachine(pageFlowMachine);
   const state = snapshot.value;
@@ -368,24 +380,67 @@ function DemolishFlow(): React.JSX.Element {
   const isImmutableBlock = authImmutable;
   const blocked = isImmutableBlock || isSponsorBlock;
 
+  // total native balance + high-value flag — needed by the Resolve step and the
+  // review summary; computed early so the flow phase / stepper can read them.
+  const totalXlm = audit ? sumNativeBalance(audit) : "0";
+  const isHighValue = useMemo<boolean>(() => {
+    if (!audit) return false;
+    const n = Number.parseFloat(totalXlm);
+    if (!Number.isFinite(n)) return false;
+    return n > HIGH_VALUE_THRESHOLD_XLM;
+  }, [audit, totalXlm]);
+
+  // what the Resolve step must surface. A blocker (un-routable balance) is the
+  // only item that forces a rebuild; the rest are read-and-acknowledge.
+  const hasBlocker = ctx.unroutableCredits.length > 0;
+  const hasScam = scamFindings.length > 0;
+  const hasDiscovery = ctx.discoveryWarnings.length > 0;
+  const hasAutoHandled = audit !== null && (audit.claimableBalances.length > 0 || numCoverable > 0);
+  const hasResolution = hasBlocker || hasScam || hasDiscovery || hasAutoHandled || isHighValue;
+
+  // initialise the confirm stage per built plan: land on "resolve" when there's
+  // anything to resolve/acknowledge, otherwise straight to the clean review.
+  const initedTreeRef = useRef<unknown>(null);
+  useEffect(() => {
+    if (tree !== null && isAwaitingConfirmation) {
+      if (initedTreeRef.current !== tree) {
+        initedTreeRef.current = tree;
+        setConfirmStage(hasResolution ? "resolve" : "review");
+        setShowConfirmDialog(false);
+      }
+    } else if (tree === null) {
+      initedTreeRef.current = null;
+    }
+  }, [tree, isAwaitingConfirmation, hasResolution]);
+
   // configure = no tree yet (either before START, or after a CANCEL that returned us to cancelled)
-  // preview = awaiting_confirmation with a tree present
   const isConfiguring = !blocked && publicKey !== null && tree === null;
-  const isPreview = !blocked && tree !== null && isAwaitingConfirmation && confirmStage === "idle";
+  // the two awaiting_confirmation stages, gated on the tree being present
+  const inConfirmation = !blocked && tree !== null && isAwaitingConfirmation;
+  const isResolve = inConfirmation && confirmStage === "resolve";
+  const isReview = inConfirmation && confirmStage === "review";
   const showFlow = !isIdle && !blocked;
+
+  // current flow phase for the step indicator
+  const flowPhase: FlowPhase = !showFlow
+    ? "connect"
+    : isExecuting || isSucceeded || isFailed
+      ? "execute"
+      : tree === null
+        ? "configure"
+        : confirmStage === "resolve"
+          ? "resolve"
+          : "review";
 
   // step indicator
   const flowSteps = useMemo(
     () =>
       buildFlowSteps({
-        connected: publicKey !== null,
-        hasAudit: audit !== null,
-        hasTree: tree !== null,
-        isConfirming: confirmStage !== "idle",
-        isExecuting,
+        phase: flowPhase,
+        hasResolution,
         isSucceeded,
       }),
-    [publicKey, audit, tree, confirmStage, isExecuting, isSucceeded],
+    [flowPhase, hasResolution, isSucceeded],
   );
 
   // cex / mediator
@@ -486,11 +541,11 @@ function DemolishFlow(): React.JSX.Element {
   ]);
 
   const onCancel = useCallback(() => {
-    setConfirmStage("idle");
+    setShowConfirmDialog(false);
     send({ type: "CANCEL" });
   }, [send]);
   const onReset = useCallback(() => {
-    setConfirmStage("idle");
+    setShowConfirmDialog(false);
     setForm(INITIAL_FORM);
     setFormError(null);
     send({ type: "RESET" });
@@ -528,15 +583,8 @@ function DemolishFlow(): React.JSX.Element {
     setPrefilledAuditId(audit.accountId);
   }
 
-  // account-side derived values used in the audit card and modals
-  const totalXlm = audit ? sumNativeBalance(audit) : "0";
-  const isHighValue = useMemo<boolean>(() => {
-    if (!audit) return false;
-    const n = Number.parseFloat(totalXlm);
-    if (!Number.isFinite(n)) return false;
-    return n > HIGH_VALUE_THRESHOLD_XLM;
-  }, [audit, totalXlm]);
-
+  // account-side derived values used in the review summary (totalXlm/isHighValue
+  // are computed earlier so the flow phase can read them)
   const acctPkShort = publicKey ? shortPk(publicKey) : "";
   const acctSub = audit?.subentryCount ?? 0;
   // acctThreshold is no longer surfaced now that AuditCard was dropped from preview;
@@ -665,68 +713,67 @@ function DemolishFlow(): React.JSX.Element {
                 </div>
               ) : null}
 
-              {isPreview ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                  {/* 1. blockers — must be resolved before the merge can run */}
-                  <ResidueConsent
-                    credits={ctx.unroutableCredits}
-                    consented={form.returnToIssuer}
-                    onToggle={onToggleResidue}
-                    onRebuild={onStart}
-                  />
-                  {/* 2. safety warnings */}
-                  <ScamTokenNotice findings={scamFindings} />
-                  <DiscoveryWarnings warnings={ctx.discoveryWarnings} />
-                  {/* 3. auto-handled — folded into one compact line */}
-                  {audit ? (
-                    <AutoHandledNotice
-                      claimableCount={audit.claimableBalances.length}
-                      sponsorshipCount={numCoverable}
-                    />
-                  ) : null}
-                  {/* 4. the plan overview + account snapshot + continue */}
-                  <PreviewPanel
-                    totalXlm={totalXlm}
-                    activeCount={activeCount}
-                    destination={form.destination}
-                    snapshot={
-                      audit
-                        ? {
-                            pkShort: acctPkShort,
-                            sub: acctSub,
-                            trustlines: acctTrustlines,
-                            offers: acctOffers,
-                            data: acctData,
-                            claimable: acctClaimable,
-                          }
-                        : null
-                    }
-                    onBack={onCancel}
-                    onContinue={() => setConfirmStage("signoff")}
-                    {...(ctx.unroutableCredits.length > 0
-                      ? { blockReason: "Resolve the balances above to continue." }
-                      : {})}
-                  />
-                </div>
+              {/* RESOLVE — acknowledge/resolve every caution, warning and info
+                  before the clean review. Only reached when hasResolution. */}
+              {isResolve ? (
+                <ResolutionPanel
+                  credits={ctx.unroutableCredits}
+                  consented={form.returnToIssuer}
+                  onToggle={onToggleResidue}
+                  onRebuild={onStart}
+                  hasBlocker={hasBlocker}
+                  scamFindings={scamFindings}
+                  discoveryWarnings={ctx.discoveryWarnings}
+                  autoHandled={{
+                    claimableCount: audit?.claimableBalances.length ?? 0,
+                    sponsorshipCount: numCoverable,
+                  }}
+                  highValue={isHighValue ? { totalXlm } : null}
+                  onBack={onCancel}
+                  onContinue={() => setConfirmStage("review")}
+                />
               ) : null}
 
-              {confirmStage === "signoff" ? (
-                <SignOffPanel
+              {/* REVIEW — the clean "here is what will happen": plan overview,
+                  every operation, destination. No cautions (all in Resolve). */}
+              {isReview ? (
+                <ReviewPanel
                   planGroups={planGroups}
                   totalXlm={totalXlm}
+                  activeCount={activeCount}
                   destination={form.destination}
                   network={network}
-                  isHighValue={isHighValue}
-                  onBack={() => setConfirmStage("idle")}
-                  onConfirm={() => {
-                    send({ type: "CONFIRM" });
-                    setConfirmStage("idle");
-                  }}
+                  snapshot={
+                    audit
+                      ? {
+                          pkShort: acctPkShort,
+                          sub: acctSub,
+                          trustlines: acctTrustlines,
+                          offers: acctOffers,
+                          data: acctData,
+                          claimable: acctClaimable,
+                        }
+                      : null
+                  }
+                  onBack={hasResolution ? () => setConfirmStage("resolve") : onCancel}
+                  onDemolish={() => setShowConfirmDialog(true)}
                 />
               ) : null}
 
               {isCancelled ? <CancelledPanel onResume={() => send({ type: "RESET" })} /> : null}
             </div>
+          ) : null}
+
+          {/* final gate — typed-confirmation dialog, opened from Review */}
+          {showConfirmDialog ? (
+            <TypedConfirmation
+              destination={form.destination}
+              onCancel={() => setShowConfirmDialog(false)}
+              onConfirm={() => {
+                setShowConfirmDialog(false);
+                send({ type: "CONFIRM" });
+              }}
+            />
           ) : null}
         </>
       ) : null}
@@ -1644,70 +1691,62 @@ function DemolishStatusWidget({
 // operation to be run, requires an explicit acknowledgment and a typed
 // last-4-char confirmation (with a short unlock delay), then triggers execution.
 // This replaces the old stacked high-value + typed-confirmation modals.
-const SIGNOFF_DELAY_MS = 3000;
-
-function SignOffPanel({
+// The combined Review step — the clean "here is what will happen". Plan
+// overview, every operation grouped, destination + account snapshot. No
+// cautions or warnings (those are acknowledged in the Resolve step); the final
+// gate is the typed-confirmation dialog opened by "Demolish account".
+function ReviewPanel({
   planGroups,
   totalXlm,
+  activeCount,
   destination,
   network,
-  isHighValue,
+  snapshot,
   onBack,
-  onConfirm,
+  onDemolish,
 }: {
   readonly planGroups: ReadonlyArray<{ phase: string; nodes: readonly PlanNode[] }>;
   readonly totalXlm: string;
+  readonly activeCount: number;
   readonly destination: string;
   readonly network: NetworkConfig;
-  readonly isHighValue: boolean;
+  readonly snapshot: {
+    readonly pkShort: string;
+    readonly sub: number;
+    readonly trustlines: number;
+    readonly offers: number;
+    readonly data: number;
+    readonly claimable: number;
+  } | null;
   readonly onBack: () => void;
-  readonly onConfirm: () => void;
+  readonly onDemolish: () => void;
 }): React.JSX.Element {
   const required = destination.length >= 4 ? destination.slice(-4) : destination;
   const destHead = destination.length > 4 ? destination.slice(0, -4) : "";
-  const [typed, setTyped] = useState("");
-  const [ack, setAck] = useState(false);
-  const [elapsedMs, setElapsedMs] = useState(0);
-
-  useEffect(() => {
-    const start = Date.now();
-    const h = setInterval(() => {
-      const next = Math.min(SIGNOFF_DELAY_MS, Date.now() - start);
-      setElapsedMs(next);
-      if (next >= SIGNOFF_DELAY_MS) clearInterval(h);
-    }, 100);
-    return () => clearInterval(h);
-  }, []);
-
-  const delayElapsed = elapsedMs >= SIGNOFF_DELAY_MS;
-  const matches = typed.trim() === required && required.length > 0;
-  const canConfirm = ack && matches && delayElapsed;
-  const secsLeft = Math.max(0, Math.ceil((SIGNOFF_DELAY_MS - elapsedMs) / 1000));
-  const opCount = planGroups.reduce((n, g) => n + g.nodes.length, 0);
-  const disabledReason = !ack
-    ? "Acknowledge the review first"
-    : !matches
-      ? "Type the last 4 characters of the destination"
-      : !delayElapsed
-        ? `Unlocks in ${secsLeft}s`
-        : undefined;
 
   return (
     <Card padding={24} style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div>
         <div style={{ marginBottom: 12 }}>
-          <Badge tone="warning" dot>
-            Final sign-off
+          <Badge tone="success" dot>
+            PLAN SIMULATED
           </Badge>
         </div>
         <h2 style={{ margin: 0, fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em" }}>
-          Review every operation, then sign
+          Review the close-out
         </h2>
         <p style={{ margin: "8px 0 0", fontSize: 14, lineHeight: 1.55, color: "var(--fg-2)" }}>
-          These {opCount} {opCount === 1 ? "transaction" : "transactions"} run in dependency order
-          and change account state. Some are irreversible — check each one before you sign.
+          Here is exactly what will happen. Nothing is signed until you confirm.
         </p>
       </div>
+
+      <StatGrid
+        stats={[
+          { label: "Operations", value: String(activeCount) },
+          { label: "Reserve recovered", value: "+1.0 XLM", tone: "accent" },
+          { label: "Forwarded", value: `${totalXlm} XLM` },
+        ]}
+      />
 
       {/* every operation, grouped */}
       <div style={{ border: "1px solid var(--border)", borderRadius: 14, overflow: "hidden" }}>
@@ -1739,75 +1778,60 @@ function SignOffPanel({
         })}
       </div>
 
-      {/* destination + amount */}
+      {/* destination + amount + account snapshot */}
       <div
         style={{
-          padding: "14px 16px",
           borderRadius: 12,
           background: "var(--surface-2)",
           border: "1px solid var(--border)",
+          overflow: "hidden",
         }}
       >
-        <div style={{ fontSize: 12, color: "var(--fg-3)", marginBottom: 6 }}>MERGES TO</div>
-        <div style={{ font: "600 13.5px/1.5 'Geist Mono', monospace", wordBreak: "break-all" }}>
-          <span style={{ color: "var(--fg-2)" }}>{destHead}</span>
-          <span style={{ color: "var(--accent)", fontWeight: 700, textDecoration: "underline" }}>
-            {required}
-          </span>
+        <div style={{ padding: "14px 16px" }}>
+          <div style={{ fontSize: 12, color: "var(--fg-3)", marginBottom: 6 }}>MERGES TO</div>
+          <div style={{ font: "600 13.5px/1.5 'Geist Mono', monospace", wordBreak: "break-all" }}>
+            <span style={{ color: "var(--fg-2)" }}>{destHead}</span>
+            <span style={{ color: "var(--accent)", fontWeight: 700, textDecoration: "underline" }}>
+              {required}
+            </span>
+          </div>
+          <div style={{ marginTop: 9, fontSize: 13, color: "var(--fg-2)" }}>
+            Forwarding{" "}
+            <span style={{ font: "600 13px 'Geist Mono', monospace", color: "var(--fg)" }}>
+              {totalXlm} XLM
+            </span>{" "}
+            and permanently closing the account.
+          </div>
         </div>
-        <div style={{ marginTop: 9, fontSize: 13, color: "var(--fg-2)" }}>
-          Forwarding{" "}
-          <span style={{ font: "600 13px 'Geist Mono', monospace", color: "var(--fg)" }}>
-            {totalXlm} XLM
-          </span>{" "}
-          and permanently closing the account.
-        </div>
+        {snapshot ? (
+          <div
+            style={{
+              padding: "12px 16px",
+              borderTop: "1px solid var(--border)",
+              display: "flex",
+              gap: 22,
+              flexWrap: "wrap",
+              alignItems: "flex-start",
+            }}
+          >
+            <SnapStat label="Account" value={snapshot.pkShort} mono />
+            <SnapStat label="Subentries" value={snapshot.sub} />
+            <SnapStat label="Trustlines" value={snapshot.trustlines} />
+            <SnapStat label="Offers" value={snapshot.offers} />
+            <SnapStat label="Data" value={snapshot.data} />
+            <SnapStat label="Claimable" value={snapshot.claimable} />
+          </div>
+        ) : null}
       </div>
-
-      {isHighValue ? (
-        <Notice tone="warning" title="High-value account">
-          This account holds {totalXlm} XLM (over {HIGH_VALUE_THRESHOLD_XLM} XLM). Once merged it
-          cannot be recovered.
-        </Notice>
-      ) : null}
-
-      {/* explicit acknowledgment */}
-      <div
-        style={{
-          padding: "13px 15px",
-          borderRadius: 12,
-          border: "1px solid var(--border-2)",
-          background: "var(--surface-2)",
-        }}
-      >
-        <Checkbox
-          checked={ack}
-          onChange={setAck}
-          data-testid="signoff-ack"
-          label="I've reviewed every operation above and understand that merging permanently closes this account and can't be undone."
-        />
-      </div>
-
-      {/* typed confirmation */}
-      <Field
-        label={`Type the last 4 characters of the destination (${required}) to confirm`}
-        value={typed}
-        onChange={setTyped}
-        mono
-        placeholder="••••"
-        data-testid="signoff-typed"
-      />
 
       <div style={{ display: "flex", gap: 11 }}>
-        <Button variant="secondary" onClick={onBack} data-testid="signoff-back">
+        <Button variant="secondary" onClick={onBack} data-testid="review-back">
           Back
         </Button>
         <Button
           variant="danger"
-          onClick={onConfirm}
-          disabled={!canConfirm}
-          disabledReason={disabledReason}
-          data-testid="signoff-demolish"
+          onClick={onDemolish}
+          data-testid="demolish-confirm"
           style={{ flex: 1 }}
           iconLeft={
             <svg
@@ -1825,7 +1849,7 @@ function SignOffPanel({
             </svg>
           }
         >
-          {delayElapsed ? "Demolish account" : `Demolish account · ${secsLeft}s`}
+          Demolish account
         </Button>
       </div>
     </Card>
@@ -2586,26 +2610,6 @@ function ConfigurePanel({
 
 // consolidated "handled automatically, no action needed" line — replaces the
 // separate claimable + sponsorship notices that used to stack in Review.
-function AutoHandledNotice({
-  claimableCount,
-  sponsorshipCount,
-}: {
-  readonly claimableCount: number;
-  readonly sponsorshipCount: number;
-}): React.JSX.Element | null {
-  if (claimableCount === 0 && sponsorshipCount === 0) return null;
-  const parts: string[] = [];
-  if (claimableCount > 0)
-    parts.push(`${claimableCount} claimable balance${claimableCount === 1 ? "" : "s"} claimed`);
-  if (sponsorshipCount > 0)
-    parts.push(`${sponsorshipCount} sponsorship${sponsorshipCount === 1 ? "" : "s"} released`);
-  return (
-    <Notice tone="neutral" role="status" data-testid="auto-handled-notice">
-      Handled automatically during close-out, no action needed — {parts.join(" and ")}.
-    </Notice>
-  );
-}
-
 function SnapStat({
   label,
   value,
@@ -2640,151 +2644,231 @@ function SnapStat({
   );
 }
 
-function PreviewPanel({
-  totalXlm,
-  activeCount,
-  destination,
-  snapshot,
+// small acknowledgment control rendered in each resolution card's footer
+function AckRow({
+  checked,
+  onChange,
+  testId,
+}: {
+  readonly checked: boolean;
+  readonly onChange: (v: boolean) => void;
+  readonly testId: string;
+}): React.JSX.Element {
+  return (
+    <Checkbox
+      checked={checked}
+      onChange={onChange}
+      data-testid={testId}
+      label="I've read and understand this"
+    />
+  );
+}
+
+// The Resolve step — every caution, warning, info and blocker the built plan
+// surfaced, each acknowledged with "I've read and understand this". Reached
+// only when the plan has something to resolve; otherwise the flow goes straight
+// to Review. A blocker (un-routable balance) is the one item that forces a
+// rebuild — while one is present the bottom action is "Rebuild plan"; once
+// clear it becomes "Continue to review", gated on every acknowledgment.
+function ResolutionPanel({
+  credits,
+  consented,
+  onToggle,
+  onRebuild,
+  hasBlocker,
+  scamFindings,
+  discoveryWarnings,
+  autoHandled,
+  highValue,
   onBack,
   onContinue,
-  blockReason,
 }: {
-  readonly totalXlm: string;
-  readonly activeCount: number;
-  readonly destination: string;
-  readonly snapshot: {
-    readonly pkShort: string;
-    readonly sub: number;
-    readonly trustlines: number;
-    readonly offers: number;
-    readonly data: number;
-    readonly claimable: number;
-  } | null;
+  readonly credits: readonly ResidueConsentCredit[];
+  readonly consented: readonly string[];
+  readonly onToggle: (key: string, consent: boolean) => void;
+  readonly onRebuild: () => void;
+  readonly hasBlocker: boolean;
+  readonly scamFindings: readonly ScamFinding[];
+  readonly discoveryWarnings: readonly string[];
+  readonly autoHandled: { readonly claimableCount: number; readonly sponsorshipCount: number };
+  readonly highValue: { readonly totalXlm: string } | null;
   readonly onBack: () => void;
   readonly onContinue: () => void;
-  // when set, the account can't be closed yet (e.g. un-routable balances); the
-  // continue button is disabled and the reason is surfaced prominently.
-  readonly blockReason?: string;
 }): React.JSX.Element {
-  const blocked = blockReason !== undefined;
-  const destShort =
-    destination.length > 14 ? `${destination.slice(0, 8)}…${destination.slice(-8)}` : destination;
+  const [acks, setAcks] = useState<Record<string, boolean>>({});
+  const setAck = (key: string, v: boolean) => setAcks((a) => ({ ...a, [key]: v }));
+
+  const hasScam = scamFindings.length > 0;
+  const hasDiscovery = discoveryWarnings.length > 0;
+  const autoParts: string[] = [];
+  if (autoHandled.claimableCount > 0)
+    autoParts.push(
+      `${autoHandled.claimableCount} claimable balance${autoHandled.claimableCount === 1 ? "" : "s"} claimed`,
+    );
+  if (autoHandled.sponsorshipCount > 0)
+    autoParts.push(
+      `${autoHandled.sponsorshipCount} sponsorship${autoHandled.sponsorshipCount === 1 ? "" : "s"} released`,
+    );
+  const hasAutoHandled = autoParts.length > 0;
+  const hasHighValue = highValue !== null;
+
+  // every acknowledgeable card must be ticked before "Continue to review"
+  const requiredAckKeys: string[] = [
+    hasScam ? "scam" : null,
+    hasDiscovery ? "discovery" : null,
+    hasAutoHandled ? "autoHandled" : null,
+    hasHighValue ? "highValue" : null,
+  ].filter((k): k is string => k !== null);
+  const allAcked = requiredAckKeys.every((k) => acks[k] === true);
+
   return (
-    <Card padding={24}>
-      <div style={{ marginBottom: 14 }}>
-        <Badge tone="success" dot>
-          PLAN SIMULATED
-        </Badge>
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <div>
+        <div style={{ marginBottom: 12 }}>
+          <Badge tone="warning" dot>
+            Action needed
+          </Badge>
+        </div>
+        <h2 style={{ margin: 0, fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em" }}>
+          Resolve before you continue
+        </h2>
+        <p style={{ margin: "8px 0 0", fontSize: 14, lineHeight: 1.55, color: "var(--fg-2)" }}>
+          {hasBlocker
+            ? "This account holds balances that block the close-out. Resolve them, then rebuild the plan."
+            : "A few things need a look before the close-out. Read each and confirm."}
+        </p>
       </div>
-      <h2 style={{ margin: "0 0 6px", fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em" }}>
-        Review the close-out
-      </h2>
-      <p
-        style={{
-          margin: "0 0 20px",
-          fontSize: 14,
-          lineHeight: 1.55,
-          color: "var(--fg-2)",
-          maxWidth: 540,
-        }}
-      >
-        The plan simulated cleanly. You&apos;ll see every one of these operations on the next step
-        before you sign.
-      </p>
 
-      <div style={{ marginBottom: 16 }}>
-        <StatGrid
-          stats={[
-            { label: "Operations", value: String(activeCount) },
-            { label: "Reserve recovered", value: "+1.0 XLM", tone: "accent" },
-            { label: "Forwarded", value: `${totalXlm} XLM` },
-          ]}
+      {/* blocker first — return-to-issuer choices; the bottom button rebuilds */}
+      {credits.length > 0 ? (
+        <ResidueConsent
+          credits={credits}
+          consented={consented}
+          onToggle={onToggle}
+          onRebuild={onRebuild}
+          hideRebuild
         />
-      </div>
-
-      {/* destination + account snapshot in one framed block */}
-      <div
-        style={{
-          border: "1px solid var(--border)",
-          borderRadius: 12,
-          overflow: "hidden",
-          marginBottom: blocked ? 16 : 22,
-        }}
-      >
-        <div
-          style={{
-            padding: "12px 16px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 12,
-            flexWrap: "wrap",
-          }}
-        >
-          <SnapStat label="Destination" value={destShort} mono />
-          <span style={{ fontSize: 12, color: "var(--fg-3)" }}>reserve + balance merged here</span>
-        </div>
-        {snapshot ? (
-          <div
-            style={{
-              padding: "12px 16px",
-              borderTop: "1px solid var(--border)",
-              display: "flex",
-              gap: 22,
-              flexWrap: "wrap",
-              alignItems: "flex-start",
-            }}
-          >
-            <SnapStat label="Account" value={snapshot.pkShort} mono />
-            <SnapStat label="Subentries" value={snapshot.sub} />
-            <SnapStat label="Trustlines" value={snapshot.trustlines} />
-            <SnapStat label="Offers" value={snapshot.offers} />
-            <SnapStat label="Data" value={snapshot.data} />
-            <SnapStat label="Claimable" value={snapshot.claimable} />
-          </div>
-        ) : null}
-      </div>
-
-      {blocked ? (
-        <div style={{ marginBottom: 18 }}>
-          <Notice tone="warning" title="Resolve before continuing" role="alert">
-            {blockReason}
-          </Notice>
-        </div>
       ) : null}
 
-      <div style={{ display: "flex", gap: 11 }}>
-        <Button variant="secondary" onClick={onBack} data-testid="demolish-cancel">
-          Back
-        </Button>
-        <Button
-          variant="primary"
-          onClick={onContinue}
-          disabled={blocked}
-          disabledReason={blockReason}
-          data-testid="demolish-confirm"
-          aria-label="Continue to sign-off"
-          style={{ flex: 1 }}
-          iconRight={
-            <svg
-              width="15"
-              height="15"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={2.2}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden
-            >
-              <path d="M5 12h14M13 6l6 6-6 6" />
-            </svg>
+      {hasScam ? (
+        <ScamTokenNotice
+          findings={scamFindings}
+          footer={
+            <AckRow
+              checked={acks.scam === true}
+              onChange={(v) => setAck("scam", v)}
+              testId="ack-scam"
+            />
+          }
+        />
+      ) : null}
+
+      {hasDiscovery ? (
+        <DiscoveryWarnings
+          warnings={discoveryWarnings}
+          footer={
+            <AckRow
+              checked={acks.discovery === true}
+              onChange={(v) => setAck("discovery", v)}
+              testId="ack-discovery"
+            />
+          }
+        />
+      ) : null}
+
+      {hasAutoHandled ? (
+        <Notice
+          tone="neutral"
+          role="status"
+          data-testid="auto-handled-notice"
+          title="Handled automatically"
+          footer={
+            <AckRow
+              checked={acks.autoHandled === true}
+              onChange={(v) => setAck("autoHandled", v)}
+              testId="ack-autohandled"
+            />
           }
         >
-          Continue to sign-off
+          No action needed during close-out — {autoParts.join(" and ")}.
+        </Notice>
+      ) : null}
+
+      {highValue ? (
+        <Notice
+          tone="warning"
+          title="High-value account"
+          data-testid="high-value-notice"
+          footer={
+            <AckRow
+              checked={acks.highValue === true}
+              onChange={(v) => setAck("highValue", v)}
+              testId="ack-highvalue"
+            />
+          }
+        >
+          This account holds {highValue.totalXlm} XLM (over {HIGH_VALUE_THRESHOLD_XLM} XLM). Once
+          merged it cannot be recovered.
+        </Notice>
+      ) : null}
+
+      <div style={{ display: "flex", gap: 11, marginTop: 4 }}>
+        <Button variant="secondary" onClick={onBack} data-testid="resolve-back">
+          Back
         </Button>
+        {hasBlocker ? (
+          <Button
+            variant="primary"
+            onClick={onRebuild}
+            data-testid="resolve-rebuild"
+            style={{ flex: 1 }}
+            iconLeft={
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2.2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <path d="M23 4v6h-6M1 20v-6h6M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15" />
+              </svg>
+            }
+          >
+            Rebuild plan
+          </Button>
+        ) : (
+          <Button
+            variant="primary"
+            onClick={onContinue}
+            disabled={!allAcked}
+            disabledReason={allAcked ? undefined : "Acknowledge every item to continue"}
+            data-testid="resolve-continue"
+            style={{ flex: 1 }}
+            iconRight={
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2.2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <path d="M5 12h14M13 6l6 6-6 6" />
+              </svg>
+            }
+          >
+            Continue to review
+          </Button>
+        )}
       </div>
-    </Card>
+    </div>
   );
 }
 

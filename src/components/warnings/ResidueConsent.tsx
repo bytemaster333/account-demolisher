@@ -20,6 +20,9 @@ export interface ResidueConsentProps {
   readonly consented: readonly string[];
   readonly onToggle: (key: string, consent: boolean) => void;
   readonly onRebuild: () => void;
+  // when the surrounding step owns the rebuild action (the Resolve step's single
+  // bottom button), hide this notice's own inline "Rebuild plan" button
+  readonly hideRebuild?: boolean;
 }
 
 export function ResidueConsent({
@@ -27,6 +30,7 @@ export function ResidueConsent({
   consented,
   onToggle,
   onRebuild,
+  hideRebuild = false,
 }: ResidueConsentProps): React.JSX.Element | null {
   if (credits.length === 0) return null;
   const consentedSet = new Set(consented);
@@ -105,11 +109,13 @@ export function ResidueConsent({
           </li>
         ))}
       </ul>
-      <div style={{ marginTop: 12 }}>
-        <Button variant="secondary" size="sm" onClick={onRebuild} data-testid="residue-rebuild">
-          Rebuild plan with these choices
-        </Button>
-      </div>
+      {hideRebuild ? null : (
+        <div style={{ marginTop: 12 }}>
+          <Button variant="secondary" size="sm" onClick={onRebuild} data-testid="residue-rebuild">
+            Rebuild plan with these choices
+          </Button>
+        </div>
+      )}
     </Notice>
   );
 }
