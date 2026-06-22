@@ -5,7 +5,7 @@
 // balance). The user must either handle them off-app, or explicitly consent to
 // return each to its issuer — an irreversible transfer we never do silently.
 
-import { Button, CopyableAddress, Notice } from "@/components/ui";
+import { Button, Checkbox, CopyableAddress, Notice } from "@/components/ui";
 
 export interface ResidueConsentCredit {
   readonly key: string;
@@ -86,26 +86,16 @@ export function ResidueConsent({
             <span style={{ flex: 1, minWidth: 0 }}>
               <CopyableAddress value={c.issuer} label="Issuer" head={4} tail={4} size={11.5} />
             </span>
-            <label
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 7,
-                fontSize: 12,
-                fontWeight: 600,
-                color: "var(--warning)",
-                cursor: "pointer",
-                whiteSpace: "nowrap",
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={consentedSet.has(c.key)}
-                onChange={(e) => onToggle(c.key, e.target.checked)}
-                style={{ width: 15, height: 15, accentColor: "var(--warning)" }}
-              />
-              return to issuer
-            </label>
+            <Checkbox
+              tone="warning"
+              checked={consentedSet.has(c.key)}
+              onChange={(v) => onToggle(c.key, v)}
+              label={
+                <span style={{ color: "var(--warning)", fontWeight: 600, whiteSpace: "nowrap" }}>
+                  return to issuer
+                </span>
+              }
+            />
           </li>
         ))}
       </ul>
