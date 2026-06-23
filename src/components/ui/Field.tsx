@@ -112,17 +112,18 @@ export function Checkbox({
   const toneVar = tone === "warning" ? "var(--warning)" : "var(--accent)";
   return (
     <label style={{ display: "inline-flex", alignItems: "center", gap: 9, cursor: "pointer" }}>
+      {/* fixed-size box; the input and checkmark are both absolutely positioned
+          so toggling never changes the box footprint (which shifted the label) */}
       <span
         style={{
           position: "relative",
-          width: 17,
-          height: 17,
+          width: 18,
+          height: 18,
           flexShrink: 0,
+          boxSizing: "border-box",
           borderRadius: 5,
           border: `1px solid ${checked ? toneVar : "var(--border-2)"}`,
           background: "var(--surface-2)",
-          display: "grid",
-          placeItems: "center",
           boxShadow: focused ? `0 0 0 3px color-mix(in srgb, ${toneVar} 22%, transparent)` : "none",
           transition: "border-color .12s, box-shadow .12s",
         }}
@@ -155,12 +156,19 @@ export function Checkbox({
             strokeLinecap="round"
             strokeLinejoin="round"
             aria-hidden
+            style={{
+              position: "absolute",
+              top: "50%",
+              left: "50%",
+              transform: "translate(-50%, -50%)",
+              display: "block",
+            }}
           >
             <path d="M20 6L9 17l-5-5" />
           </svg>
         ) : null}
       </span>
-      <span style={{ fontSize: 13, color: "var(--fg-2)" }}>{label}</span>
+      <span style={{ fontSize: 13, color: "var(--fg-2)", lineHeight: 1.4 }}>{label}</span>
     </label>
   );
 }
