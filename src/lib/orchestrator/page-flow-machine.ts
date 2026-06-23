@@ -158,7 +158,7 @@ const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({ input 
     } catch (e) {
       console.warn("[demolish] allowance enumeration skipped:", e);
       discoveryWarnings.push(
-        `Token-allowance scan failed, so any active SEP-41 approvals won't appear in this plan. Review them separately on the Allowances page. (${describeError(e)})`,
+        "Token-allowance scan couldn't complete, so any active SEP-41 approvals won't appear in this plan. Review them separately on the Allowances page.",
       );
     }
   }
@@ -176,7 +176,7 @@ const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({ input 
     } catch (e) {
       console.warn("[demolish] position discovery skipped:", e);
       discoveryWarnings.push(
-        `DeFi position discovery failed, so any Blend / Aquarius / Soroswap / FxDAO positions may be missing from this plan. (${describeError(e)})`,
+        "DeFi position discovery couldn't complete, so any Blend / Aquarius / Soroswap / FxDAO positions may be missing from this plan.",
       );
     }
   }

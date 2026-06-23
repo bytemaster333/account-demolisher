@@ -22,6 +22,14 @@ export const DEFAULT_SCAN_WINDOW_LEDGERS = 518_400;
 // per-page event cap on the rpc
 const PAGE_LIMIT = 10_000;
 
+// when getEvents reports our startLedger is below the retained event window, we
+// clamp to the floor it reports — plus this margin. The retention floor advances
+// continuously (~1 ledger / 5s), so clamping to the *exact* floor races: a single
+// ledger closing between the error and the retry would drop us back below it and
+// fail again. A small margin absorbs that (skipping a few ledgers at the very
+// oldest edge is immaterial for a best-effort "latest allowance state" scan).
+const RETENTION_RETRY_MARGIN_LEDGERS = 60;
+
 // enumerate active sep-41 allowances the user granted
 export async function enumerateAllowances(
   server: rpc.Server,
@@ -93,7 +101,9 @@ export async function enumerateAllowances(
       if (page === 0 && match) {
         const floor = Number.parseInt(match[1]!, 10);
         if (Number.isFinite(floor) && floor > startLedger) {
-          startLedger = floor;
+          // clamp to the reported floor plus a margin so a ledger closing during
+          // the retry gap can't put us right back below the retention floor
+          startLedger = Math.min(currentLedger, floor + RETENTION_RETRY_MARGIN_LEDGERS);
           const retryRequest: rpc.Api.GetEventsRequest = {
             startLedger,
             filters: [eventFilter3, eventFilter4],
