@@ -444,13 +444,15 @@ function DemolishFlow(): React.JSX.Element {
             ? "acknowledge"
             : "review";
 
-  // step indicator
+  // step indicator. Acknowledge is hidden while a blocker is unresolved — its
+  // contents depend on the post-rebuild state (returning a token to its issuer
+  // can remove that token's warnings), so it only appears once Resolve is done.
   const flowSteps = useMemo(
     () =>
       buildFlowSteps({
         phase: flowPhase,
         hasResolve: hasBlocker,
-        hasAcknowledge: hasAckItems,
+        hasAcknowledge: hasAckItems && !hasBlocker,
         isSucceeded,
       }),
     [flowPhase, hasBlocker, hasAckItems, isSucceeded],
@@ -2709,9 +2711,10 @@ const ARROW_RIGHT = (
 );
 
 // The Resolve step — ACTIONS only. Blockers (balances with no XLM path) each
-// need a return-to-issuer choice, then a rebuild. "Rebuild plan" stays disabled
-// until every balance has a choice, so you can't rebuild into the same block.
-// (To dispose of a balance yourself instead, go Back and re-scan once it's gone.)
+// need to be gone before the close-out: either return it to its issuer here, or
+// dispose of it yourself elsewhere. "Rebuild plan" re-scans with whatever choices
+// you've made — including none, for the dispose-it-yourself path (after which a
+// fresh scan simply finds no blocker).
 function ResolvePanel({
   credits,
   network,
@@ -2727,9 +2730,6 @@ function ResolvePanel({
   readonly onRebuild: () => void;
   readonly onBack: () => void;
 }): React.JSX.Element {
-  const consentedSet = new Set(consented);
-  const allResolved = credits.every((c) => consentedSet.has(c.key));
-
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div>
@@ -2742,8 +2742,8 @@ function ResolvePanel({
           Resolve before you continue
         </h2>
         <p style={{ margin: "8px 0 0", fontSize: 14, lineHeight: 1.55, color: "var(--fg-2)" }}>
-          This account holds balances that block the close-out. Choose what to do with each, then
-          rebuild the plan.
+          This account holds balances that block the close-out. Return each to its issuer, or
+          dispose of it yourself first, then rebuild the plan.
         </p>
       </div>
 
@@ -2763,8 +2763,6 @@ function ResolvePanel({
         <Button
           variant="primary"
           onClick={onRebuild}
-          disabled={!allResolved}
-          disabledReason={allResolved ? undefined : "Choose what to do with every balance first"}
           data-testid="resolve-rebuild"
           style={{ flex: 1 }}
           iconLeft={
