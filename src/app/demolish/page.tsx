@@ -48,6 +48,7 @@ import type { Connector } from "@/lib/wallet/connector";
 import { WalletKitConnector } from "@/lib/wallet/connector";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
 import { MultiSignerConnector, type MultiSignerMember } from "@/lib/wallet/multi-signer";
+import { setActiveConnector } from "@/lib/wallet/active-connector";
 import { useWalletStore } from "@/stores/wallet";
 
 const HIGH_VALUE_THRESHOLD_XLM = 1000;
@@ -267,6 +268,7 @@ function DemolishFlow(): React.JSX.Element {
   const [hasConnector, setHasConnector] = useState(false);
   const publicKey = useWalletStore((s) => s.publicKey);
   const isDemo = useWalletStore((s) => s.isDemo);
+  const disconnectWallet = useWalletStore((s) => s.disconnect);
 
   const networkId = useNetworkStore((s) => s.networkId);
   const network = useMemo<NetworkConfig>(() => resolveNetwork(networkId), [networkId]);
@@ -563,8 +565,14 @@ function DemolishFlow(): React.JSX.Element {
     setShowConfirmDialog(false);
     setForm(INITIAL_FORM);
     setFormError(null);
+    // the account we operated on is gone (merged) or abandoned — fully drop the
+    // connection so "Start over" returns to Connect, not Configure with a dead
+    // account still selected.
+    setConnector(null);
+    setActiveConnector(null);
+    disconnectWallet();
     send({ type: "RESET" });
-  }, [send]);
+  }, [send, setConnector, disconnectWallet]);
   const onRetry = useCallback(() => send({ type: "RETRY" }), [send]);
   const onToggleResidue = useCallback((key: string, consent: boolean) => {
     setForm((f) => {
