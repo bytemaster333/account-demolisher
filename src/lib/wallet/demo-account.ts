@@ -14,6 +14,7 @@ import {
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
+import { explorerAccountUrl } from "@/lib/explorer";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { buildApprove } from "@/lib/soroban/sep41";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
@@ -403,16 +404,6 @@ export async function runDemoSetup(opts: RunDemoOptions): Promise<DemoAccountRes
   onFinish({ id: "ready", status: "done", detail: "Connector loaded" });
 
   return { publicKey, connector, explorerUrl };
-}
-
-export function explorerAccountUrl(network: NetworkConfig, publicKey: string): string {
-  const slug = network.id === "mainnet" ? "public" : network.id;
-  return `https://stellar.expert/explorer/${slug}/account/${publicKey}`;
-}
-
-export function explorerTxUrl(network: NetworkConfig, txHash: string): string {
-  const slug = network.id === "mainnet" ? "public" : network.id;
-  return `https://stellar.expert/explorer/${slug}/tx/${txHash}`;
 }
 
 async function friendbotFund(friendbotUrl: string, address: string): Promise<void> {

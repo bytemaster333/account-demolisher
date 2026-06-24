@@ -33,7 +33,7 @@ import { ConnectButton } from "@/components/wallet/ConnectButton";
 import { CreateTestAccountButton } from "@/components/wallet/CreateTestAccountButton";
 import { MultisigSigners, type AddedSigner } from "@/components/wallet/MultisigSigners";
 import { SecretKeyFallback } from "@/components/wallet/SecretKeyFallback";
-import { explorerTxUrl } from "@/lib/wallet/demo-account";
+import { explorerTxUrl } from "@/lib/explorer";
 import Link from "next/link";
 import { useNetworkStore } from "@/stores/network";
 import { resolveNetwork, type NetworkConfig } from "@/lib/config/networks";
@@ -206,19 +206,25 @@ interface FlowStep {
   readonly notLast: boolean;
 }
 
-type FlowPhase = "connect" | "configure" | "resolve" | "review" | "execute";
+type FlowPhase = "connect" | "configure" | "resolve" | "acknowledge" | "review" | "execute";
 
 function buildFlowSteps(args: {
   readonly phase: FlowPhase;
-  // whether the built plan surfaced anything to resolve/acknowledge. When false
-  // the Resolve step is omitted entirely (Connect → Configure → Review → Execute)
-  readonly hasResolution: boolean;
+  // Resolve (blocker action) and Acknowledge (read warnings) are each shown only
+  // when the built plan surfaced that kind of item; empty steps are omitted.
+  readonly hasResolve: boolean;
+  readonly hasAcknowledge: boolean;
   readonly isSucceeded: boolean;
 }): readonly FlowStep[] {
-  const { phase, hasResolution, isSucceeded } = args;
-  const labels = hasResolution
-    ? ["Connect", "Configure", "Resolve", "Review", "Execute"]
-    : ["Connect", "Configure", "Review", "Execute"];
+  const { phase, hasResolve, hasAcknowledge, isSucceeded } = args;
+  const labels = [
+    "Connect",
+    "Configure",
+    ...(hasResolve ? ["Resolve"] : []),
+    ...(hasAcknowledge ? ["Acknowledge"] : []),
+    "Review",
+    "Execute",
+  ];
 
   const activeLabel =
     phase === "connect"
@@ -227,10 +233,12 @@ function buildFlowSteps(args: {
         ? "Configure"
         : phase === "resolve"
           ? "Resolve"
-          : phase === "review"
-            ? "Review"
-            : "Execute";
-  // a "resolve" phase with no resolution items (shouldn't happen) falls back to Review
+          : phase === "acknowledge"
+            ? "Acknowledge"
+            : phase === "review"
+              ? "Review"
+              : "Execute";
+  // a phase whose step was omitted (shouldn't happen) falls back to Review
   let activeIdx = labels.indexOf(activeLabel);
   if (activeIdx < 0) activeIdx = labels.indexOf("Review");
 
@@ -338,12 +346,12 @@ function DemolishFlow(): React.JSX.Element {
     setExtraSigners((prev) => prev.filter((s) => s.publicKey !== pk));
   }, []);
 
-  // the awaiting_confirmation phase has two stages:
-  //  "resolve" — acknowledge/resolve every caution, warning, info and blocker
-  //  "review"  — the clean "here is what will happen" plan review + demolish
-  // the stage is initialised per built plan (below): "resolve" if the plan has
-  // anything to resolve, otherwise straight to "review".
-  type ConfirmStage = "resolve" | "review";
+  // the awaiting_confirmation phase has three stages:
+  //  "resolve"     — take an action on a blocker (return-to-issuer) + rebuild
+  //  "acknowledge" — read-and-understand every warning / info card
+  //  "review"      — the clean "here is what will happen" review + demolish
+  // the stage is initialised per built plan (below), skipping any empty step.
+  type ConfirmStage = "resolve" | "acknowledge" | "review";
   const [confirmStage, setConfirmStage] = useState<ConfirmStage>("review");
   // the final typed-confirmation dialog, opened from the review step
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
@@ -390,34 +398,36 @@ function DemolishFlow(): React.JSX.Element {
     return n > HIGH_VALUE_THRESHOLD_XLM;
   }, [audit, totalXlm]);
 
-  // what the Resolve step must surface. A blocker (un-routable balance) is the
-  // only item that forces a rebuild; the rest are read-and-acknowledge.
+  // two distinct concerns, kept as separate steps:
+  //  - a BLOCKER (un-routable balance) needs an ACTION + rebuild  → "resolve"
+  //  - warnings / info need only READ-AND-UNDERSTAND               → "acknowledge"
   const hasBlocker = ctx.unroutableCredits.length > 0;
   const hasScam = scamFindings.length > 0;
   const hasDiscovery = ctx.discoveryWarnings.length > 0;
   const hasAutoHandled = audit !== null && (audit.claimableBalances.length > 0 || numCoverable > 0);
-  const hasResolution = hasBlocker || hasScam || hasDiscovery || hasAutoHandled || isHighValue;
+  const hasAckItems = hasScam || hasDiscovery || hasAutoHandled || isHighValue;
 
-  // initialise the confirm stage per built plan: land on "resolve" when there's
-  // anything to resolve/acknowledge, otherwise straight to the clean review.
+  // initialise the confirm stage per built plan: resolve blockers first, then
+  // acknowledge warnings/info, then the clean review — skipping any empty step.
   const initedTreeRef = useRef<unknown>(null);
   useEffect(() => {
     if (tree !== null && isAwaitingConfirmation) {
       if (initedTreeRef.current !== tree) {
         initedTreeRef.current = tree;
-        setConfirmStage(hasResolution ? "resolve" : "review");
+        setConfirmStage(hasBlocker ? "resolve" : hasAckItems ? "acknowledge" : "review");
         setShowConfirmDialog(false);
       }
     } else if (tree === null) {
       initedTreeRef.current = null;
     }
-  }, [tree, isAwaitingConfirmation, hasResolution]);
+  }, [tree, isAwaitingConfirmation, hasBlocker, hasAckItems]);
 
   // configure = no tree yet (either before START, or after a CANCEL that returned us to cancelled)
   const isConfiguring = !blocked && publicKey !== null && tree === null;
-  // the two awaiting_confirmation stages, gated on the tree being present
+  // the three awaiting_confirmation stages, gated on the tree being present
   const inConfirmation = !blocked && tree !== null && isAwaitingConfirmation;
   const isResolve = inConfirmation && confirmStage === "resolve";
+  const isAcknowledge = inConfirmation && confirmStage === "acknowledge";
   const isReview = inConfirmation && confirmStage === "review";
   const showFlow = !isIdle && !blocked;
 
@@ -430,17 +440,20 @@ function DemolishFlow(): React.JSX.Element {
         ? "configure"
         : confirmStage === "resolve"
           ? "resolve"
-          : "review";
+          : confirmStage === "acknowledge"
+            ? "acknowledge"
+            : "review";
 
   // step indicator
   const flowSteps = useMemo(
     () =>
       buildFlowSteps({
         phase: flowPhase,
-        hasResolution,
+        hasResolve: hasBlocker,
+        hasAcknowledge: hasAckItems,
         isSucceeded,
       }),
-    [flowPhase, hasResolution, isSucceeded],
+    [flowPhase, hasBlocker, hasAckItems, isSucceeded],
   );
 
   // cex / mediator
@@ -713,15 +726,24 @@ function DemolishFlow(): React.JSX.Element {
                 </div>
               ) : null}
 
-              {/* RESOLVE — acknowledge/resolve every caution, warning and info
-                  before the clean review. Only reached when hasResolution. */}
+              {/* RESOLVE — actions only: blockers that need a return-to-issuer
+                  choice + rebuild. Rebuild is gated until every one is resolved. */}
               {isResolve ? (
-                <ResolutionPanel
+                <ResolvePanel
                   credits={ctx.unroutableCredits}
+                  network={network}
                   consented={form.returnToIssuer}
                   onToggle={onToggleResidue}
                   onRebuild={onStart}
-                  hasBlocker={hasBlocker}
+                  onBack={onCancel}
+                />
+              ) : null}
+
+              {/* ACKNOWLEDGE — information only: read-and-understand each warning /
+                  info card. Continue is gated until all are acknowledged. */}
+              {isAcknowledge ? (
+                <AcknowledgePanel
+                  network={network}
                   scamFindings={scamFindings}
                   discoveryWarnings={ctx.discoveryWarnings}
                   autoHandled={{
@@ -735,7 +757,7 @@ function DemolishFlow(): React.JSX.Element {
               ) : null}
 
               {/* REVIEW — the clean "here is what will happen": plan overview,
-                  every operation, destination. No cautions (all in Resolve). */}
+                  every operation, destination. No cautions (all handled above). */}
               {isReview ? (
                 <ReviewPanel
                   planGroups={planGroups}
@@ -755,7 +777,13 @@ function DemolishFlow(): React.JSX.Element {
                         }
                       : null
                   }
-                  onBack={hasResolution ? () => setConfirmStage("resolve") : onCancel}
+                  onBack={
+                    hasAckItems
+                      ? () => setConfirmStage("acknowledge")
+                      : hasBlocker
+                        ? () => setConfirmStage("resolve")
+                        : onCancel
+                  }
                   onDemolish={() => setShowConfirmDialog(true)}
                 />
               ) : null}
@@ -2664,18 +2692,109 @@ function AckRow({
   );
 }
 
-// The Resolve step — every caution, warning, info and blocker the built plan
-// surfaced, each acknowledged with "I've read and understand this". Reached
-// only when the plan has something to resolve; otherwise the flow goes straight
-// to Review. A blocker (un-routable balance) is the one item that forces a
-// rebuild — while one is present the bottom action is "Rebuild plan"; once
-// clear it becomes "Continue to review", gated on every acknowledgment.
-function ResolutionPanel({
+const ARROW_RIGHT = (
+  <svg
+    width="15"
+    height="15"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={2.2}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden
+  >
+    <path d="M5 12h14M13 6l6 6-6 6" />
+  </svg>
+);
+
+// The Resolve step — ACTIONS only. Blockers (balances with no XLM path) each
+// need a return-to-issuer choice, then a rebuild. "Rebuild plan" stays disabled
+// until every balance has a choice, so you can't rebuild into the same block.
+// (To dispose of a balance yourself instead, go Back and re-scan once it's gone.)
+function ResolvePanel({
   credits,
+  network,
   consented,
   onToggle,
   onRebuild,
-  hasBlocker,
+  onBack,
+}: {
+  readonly credits: readonly ResidueConsentCredit[];
+  readonly network: NetworkConfig;
+  readonly consented: readonly string[];
+  readonly onToggle: (key: string, consent: boolean) => void;
+  readonly onRebuild: () => void;
+  readonly onBack: () => void;
+}): React.JSX.Element {
+  const consentedSet = new Set(consented);
+  const allResolved = credits.every((c) => consentedSet.has(c.key));
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <div>
+        <div style={{ marginBottom: 12 }}>
+          <Badge tone="warning" dot>
+            Action needed
+          </Badge>
+        </div>
+        <h2 style={{ margin: 0, fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em" }}>
+          Resolve before you continue
+        </h2>
+        <p style={{ margin: "8px 0 0", fontSize: 14, lineHeight: 1.55, color: "var(--fg-2)" }}>
+          This account holds balances that block the close-out. Choose what to do with each, then
+          rebuild the plan.
+        </p>
+      </div>
+
+      <ResidueConsent
+        credits={credits}
+        network={network}
+        consented={consented}
+        onToggle={onToggle}
+        onRebuild={onRebuild}
+        hideRebuild
+      />
+
+      <div style={{ display: "flex", gap: 11, marginTop: 4 }}>
+        <Button variant="secondary" onClick={onBack} data-testid="resolve-back">
+          Back
+        </Button>
+        <Button
+          variant="primary"
+          onClick={onRebuild}
+          disabled={!allResolved}
+          disabledReason={allResolved ? undefined : "Choose what to do with every balance first"}
+          data-testid="resolve-rebuild"
+          style={{ flex: 1 }}
+          iconLeft={
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2.2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="M23 4v6h-6M1 20v-6h6M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15" />
+            </svg>
+          }
+        >
+          Rebuild plan
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// The Acknowledge step — INFORMATION only. Warnings and info that don't block
+// the close-out but must be read and understood. "Continue to review" is gated
+// until every card is acknowledged.
+function AcknowledgePanel({
+  network,
   scamFindings,
   discoveryWarnings,
   autoHandled,
@@ -2683,11 +2802,7 @@ function ResolutionPanel({
   onBack,
   onContinue,
 }: {
-  readonly credits: readonly ResidueConsentCredit[];
-  readonly consented: readonly string[];
-  readonly onToggle: (key: string, consent: boolean) => void;
-  readonly onRebuild: () => void;
-  readonly hasBlocker: boolean;
+  readonly network: NetworkConfig;
   readonly scamFindings: readonly ScamFinding[];
   readonly discoveryWarnings: readonly string[];
   readonly autoHandled: { readonly claimableCount: number; readonly sponsorshipCount: number };
@@ -2712,7 +2827,6 @@ function ResolutionPanel({
   const hasAutoHandled = autoParts.length > 0;
   const hasHighValue = highValue !== null;
 
-  // every acknowledgeable card must be ticked before "Continue to review"
   const requiredAckKeys: string[] = [
     hasScam ? "scam" : null,
     hasDiscovery ? "discovery" : null,
@@ -2726,33 +2840,22 @@ function ResolutionPanel({
       <div>
         <div style={{ marginBottom: 12 }}>
           <Badge tone="warning" dot>
-            Action needed
+            Before you continue
           </Badge>
         </div>
         <h2 style={{ margin: 0, fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em" }}>
-          Resolve before you continue
+          Read and acknowledge
         </h2>
         <p style={{ margin: "8px 0 0", fontSize: 14, lineHeight: 1.55, color: "var(--fg-2)" }}>
-          {hasBlocker
-            ? "This account holds balances that block the close-out. Resolve them, then rebuild the plan."
-            : "A few things need a look before the close-out. Read each and confirm."}
+          These don&apos;t block the close-out, but make sure you understand each one before you
+          continue.
         </p>
       </div>
-
-      {/* blocker first — return-to-issuer choices; the bottom button rebuilds */}
-      {credits.length > 0 ? (
-        <ResidueConsent
-          credits={credits}
-          consented={consented}
-          onToggle={onToggle}
-          onRebuild={onRebuild}
-          hideRebuild
-        />
-      ) : null}
 
       {hasScam ? (
         <ScamTokenNotice
           findings={scamFindings}
+          network={network}
           footer={
             <AckRow
               checked={acks.scam === true}
@@ -2813,60 +2916,20 @@ function ResolutionPanel({
       ) : null}
 
       <div style={{ display: "flex", gap: 11, marginTop: 4 }}>
-        <Button variant="secondary" onClick={onBack} data-testid="resolve-back">
+        <Button variant="secondary" onClick={onBack} data-testid="acknowledge-back">
           Back
         </Button>
-        {hasBlocker ? (
-          <Button
-            variant="primary"
-            onClick={onRebuild}
-            data-testid="resolve-rebuild"
-            style={{ flex: 1 }}
-            iconLeft={
-              <svg
-                width="15"
-                height="15"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={2.2}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden
-              >
-                <path d="M23 4v6h-6M1 20v-6h6M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15" />
-              </svg>
-            }
-          >
-            Rebuild plan
-          </Button>
-        ) : (
-          <Button
-            variant="primary"
-            onClick={onContinue}
-            disabled={!allAcked}
-            disabledReason={allAcked ? undefined : "Acknowledge every item to continue"}
-            data-testid="resolve-continue"
-            style={{ flex: 1 }}
-            iconRight={
-              <svg
-                width="15"
-                height="15"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={2.2}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden
-              >
-                <path d="M5 12h14M13 6l6 6-6 6" />
-              </svg>
-            }
-          >
-            Continue to review
-          </Button>
-        )}
+        <Button
+          variant="primary"
+          onClick={onContinue}
+          disabled={!allAcked}
+          disabledReason={allAcked ? undefined : "Acknowledge every item to continue"}
+          data-testid="acknowledge-continue"
+          style={{ flex: 1 }}
+          iconRight={ARROW_RIGHT}
+        >
+          Continue to review
+        </Button>
       </div>
     </div>
   );

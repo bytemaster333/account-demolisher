@@ -17,12 +17,15 @@ export function CopyableAddress({
   tail = 6,
   label,
   size = 12.5,
+  href,
 }: {
   readonly value: string;
   readonly head?: number;
   readonly tail?: number;
   readonly label?: string;
   readonly size?: number;
+  // when set, adds an "open in explorer" link button next to copy
+  readonly href?: string;
 }): React.JSX.Element {
   const [copied, setCopied] = useState(false);
 
@@ -102,6 +105,41 @@ export function CopyableAddress({
           </svg>
         )}
       </button>
+      {href !== undefined ? (
+        <a
+          href={href}
+          target="_blank"
+          rel="noreferrer noopener"
+          title={`Open ${label ?? "address"} on stellar.expert`}
+          aria-label={`Open ${label ?? "address"} in block explorer`}
+          style={{
+            display: "grid",
+            placeItems: "center",
+            width: 24,
+            height: 24,
+            flexShrink: 0,
+            borderRadius: RADIUS.sm,
+            border: "1px solid var(--border)",
+            background: "var(--surface-2)",
+            color: "var(--fg-3)",
+            textDecoration: "none",
+          }}
+        >
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2.2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <path d="M7 17 17 7M9 7h8v8" />
+          </svg>
+        </a>
+      ) : null}
     </span>
   );
 }

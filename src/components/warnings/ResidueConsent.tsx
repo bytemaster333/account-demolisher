@@ -6,6 +6,8 @@
 // return each to its issuer — an irreversible transfer we never do silently.
 
 import { Button, Checkbox, CopyableAddress, Notice } from "@/components/ui";
+import type { NetworkConfig } from "@/lib/config/networks";
+import { explorerAccountUrl } from "@/lib/explorer";
 
 export interface ResidueConsentCredit {
   readonly key: string;
@@ -16,6 +18,7 @@ export interface ResidueConsentCredit {
 
 export interface ResidueConsentProps {
   readonly credits: readonly ResidueConsentCredit[];
+  readonly network: NetworkConfig;
   // pathKey()s currently consented to return-to-issuer
   readonly consented: readonly string[];
   readonly onToggle: (key: string, consent: boolean) => void;
@@ -27,6 +30,7 @@ export interface ResidueConsentProps {
 
 export function ResidueConsent({
   credits,
+  network,
   consented,
   onToggle,
   onRebuild,
@@ -84,7 +88,14 @@ export function ResidueConsent({
               {c.amount} {c.code}
             </span>
             <span style={{ flex: 1, minWidth: 0 }}>
-              <CopyableAddress value={c.issuer} label="Issuer" head={4} tail={4} size={11.5} />
+              <CopyableAddress
+                value={c.issuer}
+                label="Issuer"
+                head={4}
+                tail={4}
+                size={11.5}
+                href={explorerAccountUrl(network, c.issuer)}
+              />
             </span>
             <Checkbox
               tone="warning"

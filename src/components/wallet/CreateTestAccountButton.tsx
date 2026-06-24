@@ -8,9 +8,9 @@ import { useCallback, useMemo, useState } from "react";
 import { Badge, Button, Card, CopyableAddress } from "@/components/ui";
 import { DemoStepList, type DemoStepRow } from "@/components/wallet/DemoStepList";
 import type { NetworkConfig } from "@/lib/config/networks";
+import { explorerTxUrl } from "@/lib/explorer";
 import {
   DEMO_STEPS,
-  explorerTxUrl,
   runDemoSetup,
   type DemoStepId,
   type DemoStepResult,
