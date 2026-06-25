@@ -446,18 +446,22 @@ function DemolishFlow(): React.JSX.Element {
             ? "acknowledge"
             : "review";
 
-  // step indicator. Acknowledge is hidden while a blocker is unresolved — its
-  // contents depend on the post-rebuild state (returning a token to its issuer
-  // can remove that token's warnings), so it only appears once Resolve is done.
+  // step indicator. Resolve/Acknowledge are only decided once the plan is built
+  // (tree !== null) — during "Building plan…" the tree is null and
+  // unroutableCredits is empty, so computing them then would briefly show
+  // Acknowledge before the built plan reveals a blocker and flips to Resolve.
+  // And Acknowledge stays hidden while a blocker is unresolved, since returning a
+  // token to its issuer can drop that token's warnings after the rebuild.
+  const planBuilt = tree !== null;
   const flowSteps = useMemo(
     () =>
       buildFlowSteps({
         phase: flowPhase,
-        hasResolve: hasBlocker,
-        hasAcknowledge: hasAckItems && !hasBlocker,
+        hasResolve: planBuilt && hasBlocker,
+        hasAcknowledge: planBuilt && hasAckItems && !hasBlocker,
         isSucceeded,
       }),
-    [flowPhase, hasBlocker, hasAckItems, isSucceeded],
+    [flowPhase, planBuilt, hasBlocker, hasAckItems, isSucceeded],
   );
 
   // cex / mediator
@@ -2838,14 +2842,18 @@ function AcknowledgePanel({
   const hasScam = scamFindings.length > 0;
   const hasDiscovery = discoveryWarnings.length > 0;
   const autoParts: string[] = [];
-  if (autoHandled.claimableCount > 0)
+  if (autoHandled.claimableCount > 0) {
+    const n = autoHandled.claimableCount;
     autoParts.push(
-      `${autoHandled.claimableCount} claimable balance${autoHandled.claimableCount === 1 ? "" : "s"} claimed`,
+      `Collects ${n} pending payment${n === 1 ? "" : "s"} waiting for this account (a “claimable balance”) into your XLM before closing.`,
     );
-  if (autoHandled.sponsorshipCount > 0)
+  }
+  if (autoHandled.sponsorshipCount > 0) {
+    const n = autoHandled.sponsorshipCount;
     autoParts.push(
-      `${autoHandled.sponsorshipCount} sponsorship${autoHandled.sponsorshipCount === 1 ? "" : "s"} released`,
+      `Frees ${n} XLM deposit${n === 1 ? "" : "s"} this account had locked up as a reserve (a “sponsorship”) back into your balance.`,
     );
+  }
   const hasAutoHandled = autoParts.length > 0;
   const hasHighValue = highValue !== null;
 
@@ -2906,7 +2914,7 @@ function AcknowledgePanel({
           tone="neutral"
           role="status"
           data-testid="auto-handled-notice"
-          title="Handled automatically"
+          title="Handled for you — nothing to do"
           footer={
             <AckRow
               checked={acks.autoHandled === true}
@@ -2915,7 +2923,23 @@ function AcknowledgePanel({
             />
           }
         >
-          No action needed during close-out — {autoParts.join(" and ")}.
+          The close-out takes care of these automatically — you keep the value, no action needed:
+          <ul
+            style={{
+              listStyle: "disc",
+              margin: "7px 0 0",
+              paddingLeft: 18,
+              display: "flex",
+              flexDirection: "column",
+              gap: 5,
+            }}
+          >
+            {autoParts.map((p) => (
+              <li key={p} style={{ lineHeight: 1.5 }}>
+                {p}
+              </li>
+            ))}
+          </ul>
         </Notice>
       ) : null}
 
