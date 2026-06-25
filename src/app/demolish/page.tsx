@@ -479,6 +479,22 @@ function DemolishFlow(): React.JSX.Element {
     setExtraSigners((prev) => (prev.length === 0 ? prev : []));
   }, []);
 
+  // once the account is closed it no longer exists — drop the connection so a
+  // later navigation back to /demolish starts at Connect, not Configure with a
+  // dead account. The success screen keys off the machine + tree (not publicKey)
+  // so it stays visible. Guarded by a ref so it fires once per close.
+  const closedRef = useRef(false);
+  useEffect(() => {
+    if (isSucceeded && !closedRef.current) {
+      closedRef.current = true;
+      setConnector(null);
+      setActiveConnector(null);
+      disconnectWallet();
+    } else if (!isSucceeded && closedRef.current) {
+      closedRef.current = false;
+    }
+  }, [isSucceeded, setConnector, disconnectWallet]);
+
   const onStart = useCallback(() => {
     setFormError(null);
 
