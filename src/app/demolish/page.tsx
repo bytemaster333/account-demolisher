@@ -198,6 +198,28 @@ function nodeLabel(node: PlanNode): string {
   }
 }
 
+// network fee for a node, in stroops (0 when not simulated)
+function nodeFeeStroops(node: PlanNode): number {
+  const sim = node.simulated;
+  const raw =
+    sim?.kind === "soroban"
+      ? sim.minResourceFee
+      : sim?.kind === "classic"
+        ? sim.estimatedFee
+        : null;
+  if (raw === null) return 0;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// stroops → a trimmed XLM string (1 XLM = 10,000,000 stroops)
+function stroopsToXlm(stroops: number): string {
+  const xlm = stroops / 1e7;
+  if (xlm === 0) return "0";
+  const s = xlm.toFixed(7).replace(/0+$/, "").replace(/\.$/, "");
+  return s === "" ? "0" : s;
+}
+
 interface FlowStep {
   readonly num: string;
   readonly label: string;
@@ -499,6 +521,19 @@ function DemolishFlow(): React.JSX.Element {
     }
   }, [isSucceeded, setConnector, disconnectWallet]);
 
+  // guard against navigating away / closing the tab mid-execution — a partial
+  // run leaves the account half-dismantled. The native prompt is the strongest
+  // signal the browser allows.
+  useEffect(() => {
+    if (!isExecuting) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [isExecuting]);
+
   const onStart = useCallback(() => {
     setFormError(null);
 
@@ -710,6 +745,7 @@ function DemolishFlow(): React.JSX.Element {
                 activeCount={activeCount}
                 network={network}
                 totalXlm={totalXlm}
+                destination={destination}
                 mergeHash={mergeHash ?? null}
                 error={ctx.error}
                 onRetry={onRetry}
@@ -1337,6 +1373,7 @@ function DemolishStatusWidget({
   activeCount,
   network,
   totalXlm,
+  destination,
   mergeHash,
   error,
   onRetry,
@@ -1348,6 +1385,7 @@ function DemolishStatusWidget({
   readonly activeCount: number;
   readonly network: NetworkConfig;
   readonly totalXlm: string;
+  readonly destination: string;
   readonly mergeHash: string | null;
   readonly error: string | null;
   readonly onRetry: () => void;
@@ -1367,6 +1405,41 @@ function DemolishStatusWidget({
         : "var(--surface-2)";
 
   const parsed = state === "failed" ? parseDemolishError(error) : null;
+  const pct = activeCount > 0 ? Math.round((doneCount / activeCount) * 100) : 0;
+
+  // elapsed seconds while executing — the interval drives it (async setState is
+  // fine); it's only read from the executing subtitle
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (state !== "executing") return;
+    const start = Date.now();
+    const h = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
+    return () => clearInterval(h);
+  }, [state]);
+
+  // a plain-text receipt of an irreversible action — destination + every tx
+  const [copied, setCopied] = useState(false);
+  const copyReceipt = (): void => {
+    const lines = [
+      `Account Demolisher — account closed`,
+      `Forwarded ${totalXlm} XLM to ${destination}`,
+      mergeHash ? `Merge tx: ${explorerTxUrl(network, mergeHash)}` : "",
+      ...planGroups.flatMap((g) =>
+        g.nodes
+          .filter((n) => n.executed?.txHash)
+          .map((n) => `${nodeLabel(n)}: ${explorerTxUrl(network, n.executed!.txHash!)}`),
+      ),
+    ].filter(Boolean);
+    void navigator.clipboard
+      ?.writeText(lines.join("\n"))
+      .then(() => {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1600);
+      })
+      .catch(() => {
+        /* clipboard blocked — ignore */
+      });
+  };
 
   return (
     <div
@@ -1504,11 +1577,73 @@ function DemolishStatusWidget({
               ) : state === "failed" ? (
                 (parsed?.summary ?? "An unknown error occurred while running the plan.")
               ) : (
-                "Each step signs and submits in dependency order. You can watch the live status below."
+                <>
+                  Signing and submitting each step in order — your wallet may prompt for each.{" "}
+                  {elapsed > 0 ? `Running for ${elapsed}s.` : ""}
+                </>
               )}
             </p>
           </div>
         </div>
+
+        {/* executing: progress bar + a prominent "don't leave" guard */}
+        {state === "executing" ? (
+          <>
+            <div
+              aria-hidden
+              style={{
+                marginTop: 16,
+                height: 6,
+                borderRadius: 3,
+                background: "var(--surface-2)",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  height: "100%",
+                  width: `${pct}%`,
+                  background: "var(--accent)",
+                  borderRadius: 3,
+                  transition: "width .35s ease",
+                }}
+              />
+            </div>
+            <div
+              role="alert"
+              style={{
+                marginTop: 12,
+                display: "flex",
+                gap: 9,
+                alignItems: "flex-start",
+                padding: "10px 12px",
+                borderRadius: 10,
+                border: "1px solid color-mix(in srgb, var(--warning) 40%, transparent)",
+                background: "var(--surface)",
+              }}
+            >
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="var(--warning)"
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{ flexShrink: 0, marginTop: 1 }}
+                aria-hidden
+              >
+                <path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+              </svg>
+              <span style={{ fontSize: 12.5, lineHeight: 1.5, color: "var(--fg-2)" }}>
+                <strong style={{ color: "var(--warning)" }}>Keep this tab open.</strong> Leaving now
+                could stop the close-out partway through, with some steps done and the account not
+                yet closed.
+              </span>
+            </div>
+          </>
+        ) : null}
 
         {/* extra meta strip under the header for succeeded/failed */}
         {state === "succeeded" && mergeHash ? (
@@ -1676,28 +1811,49 @@ function DemolishStatusWidget({
               </button>
             </>
           ) : (
-            <Link
-              href="/"
-              data-testid="demolish-reset"
-              style={{
-                flex: 1,
-                height: 40,
-                padding: "0 16px",
-                borderRadius: 10,
-                border: "1px solid var(--accent-line)",
-                background: "transparent",
-                color: "var(--accent)",
-                fontWeight: 600,
-                fontSize: 13.5,
-                cursor: "pointer",
-                textDecoration: "none",
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              Back to landing
-            </Link>
+            <>
+              <button
+                type="button"
+                onClick={copyReceipt}
+                data-testid="demolish-copy-receipt"
+                style={{
+                  height: 40,
+                  padding: "0 16px",
+                  borderRadius: 10,
+                  border: "1px solid var(--border-2)",
+                  background: "var(--surface)",
+                  color: copied ? "var(--success)" : "var(--fg)",
+                  fontWeight: 600,
+                  fontSize: 13.5,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {copied ? "Copied ✓" : "Copy receipt"}
+              </button>
+              <Link
+                href="/"
+                data-testid="demolish-reset"
+                style={{
+                  flex: 1,
+                  height: 40,
+                  padding: "0 16px",
+                  borderRadius: 10,
+                  border: "1px solid var(--accent-line)",
+                  background: "transparent",
+                  color: "var(--accent)",
+                  fontWeight: 600,
+                  fontSize: 13.5,
+                  cursor: "pointer",
+                  textDecoration: "none",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                Back to landing
+              </Link>
+            </>
           )}
         </div>
       ) : null}
@@ -1782,6 +1938,11 @@ function ReviewPanel({
   const required = destination.length >= 4 ? destination.slice(-4) : destination;
   const destHead = destination.length > 4 ? destination.slice(0, -4) : "";
 
+  // flatten for numbering + total network cost
+  const allNodes = planGroups.flatMap((g) => g.nodes);
+  const totalFeeStroops = allNodes.reduce((sum, n) => sum + nodeFeeStroops(n), 0);
+  const indexOf = new Map(allNodes.map((n, i) => [n.id, i + 1]));
+
   return (
     <Card padding={24} style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div>
@@ -1794,15 +1955,16 @@ function ReviewPanel({
           Review the close-out
         </h2>
         <p style={{ margin: "8px 0 0", fontSize: 14, lineHeight: 1.55, color: "var(--fg-2)" }}>
-          Here is exactly what will happen. Nothing is signed until you confirm.
+          {activeCount} {activeCount === 1 ? "step runs" : "steps run"} in order — here is exactly
+          what will happen. Nothing is signed until you confirm.
         </p>
       </div>
 
       <StatGrid
         stats={[
-          { label: "Operations", value: String(activeCount) },
+          { label: "Forwarded to destination", value: `${totalXlm} XLM` },
           { label: "Reserve recovered", value: "+1.0 XLM", tone: "accent" },
-          { label: "Forwarded", value: `${totalXlm} XLM` },
+          { label: "Network fees", value: `≈ ${stroopsToXlm(totalFeeStroops)} XLM` },
         ]}
       />
 
@@ -1828,7 +1990,13 @@ function ReviewPanel({
               </div>
               <div style={{ padding: "0 6px 6px" }}>
                 {g.nodes.map((n) => (
-                  <PlanRow key={n.id} node={n} network={network} />
+                  <PlanRow
+                    key={n.id}
+                    node={n}
+                    network={network}
+                    mode="plan"
+                    index={indexOf.get(n.id) ?? 0}
+                  />
                 ))}
               </div>
             </div>
@@ -1917,24 +2085,30 @@ function ReviewPanel({
 function PlanRow({
   node,
   network,
+  mode = "live",
+  index,
 }: {
   readonly node: PlanNode;
   readonly network: NetworkConfig;
+  // "plan" = pre-execution review (numbered, shows the XLM fee, no status);
+  // "live" = during/after execution (status indicator, tx link, no fee)
+  readonly mode?: "plan" | "live";
+  readonly index?: number;
 }): React.JSX.Element {
   const isDone = node.status === "confirmed";
   const isRunning = node.status === "signed" || node.status === "submitted";
   const isSkipped = node.status === "skipped";
   const isFailed = node.status === "failed";
   const isPending = !isDone && !isRunning && !isSkipped && !isFailed;
-  const sim = node.simulated;
-  const simFee =
-    sim?.kind === "soroban"
-      ? sim.minResourceFee
-      : sim?.kind === "classic"
-        ? sim.estimatedFee
-        : null;
-  const simAuth =
-    sim?.kind === "soroban" ? String(sim.auth.length) : sim?.kind === "classic" ? "n/a" : null;
+
+  // plan mode surfaces the network fee up-front so cost is visible before
+  // signing; live mode drops it (once submitted the fee is spent and the tx
+  // link is what matters). "auth" (Soroban auth-entry count) is dev-only noise
+  // and is no longer shown anywhere.
+  const feeStroops = nodeFeeStroops(node);
+  const showFee = mode === "plan" && feeStroops > 0;
+  // live mode highlights the step that's currently signing/submitting
+  const highlight = mode === "live" && isRunning;
 
   return (
     <div style={{ borderRadius: 10, overflow: "hidden" }}>
@@ -1945,10 +2119,12 @@ function PlanRow({
           alignItems: "flex-start",
           gap: 11,
           padding: "9px 10px",
-          background: "none",
+          background: highlight ? "var(--surface-2)" : "none",
+          boxShadow: highlight ? "inset 2px 0 0 var(--accent)" : "none",
           border: "none",
           borderRadius: 10,
           color: "var(--fg)",
+          transition: "background .15s",
         }}
       >
         <span
@@ -1960,104 +2136,123 @@ function PlanRow({
             marginTop: 1,
           }}
         >
-          {isDone ? (
+          {mode === "plan" ? (
             <span
               style={{
                 position: "absolute",
                 inset: 0,
-                borderRadius: "50%",
-                background: "var(--surface-2)",
-                display: "grid",
-                placeItems: "center",
-              }}
-            >
-              <svg
-                width="12"
-                height="12"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="var(--success)"
-                strokeWidth={3.2}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M20 6L9 17l-5-5" />
-              </svg>
-            </span>
-          ) : null}
-          {isRunning ? (
-            <span
-              style={{
-                position: "absolute",
-                inset: 0,
-                borderRadius: "50%",
-                border: "2px solid var(--accent-soft)",
-                borderTopColor: "var(--accent)",
-                animation: "spin .8s linear infinite",
-              }}
-            />
-          ) : null}
-          {isPending ? (
-            <span
-              style={{
-                position: "absolute",
-                inset: 3,
                 borderRadius: "50%",
                 border: "1.5px solid var(--border-2)",
-              }}
-            />
-          ) : null}
-          {isSkipped ? (
-            <span
-              style={{
-                position: "absolute",
-                inset: 0,
-                borderRadius: "50%",
-                background: "var(--surface-2)",
                 display: "grid",
                 placeItems: "center",
+                font: "600 11px/1 'Geist Mono', monospace",
+                color: "var(--fg-3)",
               }}
             >
-              <svg
-                width="12"
-                height="12"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="var(--warning)"
-                strokeWidth={2.4}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <circle cx="12" cy="12" r="9" />
-                <path d="M12 8v4l3 2" />
-              </svg>
+              {index ?? ""}
             </span>
-          ) : null}
-          {isFailed ? (
-            <span
-              style={{
-                position: "absolute",
-                inset: 0,
-                borderRadius: "50%",
-                background: "var(--surface-2)",
-                display: "grid",
-                placeItems: "center",
-              }}
-            >
-              <svg
-                width="12"
-                height="12"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="var(--danger)"
-                strokeWidth={3}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M18 6L6 18M6 6l12 12" />
-              </svg>
-            </span>
-          ) : null}
+          ) : (
+            <>
+              {isDone ? (
+                <span
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    borderRadius: "50%",
+                    background: "var(--surface-2)",
+                    display: "grid",
+                    placeItems: "center",
+                  }}
+                >
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="var(--success)"
+                    strokeWidth={3.2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M20 6L9 17l-5-5" />
+                  </svg>
+                </span>
+              ) : null}
+              {isRunning ? (
+                <span
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    borderRadius: "50%",
+                    border: "2px solid var(--accent-soft)",
+                    borderTopColor: "var(--accent)",
+                    animation: "spin .8s linear infinite",
+                  }}
+                />
+              ) : null}
+              {isPending ? (
+                <span
+                  style={{
+                    position: "absolute",
+                    inset: 3,
+                    borderRadius: "50%",
+                    border: "1.5px solid var(--border-2)",
+                  }}
+                />
+              ) : null}
+              {isSkipped ? (
+                <span
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    borderRadius: "50%",
+                    background: "var(--surface-2)",
+                    display: "grid",
+                    placeItems: "center",
+                  }}
+                >
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="var(--warning)"
+                    strokeWidth={2.4}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <circle cx="12" cy="12" r="9" />
+                    <path d="M12 8v4l3 2" />
+                  </svg>
+                </span>
+              ) : null}
+              {isFailed ? (
+                <span
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    borderRadius: "50%",
+                    background: "var(--surface-2)",
+                    display: "grid",
+                    placeItems: "center",
+                  }}
+                >
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="var(--danger)"
+                    strokeWidth={3}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M18 6L6 18M6 6l12 12" />
+                  </svg>
+                </span>
+              ) : null}
+            </>
+          )}
         </span>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div
@@ -2092,29 +2287,16 @@ function PlanRow({
                 skipped
               </span>
             ) : null}
-            {/* inline meta — same row, monospace, tiny — always visible
-                so the user never needs to click an expand toggle. */}
-            {simFee !== null || simAuth !== null ? (
+            {showFee ? (
               <span
                 style={{
                   marginLeft: "auto",
-                  display: "inline-flex",
-                  alignItems: "baseline",
-                  gap: 10,
                   font: "500 11px/1 'Geist Mono', monospace",
                   color: "var(--fg-3)",
+                  whiteSpace: "nowrap",
                 }}
               >
-                {simFee !== null ? (
-                  <span>
-                    fee <span style={{ color: "var(--fg-2)" }}>{simFee}</span>
-                  </span>
-                ) : null}
-                {simAuth !== null ? (
-                  <span>
-                    auth <span style={{ color: "var(--fg-2)" }}>{simAuth}</span>
-                  </span>
-                ) : null}
+                fee <span style={{ color: "var(--fg-2)" }}>{stroopsToXlm(feeStroops)} XLM</span>
               </span>
             ) : null}
           </div>
