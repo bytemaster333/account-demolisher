@@ -2120,7 +2120,6 @@ function PlanRow({
           gap: 11,
           padding: "9px 10px",
           background: highlight ? "var(--surface-2)" : "none",
-          boxShadow: highlight ? "inset 2px 0 0 var(--accent)" : "none",
           border: "none",
           borderRadius: 10,
           color: "var(--fg)",
