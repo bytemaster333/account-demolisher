@@ -18,7 +18,6 @@ import { getRpc } from "@/lib/soroban/rpc-client";
 import type { rpc } from "@stellar/stellar-sdk";
 import type { NetworkConfig } from "@/lib/config/networks";
 import {
-  EMPTY_POSITIONS,
   type AquariusPositionSummary,
   type BlendPositionSummary,
   type FxDAOPositionSummary,
@@ -211,8 +210,6 @@ export class DirectContractProvider implements IDeFiPositionProvider {
     return vaults.map(fxdaoVaultToSummary);
   }
 }
-
-export { EMPTY_POSITIONS };
 
 // drop a pool entry if every balance map is empty or all-zero
 function hasAnyNonZeroBlendBalance(p: BlendUserPositions): boolean {

@@ -17,6 +17,7 @@ import { simulate } from "@/lib/soroban/simulate";
 
 export interface VaultKey {
   readonly account: string;
+  readonly denomination: string;
   readonly index: bigint;
 }
 
@@ -84,11 +85,14 @@ export function optionalVaultKeyScVal(key: VaultKey | null): xdr.ScVal {
 
 // VaultKey on-chain is scvMap with fields in alphabetical order: account, denomination, index
 function vaultKeyScVal(key: VaultKey): xdr.ScVal {
-  // denomination is intentionally omitted here because the host expects the
   return xdr.ScVal.scvMap([
     new xdr.ScMapEntry({
       key: nativeToScVal("account", { type: "symbol" }),
       val: scvAddress(key.account),
+    }),
+    new xdr.ScMapEntry({
+      key: nativeToScVal("denomination", { type: "symbol" }),
+      val: nativeToScVal(key.denomination, { type: "symbol" }),
     }),
     new xdr.ScMapEntry({
       key: nativeToScVal("index", { type: "symbol" }),
@@ -116,7 +120,7 @@ async function readLowestKey(
   const info = scValToNative(sim.retval) as Record<string, unknown> | null;
   if (info === null || typeof info !== "object") return null;
   const lowest = info["lowest_key"];
-  return decodeOptionalVaultKey(lowest);
+  return decodeOptionalVaultKey(lowest, denomination);
 }
 
 interface RawVault {
@@ -144,18 +148,18 @@ async function readVaultRaw(
   if (decoded === null || typeof decoded !== "object") return null;
   const index = decoded["index"];
   if (typeof index !== "bigint") return null;
-  const nextKey = decodeOptionalVaultKey(decoded["next_key"]);
+  const nextKey = decodeOptionalVaultKey(decoded["next_key"], denomination);
   return { index, nextKey };
 }
 
-function decodeOptionalVaultKey(v: unknown): VaultKey | null {
+export function decodeOptionalVaultKey(v: unknown, denomination: string): VaultKey | null {
   // OptionalVaultKey is encoded as a tagged tuple (vec) with either ["None"]
   if (v === null || v === undefined) return null;
   if (Array.isArray(v)) {
     const [tag, payload] = v;
     if (tag === "None") return null;
     if (tag === "Some" && payload && typeof payload === "object") {
-      return decodeVaultKey(payload as Record<string, unknown>);
+      return decodeVaultKey(payload as Record<string, unknown>, denomination);
     }
     return null;
   }
@@ -166,23 +170,23 @@ function decodeOptionalVaultKey(v: unknown): VaultKey | null {
     if (tag === "Some" && Array.isArray(values) && values.length > 0) {
       const inner = values[0];
       if (inner && typeof inner === "object") {
-        return decodeVaultKey(inner as Record<string, unknown>);
+        return decodeVaultKey(inner as Record<string, unknown>, denomination);
       }
     }
     // some sdks decode straight to the inner object when the tag is "Some"
     if ("account" in (v as object) && "index" in (v as object)) {
-      return decodeVaultKey(v as Record<string, unknown>);
+      return decodeVaultKey(v as Record<string, unknown>, denomination);
     }
   }
   return null;
 }
 
-function decodeVaultKey(o: Record<string, unknown>): VaultKey | null {
+function decodeVaultKey(o: Record<string, unknown>, denomination: string): VaultKey | null {
   const account = o["account"];
   const index = o["index"];
   if (typeof account !== "string") return null;
   if (typeof index !== "bigint") return null;
-  return { account, index };
+  return { account, denomination, index };
 }
 
 // build an unsigned read-only tx for get_vault / get_vaults_info simulation

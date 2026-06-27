@@ -1,14 +1,13 @@
 import { describe, it, expect } from "vitest";
 import {
   evaluateScamHeuristics,
-  findingsForAsset,
   levenshtein,
   runScamHeuristics,
   TIER1_ASSETS,
   type ScamFlag,
   type ScamHeuristicId,
 } from "@/lib/safety/scam-heuristics";
-import type { AssetIdentifier, AuditBalance } from "@/lib/types/account";
+import type { AuditBalance } from "@/lib/types/account";
 
 // scam-token heuristics score classic trustlines / sep-41 tokens against a
 // frozen tier-1 reference list. these tests lock in each heuristic's exact
@@ -236,41 +235,5 @@ describe("runScamHeuristics", () => {
     const flagIds = findings.map((f) => f.flag.id);
     expect(flagIds).toContain("suspicious_character");
     expect(flagIds).toContain("lookalike_symbol");
-  });
-});
-
-describe("findingsForAsset", () => {
-  it("filters findings down to a matching credit asset identifier", () => {
-    const findings = runScamHeuristics([
-      {
-        asset: { kind: "credit", code: "USDC", issuer: IMPOSTOR },
-        amount: "0",
-        buyingLiabilities: "0",
-        sellingLiabilities: "0",
-      },
-      {
-        asset: { kind: "credit", code: "USDT", issuer: IMPOSTOR },
-        amount: "0",
-        buyingLiabilities: "0",
-        sellingLiabilities: "0",
-      },
-    ]);
-    const target: AssetIdentifier = { kind: "credit", code: "USDC", issuer: IMPOSTOR };
-    const filtered = findingsForAsset(findings, target);
-    expect(filtered.length).toBeGreaterThan(0);
-    for (const f of filtered) expect(f.asset).toEqual(target);
-  });
-
-  it("returns nothing for an asset with no findings", () => {
-    const findings = runScamHeuristics([
-      {
-        asset: { kind: "credit", code: "USDC", issuer: IMPOSTOR },
-        amount: "0",
-        buyingLiabilities: "0",
-        sellingLiabilities: "0",
-      },
-    ]);
-    const other: AssetIdentifier = { kind: "credit", code: "USDC", issuer: USDC_ISSUER };
-    expect(findingsForAsset(findings, other)).toEqual([]);
   });
 });

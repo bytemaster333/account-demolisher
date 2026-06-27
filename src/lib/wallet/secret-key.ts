@@ -62,20 +62,22 @@ export class SecretKeyConnector implements Connector {
     };
   }
 
-  // sign a soroban auth-entry preimage xdr (sep-43)
+  // sign a soroban auth-entry preimage xdr (sep-43).
+  //
+  // signing the raw base64 bytes here would produce a plain ed25519 signature,
+  // not a valid network-bound Soroban auth signature: SEP-43 requires signing
+  // the sha-256 hash of an xdr.HashIdPreimageSorobanAuthorization that binds the
+  // network id, nonce, and signature-expiration ledger — none of which the single
+  // authEntryXdr string carries. No production caller reaches this method, so —
+  // like MultiSignerConnector.signAuthEntry — refuse rather than sign wrongly.
   async signAuthEntry(
-    authEntryXdr: string,
+    _authEntryXdr: string,
     _address: string,
     _networkPassphrase: string,
   ): Promise<{ signedXdr: string; signerAddress: string }> {
-    if (typeof authEntryXdr !== "string" || authEntryXdr.length === 0) {
-      throw new Error("SecretKeyConnector.signAuthEntry: authEntryXdr must be non-empty.");
-    }
-    const keypair = Keypair.fromSecret(this.#seed);
-    const signature = keypair.sign(Buffer.from(authEntryXdr, "base64"));
-    return {
-      signedXdr: signature.toString("base64"),
-      signerAddress: keypair.publicKey(),
-    };
+    throw new Error(
+      "SecretKeyConnector: SEP-43 auth-entry signing is not implemented. " +
+        "Signing raw entry bytes would not produce a valid network-bound Soroban auth signature.",
+    );
   }
 }

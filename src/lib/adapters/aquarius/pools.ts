@@ -69,16 +69,6 @@ export function poolIndexHexToBytes(poolIndexHex: string): Uint8Array {
   return bytes;
 }
 
-// inverse of poolIndexHexToBytes. lowercase hex, no 0x prefix
-export function poolIndexBytesToHex(bytes: Uint8Array): string {
-  if (bytes.length !== 32) {
-    throw new RangeError(
-      `Aquarius pool_index must be 32 bytes (BytesN<32>); got length ${bytes.length}`,
-    );
-  }
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 // encode a hex pool_index as scvBytes
 async function poolIndexToScVal(poolIndexHex: string): Promise<xdr.ScVal> {
   const { xdr } = await import("@stellar/stellar-sdk");
@@ -538,14 +528,3 @@ function tryDecodeDepositOrWithdrawEvent(
 
   return { poolAddress, tokens };
 }
-
-// internals re-export. not part of the public surface
-export const __internals = {
-  getAquariusRouterIdFromAllowlist,
-  tokensToScVal,
-  poolIndexToScVal,
-  readShareIdFromRouter,
-  tryDecodeDepositOrWithdrawEvent,
-  assertUserPoolsApiResponse,
-  decodeBytesN32AddressMap,
-};

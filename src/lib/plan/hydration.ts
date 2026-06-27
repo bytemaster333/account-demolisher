@@ -1,6 +1,12 @@
 // walks the plan tree and attaches an unsigned transaction to every soroban
 
-import { Asset, type Horizon, type Transaction, type rpc } from "@stellar/stellar-sdk";
+import {
+  Asset,
+  scValToNative,
+  type Horizon,
+  type Transaction,
+  type rpc,
+} from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import type { BlendUserPositions } from "@/lib/adapters/blend/client";
@@ -22,6 +28,8 @@ import { getAllowlistForNetwork } from "@/lib/config/contracts";
 import { FXDAO_MAINNET_STABLE_ISSUER } from "@/lib/adapters/fxdao/contracts";
 import { buildRevoke } from "@/lib/soroban/allowances";
 import { buildTransfer } from "@/lib/soroban/sep41";
+import { simulate } from "@/lib/soroban/simulate";
+import { applySlippageMin, DEFAULT_SLIPPAGE_BPS } from "@/lib/safety/slippage";
 import type { AssetIdentifier } from "@/lib/types/account";
 
 import type { PlanNode, PlanTree } from "./tree";
@@ -106,6 +114,7 @@ async function hydrateNode(
   getSourceAccount: () => Promise<Horizon.AccountResponse>,
 ): Promise<void> {
   const a = deps.adapters ?? {};
+  const slippageBps = DEFAULT_SLIPPAGE_BPS;
 
   switch (node.kind) {
     case "RevokeAllowance": {
@@ -203,14 +212,32 @@ async function hydrateNode(
         );
       }
       const fn = a.aquariusWithdraw ?? aquariusWithdraw;
+      const poolIndex = poolIndexHexToBytes(node.metadata.poolIndex);
+      // First build+simulate with zero floors to read the router's expected
+      // per-token output, then rebuild with a slippage-bounded minimum so the
+      // signed tx cannot silently accept near-zero output for any reserve token.
+      // (The executor only signs/submits — nothing downstream floors this.)
+      const probe = await fn(
+        {
+          user: userPublicKey,
+          tokens: node.metadata.tokens,
+          poolIndex,
+          shareAmount: node.metadata.shareAmount,
+          minAmounts: node.metadata.tokens.map(() => 0n),
+          sourceAccount,
+          network: deps.network,
+        },
+        { server: deps.rpc },
+      );
+      const expected = await readExpectedAmounts(deps.rpc, probe, node.metadata.tokens.length);
+      const minAmounts = expected.map((e) => BigInt(applySlippageMin(e.toString(), slippageBps)));
       const tx = await fn(
         {
           user: userPublicKey,
           tokens: node.metadata.tokens,
-          poolIndex: poolIndexHexToBytes(node.metadata.poolIndex),
+          poolIndex,
           shareAmount: node.metadata.shareAmount,
-          // accept any output; slippage policy lives in the orchestrator
-          minAmounts: node.metadata.tokens.map(() => 0n),
+          minAmounts,
           sourceAccount,
           network: deps.network,
         },
@@ -240,14 +267,31 @@ async function hydrateNode(
       const sourceAccount = await getSourceAccount();
       const fn = a.removeLiquidityByContractIds ?? removeLiquidityByContractIds;
       const deadline = Math.floor(Date.now() / 1000) + 300; // 5 min
+      // First build+simulate with zero floors to read remove_liquidity's expected
+      // (amountA, amountB), then rebuild with slippage-bounded minimums so the
+      // signed tx cannot silently accept near-zero output for either token.
+      // (The executor only signs/submits — nothing downstream floors this.)
+      const probe = await fn(
+        {
+          tokenAAddress: node.metadata.tokenA,
+          tokenBAddress: node.metadata.tokenB,
+          liquidity: node.metadata.shareBalance.toString(),
+          amountAMin: "0",
+          amountBMin: "0",
+          userAddress: userPublicKey,
+          deadline,
+          network: deps.network,
+        },
+        { server: deps.rpc, sourceAccount },
+      );
+      const expected = await readExpectedAmounts(deps.rpc, probe, 2);
       const tx = await fn(
         {
           tokenAAddress: node.metadata.tokenA,
           tokenBAddress: node.metadata.tokenB,
           liquidity: node.metadata.shareBalance.toString(),
-          // accept any output; orchestrator handles slippage
-          amountAMin: "0",
-          amountBMin: "0",
+          amountAMin: applySlippageMin(expected[0]!.toString(), slippageBps),
+          amountBMin: applySlippageMin(expected[1]!.toString(), slippageBps),
           userAddress: userPublicKey,
           deadline,
           network: deps.network,
@@ -401,6 +445,38 @@ function resolveContractIdForAsset(asset: AssetIdentifier, network: NetworkConfi
         "TransferAsIs: liquidity_pool_shares cannot be transferred as a SEP-41 asset; use removeLiquidity",
       );
   }
+}
+
+// re-simulate an already-assembled withdraw/remove_liquidity tx to read the
+// router's expected per-token output vector. returns exactly `count`
+// non-negative bigints. throws (rather than falling back to a zero floor) if
+// the retval is missing or the wrong shape — a withdraw that cannot be quoted
+// must not be signed with an all-accepting minimum.
+async function readExpectedAmounts(
+  server: rpc.Server,
+  tx: Transaction,
+  count: number,
+): Promise<bigint[]> {
+  const sim = await simulate(server, tx);
+  if (!sim.ok) {
+    throw new Error(`could not simulate withdraw to derive slippage floor: ${sim.error}`);
+  }
+  if (sim.retval === null) {
+    throw new Error("withdraw simulation returned no value; cannot derive slippage floor");
+  }
+  const native = scValToNative(sim.retval) as unknown;
+  if (!Array.isArray(native) || native.length !== count) {
+    throw new Error(
+      `withdraw simulation returned an unexpected shape; expected a ${count}-element amount vector`,
+    );
+  }
+  return native.map((v, i) => {
+    const n = typeof v === "bigint" ? v : typeof v === "number" ? BigInt(v) : null;
+    if (n === null || n < 0n) {
+      throw new Error(`withdraw simulation returned a non-integer amount at index ${i}`);
+    }
+    return n;
+  });
 }
 
 // blend position synthesizers — buildExitSequence wants a full BlendUserPositions

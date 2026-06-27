@@ -90,24 +90,17 @@ describe("SecretKeyConnector signing", () => {
     expect(tx.signatures).toHaveLength(0);
   });
 
-  it("signAuthEntry returns a verifiable signature over the provided preimage bytes", async () => {
+  it("refuses to sign a soroban auth-entry rather than signing raw bytes", async () => {
+    // signing the raw base64 bytes would be a plain ed25519 signature, not a
+    // valid network-bound SEP-43 Soroban auth signature. mirroring
+    // MultiSignerConnector, the connector refuses instead of producing a
+    // silently-wrong signature (a raw signing oracle over the in-memory seed).
     const kp = Keypair.random();
     const connector = new SecretKeyConnector(kp.secret());
     const preimage = Buffer.from("some-auth-entry-preimage").toString("base64");
 
-    const { signedXdr, signerAddress } = await connector.signAuthEntry(
-      preimage,
-      kp.publicKey(),
-      NET,
+    await expect(connector.signAuthEntry(preimage, kp.publicKey(), NET)).rejects.toThrow(
+      /not implemented/,
     );
-    expect(signerAddress).toBe(kp.publicKey());
-    const ok = kp.verify(Buffer.from(preimage, "base64"), Buffer.from(signedXdr, "base64"));
-    expect(ok).toBe(true);
-  });
-
-  it("rejects an empty auth-entry preimage", async () => {
-    const kp = Keypair.random();
-    const connector = new SecretKeyConnector(kp.secret());
-    await expect(connector.signAuthEntry("", kp.publicKey(), NET)).rejects.toThrow();
   });
 });

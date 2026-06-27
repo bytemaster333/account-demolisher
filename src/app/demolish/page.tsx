@@ -4,7 +4,7 @@
 // wires the page-flow xstate machine and the plan tree
 
 import { useMachine } from "@xstate/react";
-import { Keypair, StrKey } from "@stellar/stellar-sdk";
+import { BASE_FEE, Keypair, StrKey } from "@stellar/stellar-sdk";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
 
@@ -198,12 +198,17 @@ function nodeLabel(node: PlanNode): string {
   }
 }
 
-// network fee for a node, in stroops (0 when not simulated)
-function nodeFeeStroops(node: PlanNode): number {
+// network fee for a node, in stroops (0 when not simulated).
+// exported for unit tests.
+export function nodeFeeStroops(node: PlanNode): number {
   const sim = node.simulated;
   const raw =
     sim?.kind === "soroban"
-      ? sim.minResourceFee
+      ? // the submitted fee assembles as minResourceFee + the classic inclusion
+        // fee; every soroban node here is a single op built with BASE_FEE, so add
+        // BASE_FEE to match assembleTransaction (and the classic branch, which
+        // already tallies BASE_FEE * opCount).
+        (Number.parseInt(sim.minResourceFee, 10) + Number.parseInt(BASE_FEE, 10)).toString()
       : sim?.kind === "classic"
         ? sim.estimatedFee
         : null;

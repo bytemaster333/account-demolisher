@@ -200,23 +200,3 @@ export interface ScamFinding {
   readonly flag: ScamFlag;
   readonly asset: AssetIdentifier;
 }
-
-// filter findings to those touching a given asset identifier
-export function findingsForAsset(
-  findings: readonly ScamFinding[],
-  asset: AssetIdentifier,
-): readonly ScamFinding[] {
-  return findings.filter((f) => sameAsset(f.asset, asset));
-}
-
-function sameAsset(a: AssetIdentifier, b: AssetIdentifier): boolean {
-  if (a.kind !== b.kind) return false;
-  if (a.kind === "native" && b.kind === "native") return true;
-  if (a.kind === "credit" && b.kind === "credit") {
-    return a.code === b.code && a.issuer === b.issuer;
-  }
-  if (a.kind === "liquidity_pool_shares" && b.kind === "liquidity_pool_shares") {
-    return a.poolId === b.poolId;
-  }
-  return false;
-}

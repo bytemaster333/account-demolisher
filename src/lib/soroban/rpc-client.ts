@@ -12,8 +12,3 @@ export function getRpc(network: NetworkConfig): rpc.Server {
   }
   return server;
 }
-
-// test-only: clear the cached clients
-export function _resetRpcCacheForTests(): void {
-  cache.clear();
-}

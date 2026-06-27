@@ -1,8 +1,6 @@
 // browser-side typed client for the soroswap aggregator
 import type {
-  BuildQuoteRequest,
   BuildQuoteResponse,
-  QuoteRequest,
   QuoteResponse,
   SendTransactionResponse,
   SupportedNetworks,
@@ -11,11 +9,7 @@ import type {
 const DEFAULT_PROXY_URL = "/api/soroswap";
 
 // re-exports of SDK types the callers depend on
-export type SoroswapQuoteRequest = QuoteRequest;
 export type SoroswapQuote = QuoteResponse;
-export type SoroswapBuildRequest = BuildQuoteRequest;
-export type SoroswapBuildResponse = BuildQuoteResponse;
-export type SoroswapSendResponse = SendTransactionResponse;
 
 export type SoroswapNetwork = SupportedNetworks | "mainnet" | "testnet";
 
@@ -80,6 +74,46 @@ export interface SoroswapClient {
 // serialize values containing bigint to a JSON-safe form
 function jsonSerializeWithBigInt(value: unknown): string {
   return JSON.stringify(value, (_k, v: unknown) => (typeof v === "bigint" ? v.toString() : v));
+}
+
+// the SDK types amountOut/otherAmountThreshold as `bigint`, but the proxy JSON path never
+// materializes them as such — JSON.parse yields a string or (lossily) a Number. downstream the
+// slippage guard depends on exact integer stroops, so reject any value that isn't a faithful
+// non-negative integer instead of silently trusting rounded/exponential digits.
+function assertStroopField(v: unknown, field: string): void {
+  if (typeof v === "bigint") {
+    if (v < 0n) throw new SoroswapProxyError(`quote.${field} is negative: ${v}`, "PROXY_BAD_RESPONSE", null, "quote");
+    return;
+  }
+  if (typeof v === "string") {
+    if (!/^\d+$/.test(v)) {
+      throw new SoroswapProxyError(
+        `quote.${field} is not a non-negative integer string: "${v}"`,
+        "PROXY_BAD_RESPONSE",
+        null,
+        "quote",
+      );
+    }
+    return;
+  }
+  if (typeof v === "number") {
+    // a JSON number that already lost precision (>2^53) or is fractional cannot be trusted
+    if (!Number.isSafeInteger(v) || v < 0) {
+      throw new SoroswapProxyError(
+        `quote.${field} exceeds safe-integer precision or is non-integer: ${v}`,
+        "PROXY_BAD_RESPONSE",
+        null,
+        "quote",
+      );
+    }
+    return;
+  }
+  throw new SoroswapProxyError(
+    `quote.${field} has unexpected type: ${typeof v}`,
+    "PROXY_BAD_RESPONSE",
+    null,
+    "quote",
+  );
 }
 
 export class SoroswapHttpClient implements SoroswapClient {
@@ -163,7 +197,12 @@ export class SoroswapHttpClient implements SoroswapClient {
       ...(request.feeBps !== undefined ? { feeBps: request.feeBps } : {}),
       ...(request.network !== undefined ? { network: request.network } : {}),
     };
-    return this.dispatch<QuoteResponse>({ op: "quote", payload });
+    const quote = await this.dispatch<QuoteResponse>({ op: "quote", payload });
+    // the response is cast from unchecked JSON; validate the two fields the slippage guard trusts
+    const raw = quote as unknown as Record<string, unknown>;
+    assertStroopField(raw["amountOut"], "amountOut");
+    assertStroopField(raw["otherAmountThreshold"], "otherAmountThreshold");
+    return quote;
   }
 
   // POST /quote/build

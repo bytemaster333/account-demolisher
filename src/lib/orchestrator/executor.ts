@@ -5,7 +5,7 @@ import type { Horizon } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import type { Connector } from "@/lib/wallet/connector";
-import { auditAccount } from "@/lib/stellar/account-audit";
+import { auditAccount, AccountNotFoundError } from "@/lib/stellar/account-audit";
 import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
 import { batchClassicDemolition } from "@/lib/plan/classic-batcher";
@@ -56,6 +56,28 @@ export function pickTransaction(node: PlanNode) {
   }
 }
 
+// rides out transient horizon blips (5xx / network) on the pure, idempotent
+// reads that prep the final merge, so a momentary outage doesn't abort execution
+// after the soroban exits have already confirmed on-chain. Deterministic outcomes
+// (404 AccountNotFound, other 4xx) are rethrown immediately — never retried.
+async function withHorizonRetry<T>(fn: () => Promise<T>, tries = 3): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      // a merged/missing account is a real, terminal answer — don't retry it
+      if (err instanceof AccountNotFoundError) throw err;
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if (status !== undefined && status < 500) throw err;
+      if (i === tries - 1) break;
+      await new Promise((resolve) => setTimeout(resolve, 300 * 2 ** i));
+    }
+  }
+  throw lastErr;
+}
+
 export async function executePlanTreeOnChain(
   input: {
     publicKey: string;
@@ -102,8 +124,8 @@ export async function executePlanTreeOnChain(
       // soroban exits shift classical balances, so the cached batches are
       // rebuilt against fresh state — including freshly-resolved XLM paths so
       // credit balances convert via path payment instead of routing to issuer.
-      const freshAudit = await auditAccount(input.publicKey, deps.network);
-      const freshPaths = await resolveCreditPaths(freshAudit, deps.network);
+      const freshAudit = await withHorizonRetry(() => auditAccount(input.publicKey, deps.network));
+      const freshPaths = await withHorizonRetry(() => resolveCreditPaths(freshAudit, deps.network));
       const freshBatches = batchClassicDemolition(
         freshAudit,
         {
@@ -129,7 +151,9 @@ export async function executePlanTreeOnChain(
       }
       let lastReceipt: ConfirmationReceipt | null = null;
       for (let i = 0; i < freshBatches.length; i++) {
-        const sourceAccount = await deps.horizon.loadAccount(input.publicKey);
+        const sourceAccount = await withHorizonRetry(() =>
+          deps.horizon.loadAccount(input.publicKey),
+        );
         const built = buildClassicTransaction(freshBatches[i]!, sourceAccount, deps.network);
         const signed = await deps.connector.signTransaction(
           built.transaction,

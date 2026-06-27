@@ -10,6 +10,7 @@ import type {
   AuditSigner,
   AuditThresholds,
   ClaimableBalanceEntry,
+  DataEntry,
   OfferEntry,
   SponsorshipInfo,
 } from "@/lib/types/account";
@@ -113,12 +114,15 @@ describe("computeCoverableSponsorships", () => {
     };
   }
 
+  const dataEntry: DataEntry = { name: "config", value: "dmFsdWU=" };
+
   it("counts self-sponsored balances, offers, signers, and claimable CBs", () => {
     const n = computeCoverableSponsorships(ACC, {
       balances: [selfBalance],
       offers: [selfOffer],
       signers: [selfSigner],
       claimableBalances: [cb(ACC, true)],
+      data: [],
     });
     expect(n).toBe(4);
   });
@@ -129,6 +133,7 @@ describe("computeCoverableSponsorships", () => {
       offers: [],
       signers: [],
       claimableBalances: [cb(OTHER, true)],
+      data: [],
     });
     expect(n).toBe(0);
   });
@@ -139,7 +144,38 @@ describe("computeCoverableSponsorships", () => {
       offers: [],
       signers: [],
       claimableBalances: [cb(ACC, false), cb(ACC, true)],
+      data: [],
     });
     expect(n).toBe(1);
+  });
+
+  // the demolition deletes every data entry on close, releasing any
+  // self-sponsorship they carry, so each data entry must count as coverable —
+  // otherwise a self-sponsored data entry produces a false IS_SPONSOR block on
+  // an account the demolition can fully close.
+  it("counts the account's own data entries as coverable", () => {
+    const n = computeCoverableSponsorships(ACC, {
+      balances: [],
+      offers: [],
+      signers: [],
+      claimableBalances: [],
+      data: [dataEntry, { name: "other", value: "eA==" }],
+    });
+    expect(n).toBe(2);
+  });
+
+  it("data entries prevent a false IS_SPONSOR block on a self-sponsored data entry", () => {
+    // account self-sponsors exactly one data entry: num_sponsoring counts it,
+    // so coverable must too, else foreign = 1 > 0 falsely blocks the merge.
+    const coverable = computeCoverableSponsorships(ACC, {
+      balances: [],
+      offers: [],
+      signers: [],
+      claimableBalances: [],
+      data: [dataEntry],
+    });
+    const clamped = Math.min(coverable, 1);
+    const res = computeMergeability(noFlags, sponsorship(1, clamped));
+    expect(res).toEqual({ mergeable: true });
   });
 });

@@ -72,7 +72,14 @@ function reindexByAssetId(indexedPositions: Map<number, bigint>, pool: Pool): Ma
   }
   for (const [index, amount] of indexedPositions) {
     const assetId = indexToAssetId.get(index);
-    if (assetId === undefined) continue;
+    if (assetId === undefined) {
+      // do not silently drop: an unmapped reserve index means the pool's reserve
+      // list and the user's positions disagree; treat as a load failure so the
+      // orchestrator never reports the position as clean.
+      throw new Error(
+        `reindexByAssetId: position at reserve index ${index} (amount=${amount.toString()}) has no matching reserve in pool ${pool.id}; refusing to treat as empty`,
+      );
+    }
     out.set(assetId, amount);
   }
   return out;

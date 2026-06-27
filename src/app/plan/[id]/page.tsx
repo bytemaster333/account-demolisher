@@ -1,5 +1,6 @@
 // refractor-linked plan view
 
+import { TransactionBuilder } from "@stellar/stellar-sdk";
 import Link from "next/link";
 
 import { AppShell } from "@/components/layout/AppShell";
@@ -13,6 +14,8 @@ import {
   Progress,
   SectionLabel,
 } from "@/components/ui";
+import { getPublicEnv } from "@/lib/config/env";
+import { resolveNetwork } from "@/lib/config/networks";
 import { RefractorError, getStatus, type RefractorTxStatus } from "@/lib/multisig/refractor";
 
 import { CopyLinkButton } from "./CopyLinkButton";
@@ -43,9 +46,53 @@ async function load(id: string): Promise<LoadResult> {
   }
 }
 
+// result of binding a Refractor-returned envelope to the requested link + network.
+// hashOk: status.xdr actually hashes (under the app's passphrase) to the id in
+// the URL; networkOk: status.network is the network this deployment is on.
+// verified is the conjunction — the gate for showing the sign action.
+export interface EnvelopeVerification {
+  readonly hashOk: boolean;
+  readonly networkOk: boolean;
+  readonly verified: boolean;
+}
+
+// short network token Refractor reports ("public"/"testnet"/"futurenet"),
+// derived from a passphrase. mirrors refractor.ts's networkTokenFor so the
+// network compare uses Refractor's vocabulary rather than the raw passphrase
+function networkTokenFor(passphrase: string): string {
+  if (passphrase === "Public Global Stellar Network ; September 2015") return "public";
+  if (passphrase === "Test SDF Network ; September 2015") return "testnet";
+  if (passphrase === "Test SDF Future Network ; October 2022") return "futurenet";
+  return passphrase;
+}
+
+// cryptographically bind the returned envelope to the URL id and the app
+// network. Refractor is a third-party service; a malicious/MITM'd response
+// could hand back a benign-looking XDR that isn't what the signer commits to,
+// so we never trust status.xdr/status.network without checking them here
+export function verifyEnvelope(
+  id: string,
+  status: Pick<RefractorTxStatus, "xdr" | "network">,
+  passphrase: string,
+): EnvelopeVerification {
+  const hashOk = (() => {
+    try {
+      // fee-bump / malformed envelopes throw here; that's a verification failure
+      return Buffer.from(TransactionBuilder.fromXDR(status.xdr, passphrase).hash()).toString(
+        "hex",
+      ) === id;
+    } catch {
+      return false;
+    }
+  })();
+  const networkOk = networkTokenFor(passphrase) === status.network;
+  return { hashOk, networkOk, verified: hashOk && networkOk };
+}
+
 export default async function PlanPage({ params }: PlanPageProps): Promise<React.JSX.Element> {
   const { id } = await params;
   const result = await load(id);
+  const net = resolveNetwork(getPublicEnv().NEXT_PUBLIC_STELLAR_NETWORK);
 
   return (
     <AppShell>
@@ -57,7 +104,11 @@ export default async function PlanPage({ params }: PlanPageProps): Promise<React
         />
 
         {result.kind === "ok" ? (
-          <PlanStatusView id={id} status={result.status} />
+          <PlanStatusView
+            id={id}
+            status={result.status}
+            verification={verifyEnvelope(id, result.status, net.passphrase)}
+          />
         ) : result.kind === "not-found" ? (
           <NotFoundState id={id} />
         ) : (
@@ -67,9 +118,9 @@ export default async function PlanPage({ params }: PlanPageProps): Promise<React
         <div style={{ marginTop: 16 }} data-testid="plan-disclaimer">
           <Notice tone="neutral">
             Signature collection is coordinated through{" "}
-            <strong style={{ color: "var(--fg-2)" }}>Refractor</strong>, a third-party service. The
-            canonical transaction is verified against the network passphrase before any signature is
-            merged.
+            <strong style={{ color: "var(--fg-2)" }}>Refractor</strong>, a third-party service.
+            Demolisher verifies the returned transaction hashes to this link and matches the
+            configured network before showing the sign action.
           </Notice>
         </div>
       </PageContainer>
@@ -80,9 +131,11 @@ export default async function PlanPage({ params }: PlanPageProps): Promise<React
 function PlanStatusView({
   id,
   status,
+  verification,
 }: {
   readonly id: string;
   readonly status: RefractorTxStatus;
+  readonly verification: EnvelopeVerification;
 }): React.JSX.Element {
   const knownSigners = status.signers.length > 0;
   const threshold = status.signers.length;
@@ -90,10 +143,13 @@ function PlanStatusView({
   const submitted = status.submitted === true;
   const submitHash = status.submitResult?.hash ?? null;
   const refractorSignUrl = `${REFRACTOR_FRONTEND}/tx/${id}`;
+  const unverified = !verification.verified;
 
   return (
     <>
       {submitted ? <SubmittedBanner txHash={submitHash} network={status.network} /> : null}
+
+      {unverified ? <UnverifiedBanner verification={verification} /> : null}
 
       <Card padding={0} data-testid="plan-card" style={{ overflow: "hidden" }}>
         {/* shareable link row */}
@@ -170,8 +226,10 @@ function PlanStatusView({
             </div>
           ) : null}
 
-          {/* primary action — sign on Refractor (its frontend collects signatures) */}
-          {!submitted ? (
+          {/* primary action — sign on Refractor (its frontend collects signatures).
+              suppressed when the envelope can't be bound to this link/network,
+              so we never invite a signature on an unverified transaction */}
+          {!submitted && !unverified ? (
             <div style={{ marginTop: 22 }} data-testid="plan-sign-cta">
               <a
                 href={refractorSignUrl}
@@ -408,6 +466,27 @@ function SubmittedBanner({
             </a>
           </>
         ) : null}
+      </Notice>
+    </div>
+  );
+}
+
+// shown when the returned envelope can't be bound to the requested link and/or
+// the configured network. this is a hard stop: the sign action is suppressed
+// above so the user is never invited to sign a transaction we couldn't verify
+function UnverifiedBanner({
+  verification,
+}: {
+  readonly verification: EnvelopeVerification;
+}): React.JSX.Element {
+  const reason = !verification.hashOk
+    ? "The returned transaction does not hash to this plan link — its contents don't match the id you opened."
+    : "The returned transaction is for a different network than this app is configured for.";
+  return (
+    <div style={{ marginBottom: 16 }} data-testid="plan-unverified-banner">
+      <Notice tone="danger" title="Transaction could not be verified — do NOT sign it">
+        {reason} This can indicate a tampered or mismatched envelope; the sign action has been
+        disabled. Do not add your signature.
       </Notice>
     </div>
   );

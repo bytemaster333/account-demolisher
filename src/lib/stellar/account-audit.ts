@@ -68,6 +68,7 @@ export async function auditAccount(
     offers,
     signers,
     claimableBalances,
+    data,
   });
 
   const sponsorship: SponsorshipInfo = {
@@ -317,13 +318,20 @@ export function computeCoverableSponsorships(
     readonly offers: readonly OfferEntry[];
     readonly signers: readonly AuditSigner[];
     readonly claimableBalances: readonly ClaimableBalanceEntry[];
+    readonly data: readonly DataEntry[];
   },
 ): number {
+  // horizon's account record carries no per-data-entry sponsor field, so we
+  // can't tell which data entries are self-sponsored. The demolition deletes
+  // every data entry on close, releasing any self-sponsorship they carry, so
+  // count them all as coverable. The Math.min clamp against num_sponsoring at
+  // the call site absorbs any overcount from non-self-sponsored data entries.
   return (
     entries.balances.filter((b) => b.sponsor === accountId).length +
     entries.offers.filter((o) => o.sponsor === accountId).length +
     entries.signers.filter((s) => s.sponsor === accountId).length +
-    entries.claimableBalances.filter((cb) => cb.sponsor === accountId && cb.claimableNow).length
+    entries.claimableBalances.filter((cb) => cb.sponsor === accountId && cb.claimableNow).length +
+    entries.data.length
   );
 }
 

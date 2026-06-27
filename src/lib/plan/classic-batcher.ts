@@ -36,8 +36,15 @@ export function batchClassicDemolition(
     const reserveB = pool.reserves[1];
     if (!reserveA || !reserveB) continue;
     const shareBalance = pool.shareBalance;
-    const minA = applySlippage(reserveA.amount);
-    const minB = applySlippage(reserveB.amount);
+    // reserveA/reserveB are the WHOLE pool's reserves, not this account's
+    // proportional share, so applying a haircut to them yields a minimum far
+    // above any fractional holder's payout and reverts the withdraw with
+    // LIQUIDITY_POOL_WITHDRAW_UNDER_MINIMUM. Without the pool's total_shares we
+    // can't reconstruct the proportional expected output here, so accept any
+    // output on this full-account-closure withdraw. (A proportional min needs
+    // total_shares threaded through PoolShareEntry — see loadPoolShares.)
+    const minA = "0";
+    const minB = "0";
     ops.push({
       kind: "liquidity_pool_withdraw",
       summary: `Withdraw pool shares from ${pool.poolId.slice(0, 8)}...`,
@@ -186,6 +193,14 @@ export function batchClassicDemolition(
   }
 
   // 9. final account_merge
+  if (!options.useMediator && options.destination === audit.accountId) {
+    // Stellar rejects a self-merge with ACCOUNT_MERGE_MALFORMED. Guard here so
+    // non-UI callers can't emit an op that is guaranteed to fail at submit time
+    // (the mediator flow merges into a distinct ephemeral account, so it's fine).
+    throw new Error(
+      "batchClassicDemolition: merge destination must differ from the account being closed (self-merge is invalid)",
+    );
+  }
   const mergeDestination = options.useMediator
     ? (options.mediatorPublicKey as string)
     : options.destination;

@@ -208,6 +208,57 @@ describe("batchClassicDemolition — canonical ordering", () => {
   });
 });
 
+describe("batchClassicDemolition — liquidity pool withdraw minimums", () => {
+  // a fractional holder: this account owns "1" share of a pool whose total
+  // reserves are "500"/"500". Deriving the withdraw minimum from the whole
+  // pool's reserves would demand ~495 of each asset out of a proportional
+  // payout that is a tiny fraction of that, guaranteeing an on-chain revert.
+  const fractionalPool = makeAudit({
+    poolShares: [
+      {
+        poolId: POOL_ID,
+        poolType: "constant_product",
+        shareBalance: "1",
+        shareLimit: "1000",
+        fee: 30,
+        reserves: [
+          { asset: { kind: "native" }, amount: "500" },
+          { asset: { kind: "credit", code: "USDC", issuer: ISSUER }, amount: "500" },
+        ],
+      },
+    ],
+  });
+
+  it("does not derive the withdraw minimum from the whole pool's reserves", () => {
+    const withdraw = allOps(batchClassicDemolition(fractionalPool, directOptions)).find(
+      (o) => o.kind === "liquidity_pool_withdraw",
+    )!;
+    // the amount withdrawn is still this account's full share balance
+    expect(withdraw.metadata.amount).toBe("1");
+    // the minimums must NOT be ~99% of the total reserves (495), which would
+    // revert with LIQUIDITY_POOL_WITHDRAW_UNDER_MINIMUM for a fractional holder
+    expect(withdraw.metadata.minAmountA).toBe("0");
+    expect(withdraw.metadata.minAmountB).toBe("0");
+  });
+});
+
+describe("batchClassicDemolition — self-merge guard", () => {
+  it("throws when the direct merge destination equals the account being closed", () => {
+    expect(() =>
+      batchClassicDemolition(makeAudit({ accountId: ACC }), {
+        destination: ACC,
+        useMediator: false,
+      }),
+    ).toThrow(/self-merge is invalid/);
+  });
+
+  it("still merges into a distinct direct destination", () => {
+    const ops = allOps(batchClassicDemolition(makeAudit({ accountId: ACC }), directOptions));
+    const merge = ops.find((o) => o.kind === "account_merge")!;
+    expect(merge.metadata.destination).toBe(DEST);
+  });
+});
+
 describe("batchClassicDemolition — claimable-balance opt-in", () => {
   const twoCbs = makeAudit({
     claimableBalances: [

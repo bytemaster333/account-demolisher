@@ -7,7 +7,7 @@
 // account's sequence number and would be rejected as tx_bad_seq if the previous
 // hadn't landed yet. one wallet signature per approval.
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button, Card, Notice, Progress, Spinner } from "@/components/ui";
 import type { NetworkConfig } from "@/lib/config/networks";
@@ -16,6 +16,7 @@ import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import { confirmRevoke, submitRevoke } from "@/lib/soroban/revoke";
 import { lookupSpender } from "@/lib/soroban/spender-registry";
 import type { Connector } from "@/lib/wallet/connector";
+import { useNetworkStore } from "@/stores/network";
 
 export interface BulkRevokeBarProps {
   readonly records: readonly AllowanceRecord[];
@@ -56,6 +57,29 @@ export function BulkRevokeBar({
   // read synchronously inside the loop; the state above only drives the label
   const stopRef = useRef(false);
 
+  // on unmount (e.g. client-side navigation away from /allowances) halt the loop
+  // so it can't keep submitting real approve(0) txs with the Stop control gone.
+  // stops at the next iteration check; a signature already in flight still lands.
+  const mountedRef = useRef(true);
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+      stopRef.current = true;
+    },
+    [],
+  );
+
+  // a mid-sweep network switch invalidates the connected account and the
+  // closed-over network the loop is still signing against; treat it as a stop.
+  // skip the initial mount (only an actual switch should abort a sweep).
+  const networkId = useNetworkStore((s) => s.networkId);
+  const initialNetworkId = useRef(networkId);
+  useEffect(() => {
+    if (networkId === initialNetworkId.current) return;
+    stopRef.current = true;
+    setStopping(true);
+  }, [networkId]);
+
   const ask = (list: readonly AllowanceRecord[]): void => {
     setPendingTargets(list);
     setPhase("confirm");
@@ -83,9 +107,12 @@ export function BulkRevokeBar({
       } catch (e: unknown) {
         acc.push({ record, ok: false, error: errorMessage(e, "Revoke failed.") });
       }
+      // if we unmounted while awaiting, stop before touching state or the next tx
+      if (!mountedRef.current) break;
       setOutcomes([...acc]);
       setDoneCount(acc.length);
     }
+    if (!mountedRef.current) return;
     setCurrent(null);
     setPhase("done");
   };

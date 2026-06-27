@@ -12,7 +12,7 @@ export interface AllowanceRecord {
   readonly amount: bigint;
   readonly live_until_ledger: number;
   readonly lastSeenLedger: number;
-  // true when live_until_ledger <= currentLedger at enumeration time
+  // true when live_until_ledger < currentLedger at enumeration time
   readonly expired: boolean;
 }
 
@@ -29,6 +29,30 @@ const PAGE_LIMIT = 10_000;
 // fail again. A small margin absorbs that (skipping a few ledgers at the very
 // oldest edge is immaterial for a best-effort "latest allowance state" scan).
 const RETENTION_RETRY_MARGIN_LEDGERS = 60;
+
+// how many times we'll re-clamp startLedger and retry after a retention-range
+// error. The floor advances ~1 ledger / 5s, so the margin above absorbs any
+// realistic retry gap in one shot — but a bounded loop keeps a second range
+// error from propagating uncaught out of enumerateAllowances.
+const MAX_RETENTION_RETRIES = 3;
+
+// parses the retention floor from a getEvents "ledger range: N - M" error,
+// checking both the direct message and a nested cause. returns null if the
+// error isn't a recognizable range error.
+function parseRetentionFloor(err: unknown): number | null {
+  const directMessage =
+    typeof (err as { message?: unknown } | undefined)?.message === "string"
+      ? (err as { message: string }).message
+      : "";
+  const causeMsg =
+    typeof (err as { cause?: { message?: unknown } } | undefined)?.cause?.message === "string"
+      ? (err as { cause: { message: string } }).cause.message
+      : "";
+  const match = `${directMessage} ${causeMsg}`.match(/ledger range:\s*(\d+)\s*-\s*(\d+)/);
+  if (!match) return null;
+  const floor = Number.parseInt(match[1]!, 10);
+  return Number.isFinite(floor) ? floor : null;
+}
 
 // enumerate active sep-41 allowances the user granted
 export async function enumerateAllowances(
@@ -88,34 +112,47 @@ export async function enumerateAllowances(
       resp = await server.getEvents(request);
     } catch (err) {
       // testnet retention is ~7 days; if startLedger is before retention the
-      const directMessage =
-        typeof (err as { message?: unknown } | undefined)?.message === "string"
-          ? (err as { message: string }).message
-          : "";
-      const causeMsg =
-        typeof (err as { cause?: { message?: unknown } } | undefined)?.cause?.message === "string"
-          ? (err as { cause: { message: string } }).cause.message
-          : "";
-      const combined = `${directMessage} ${causeMsg}`;
-      const match = combined.match(/ledger range:\s*(\d+)\s*-\s*(\d+)/);
-      if (page === 0 && match) {
-        const floor = Number.parseInt(match[1]!, 10);
-        if (Number.isFinite(floor) && floor > startLedger) {
-          // clamp to the reported floor plus a margin so a ledger closing during
-          // the retry gap can't put us right back below the retention floor
-          startLedger = Math.min(currentLedger, floor + RETENTION_RETRY_MARGIN_LEDGERS);
-          const retryRequest: rpc.Api.GetEventsRequest = {
-            startLedger,
-            filters: [eventFilter3, eventFilter4],
-            limit: PAGE_LIMIT,
-          };
-          resp = await server.getEvents(retryRequest);
-        } else {
-          throw err;
-        }
-      } else {
+      // rpc rejects with a "ledger range: N - M" error. Clamp to the reported
+      // floor (plus a margin) and retry. A single ledger closing during the
+      // retry gap could push us back below the floor, so re-parse the fresh
+      // floor and re-clamp on repeat failures, up to a bounded number of tries.
+      const floor = page === 0 ? parseRetentionFloor(err) : null;
+      if (floor === null || floor <= startLedger) {
         throw err;
       }
+      // clamp to the reported floor plus a margin so a ledger closing during
+      // the retry gap can't put us right back below the retention floor
+      startLedger = Math.min(currentLedger, floor + RETENTION_RETRY_MARGIN_LEDGERS);
+
+      let retryResp: rpc.Api.GetEventsResponse | undefined;
+      for (let attempt = 0; attempt < MAX_RETENTION_RETRIES; attempt++) {
+        const retryRequest: rpc.Api.GetEventsRequest = {
+          startLedger,
+          filters: [eventFilter3, eventFilter4],
+          limit: PAGE_LIMIT,
+        };
+        try {
+          retryResp = await server.getEvents(retryRequest);
+          break;
+        } catch (retryErr) {
+          const newFloor = parseRetentionFloor(retryErr);
+          // rethrow if it isn't a range error or the floor didn't advance past
+          // our clamped startLedger (re-clamping wouldn't make progress)
+          if (newFloor === null || newFloor <= startLedger) {
+            throw retryErr;
+          }
+          startLedger = Math.min(currentLedger, newFloor + RETENTION_RETRY_MARGIN_LEDGERS);
+          if (attempt === MAX_RETENTION_RETRIES - 1) {
+            throw retryErr;
+          }
+        }
+      }
+      // retryResp is always assigned on a successful break above; the loop
+      // otherwise throws. This guard satisfies the type checker.
+      if (retryResp === undefined) {
+        throw err;
+      }
+      resp = retryResp;
     }
     // process whatever events came back (might be 0 — a topic-filtered query
     for (const ev of resp.events) {
@@ -141,7 +178,7 @@ export async function enumerateAllowances(
   // stamp each record with its expiry and filter by default
   const out: AllowanceRecord[] = [];
   for (const rec of latest.values()) {
-    const expired = rec.live_until_ledger <= currentLedger;
+    const expired = rec.live_until_ledger < currentLedger;
     if (expired && !includeExpired) continue;
     out.push({ ...rec, expired });
   }

@@ -328,9 +328,22 @@ const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ input }) 
     if (send.status !== "PENDING" && send.status !== "DUPLICATE") {
       throw new Error(`submitSoroban: sendTransaction returned ${send.status}`);
     }
-    const result = await rpc.pollTransaction(send.hash, { attempts: 30 });
+    // bounded poll (~60s). the SDK short-circuits on a definitive status, so a
+    // trailing NOT_FOUND means the poll ceiling was hit while the tx was still
+    // pending — that is NOT the same as a hard on-chain FAILED, so report it
+    // distinctly instead of asserting failure for a tx that may still confirm.
+    // (kept bounded, not unbounded: the RPC's tx-retention window ages hashes
+    // out of its queryable set, so polling forever is not safe either.)
+    const result = await rpc.pollTransaction(send.hash, { attempts: 60 });
+    if (result.status === "FAILED") {
+      throw new Error(`submitSoroban: transaction ${send.hash} failed on-chain`);
+    }
     if (result.status !== "SUCCESS") {
-      throw new Error(`submitSoroban: pollTransaction returned ${result.status}`);
+      // status is NOT_FOUND: poll ceiling reached, tx may still confirm shortly
+      throw new Error(
+        `submitSoroban: transaction ${send.hash} still pending after polling; ` +
+          "it may confirm shortly. Verify on-chain before re-running this step.",
+      );
     }
     return { txHash: send.hash, ledger: result.ledger };
   };
@@ -591,7 +604,14 @@ export const pageFlowMachine = setup({
     },
     failed: {
       on: {
-        RETRY: "discovering",
+        // re-execute the already-mutated failed tree so the executor's
+        // node.executed skip logic skips already-confirmed on-chain steps
+        // instead of re-signing/re-submitting them; fall back to a full
+        // rediscovery only when the failure happened before a tree existed.
+        RETRY: [
+          { target: "executing", guard: ({ context }) => context.tree !== null },
+          { target: "discovering" },
+        ],
         RESET: { target: "idle", actions: assign(() => initialContext) },
       },
     },
