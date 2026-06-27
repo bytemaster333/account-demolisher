@@ -2,16 +2,14 @@
 
 // per-row revoke action: builds + signs + submits an approve(amount=0) tx for the row's allowance
 
-import { TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
 import { useCallback, useState } from "react";
 
 import { Button, Spinner } from "@/components/ui";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import { explorerTxUrl } from "@/lib/explorer";
-import { buildRevoke, type AllowanceRecord } from "@/lib/soroban/allowances";
-import { getRpc } from "@/lib/soroban/rpc-client";
-import { getHorizon } from "@/lib/stellar/horizon-client";
+import { type AllowanceRecord } from "@/lib/soroban/allowances";
+import { submitRevoke } from "@/lib/soroban/revoke";
 import type { Connector } from "@/lib/wallet/connector";
 
 export interface RevokeButtonProps {
@@ -24,7 +22,7 @@ export interface RevokeButtonProps {
   readonly onRevoked?: ((record: AllowanceRecord, txHash: string) => void) | undefined;
 }
 
-type Phase = "idle" | "building" | "signing" | "submitting" | "confirmed" | "failed";
+type Phase = "idle" | "submitting" | "confirmed" | "failed";
 
 export function RevokeButton({
   record,
@@ -46,40 +44,11 @@ export function RevokeButton({
       return;
     }
     try {
-      // immediate expiry on top of amount=0
-      setPhase("building");
-      const rpc = getRpc(network);
-      const { sequence: currentLedger } = await rpc.getLatestLedger();
-
-      const horizon = getHorizon(network);
-      const sourceAccount = await horizon.loadAccount(userAddress);
-
-      const tx: Transaction = await buildRevoke(
-        rpc,
-        record.contractId,
-        userAddress,
-        record.spender,
-        currentLedger,
-        network,
-        sourceAccount,
-      );
-
-      setPhase("signing");
-      const signed = await connector.signTransaction(tx, network.passphrase);
-
       setPhase("submitting");
-      const reconstructed = TransactionBuilder.fromXDR(
-        signed.signedXdr,
-        network.passphrase,
-      ) as Transaction;
-      const send = await rpc.sendTransaction(reconstructed);
-
-      // PENDING is success-on-enqueue. user can re-load the list to confirm finality
-      const submitHash = send.hash;
-      if (send.status === "ERROR") {
-        const detail = send.errorResult ? ` (${send.errorResult.result().switch().name})` : "";
-        throw new Error(`RPC rejected transaction${detail}.`);
-      }
+      // submit-only (enqueue-and-go). PENDING is success; the list can be
+      // reloaded to confirm finality. bulk revoke additionally waits via
+      // confirmRevoke because it depends on sequence advancement.
+      const submitHash = await submitRevoke(network, connector, record, userAddress);
       setTxHash(submitHash);
       setPhase("confirmed");
       onRevoked?.(record, submitHash);
@@ -91,7 +60,7 @@ export function RevokeButton({
   }, [connectorRef, network, record, userAddress, onRevoked]);
 
   const noConnector = connectorRef === null;
-  const inFlight = phase === "building" || phase === "signing" || phase === "submitting";
+  const inFlight = phase === "submitting";
   const testId = `revoke-button-${record.contractId}-${record.spender}`;
 
   // confirmed: green check + "Revoked"

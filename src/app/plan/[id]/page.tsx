@@ -16,6 +16,7 @@ import {
 import { RefractorError, getStatus, type RefractorTxStatus } from "@/lib/multisig/refractor";
 
 import { CopyLinkButton } from "./CopyLinkButton";
+import { PlanLiveRefresh } from "./PlanLiveRefresh";
 
 interface PlanPageProps {
   readonly params: Promise<{ id: string }>;
@@ -137,6 +138,9 @@ function PlanStatusView({
         </div>
 
         <div style={{ padding: "22px 20px" }}>
+          {/* live refresh — polls Refractor via router.refresh(); unmounts once submitted */}
+          {!submitted ? <PlanLiveRefresh /> : null}
+
           {/* progress — or indeterminate state when Refractor hasn't inspected yet */}
           {knownSigners ? (
             <Progress
@@ -159,6 +163,7 @@ function PlanStatusView({
               <SectionLabel>Signers</SectionLabel>
               <SignersList
                 signers={status.signers}
+                signedBy={status.signedBy}
                 signaturesNeeded={status.signaturesNeeded}
                 network={status.network}
               />
@@ -252,13 +257,20 @@ function PlanStatusView({
 
 function SignersList({
   signers,
+  signedBy,
   signaturesNeeded,
   network,
 }: {
   readonly signers: readonly string[];
+  readonly signedBy: readonly string[];
   readonly signaturesNeeded: number;
   readonly network: string;
 }): React.JSX.Element {
+  const signedSet = new Set(signedBy);
+  // whether refractor has resolved any collected signature to a known signer.
+  // when it hasn't (empty), we can't attribute signatures, so every row stays
+  // Pending rather than implying nobody has signed
+  const attributable = signedBy.length > 0;
   return (
     <div
       style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 11 }}
@@ -266,17 +278,21 @@ function SignersList({
     >
       {signers.map((key) => {
         const href = accountExplorerUrl(network, key);
+        const signed = signedSet.has(key);
         return (
           <div
             key={key}
             data-testid={`plan-signer-${key}`}
+            data-signed={signed ? "true" : "false"}
             style={{
               display: "flex",
               alignItems: "center",
               gap: 12,
               padding: "11px 14px",
               borderRadius: 12,
-              border: "1px solid var(--border)",
+              border: signed
+                ? "1px solid color-mix(in srgb, var(--success) 30%, transparent)"
+                : "1px solid var(--border)",
               background: "var(--surface-2)",
             }}
           >
@@ -287,15 +303,31 @@ function SignersList({
                 height: 30,
                 borderRadius: 9,
                 background: "var(--surface)",
-                border: "1px solid var(--border-2)",
+                border: signed ? "1px solid var(--success)" : "1px solid var(--border-2)",
                 display: "grid",
                 placeItems: "center",
                 font: "600 12px/1 'Geist Mono', monospace",
-                color: "var(--fg-2)",
+                color: signed ? "var(--success)" : "var(--fg-2)",
                 flexShrink: 0,
               }}
             >
-              {key.slice(0, 2)}
+              {signed ? (
+                <svg
+                  width="15"
+                  height="15"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2.6}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <path d="M20 6L9 17l-5-5" />
+                </svg>
+              ) : (
+                key.slice(0, 2)
+              )}
             </span>
             <div style={{ flex: 1, minWidth: 0 }}>
               <CopyableAddress
@@ -307,7 +339,11 @@ function SignersList({
                 {...(href !== undefined ? { href } : {})}
               />
             </div>
-            <Badge tone="warning">Pending</Badge>
+            {signed ? (
+              <Badge tone="success">Signed</Badge>
+            ) : (
+              <Badge tone={attributable ? "warning" : "neutral"}>Pending</Badge>
+            )}
           </div>
         );
       })}

@@ -13,6 +13,11 @@ export interface RefractorTxStatus {
   // submission is in flight or finished
   readonly signaturesNeeded: number;
   readonly signers: readonly string[];
+  // subset of `signers` whose signature refractor has already collected. derived
+  // from the `signatures` array, matched to the desired set by key — the same
+  // matching `signaturesNeeded` relies on. empty when refractor reports no
+  // resolvable signer keys yet (e.g. before it inspects the envelope)
+  readonly signedBy: readonly string[];
   // unix-seconds expiry after which refractor purges the envelope
   readonly expiresAt?: number;
   readonly callbackUrl?: string;
@@ -290,6 +295,11 @@ function parseStatus(payload: unknown): RefractorTxStatus {
   // needs to sign; fall back to whoever has already signed
   const signers: readonly string[] = desiredKeys.length > 0 ? desiredKeys : collectedKeys;
 
+  // which of the surfaced signers have already signed. intersect against the
+  // surfaced set so a collected key outside it can't mark a non-listed signer
+  const signerSet = new Set(signers);
+  const signedBy: readonly string[] = collectedKeys.filter((k) => signerSet.has(k));
+
   const status: {
     -readonly [K in keyof RefractorTxStatus]: RefractorTxStatus[K];
   } = {
@@ -298,6 +308,7 @@ function parseStatus(payload: unknown): RefractorTxStatus {
     xdr,
     signaturesNeeded,
     signers,
+    signedBy,
   };
 
   const expiresAt = readNumber(obj, "expiresAt");

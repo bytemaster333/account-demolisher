@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
 
 import { AllowanceList } from "@/components/allowance-viewer/AllowanceList";
+import { BulkRevokeBar } from "@/components/allowance-viewer/BulkRevokeBar";
 import { AppShell } from "@/components/layout/AppShell";
 import {
   Button,
@@ -233,15 +234,24 @@ export default function AllowancesPage(): React.JSX.Element {
                 body="This address has no standing approvals in the scanned window."
               />
             ) : (
-              <AllowanceList
-                records={records}
-                userAddress={viewedAddress ?? ""}
-                network={network}
-                currentLedger={currentLedger ?? 0}
-                connectorRef={canRevoke ? connectorRef : null}
-                showExpired={showExpired}
-                onRevoked={onRevoked}
-              />
+              <>
+                <BulkRevokeBar
+                  records={records}
+                  userAddress={viewedAddress ?? ""}
+                  network={network}
+                  connectorRef={canRevoke ? connectorRef : null}
+                  onComplete={onRevoked}
+                />
+                <AllowanceList
+                  records={records}
+                  userAddress={viewedAddress ?? ""}
+                  network={network}
+                  currentLedger={currentLedger ?? 0}
+                  connectorRef={canRevoke ? connectorRef : null}
+                  showExpired={showExpired}
+                  onRevoked={onRevoked}
+                />
+              </>
             )
           ) : null}
         </div>
