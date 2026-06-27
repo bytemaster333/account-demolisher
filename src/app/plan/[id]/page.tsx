@@ -6,6 +6,7 @@ import { AppShell } from "@/components/layout/AppShell";
 import {
   Badge,
   Card,
+  CopyableAddress,
   Notice,
   PageContainer,
   PageHeader,
@@ -156,7 +157,11 @@ function PlanStatusView({
           {knownSigners ? (
             <div style={{ marginTop: 22 }}>
               <SectionLabel>Signers</SectionLabel>
-              <SignersList signers={status.signers} signaturesNeeded={status.signaturesNeeded} />
+              <SignersList
+                signers={status.signers}
+                signaturesNeeded={status.signaturesNeeded}
+                network={status.network}
+              />
             </div>
           ) : null}
 
@@ -248,62 +253,64 @@ function PlanStatusView({
 function SignersList({
   signers,
   signaturesNeeded,
+  network,
 }: {
   readonly signers: readonly string[];
   readonly signaturesNeeded: number;
+  readonly network: string;
 }): React.JSX.Element {
   return (
     <div
       style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 11 }}
       data-testid="plan-signers"
     >
-      {signers.map((key) => (
-        <div
-          key={key}
-          data-testid={`plan-signer-${key}`}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-            padding: "11px 14px",
-            borderRadius: 12,
-            border: "1px solid var(--border)",
-            background: "var(--surface-2)",
-          }}
-        >
-          <span
-            aria-hidden
+      {signers.map((key) => {
+        const href = accountExplorerUrl(network, key);
+        return (
+          <div
+            key={key}
+            data-testid={`plan-signer-${key}`}
             style={{
-              width: 30,
-              height: 30,
-              borderRadius: 9,
-              background: "var(--surface)",
-              border: "1px solid var(--border-2)",
-              display: "grid",
-              placeItems: "center",
-              font: "600 12px/1 'Geist Mono', monospace",
-              color: "var(--fg-2)",
-              flexShrink: 0,
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              padding: "11px 14px",
+              borderRadius: 12,
+              border: "1px solid var(--border)",
+              background: "var(--surface-2)",
             }}
           >
-            {key.slice(0, 2)}
-          </span>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div
+            <span
+              aria-hidden
               style={{
-                font: "600 12.5px/1.4 'Geist Mono', monospace",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
+                width: 30,
+                height: 30,
+                borderRadius: 9,
+                background: "var(--surface)",
+                border: "1px solid var(--border-2)",
+                display: "grid",
+                placeItems: "center",
+                font: "600 12px/1 'Geist Mono', monospace",
+                color: "var(--fg-2)",
+                flexShrink: 0,
               }}
-              title={key}
             >
-              {key}
+              {key.slice(0, 2)}
+            </span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <CopyableAddress
+                value={key}
+                label="Signer"
+                head={8}
+                tail={6}
+                size={12.5}
+                {...(href !== undefined ? { href } : {})}
+              />
             </div>
+            <Badge tone="warning">Pending</Badge>
           </div>
-          <Badge tone="warning">Pending</Badge>
-        </div>
-      ))}
+        );
+      })}
       <div
         style={{ fontSize: 11.5, color: "var(--fg-3)", marginTop: 2 }}
         data-testid="plan-signers-needed"
@@ -350,7 +357,7 @@ function SubmittedBanner({
           style={{ fontFamily: '"Geist Mono", monospace' }}
           title={txHash ?? undefined}
         >
-          {txHash ?? "Refractor confirmed submission; awaiting tx hash."}
+          {txHash !== null ? shortId(txHash) : "Refractor confirmed submission; awaiting tx hash."}
         </span>
         {horizonUrl !== null ? (
           <>
@@ -441,9 +448,20 @@ function shortId(id: string): string {
 }
 
 function horizonTxUrl(network: string, hash: string): string | null {
+  const slug = explorerSlug(network);
+  return slug === null ? null : `https://stellar.expert/explorer/${slug}/tx/${hash}`;
+}
+
+// account explorer link from Refractor's network string ("public"/"testnet"/…)
+function accountExplorerUrl(network: string, key: string): string | undefined {
+  const slug = explorerSlug(network);
+  return slug === null ? undefined : `https://stellar.expert/explorer/${slug}/account/${key}`;
+}
+
+function explorerSlug(network: string): string | null {
   const net = network.toLowerCase();
-  if (net === "public") return `https://stellar.expert/explorer/public/tx/${hash}`;
-  if (net === "testnet") return `https://stellar.expert/explorer/testnet/tx/${hash}`;
-  if (net === "futurenet") return `https://stellar.expert/explorer/futurenet/tx/${hash}`;
+  if (net === "public") return "public";
+  if (net === "testnet") return "testnet";
+  if (net === "futurenet") return "futurenet";
   return null;
 }

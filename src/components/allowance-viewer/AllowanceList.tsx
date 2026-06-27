@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Badge, Card, CopyableAddress, Dot } from "@/components/ui";
 import { errorMessage } from "@/lib/errors";
+import { explorerAccountUrl, explorerContractUrl } from "@/lib/explorer";
 import type { NetworkConfig } from "@/lib/config/networks";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import { getRpc } from "@/lib/soroban/rpc-client";
@@ -36,6 +37,13 @@ const HEADER_CELL: React.CSSProperties = {
   color: "var(--fg-3)",
   letterSpacing: "0.06em",
 };
+
+// stellar.expert link for a stellar address — contract (C…) or account (G…)
+function addressExplorerUrl(network: NetworkConfig, addr: string): string {
+  return addr.startsWith("C")
+    ? explorerContractUrl(network, addr)
+    : explorerAccountUrl(network, addr);
+}
 
 export function AllowanceList({
   records,
@@ -204,7 +212,12 @@ function AllowanceRow({
             {tokenSymbol ?? (tokenError ? "(unknown)" : "…")}
           </div>
           <div style={{ marginTop: 2 }}>
-            <CopyableAddress value={record.contractId} label="Token contract" size={11} />
+            <CopyableAddress
+              value={record.contractId}
+              label="Token contract"
+              size={11}
+              href={explorerContractUrl(network, record.contractId)}
+            />
           </div>
           {tokenError !== null && (
             <div role="alert" style={{ fontSize: 11, color: "var(--danger)", marginTop: 3 }}>
@@ -233,11 +246,21 @@ function AllowanceRow({
                 · {spenderInfo.protocol}
               </span>
             </span>
-            <CopyableAddress value={record.spender} label="Spender" size={11} />
+            <CopyableAddress
+              value={record.spender}
+              label="Spender"
+              size={11}
+              href={addressExplorerUrl(network, record.spender)}
+            />
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <CopyableAddress value={record.spender} label="Spender" size={12} />
+            <CopyableAddress
+              value={record.spender}
+              label="Spender"
+              size={12}
+              href={addressExplorerUrl(network, record.spender)}
+            />
             <span data-testid="unknown-spender-badge">
               <Badge tone="danger" bordered>
                 <svg

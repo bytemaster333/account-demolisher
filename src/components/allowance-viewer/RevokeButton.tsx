@@ -8,6 +8,7 @@ import { useCallback, useState } from "react";
 import { Button, Spinner } from "@/components/ui";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
+import { explorerTxUrl } from "@/lib/explorer";
 import { buildRevoke, type AllowanceRecord } from "@/lib/soroban/allowances";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { getHorizon } from "@/lib/stellar/horizon-client";
@@ -124,11 +125,36 @@ export function RevokeButton({
           Revoked
         </span>
         {txHash !== null && (
-          <span
-            style={{ fontSize: 11, color: "var(--success)", fontFamily: '"Geist Mono", monospace' }}
+          <a
+            href={explorerTxUrl(network, txHash)}
+            target="_blank"
+            rel="noreferrer noopener"
+            title={txHash}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              fontSize: 11,
+              color: "var(--success)",
+              fontFamily: '"Geist Mono", monospace',
+              textDecoration: "none",
+            }}
           >
-            tx {txHash.slice(0, 10)}…
-          </span>
+            tx {txHash.slice(0, 8)}…{txHash.slice(-4)}
+            <svg
+              width="10"
+              height="10"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2.2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="M7 17 17 7M9 7h8v8" />
+            </svg>
+          </a>
         )}
       </div>
     );
