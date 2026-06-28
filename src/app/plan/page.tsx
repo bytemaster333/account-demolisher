@@ -43,7 +43,7 @@ function parsePlanInput(raw: string): string | null {
 }
 
 const STEPS: ReadonlyArray<string> = [
-  "Run a demolition on a multi-signature account. Demolisher uploads the unsigned closure transaction to Refractor and hands you a shareable /plan/<hash> link.",
+  "Have your multi-signature closure transaction on Refractor, then paste its link or transaction hash below. Demolisher opens a shareable /plan/<hash> view of that plan.",
   "Send that link to every co-signer. Each one opens it, reviews the exact transaction, and adds their signature with their own wallet.",
   "Once the collected signatures meet the account's threshold, Refractor submits the transaction to the network automatically — the plan page then shows the final tx hash.",
 ];

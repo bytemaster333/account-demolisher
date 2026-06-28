@@ -79,6 +79,9 @@ export interface PoolShareEntry {
   readonly poolId: string;
   readonly poolType: "constant_product" | string;
   readonly shareBalance: string;
+  // total pool shares outstanding — needed to size this holder's proportional
+  // share of the reserves when computing a withdraw slippage floor
+  readonly totalShares: string;
   readonly shareLimit: string;
   readonly fee: number;
   readonly reserves: ReadonlyArray<{

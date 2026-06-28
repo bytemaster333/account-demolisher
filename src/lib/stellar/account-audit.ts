@@ -268,6 +268,7 @@ async function loadPoolShares(
       poolId: pb.asset.poolId,
       poolType: pool.type,
       shareBalance: pb.amount,
+      totalShares: pool.total_shares,
       shareLimit: pb.limit ?? "0",
       fee: pool.fee_bp,
       reserves: pool.reserves.map((r) => ({

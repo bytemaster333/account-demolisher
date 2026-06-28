@@ -374,6 +374,18 @@ const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ input }) 
     const mergedTxHash = finalNode?.executed?.txHash;
     const forwardNode = output.tree.allNodes.get("mediator-forward");
     const forwardTxHash = forwardNode?.executed?.txHash;
+
+    // the executor cascade-skips the merge when a dependency (a DeFi exit) fails,
+    // so a non-confirmed final node means the account did NOT close — surface it
+    // as a failure instead of a false "Demolition complete."
+    if (finalNode !== undefined && finalNode.status !== "confirmed") {
+      const reason =
+        finalNode.error ??
+        "the account merge did not complete because a required step was skipped or failed.";
+      input.onProgress({ kind: "blocked", message: `Merge did not complete: ${reason}` });
+      return { result: { ok: false, errors: [reason] }, tree: output.tree };
+    }
+
     input.onProgress({
       kind: "complete",
       message: "Demolition complete.",

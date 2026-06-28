@@ -115,6 +115,7 @@ describe("batchClassicDemolition — canonical ordering", () => {
         poolId: POOL_ID,
         poolType: "constant_product",
         shareBalance: "10",
+        totalShares: "1000",
         shareLimit: "1000",
         fee: 30,
         reserves: [
@@ -209,16 +210,18 @@ describe("batchClassicDemolition — canonical ordering", () => {
 });
 
 describe("batchClassicDemolition — liquidity pool withdraw minimums", () => {
-  // a fractional holder: this account owns "1" share of a pool whose total
-  // reserves are "500"/"500". Deriving the withdraw minimum from the whole
-  // pool's reserves would demand ~495 of each asset out of a proportional
-  // payout that is a tiny fraction of that, guaranteeing an on-chain revert.
+  // a fractional holder: this account owns "1" of a pool's "1000" total shares,
+  // whose reserves are "500"/"500". Its proportional payout is 500 * 1/1000 =
+  // 0.5 of each reserve; the withdraw minimum is a 1% haircut of THAT (0.495),
+  // never ~99% of the whole reserve (495), which would revert for a fractional
+  // holder with LIQUIDITY_POOL_WITHDRAW_UNDER_MINIMUM.
   const fractionalPool = makeAudit({
     poolShares: [
       {
         poolId: POOL_ID,
         poolType: "constant_product",
         shareBalance: "1",
+        totalShares: "1000",
         shareLimit: "1000",
         fee: 30,
         reserves: [
@@ -229,14 +232,37 @@ describe("batchClassicDemolition — liquidity pool withdraw minimums", () => {
     ],
   });
 
-  it("does not derive the withdraw minimum from the whole pool's reserves", () => {
+  it("derives the withdraw minimum from the holder's proportional share", () => {
     const withdraw = allOps(batchClassicDemolition(fractionalPool, directOptions)).find(
       (o) => o.kind === "liquidity_pool_withdraw",
     )!;
     // the amount withdrawn is still this account's full share balance
     expect(withdraw.metadata.amount).toBe("1");
-    // the minimums must NOT be ~99% of the total reserves (495), which would
-    // revert with LIQUIDITY_POOL_WITHDRAW_UNDER_MINIMUM for a fractional holder
+    // proportional payout 500 * 1/1000 = 0.5 per reserve, 1% haircut -> 0.495
+    expect(withdraw.metadata.minAmountA).toBe("0.4950000");
+    expect(withdraw.metadata.minAmountB).toBe("0.4950000");
+  });
+
+  it("falls back to a 0 floor when totalShares is unavailable", () => {
+    const noTotal = makeAudit({
+      poolShares: [
+        {
+          poolId: POOL_ID,
+          poolType: "constant_product",
+          shareBalance: "1",
+          totalShares: "0",
+          shareLimit: "1000",
+          fee: 30,
+          reserves: [
+            { asset: { kind: "native" }, amount: "500" },
+            { asset: { kind: "credit", code: "USDC", issuer: ISSUER }, amount: "500" },
+          ],
+        },
+      ],
+    });
+    const withdraw = allOps(batchClassicDemolition(noTotal, directOptions)).find(
+      (o) => o.kind === "liquidity_pool_withdraw",
+    )!;
     expect(withdraw.metadata.minAmountA).toBe("0");
     expect(withdraw.metadata.minAmountB).toBe("0");
   });

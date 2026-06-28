@@ -91,10 +91,16 @@ async function submitRevokeImpl(
 }
 
 // poll a submitted revoke to ledger inclusion. throws if it fails to confirm.
+// distinguishes a real on-chain FAILED (terminal — the tx was included and
+// reverted) from an exhausted poll window (NOT_FOUND — the tx may still land),
+// so the bulk sweep can report the right thing and not advance its sequence
+// view on a tx that never sequenced.
 export async function confirmRevoke(network: NetworkConfig, hash: string): Promise<void> {
   const rpc = getRpc(network);
-  const result = await rpc.pollTransaction(hash, { attempts: 30 });
-  if (result.status !== "SUCCESS") {
-    throw new Error(`Revoke did not confirm on-chain (status: ${result.status}).`);
+  const result = await rpc.pollTransaction(hash, { attempts: 60 });
+  if (result.status === "SUCCESS") return;
+  if (result.status === "FAILED") {
+    throw new Error("Revoke transaction failed on-chain.");
   }
+  throw new Error("Revoke did not confirm within the polling window; it may still land.");
 }

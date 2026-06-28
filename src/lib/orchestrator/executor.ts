@@ -5,10 +5,14 @@ import type { Horizon } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import type { Connector } from "@/lib/wallet/connector";
-import { auditAccount, AccountNotFoundError } from "@/lib/stellar/account-audit";
+import {
+  auditAccount,
+  AccountNotFoundError,
+  computeMergeability,
+} from "@/lib/stellar/account-audit";
 import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
-import { batchClassicDemolition } from "@/lib/plan/classic-batcher";
+import { batchClassicDemolition, unroutableCredits } from "@/lib/plan/classic-batcher";
 import { resolveCreditPaths } from "@/lib/stellar/path-finder";
 import { submitMediatorForward } from "@/lib/mediator/forward";
 import { isSorobanNode, topologicalOrder, type PlanNode, type PlanTree } from "@/lib/plan/tree";
@@ -114,6 +118,23 @@ export async function executePlanTreeOnChain(
     }
     if (node.status === "skipped" || node.status === "failed") continue;
 
+    // cascade-skip: never run a node whose dependency didn't complete.
+    // topologicalOrder guarantees deps are terminal (confirmed/skipped/failed)
+    // by the time we reach a dependent, so a FAILED DeFi exit correctly blocks
+    // the FinalClassicTx merge instead of merging around a still-open position.
+    // A deliberately-skipped dep is acceptable (the fresh-state merge guard below
+    // re-audits and refuses if anything material remains).
+    const blockingDep = node.dependencies.find((depId) => {
+      const dep = input.tree.allNodes.get(depId);
+      return !dep || (dep.status !== "confirmed" && dep.status !== "skipped");
+    });
+    if (blockingDep !== undefined) {
+      node.status = "skipped";
+      node.error = `Skipped: dependency "${blockingDep}" did not complete.`;
+      notify(node);
+      continue;
+    }
+
     try {
       await deps.horizon.loadAccount(input.publicKey);
     } catch {
@@ -126,6 +147,29 @@ export async function executePlanTreeOnChain(
       // credit balances convert via path payment instead of routing to issuer.
       const freshAudit = await withHorizonRetry(() => auditAccount(input.publicKey, deps.network));
       const freshPaths = await withHorizonRetry(() => resolveCreditPaths(freshAudit, deps.network));
+
+      // execute-time re-check against fresh state: preview passed, but the world
+      // may have diverged (a DeFi exit failed, a credit lost its XLM path). Refuse
+      // to build/sign a doomed or fund-losing merge rather than committing part of
+      // a multi-batch close and leaving the account wedged.
+      const merge = computeMergeability(freshAudit.flags, freshAudit.sponsorship);
+      if (!merge.mergeable) {
+        throw new Error(
+          `account_merge blocked: ${merge.reason}${merge.detail ? ` — ${merge.detail}` : ""}`,
+        );
+      }
+      const stuck = unroutableCredits(
+        freshAudit,
+        freshPaths,
+        node.metadata.returnToIssuerAssetKeys,
+      );
+      if (stuck.length > 0) {
+        throw new Error(
+          `account_merge blocked: ${stuck.length} credit balance(s) have no XLM path and no ` +
+            `return-to-issuer consent (${stuck.map((c) => c.code).join(", ")})`,
+        );
+      }
+
       const freshBatches = batchClassicDemolition(
         freshAudit,
         {

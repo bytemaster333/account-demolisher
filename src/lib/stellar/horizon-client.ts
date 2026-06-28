@@ -12,8 +12,3 @@ export function getHorizon(network: NetworkConfig): Horizon.Server {
   }
   return server;
 }
-
-// test-only: clear the cached clients
-export function _resetHorizonCacheForTests(): void {
-  cache.clear();
-}

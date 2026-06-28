@@ -49,9 +49,3 @@ export function getKit(network: NetworkConfig): KitHandle {
 
   return StellarWalletsKit;
 }
-
-// test-only: reset the init latch. the upstream lib has no public reset
-// hook, so tests needing a truly virgin kit must mock the module
-export function _resetKitInitLatchForTests(): void {
-  initializedPassphrase = null;
-}

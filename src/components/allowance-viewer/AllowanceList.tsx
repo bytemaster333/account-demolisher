@@ -333,7 +333,9 @@ function formatAmount(amount: bigint, decimals: number | null): string {
 
 function formatExpiry(liveUntilLedger: number, currentLedger: number): string {
   const delta = liveUntilLedger - currentLedger;
-  if (delta <= 0) return "expired";
+  // an allowance is live *through* its live_until_ledger, so it's only expired
+  // once the current ledger passes it — matches enumerateAllowances' `expired`.
+  if (delta < 0) return "expired";
   const seconds = delta * SECONDS_PER_LEDGER;
   if (seconds < 60) return `in ${seconds}s`;
   const minutes = Math.floor(seconds / 60);

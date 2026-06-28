@@ -555,6 +555,12 @@ function DemolishFlow(): React.JSX.Element {
       setFormError("Fallback address must be a valid Stellar G... address.");
       return;
     }
+    if (parsed.data.destination === publicKey) {
+      setFormError(
+        "Destination can't be your own account — Stellar rejects a self-merge (ACCOUNT_MERGE_MALFORMED).",
+      );
+      return;
+    }
 
     const memo = parseMemo(form);
 

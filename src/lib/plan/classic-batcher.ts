@@ -36,15 +36,14 @@ export function batchClassicDemolition(
     const reserveB = pool.reserves[1];
     if (!reserveA || !reserveB) continue;
     const shareBalance = pool.shareBalance;
-    // reserveA/reserveB are the WHOLE pool's reserves, not this account's
-    // proportional share, so applying a haircut to them yields a minimum far
-    // above any fractional holder's payout and reverts the withdraw with
-    // LIQUIDITY_POOL_WITHDRAW_UNDER_MINIMUM. Without the pool's total_shares we
-    // can't reconstruct the proportional expected output here, so accept any
-    // output on this full-account-closure withdraw. (A proportional min needs
-    // total_shares threaded through PoolShareEntry — see loadPoolShares.)
-    const minA = "0";
-    const minB = "0";
+    // reserveA/reserveB are the WHOLE pool's reserves, not this account's share.
+    // The holder's expected payout for reserve R is R * myShares / totalShares;
+    // apply the slippage haircut to THAT, not to the whole reserve (which would
+    // revert with LIQUIDITY_POOL_WITHDRAW_UNDER_MINIMUM). Fall back to a 0 floor
+    // only if totalShares is missing/zero (can't size the share).
+    const proportionalMin = proportionalWithdrawMin(shareBalance, pool.totalShares);
+    const minA = proportionalMin(reserveA.amount);
+    const minB = proportionalMin(reserveB.amount);
     ops.push({
       kind: "liquidity_pool_withdraw",
       summary: `Withdraw pool shares from ${pool.poolId.slice(0, 8)}...`,
@@ -302,6 +301,26 @@ export function applySlippage(amountStr: string): string {
   const stroops = decimalToStroops(amountStr);
   const adjusted = (stroops * SLIPPAGE_NUMERATOR) / SLIPPAGE_DENOMINATOR;
   return stroopsToDecimal(adjusted);
+}
+
+// slippage-bounded minimum for one reserve of an LP withdraw. The holder's
+// expected output for a reserve is reserve * myShares / totalShares; haircut
+// THAT by the slippage tolerance. Returns "0" (accept any output) when
+// totalShares is missing/zero — better an unprotected withdraw than a min that
+// over-shoots the payout and reverts the whole close-out.
+export function proportionalWithdrawMin(
+  shareBalance: string,
+  totalShares: string,
+): (reserveAmount: string) => string {
+  const share = decimalToStroops(shareBalance);
+  const total = decimalToStroops(totalShares);
+  return (reserveAmount: string): string => {
+    if (total <= 0n || share <= 0n) return "0";
+    const reserve = decimalToStroops(reserveAmount);
+    const expected = (reserve * share) / total;
+    const adjusted = (expected * SLIPPAGE_NUMERATOR) / SLIPPAGE_DENOMINATOR;
+    return stroopsToDecimal(adjusted);
+  };
 }
 
 function decimalToStroops(s: string): bigint {

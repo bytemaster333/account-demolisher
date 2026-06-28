@@ -6,7 +6,6 @@ import { describe, it, expect, vi } from "vitest";
 // nodeFeeStroops (the unit under test) does not touch it.
 vi.mock("@/lib/wallet/kit", () => ({
   getKit: vi.fn(),
-  _resetKitInitLatchForTests: vi.fn(),
 }));
 
 import { nodeFeeStroops } from "@/app/demolish/page";

@@ -80,6 +80,19 @@ export function BulkRevokeBar({
     setStopping(true);
   }, [networkId]);
 
+  // warn before a tab close / reload while a sweep is live — a partial run leaves
+  // some approvals revoked and others not, and an in-flight signature could still
+  // land. Mirrors the demolish execute-phase beforeunload guard.
+  useEffect(() => {
+    if (phase !== "running") return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [phase]);
+
   const ask = (list: readonly AllowanceRecord[]): void => {
     setPendingTargets(list);
     setPhase("confirm");

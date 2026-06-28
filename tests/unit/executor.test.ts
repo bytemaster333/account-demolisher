@@ -31,6 +31,9 @@ vi.mock("@/lib/stellar/path-finder", () => ({
 
 vi.mock("@/lib/plan/classic-batcher", () => ({
   batchClassicDemolition: (...args: unknown[]) => batchClassicDemolition(...args),
+  // the merge guard calls this against fresh state; MERGEABLE_AUDIT has no
+  // credit balances, so no credit is unroutable
+  unroutableCredits: () => [],
 }));
 
 vi.mock("@/lib/stellar/classic-builder", () => ({
@@ -46,6 +49,14 @@ const NETWORK = {
   id: "mainnet",
   passphrase: "Public Global Stellar Network ; September 2015",
 } as unknown as NetworkConfig;
+
+// a fresh-state audit that passes the executor's execute-time merge guard
+// (not auth-immutable, sponsors nothing foreign, no unroutable credit balances)
+const MERGEABLE_AUDIT = {
+  balances: [],
+  flags: { authImmutable: false },
+  sponsorship: { numSponsoring: 0, coverable: 0 },
+};
 
 function makeFinalClassicTree() {
   const node = {
@@ -96,7 +107,7 @@ describe("executePlanTreeOnChain — horizon retry on FinalClassicTx prep", () =
     vi.clearAllMocks();
     vi.useFakeTimers();
     // healthy defaults; individual tests override auditAccount to inject failures
-    auditAccount.mockResolvedValue({ balances: [] });
+    auditAccount.mockResolvedValue(MERGEABLE_AUDIT);
     resolveCreditPaths.mockResolvedValue(new Map());
     batchClassicDemolition.mockReturnValue([{ ops: [] }]);
     buildClassicTransaction.mockReturnValue({ transaction: {} });
@@ -111,7 +122,7 @@ describe("executePlanTreeOnChain — horizon retry on FinalClassicTx prep", () =
     auditAccount
       .mockRejectedValueOnce(horizon5xx())
       .mockRejectedValueOnce(horizon5xx())
-      .mockResolvedValueOnce({ balances: [] });
+      .mockResolvedValueOnce(MERGEABLE_AUDIT);
 
     const { tree } = makeFinalClassicTree();
     const deps = makeDeps();
@@ -181,6 +192,29 @@ describe("executePlanTreeOnChain — horizon retry on FinalClassicTx prep", () =
     await vi.runAllTimersAsync();
     await settled;
     expect(auditAccount).toHaveBeenCalledTimes(3);
+    expect(deps.submitClassic).not.toHaveBeenCalled();
+  });
+
+  it("refuses to build/sign the merge when fresh state is no longer mergeable", async () => {
+    // between preview and execute the account became auth-immutable; the merge
+    // guard must throw BEFORE anything is signed, not commit a doomed batch.
+    auditAccount.mockResolvedValue({
+      balances: [],
+      flags: { authImmutable: true },
+      sponsorship: { numSponsoring: 0, coverable: 0 },
+    });
+
+    const { tree } = makeFinalClassicTree();
+    const deps = makeDeps();
+
+    const promise = executePlanTreeOnChain(
+      { publicKey: "GUSER", tree, previousReceipts: {} },
+      deps,
+    );
+    const settled = expect(promise).rejects.toThrow(/account_merge blocked: AUTH_IMMUTABLE/);
+    await vi.runAllTimersAsync();
+    await settled;
+    expect(deps.connector.signTransaction).not.toHaveBeenCalled();
     expect(deps.submitClassic).not.toHaveBeenCalled();
   });
 });
