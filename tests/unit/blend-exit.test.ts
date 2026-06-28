@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { Account, FeeBumpTransaction, Transaction, type Horizon, type rpc } from "@stellar/stellar-sdk";
+import {
+  Account,
+  FeeBumpTransaction,
+  Transaction,
+  type Horizon,
+  type rpc,
+} from "@stellar/stellar-sdk";
 
 import { buildExitSequence, type BlendExitStep } from "@/lib/adapters/blend/exit";
 import type { BlendUserPositions } from "@/lib/adapters/blend/client";

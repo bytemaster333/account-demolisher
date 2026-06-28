@@ -78,9 +78,10 @@ export function verifyEnvelope(
   const hashOk = (() => {
     try {
       // fee-bump / malformed envelopes throw here; that's a verification failure
-      return Buffer.from(TransactionBuilder.fromXDR(status.xdr, passphrase).hash()).toString(
-        "hex",
-      ) === id;
+      return (
+        Buffer.from(TransactionBuilder.fromXDR(status.xdr, passphrase).hash()).toString("hex") ===
+        id
+      );
     } catch {
       return false;
     }

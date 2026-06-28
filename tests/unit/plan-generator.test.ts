@@ -139,6 +139,7 @@ describe("generatePlan — mediator forward", () => {
     const tree = generatePlan(makeAudit(), richPositions(), [], DEST, {
       useMediator: true,
       mediatorPublicKey: MED,
+      flowToken: "nonce.exp.mac",
     });
     expect(dependsOn(tree, "mediator-forward", "final-classic-tx")).toBe(true);
     const order = topologicalOrder(tree);
@@ -146,11 +147,24 @@ describe("generatePlan — mediator forward", () => {
     const forwardIdx = indexOf(order, "mediator-forward");
     expect(forwardIdx).toBeGreaterThan(finalIdx);
     expect(forwardIdx).toBe(order.length - 1);
+    const fwd = tree.allNodes.get("mediator-forward");
+    expect(fwd?.metadata.kind === "MediatorForward" && fwd.metadata.flowToken).toBe(
+      "nonce.exp.mac",
+    );
   });
 
   it("throws when useMediator is set without a mediator public key", () => {
     expect(() =>
       generatePlan(makeAudit(), emptyPositions(), [], DEST, { useMediator: true }),
     ).toThrow(/requires opts\.mediatorPublicKey/);
+  });
+
+  it("throws when useMediator is set without a flow token", () => {
+    expect(() =>
+      generatePlan(makeAudit(), emptyPositions(), [], DEST, {
+        useMediator: true,
+        mediatorPublicKey: MED,
+      }),
+    ).toThrow(/requires opts\.flowToken/);
   });
 });

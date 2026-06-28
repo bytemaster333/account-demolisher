@@ -3,9 +3,10 @@
 import { getPublicEnv } from "@/lib/config/env";
 import { resolveNetwork } from "@/lib/config/networks";
 import { validateMediatorForwardEnvelope } from "@/lib/mediator/validator";
-import { getMediatorKeypair } from "@/server/mediator-secret";
+import { resolveMediatorFlow, startMediatorFlow } from "@/server/mediator-secret";
 
-// node runtime: getMediatorKeypair() and the validator pull in stellar-sdk, which isn't edge-compatible
+// node runtime: the flow-key derivation (node:crypto) and the validator pull in
+// stellar-sdk / node crypto, which aren't edge-compatible
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -140,97 +141,80 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   let envelopeXdr: string;
+  let flowToken: string;
   try {
     const raw = (await request.json()) as unknown;
-    if (typeof raw !== "object" || raw === null || !("envelopeXdr" in raw)) {
-      return jsonResponse(
-        {
-          ok: false,
-          code: "BAD_REQUEST",
-          reason: "Request body must be a JSON object with an `envelopeXdr` string field.",
-        },
-        400,
+    if (typeof raw !== "object" || raw === null) {
+      return badRequest("Request body must be a JSON object.", cors);
+    }
+    const rec = raw as Record<string, unknown>;
+    if (typeof rec.envelopeXdr !== "string" || rec.envelopeXdr.length === 0) {
+      return badRequest("`envelopeXdr` must be a non-empty base64 string.", cors);
+    }
+    if (typeof rec.flowToken !== "string" || rec.flowToken.length === 0) {
+      return badRequest(
+        "`flowToken` must be a non-empty string; call GET to start a flow first.",
         cors,
       );
     }
-    const candidate = (raw as { envelopeXdr: unknown }).envelopeXdr;
-    if (typeof candidate !== "string" || candidate.length === 0) {
-      return jsonResponse(
-        {
-          ok: false,
-          code: "BAD_REQUEST",
-          reason: "`envelopeXdr` must be a non-empty base64 string.",
-        },
-        400,
-        cors,
-      );
-    }
-    envelopeXdr = candidate;
-    // the mediator only co-signs the forward envelope; reject anything else
-    const rawKind = (raw as { kind?: unknown }).kind;
-    if (rawKind !== undefined && rawKind !== "forward") {
-      return jsonResponse(
-        {
-          ok: false,
-          code: "BAD_REQUEST",
-          reason: 'Only the "forward" envelope shape is accepted.',
-        },
-        400,
-        cors,
-      );
-    }
+    envelopeXdr = rec.envelopeXdr;
+    flowToken = rec.flowToken;
+  } catch {
+    return badRequest("Request body is not valid JSON.", cors);
+  }
+
+  // resolve THIS flow's ephemeral keypair from the token. A forged/expired token
+  // resolves to null and unlocks nothing; a thrown error means the master seed
+  // is unset/malformed (scrubbed so no config detail leaks to the client).
+  let flowKeypair: ReturnType<typeof resolveMediatorFlow>;
+  try {
+    flowKeypair = resolveMediatorFlow(flowToken);
   } catch {
     return jsonResponse(
-      { ok: false, code: "BAD_REQUEST", reason: "Request body is not valid JSON." },
+      { ok: false, code: "MEDIATOR_NOT_CONFIGURED", reason: "Mediator is not configured." },
+      500,
+      cors,
+    );
+  }
+  if (flowKeypair === null) {
+    return jsonResponse(
+      { ok: false, code: "INVALID_FLOW_TOKEN", reason: "Flow token is invalid or expired." },
       400,
       cors,
     );
   }
 
-  let networkPassphrase: string;
-  let mediatorPublicKey: string;
-  try {
-    const network = resolveNetwork(getPublicEnv().NEXT_PUBLIC_STELLAR_NETWORK);
-    networkPassphrase = network.passphrase;
-    mediatorPublicKey = getMediatorKeypair().publicKey();
-  } catch (err) {
-    // don't leak details that might include the seed
-    return jsonResponse(
-      {
-        ok: false,
-        code: "MEDIATOR_NOT_CONFIGURED",
-        reason: err instanceof Error ? err.message : "Mediator is not configured.",
-      },
-      500,
-      cors,
-    );
-  }
+  const networkPassphrase = resolveNetwork(getPublicEnv().NEXT_PUBLIC_STELLAR_NETWORK).passphrase;
 
-  // the mediator only ever co-signs the forward envelope: a mediator-sourced
-  // native payout + accountMerge, BOTH to the same destination (validated). The
-  // old "merge" variant left op1's amount/destination unbounded and had no live
-  // caller, so it was removed — it was a pure mediator-siphon surface.
-  const result = validateMediatorForwardEnvelope(envelopeXdr, networkPassphrase, mediatorPublicKey);
+  // the mediator only co-signs the forward envelope: a native payout + an
+  // accountMerge, both sourced by and drawn from THIS flow's ephemeral account.
+  // Because the account is per-flow and only ever holds this user's funds, a
+  // co-signed drain can never reach anyone else's balance.
+  const result = validateMediatorForwardEnvelope(
+    envelopeXdr,
+    networkPassphrase,
+    flowKeypair.publicKey(),
+  );
   if (!result.ok) {
     return jsonResponse({ ok: false, code: result.code, reason: result.reason }, 400, cors);
   }
 
   try {
     const tx = result.tx;
-    tx.sign(getMediatorKeypair());
+    tx.sign(flowKeypair);
     const signedXdr = tx.toEnvelope().toXDR("base64");
     return jsonResponse({ ok: true, signedXdr }, 200, cors);
-  } catch (err) {
+  } catch {
     return jsonResponse(
-      {
-        ok: false,
-        code: "SIGNING_FAILED",
-        reason: err instanceof Error ? err.message : "Failed to sign envelope.",
-      },
+      { ok: false, code: "SIGNING_FAILED", reason: "Failed to sign envelope." },
       500,
       cors,
     );
   }
+}
+
+function badRequest(reason: string, cors: Record<string, string>): Response {
+  return jsonResponse({ ok: false, code: "BAD_REQUEST", reason }, 400, cors);
 }
 
 function methodNotAllowed(): Response {
@@ -241,19 +225,19 @@ function methodNotAllowed(): Response {
   );
 }
 
-// returns the mediator's public key so the browser orchestrator can build the merge op
-// only used by the reference (server-held) deployment; self-hosted mode generates its own keypair
+// starts a fresh mediator flow: mints a one-time flow token and the ephemeral
+// public key the browser orchestrator funds + merges into. The token must be
+// echoed back at POST time to unlock signing for THIS flow's key only.
 export function GET(): Response {
   try {
-    const publicKey = getMediatorKeypair().publicKey();
-    return jsonResponse({ mediatorPublicKey: publicKey }, 200);
-  } catch (err) {
+    const flow = startMediatorFlow();
     return jsonResponse(
-      {
-        ok: false,
-        code: "MEDIATOR_NOT_CONFIGURED",
-        reason: err instanceof Error ? err.message : "Mediator is not configured.",
-      },
+      { flowToken: flow.flowToken, mediatorPublicKey: flow.mediatorPublicKey },
+      200,
+    );
+  } catch {
+    return jsonResponse(
+      { ok: false, code: "MEDIATOR_NOT_CONFIGURED", reason: "Mediator is not configured." },
       500,
     );
   }

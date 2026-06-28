@@ -165,6 +165,7 @@ describe("isSorobanNode", () => {
       metadata: {
         kind: "MediatorForward",
         mediatorPublicKey: "GMED",
+        flowToken: "nonce.exp.mac",
         ultimateDestination: "GCEX",
       },
     };

@@ -11,14 +11,9 @@ import { verifyEnvelope } from "@/app/plan/[id]/page";
 // build a real classic tx on `passphrase`, returning its base64 XDR and the
 // hex tx hash Refractor would key it under (== the /plan/{id} id)
 function buildTx(passphrase: string): { xdr: string; id: string } {
-  const source = new Account(
-    "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-    "0",
-  );
+  const source = new Account("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF", "0");
   const tx = new TransactionBuilder(source, { fee: "100", networkPassphrase: passphrase })
-    .addOperation(
-      Operation.bumpSequence({ bumpTo: "1" }),
-    )
+    .addOperation(Operation.bumpSequence({ bumpTo: "1" }))
     .setTimeout(0)
     .build();
   return { xdr: tx.toXDR(), id: tx.hash().toString("hex") };

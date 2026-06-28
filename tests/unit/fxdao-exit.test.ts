@@ -1,11 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  Account,
-  Operation,
-  scValToNative,
-  xdr,
-  type Horizon,
-} from "@stellar/stellar-sdk";
+import { Account, Operation, scValToNative, xdr, type Horizon } from "@stellar/stellar-sdk";
 
 import { buildVaultExit } from "@/lib/adapters/fxdao/exit";
 import type { FxDAOVault } from "@/lib/adapters/fxdao/client";
@@ -31,9 +25,10 @@ function vault(debt: bigint): FxDAOVault {
 }
 
 // pull the contract-call name and args out of a built single-op invoke tx
-function invokeArgs(tx: {
-  operations: readonly Operation[];
-}): { fn: string; args: readonly xdr.ScVal[] } {
+function invokeArgs(tx: { operations: readonly Operation[] }): {
+  fn: string;
+  args: readonly xdr.ScVal[];
+} {
   const op = tx.operations[0] as Operation.InvokeHostFunction;
   const call = op.func.invokeContract();
   return {

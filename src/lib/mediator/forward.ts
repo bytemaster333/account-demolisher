@@ -15,6 +15,8 @@ import { requestMediatorSignature } from "@/lib/mediator/client";
 
 export interface MediatorForwardInput {
   readonly mediatorPublicKey: string;
+  // one-time token from startMediatorFlow that unlocks this flow's signing key
+  readonly flowToken: string;
   readonly destination: string;
   // defaults to destination if omitted (frees the mediator account)
   readonly userFallbackAddress?: string;
@@ -80,7 +82,7 @@ export async function submitMediatorForward(
   const unsignedTx = builder.build();
   const unsignedXdr = unsignedTx.toEnvelope().toXDR("base64");
 
-  const result = await requestMediatorSignature(unsignedXdr, { kind: "forward" });
+  const result = await requestMediatorSignature(unsignedXdr, input.flowToken);
   if (!result.ok) {
     return {
       ok: false,

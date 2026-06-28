@@ -96,9 +96,9 @@ describe("hydratePlanTransactions — WithdrawSoroswapLp slippage floor", () => 
   });
 
   it("fails the node (does not sign a zero-floor withdraw) when the quote cannot be read", async () => {
-    const removeLiquidityByContractIds = vi.fn(
-      async () => ({ fake: "tx" }),
-    ) as unknown as NonNullable<HydrationAdapterOverrides["removeLiquidityByContractIds"]>;
+    const removeLiquidityByContractIds = vi.fn(async () => ({
+      fake: "tx",
+    })) as unknown as NonNullable<HydrationAdapterOverrides["removeLiquidityByContractIds"]>;
     const node: PlanNode = {
       id: "lp2",
       kind: "WithdrawSoroswapLp",

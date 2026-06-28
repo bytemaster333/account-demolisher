@@ -131,9 +131,9 @@ describe("removeLiquidityByContractIds encoding", () => {
 describe("removeLiquidityByContractIds guards", () => {
   it("rejects a negative liquidity with TypeError before assembling", async () => {
     const { deps } = captureDeps();
-    await expect(
-      removeLiquidityByContractIds(baseArgs({ liquidity: "-1" }), deps),
-    ).rejects.toThrow(TypeError);
+    await expect(removeLiquidityByContractIds(baseArgs({ liquidity: "-1" }), deps)).rejects.toThrow(
+      TypeError,
+    );
   });
 
   it("rejects a decimal amountAMin with TypeError", async () => {
@@ -152,23 +152,23 @@ describe("removeLiquidityByContractIds guards", () => {
 
   it("rejects deadline=0 with RangeError", async () => {
     const { deps } = captureDeps();
-    await expect(
-      removeLiquidityByContractIds(baseArgs({ deadline: 0 }), deps),
-    ).rejects.toThrow(RangeError);
+    await expect(removeLiquidityByContractIds(baseArgs({ deadline: 0 }), deps)).rejects.toThrow(
+      RangeError,
+    );
   });
 
   it("rejects a negative deadline with RangeError", async () => {
     const { deps } = captureDeps();
-    await expect(
-      removeLiquidityByContractIds(baseArgs({ deadline: -1 }), deps),
-    ).rejects.toThrow(RangeError);
+    await expect(removeLiquidityByContractIds(baseArgs({ deadline: -1 }), deps)).rejects.toThrow(
+      RangeError,
+    );
   });
 
   it("rejects a non-integer deadline with RangeError", async () => {
     const { deps } = captureDeps();
-    await expect(
-      removeLiquidityByContractIds(baseArgs({ deadline: 1.5 }), deps),
-    ).rejects.toThrow(RangeError);
+    await expect(removeLiquidityByContractIds(baseArgs({ deadline: 1.5 }), deps)).rejects.toThrow(
+      RangeError,
+    );
   });
 });
 

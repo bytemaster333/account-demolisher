@@ -171,6 +171,9 @@ export interface FinalClassicTxMetadata {
 export interface MediatorForwardMetadata {
   readonly kind: "MediatorForward";
   readonly mediatorPublicKey: string;
+  // one-time token authorizing the sign route to co-sign the forward out of
+  // this flow's ephemeral mediator account
+  readonly flowToken: string;
   readonly ultimateDestination: string;
   readonly memo?: string;
 }

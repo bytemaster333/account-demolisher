@@ -26,10 +26,7 @@ const fakeTree = { allNodes: new Map(), roots: [] } as unknown as PlanTree;
  * on-chain failure. When false, discover itself rejects, so the machine reaches
  * `failed` before any tree exists (context.tree stays null).
  */
-function actorInFailed(opts: {
-  withTree: boolean;
-  onExecute: () => Promise<unknown>;
-}) {
+function actorInFailed(opts: { withTree: boolean; onExecute: () => Promise<unknown> }) {
   const executeSpy = vi.fn(opts.onExecute);
   const machine = pageFlowMachine.provide({
     actors: {

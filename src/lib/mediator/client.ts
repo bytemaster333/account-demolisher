@@ -5,37 +5,42 @@ export type MediatorSignatureResult =
   | { ok: true; signedXdr: string }
   | { ok: false; code: string; reason: string };
 
-// which validator the route runs against the envelope
-export type MediatorEnvelopeKind = "merge" | "forward";
+export type MediatorFlowResult =
+  | { ok: true; flowToken: string; mediatorPublicKey: string }
+  | { ok: false; code: string; reason: string };
 
-export interface RequestMediatorSignatureOptions {
+export interface MediatorEndpointOptions {
   readonly endpoint?: string;
   readonly signal?: AbortSignal;
-  readonly kind?: MediatorEnvelopeKind;
 }
 
 const DEFAULT_ENDPOINT = "/api/mediator/sign";
 
-// posts the unsigned envelope to the route and returns the typed result
-// network errors surface as { ok: false, code: "NETWORK_ERROR", ... }
-export async function requestMediatorSignature(
-  envelopeXdr: string,
-  options: RequestMediatorSignatureOptions = {},
-): Promise<MediatorSignatureResult> {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+async function readJson(response: Response): Promise<Record<string, unknown> | null> {
+  try {
+    const body: unknown = await response.json();
+    return isRecord(body) ? body : null;
+  } catch {
+    return null;
+  }
+}
+
+// GET the endpoint to start a flow: returns a one-time flow token plus the
+// ephemeral mediator public key the plan should fund and merge into. Each call
+// mints a fresh, independent flow.
+export async function startMediatorFlow(
+  options: MediatorEndpointOptions = {},
+): Promise<MediatorFlowResult> {
   const endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
 
   let response: Response;
   try {
-    const body: Record<string, unknown> = { envelopeXdr };
-    if (options.kind !== undefined) body.kind = options.kind;
-    const init: RequestInit = {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    };
-    if (options.signal !== undefined) {
-      init.signal = options.signal;
-    }
+    const init: RequestInit = { method: "GET", headers: { accept: "application/json" } };
+    if (options.signal !== undefined) init.signal = options.signal;
     response = await fetch(endpoint, init);
   } catch (err) {
     return {
@@ -45,28 +50,61 @@ export async function requestMediatorSignature(
     };
   }
 
-  let body: unknown;
+  const body = await readJson(response);
+  if (body === null) {
+    return {
+      ok: false,
+      code: "NETWORK_ERROR",
+      reason: "Mediator returned an unexpected response.",
+    };
+  }
+  if (typeof body.flowToken === "string" && typeof body.mediatorPublicKey === "string") {
+    return { ok: true, flowToken: body.flowToken, mediatorPublicKey: body.mediatorPublicKey };
+  }
+  if (typeof body.code === "string" && typeof body.reason === "string") {
+    return { ok: false, code: body.code, reason: body.reason };
+  }
+  return {
+    ok: false,
+    code: "NETWORK_ERROR",
+    reason: `Mediator returned an unexpected status ${response.status}.`,
+  };
+}
+
+// posts the unsigned envelope + this flow's token to the route and returns the
+// typed result. network errors surface as { ok: false, code: "NETWORK_ERROR" }.
+export async function requestMediatorSignature(
+  envelopeXdr: string,
+  flowToken: string,
+  options: MediatorEndpointOptions = {},
+): Promise<MediatorSignatureResult> {
+  const endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
+
+  let response: Response;
   try {
-    body = await response.json();
+    const init: RequestInit = {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ envelopeXdr, flowToken }),
+    };
+    if (options.signal !== undefined) init.signal = options.signal;
+    response = await fetch(endpoint, init);
   } catch (err) {
     return {
       ok: false,
       code: "NETWORK_ERROR",
-      reason:
-        err instanceof Error
-          ? `Malformed mediator response: ${err.message}`
-          : "Mediator returned a non-JSON response.",
+      reason: err instanceof Error ? err.message : "Failed to reach mediator endpoint.",
     };
   }
 
-  if (!isRecord(body)) {
+  const body = await readJson(response);
+  if (body === null) {
     return {
       ok: false,
       code: "NETWORK_ERROR",
-      reason: "Mediator returned an unexpected response shape.",
+      reason: "Mediator returned an unexpected response.",
     };
   }
-
   if (body.ok === true && typeof body.signedXdr === "string") {
     return { ok: true, signedXdr: body.signedXdr };
   }
@@ -78,8 +116,4 @@ export async function requestMediatorSignature(
     code: "NETWORK_ERROR",
     reason: `Mediator returned an unexpected status ${response.status}.`,
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }

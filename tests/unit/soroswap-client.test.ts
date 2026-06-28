@@ -20,11 +20,12 @@ const BASE_QUOTE_REQUEST: ClientQuoteRequest = {
 // build a fetch stub that returns `bodyObj` serialized as the given raw text (so we can
 // inject values JSON.parse would have already rounded, e.g. bare numbers past 2^53)
 function fetchReturning(rawText: string): typeof fetch {
-  return vi.fn(async () =>
-    new Response(rawText, {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    }),
+  return vi.fn(
+    async () =>
+      new Response(rawText, {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
   ) as unknown as typeof fetch;
 }
 
@@ -59,7 +60,8 @@ describe("SoroswapHttpClient.quote precision validation", () => {
   it("rejects an amountOut JSON number that has lost integer precision (> 2^53)", async () => {
     // 9007199254740993 (2^53 + 1) is not representable; JSON.parse rounds it to 2^53.
     // Without the guard this silently-corrupted value would flow into the slippage check.
-    const raw = '{"amountOut":9007199254740993,"otherAmountThreshold":"12000","tradeType":"EXACT_IN"}';
+    const raw =
+      '{"amountOut":9007199254740993,"otherAmountThreshold":"12000","tradeType":"EXACT_IN"}';
     const client = clientWith(raw);
     await expect(client.quote(BASE_QUOTE_REQUEST)).rejects.toBeInstanceOf(SoroswapProxyError);
     await expect(client.quote(BASE_QUOTE_REQUEST)).rejects.toThrow(/amountOut/);

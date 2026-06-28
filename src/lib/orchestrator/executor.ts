@@ -223,6 +223,7 @@ export async function executePlanTreeOnChain(
     if (node.kind === "MediatorForward") {
       const forwardInput: Parameters<typeof submitMediatorForward>[0] = {
         mediatorPublicKey: node.metadata.mediatorPublicKey,
+        flowToken: node.metadata.flowToken,
         destination: node.metadata.ultimateDestination,
         network: deps.network,
         ...(node.metadata.memo

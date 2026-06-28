@@ -82,7 +82,13 @@ function jsonSerializeWithBigInt(value: unknown): string {
 // non-negative integer instead of silently trusting rounded/exponential digits.
 function assertStroopField(v: unknown, field: string): void {
   if (typeof v === "bigint") {
-    if (v < 0n) throw new SoroswapProxyError(`quote.${field} is negative: ${v}`, "PROXY_BAD_RESPONSE", null, "quote");
+    if (v < 0n)
+      throw new SoroswapProxyError(
+        `quote.${field} is negative: ${v}`,
+        "PROXY_BAD_RESPONSE",
+        null,
+        "quote",
+      );
     return;
   }
   if (typeof v === "string") {

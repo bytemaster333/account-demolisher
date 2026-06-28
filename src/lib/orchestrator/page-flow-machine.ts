@@ -14,6 +14,7 @@ import {
   type UnroutableCredit,
 } from "@/lib/plan/classic-batcher";
 import { hydratePlanTransactions } from "@/lib/plan/hydration";
+import { startMediatorFlow } from "@/lib/mediator/client";
 import { executePlanTreeOnChain, type ConfirmationReceipt } from "@/lib/orchestrator/executor";
 import { auditAccount } from "@/lib/stellar/account-audit";
 import { resolveCreditPaths } from "@/lib/stellar/path-finder";
@@ -197,12 +198,27 @@ const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) 
   const paths = await resolveCreditPaths(input.audit, input.network);
   const unroutable = unroutableCredits(input.audit, paths, input.returnToIssuerAssetKeys);
 
+  // For a CEX (memo-required) destination the close-out routes through an
+  // ephemeral, per-flow mediator account. Mint that flow now so the merge (into
+  // the mediator) and the later forward (out of it) target the SAME key; the
+  // returned token authorizes signing that key at forward time. Per-flow keys
+  // mean a co-signed drain can only ever reach this user's own funds.
+  let mediator: { readonly flowToken: string; readonly mediatorPublicKey: string } | null = null;
+  if (input.useMediator) {
+    const flow = await startMediatorFlow();
+    if (!flow.ok) {
+      throw new Error(`Could not start the exchange-forward flow (${flow.code}): ${flow.reason}`);
+    }
+    mediator = { flowToken: flow.flowToken, mediatorPublicKey: flow.mediatorPublicKey };
+  }
+
   // build the real batches so FinalClassicTx carries the real op count
   const batches = batchClassicDemolition(
     input.audit,
     {
       destination: input.destination,
       useMediator: input.useMediator,
+      ...(mediator ? { mediatorPublicKey: mediator.mediatorPublicKey } : {}),
       ...(input.selectedClaimableBalanceIds
         ? { claimableBalanceIds: input.selectedClaimableBalanceIds }
         : {}),
@@ -223,6 +239,9 @@ const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) 
     useMediator: input.useMediator,
     selectedAllowances,
     paths,
+    ...(mediator
+      ? { mediatorPublicKey: mediator.mediatorPublicKey, flowToken: mediator.flowToken }
+      : {}),
     ...(input.memo ? { memo: input.memo } : {}),
     ...(input.userFallbackAddress ? { userFallbackAddress: input.userFallbackAddress } : {}),
     ...(input.selectedClaimableBalanceIds

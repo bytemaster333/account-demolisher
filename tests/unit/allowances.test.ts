@@ -159,9 +159,7 @@ describe("enumerateAllowances retention clamp", () => {
 describe("enumerateAllowances event decoding", () => {
   it("decodes a 3-topic approve with tuple-as-vec value", async () => {
     const currentLedger = 100_000;
-    const server = serverWithEvents([
-      approveEvent(5_000, vecValue(500n, currentLedger + 100)),
-    ]);
+    const server = serverWithEvents([approveEvent(5_000, vecValue(500n, currentLedger + 100))]);
 
     const recs = await enumerateAllowances(server, USER, currentLedger, currentLedger);
 

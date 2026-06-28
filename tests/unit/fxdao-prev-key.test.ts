@@ -115,7 +115,8 @@ function makeSimulate(
     if (fn === "get_vault") {
       if (!(account in vaults)) return fail(`get_vault: ${account} not found`);
       const next = vaults[account];
-      const nextKey = next === null || next === undefined ? none() : some(vaultKeyMap(next, DENOM, 1n));
+      const nextKey =
+        next === null || next === undefined ? none() : some(vaultKeyMap(next, DENOM, 1n));
       return ok(vaultRaw(2n, nextKey));
     }
     throw new Error(`unexpected sim call ${fn}`);

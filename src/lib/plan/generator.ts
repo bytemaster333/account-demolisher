@@ -17,6 +17,9 @@ import { buildPlanTree, type PlanNode, type PlanTree } from "./tree";
 export interface GeneratePlanOptions {
   readonly useMediator?: boolean;
   readonly mediatorPublicKey?: string;
+  // one-time token that authorizes signing the ephemeral mediator's forward;
+  // minted together with mediatorPublicKey
+  readonly flowToken?: string;
   // allowance pairs opted in for revocation, keyed `${contractId}|${spender}`
   readonly selectedAllowances?: readonly string[];
   readonly selectedClaimableBalanceIds?: readonly string[];
@@ -39,6 +42,11 @@ export function generatePlan(
   const useMediator = opts.useMediator === true;
   if (useMediator && !opts.mediatorPublicKey) {
     throw new Error("generatePlan: useMediator=true requires opts.mediatorPublicKey");
+  }
+  if (useMediator && !opts.flowToken) {
+    // the merge funds + drains an ephemeral mediator; without the flow token the
+    // forward out of it can never be co-signed, stranding the funds
+    throw new Error("generatePlan: useMediator=true requires opts.flowToken");
   }
 
   const selectedAllowances = new Set(opts.selectedAllowances ?? []);
@@ -297,6 +305,7 @@ export function generatePlan(
       metadata: {
         kind: "MediatorForward",
         mediatorPublicKey: opts.mediatorPublicKey,
+        flowToken: opts.flowToken ?? "",
         ultimateDestination: destination,
         ...(opts.memo?.type === "text" ? { memo: opts.memo.value } : {}),
       },
