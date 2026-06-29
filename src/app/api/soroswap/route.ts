@@ -111,6 +111,21 @@ function jsonResponse(body: Record<string, unknown>, status: number): Response {
 }
 
 // preserve upstream status. only content-type on the response — never echo auth headers
+// the amount fields whose full integer precision the slippage guard relies on
+const AMOUNT_FIELDS = ["amountOut", "otherAmountThreshold", "amountIn"];
+const UNQUOTED_AMOUNT_RE = new RegExp(
+  `("(?:${AMOUNT_FIELDS.join("|")})"\\s*:\\s*)(\\d+)(?=\\s*[,}\\]])`,
+  "g",
+);
+
+// quote any UNQUOTED integer value of a known amount field as a string, so
+// JSON.parse can't round it to a lossy Number. Already-quoted values (string
+// amounts) start with `"` after the colon and don't match, so they're left as-is.
+// exported for unit testing.
+export function preserveAmountPrecision(rawText: string): string {
+  return rawText.replace(UNQUOTED_AMOUNT_RE, '$1"$2"');
+}
+
 function forwardUpstream(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -334,9 +349,17 @@ export async function POST(request: Request): Promise<Response> {
 
   // read body as text first so we can fall back when upstream returns non-JSON (e.g. an HTML error page)
   const rawText = await upstreamResponse.text();
+  // quote/build responses carry stroop amounts that can exceed 2^53. A plain
+  // JSON.parse would round them to a lossy Number before we ever re-serialize,
+  // silently corrupting the value the browser's slippage guard depends on. Quote
+  // those fields as strings in the raw text FIRST so they survive as exact
+  // integers end-to-end (the SDK types them as bigint; the client accepts
+  // strings). See src/lib/adapters/soroswap/client.ts assertStroopField.
+  const preserve = opReq.op === "quote" || opReq.op === "build";
+  const textForParse = preserve ? preserveAmountPrecision(rawText) : rawText;
   let parsedBody: unknown;
   try {
-    parsedBody = rawText.length === 0 ? null : JSON.parse(rawText);
+    parsedBody = rawText.length === 0 ? null : JSON.parse(textForParse);
   } catch {
     parsedBody = { message: rawText };
   }

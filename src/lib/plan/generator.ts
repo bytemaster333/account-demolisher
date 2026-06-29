@@ -100,8 +100,8 @@ export function generatePlan(
     if (ids.length > 0) blendRepayIdsByPool.set(pool.poolId, ids);
   }
 
-  // fxdao debt payments, one per vault with debt > 0
-  const fxDebtIdsByDenom = new Map<string, string>();
+  // fxdao debt payments, one per vault with debt > 0. A full pay_debt closes the
+  // vault and reclaims its collateral in one call — no follow-up node needed.
   for (const vault of positions.fxdao) {
     if (vault.debt <= 0n) continue;
     const id = makeId("fxdao-pay-debt", vault.denomination);
@@ -110,14 +110,14 @@ export function generatePlan(
       kind: "PayFxDAODebt",
       dependencies: [],
       status: "pending",
-      description: `Pay FxDAO ${vault.denomination} debt of ${vault.debt.toString()}`,
+      // a full pay_debt closes the vault AND releases its collateral in one call
+      description: `Close FxDAO ${vault.denomination} vault (repay ${vault.debt.toString()}, reclaim ${vault.collateral.toString()} collateral)`,
       metadata: {
         kind: "PayFxDAODebt",
         vaultDenomination: vault.denomination,
         debt: vault.debt,
       },
     });
-    fxDebtIdsByDenom.set(vault.denomination, id);
   }
 
   // blend collateral + supply withdraws; depend on the pool's repays
@@ -182,25 +182,9 @@ export function generatePlan(
     soroswapWithdrawIds.push(id);
   }
 
-  // fxdao redeem depends on the same vault's debt payment
-  for (const vault of positions.fxdao) {
-    if (vault.collateral <= 0n) continue;
-    const id = makeId("fxdao-redeem", vault.denomination);
-    const debtId = fxDebtIdsByDenom.get(vault.denomination);
-    nodes.push({
-      id,
-      kind: "RedeemFxDAO",
-      dependencies: debtId ? [debtId] : [],
-      status: "pending",
-      description: `Redeem FxDAO ${vault.denomination} collateral (${vault.collateral.toString()} stroops)`,
-      metadata: {
-        kind: "RedeemFxDAO",
-        vaultDenomination: vault.denomination,
-        collateral: vault.collateral,
-        debt: vault.debt,
-      },
-    });
-  }
+  // (No separate FxDAO redeem step: pay_debt above already reclaims the vault's
+  // collateral. redeem() is an unrelated protocol op that burns stablecoin
+  // against the lowest vault in the list, not a way to close your own vault.)
 
   // blend emissions, one per pool, after its withdraws
   for (const pool of positions.blend) {

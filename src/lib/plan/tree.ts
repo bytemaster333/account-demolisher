@@ -41,7 +41,6 @@ export type PlanNodeKind =
   | "WithdrawBlend"
   | "WithdrawAquarius"
   | "WithdrawSoroswapLp"
-  | "RedeemFxDAO"
   | "ClaimBlendEmissions"
   | "ClaimAquariusRewards"
   | "ConvertSorobanToXLM"
@@ -107,15 +106,6 @@ export interface WithdrawSoroswapLpMetadata {
   readonly tokenA: string;
   readonly tokenB: string;
   readonly shareBalance: bigint;
-  readonly transaction?: Transaction;
-}
-
-export interface RedeemFxDAOMetadata {
-  readonly kind: "RedeemFxDAO";
-  readonly vaultDenomination: string;
-  readonly collateral: bigint;
-  // smallest-units synthetic debt the redeem op burns to release collateral
-  readonly debt: bigint;
   readonly transaction?: Transaction;
 }
 
@@ -202,10 +192,6 @@ export interface WithdrawSoroswapLpNode extends PlanNodeBase {
   readonly kind: "WithdrawSoroswapLp";
   readonly metadata: WithdrawSoroswapLpMetadata;
 }
-export interface RedeemFxDAONode extends PlanNodeBase {
-  readonly kind: "RedeemFxDAO";
-  readonly metadata: RedeemFxDAOMetadata;
-}
 export interface ClaimBlendEmissionsNode extends PlanNodeBase {
   readonly kind: "ClaimBlendEmissions";
   readonly metadata: ClaimBlendEmissionsMetadata;
@@ -242,7 +228,6 @@ export type PlanNode =
   | WithdrawBlendNode
   | WithdrawAquariusNode
   | WithdrawSoroswapLpNode
-  | RedeemFxDAONode
   | ClaimBlendEmissionsNode
   | ClaimAquariusRewardsNode
   | ConvertSorobanToXLMNode
@@ -377,7 +362,6 @@ export function isSorobanNode(node: PlanNode): boolean {
     case "WithdrawBlend":
     case "WithdrawAquarius":
     case "WithdrawSoroswapLp":
-    case "RedeemFxDAO":
     case "ClaimBlendEmissions":
     case "ClaimAquariusRewards":
     case "ConvertSorobanToXLM":

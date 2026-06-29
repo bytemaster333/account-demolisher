@@ -22,13 +22,16 @@ import { optionalVaultKeyScVal, type VaultKey } from "./prev-key";
 // five-minute timeout
 const MAX_TIMEOUT_SECONDS = 300;
 
-// the two exit transactions for one fxdao vault; both target the same VaultsContract
+// the unsigned exit for one fxdao vault. A single pay_debt(amount == total_debt)
+// closes the vault: the VaultsContract burns the caller's stablecoin AND releases
+// the full collateral back to the owner in that one call. (There is no separate
+// "redeem the collateral" step — redeem() is an unrelated protocol feature that
+// burns stablecoin against the LOWEST vault in the list, not the caller's.)
 export interface FxDAOVaultExit {
   readonly payDebt: Transaction;
-  readonly redeem: Transaction;
 }
 
-// build the two-step unsigned exit for one vault
+// build the unsigned close for one vault
 export async function buildVaultExit(
   vault: FxDAOVault,
   userPublicKey: string,
@@ -63,12 +66,10 @@ export async function buildVaultExit(
     vaultsContractId,
     prevKey,
   );
-  const redeem = buildRedeemTx(vault, userPublicKey, sourceAccount, network, vaultsContractId);
 
   assertTransactionAllowed(payDebt, network);
-  assertTransactionAllowed(redeem, network);
 
-  return { payDebt, redeem };
+  return { payDebt };
 }
 
 // resolve the VaultsContract id for the target network. fxdao has no futurenet deployment
@@ -132,31 +133,6 @@ function buildPayDebtTx(
     networkPassphrase: network.passphrase,
   })
     .addOperation(contract.call("pay_debt", ...callArgs))
-    .setTimeout(MAX_TIMEOUT_SECONDS)
-    .build();
-}
-
-// build redeem(caller, denomination, new_prev_key, amount)
-function buildRedeemTx(
-  vault: FxDAOVault,
-  userPublicKey: string,
-  sourceAccount: Horizon.AccountResponse,
-  network: NetworkConfig,
-  vaultsContractId: string,
-): Transaction {
-  const contract = new Contract(vaultsContractId);
-  const callArgs: xdr.ScVal[] = [
-    scvAddress(userPublicKey),
-    nativeToScVal(vault.denomination, { type: "symbol" }),
-    optionalVaultKeyNone(), // new_prev_key — None when amount == debt of the lowest vault
-    nativeToScVal(vault.debt, { type: "u128" }), // burn full debt
-  ];
-
-  return new TransactionBuilder(sourceAccount, {
-    fee: BASE_FEE,
-    networkPassphrase: network.passphrase,
-  })
-    .addOperation(contract.call("redeem", ...callArgs))
     .setTimeout(MAX_TIMEOUT_SECONDS)
     .build();
 }

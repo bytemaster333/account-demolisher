@@ -218,3 +218,119 @@ describe("executePlanTreeOnChain — horizon retry on FinalClassicTx prep", () =
     expect(deps.submitClassic).not.toHaveBeenCalled();
   });
 });
+
+describe("executePlanTreeOnChain — merge fee/reprice retry", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    auditAccount.mockResolvedValue(MERGEABLE_AUDIT);
+    resolveCreditPaths.mockResolvedValue(new Map());
+    batchClassicDemolition.mockReturnValue([{ ops: [] }]);
+    buildClassicTransaction.mockReturnValue({ transaction: {} });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("retries with a higher fee on tx_insufficient_fee, then succeeds", async () => {
+    const deps = makeDeps();
+    (deps.submitClassic as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(
+        new Error('submitClassic rejected: {"transaction":"tx_insufficient_fee"}'),
+      )
+      .mockResolvedValueOnce({ txHash: "HASH2", ledger: 43 });
+
+    const { tree } = makeFinalClassicTree();
+    const promise = executePlanTreeOnChain(
+      { publicKey: "GUSER", tree, previousReceipts: {} },
+      deps,
+    );
+    await vi.runAllTimersAsync();
+    const output = await promise;
+
+    // re-audited on retry, and the second build bid a strictly higher fee
+    expect(auditAccount).toHaveBeenCalledTimes(2);
+    const fees = (buildClassicTransaction as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[3]);
+    expect(fees[1]).toBeGreaterThan(fees[0]);
+    expect(output.receipts["final"]).toEqual({ txHash: "HASH2", ledger: 43 });
+  });
+
+  it("retries on op_under_dest_min (re-resolving paths) without changing the fee", async () => {
+    const deps = makeDeps();
+    (deps.submitClassic as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(
+        new Error('submitClassic rejected: {"operations":["op_under_dest_min"]}'),
+      )
+      .mockResolvedValueOnce({ txHash: "HASH2", ledger: 44 });
+
+    const { tree } = makeFinalClassicTree();
+    const promise = executePlanTreeOnChain(
+      { publicKey: "GUSER", tree, previousReceipts: {} },
+      deps,
+    );
+    await vi.runAllTimersAsync();
+    await promise;
+
+    // paths re-resolved on the retry; fee held steady (price, not congestion)
+    expect(resolveCreditPaths).toHaveBeenCalledTimes(2);
+    const fees = (buildClassicTransaction as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[3]);
+    expect(fees[1]).toBe(fees[0]);
+  });
+
+  it("does NOT retry a deterministic rejection (tx_bad_seq) — fails fast", async () => {
+    const deps = makeDeps();
+    (deps.submitClassic as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('submitClassic rejected: {"transaction":"tx_bad_seq"}'),
+    );
+
+    const { tree } = makeFinalClassicTree();
+    const promise = executePlanTreeOnChain(
+      { publicKey: "GUSER", tree, previousReceipts: {} },
+      deps,
+    );
+    const settled = expect(promise).rejects.toThrow(/tx_bad_seq/);
+    await vi.runAllTimersAsync();
+    await settled;
+    expect(deps.submitClassic).toHaveBeenCalledTimes(1);
+    expect(auditAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it("bids a surge-aware fee from feeStats on the first attempt", async () => {
+    const deps = makeDeps({
+      horizon: {
+        loadAccount: vi.fn(async () => ({ accountId: () => "GUSER" })),
+        feeStats: vi.fn(async () => ({ max_fee: { p90: "5000" } })),
+      } as never,
+    });
+
+    const { tree } = makeFinalClassicTree();
+    const promise = executePlanTreeOnChain(
+      { publicKey: "GUSER", tree, previousReceipts: {} },
+      deps,
+    );
+    await vi.runAllTimersAsync();
+    await promise;
+
+    const firstFee = (buildClassicTransaction as ReturnType<typeof vi.fn>).mock.calls[0]![3];
+    expect(firstFee).toBe(5000);
+  });
+
+  it("gives up after MAX attempts on a persistent fee rejection", async () => {
+    const deps = makeDeps();
+    (deps.submitClassic as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('submitClassic rejected: {"transaction":"tx_insufficient_fee"}'),
+    );
+
+    const { tree } = makeFinalClassicTree();
+    const promise = executePlanTreeOnChain(
+      { publicKey: "GUSER", tree, previousReceipts: {} },
+      deps,
+    );
+    const settled = expect(promise).rejects.toThrow(/tx_insufficient_fee/);
+    await vi.runAllTimersAsync();
+    await settled;
+    // MAX_MERGE_ATTEMPTS = 3
+    expect(deps.submitClassic).toHaveBeenCalledTimes(3);
+  });
+});

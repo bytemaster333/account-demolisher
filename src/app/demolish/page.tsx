@@ -148,7 +148,6 @@ function phaseForNode(node: PlanNode): string {
     case "WithdrawBlend":
     case "WithdrawAquarius":
     case "WithdrawSoroswapLp":
-    case "RedeemFxDAO":
       return "DeFi withdrawals";
     case "ClaimBlendEmissions":
     case "ClaimAquariusRewards":
@@ -179,8 +178,6 @@ function nodeLabel(node: PlanNode): string {
       return "Withdraw Aquarius LP";
     case "WithdrawSoroswapLp":
       return "Withdraw Soroswap LP";
-    case "RedeemFxDAO":
-      return "Redeem FxDAO vault";
     case "ClaimBlendEmissions":
       return "Claim Blend emissions";
     case "ClaimAquariusRewards":

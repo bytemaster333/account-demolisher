@@ -97,13 +97,16 @@ describe("generatePlan — protocol ordering invariants", () => {
     expect(indexOf(order, repayId)).toBeLessThan(indexOf(order, withdrawId));
   });
 
-  it("wires and orders FxDAO pay-debt before redeem for the same denomination", () => {
+  it("emits a single FxDAO pay-debt node and no separate redeem node", () => {
     const tree = generatePlan(makeAudit(), richPositions(), [], DEST);
-    const payDebtId = id("fxdao-pay-debt", DENOM);
-    const redeemId = id("fxdao-redeem", DENOM);
-    expect(dependsOn(tree, redeemId, payDebtId)).toBe(true);
-    const order = topologicalOrder(tree);
-    expect(indexOf(order, payDebtId)).toBeLessThan(indexOf(order, redeemId));
+    // pay_debt (full) closes the vault and reclaims collateral in one call
+    expect(tree.allNodes.has(id("fxdao-pay-debt", DENOM))).toBe(true);
+    // the old RedeemFxDAO node is gone — redeem() acts on the lowest vault, not
+    // the caller's, so it was never a correct close-your-vault step
+    expect(tree.allNodes.has(id("fxdao-redeem", DENOM))).toBe(false);
+    for (const node of tree.allNodes.values()) {
+      expect(node.kind).not.toBe("RedeemFxDAO");
+    }
   });
 
   it("wires and orders Blend emissions claim after its withdraws and before the merge", () => {

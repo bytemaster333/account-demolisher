@@ -315,7 +315,8 @@ async function hydrateNode(
         {
           denomination: node.metadata.vaultDenomination,
           debt: node.metadata.debt,
-          // collateral lives on the sibling RedeemFxDAO node; pay_debt ignores it
+          // pay_debt uses only the debt; a full repayment releases the vault's
+          // collateral to the owner on-chain in the same call.
           collateral: 0n,
         },
         userPublicKey,
@@ -325,31 +326,6 @@ async function hydrateNode(
         prevKey,
       );
       setTransaction(node, exit.payDebt);
-      return;
-    }
-
-    case "RedeemFxDAO": {
-      if (node.metadata.debt <= 0n) {
-        throw new Error(
-          `RedeemFxDAO: vault debt is ${node.metadata.debt.toString()} (must be > 0); cannot build redeem`,
-        );
-      }
-      const sourceAccount = await getSourceAccount();
-      const fn = a.buildVaultExit ?? buildVaultExit;
-      // redeem doesn't take prev_key; pass null and pick the redeem half only
-      const exit = await fn(
-        {
-          denomination: node.metadata.vaultDenomination,
-          debt: node.metadata.debt,
-          collateral: node.metadata.collateral,
-        },
-        userPublicKey,
-        deps.network,
-        sourceAccount,
-        FXDAO_MAINNET_STABLE_ISSUER,
-        null,
-      );
-      setTransaction(node, exit.redeem);
       return;
     }
 
@@ -396,7 +372,6 @@ function nodeHasTransaction(node: PlanNode): boolean {
     case "WithdrawBlend":
     case "WithdrawAquarius":
     case "WithdrawSoroswapLp":
-    case "RedeemFxDAO":
     case "ClaimBlendEmissions":
     case "ClaimAquariusRewards":
     case "ConvertSorobanToXLM":
@@ -418,7 +393,6 @@ function setTransaction(node: PlanNode, tx: Transaction): void {
     case "WithdrawBlend":
     case "WithdrawAquarius":
     case "WithdrawSoroswapLp":
-    case "RedeemFxDAO":
     case "ClaimBlendEmissions":
     case "ClaimAquariusRewards":
     case "ConvertSorobanToXLM":

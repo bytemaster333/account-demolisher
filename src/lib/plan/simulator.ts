@@ -73,8 +73,6 @@ function getSorobanTransaction(node: PlanNode): Transaction | undefined {
       return node.metadata.transaction;
     case "WithdrawSoroswapLp":
       return node.metadata.transaction;
-    case "RedeemFxDAO":
-      return node.metadata.transaction;
     case "ClaimBlendEmissions":
       return node.metadata.transaction;
     case "ClaimAquariusRewards":

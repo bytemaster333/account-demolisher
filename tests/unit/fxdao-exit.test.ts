@@ -5,11 +5,13 @@ import { buildVaultExit } from "@/lib/adapters/fxdao/exit";
 import type { FxDAOVault } from "@/lib/adapters/fxdao/client";
 import { TESTNET } from "@/lib/config/networks";
 
-// buildVaultExit encodes two real VaultsContract calls (pay_debt, redeem) whose
-// arg shape must match the on-chain host: new_prev_key = None and amount = the
-// full vault.debt (u128). A silent regression in either would still build a
-// signable-but-doomed tx, so we assert the guard rejections and DECODE the built
-// op args rather than trusting the builder.
+// buildVaultExit encodes ONE real VaultsContract call, pay_debt, whose arg shape
+// must match the on-chain host: new_prev_key = None and amount = the full
+// vault.debt (u128). A full pay_debt closes the vault and releases its collateral
+// in the same call, so there is NO separate redeem step (redeem() acts on the
+// protocol's lowest vault, not the caller's). A silent regression would still
+// build a signable-but-doomed tx, so we DECODE the built op args rather than
+// trusting the builder.
 
 const USER = "GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3";
 const ISSUER = "GAVH5ZWACAY2PHPUG4FL3LHHJIYIHOFPSIUGM2KHK25CJWXHAV6QKDMN";
@@ -80,23 +82,11 @@ describe("buildVaultExit encoding", () => {
     expect(scValToNative(args[3]!)).toBe(DEBT);
   });
 
-  it("encodes redeem with new_prev_key=None and amount=full debt", async () => {
-    const { redeem } = await buildVaultExit(
-      vault(DEBT),
-      USER,
-      TESTNET,
-      sourceAccount(),
-      ISSUER,
-      null,
-    );
-
-    const { fn, args } = invokeArgs(redeem);
-    expect(fn).toBe("redeem");
-    // redeem(caller, denomination, new_prev_key, amount)
-    expect(args).toHaveLength(4);
-    // arg[2] is new_prev_key — hard-coded None
-    expect(isNoneOptionalVaultKey(args[2]!)).toBe(true);
-    // arg[3] is the burn amount — must equal the full vault debt
-    expect(scValToNative(args[3]!)).toBe(DEBT);
+  it("builds only pay_debt — no redeem step (redeem targets the lowest vault, not the caller's)", async () => {
+    const exit = await buildVaultExit(vault(DEBT), USER, TESTNET, sourceAccount(), ISSUER, null);
+    // the shape carries a single tx; a resurrected redeem field would fail here
+    expect(Object.keys(exit)).toEqual(["payDebt"]);
+    expect((exit as unknown as Record<string, unknown>).redeem).toBeUndefined();
+    expect(invokeArgs(exit.payDebt).fn).toBe("pay_debt");
   });
 });
