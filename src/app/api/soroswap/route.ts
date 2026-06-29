@@ -218,8 +218,44 @@ function planUpstreamCall(req: OpRequest): UpstreamCall | { error: string } {
   }
 }
 
+const DEV_ALLOWED_ORIGINS = new Set<string>([
+  "http://localhost:3000",
+  "http://localhost:3001",
+  "http://localhost:3002",
+]);
+
+// same-origin / CSRF control for this unauthenticated proxy. The app's own
+// browser client is same-origin, so it's always allowed; a cross-origin site
+// trying to drive the user's browser into spending our Soroswap API quota is
+// rejected. A non-browser caller (no Origin header) is allowed but bounded by
+// the per-IP rate limit — a fully closed control would need request auth this
+// proxy intentionally does not have.
+function isAllowedOrigin(request: Request): boolean {
+  const origin = request.headers.get("origin");
+  if (origin === null) return true;
+  let originHost: string;
+  try {
+    originHost = new URL(origin).host;
+  } catch {
+    return false;
+  }
+  try {
+    if (new URL(request.url).host === originHost) return true;
+  } catch {
+    // request.url should always parse; fall through to the allow-list
+  }
+  return DEV_ALLOWED_ORIGINS.has(origin);
+}
+
 // rate-limit, parse op envelope, plan the upstream call, attach authorization, forward verbatim
 export async function POST(request: Request): Promise<Response> {
+  if (!isAllowedOrigin(request)) {
+    return jsonResponse(
+      { ok: false, code: "FORBIDDEN_ORIGIN", reason: "Cross-origin requests are not accepted." },
+      403,
+    );
+  }
+
   const ip = getRemoteIp(request);
 
   if (!consumeToken(ip)) {
