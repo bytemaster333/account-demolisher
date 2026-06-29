@@ -63,7 +63,7 @@ export default function PlanIndexPage(): React.JSX.Element {
 
   return (
     <AppShell>
-      <PageContainer width={1080}>
+      <PageContainer>
         <PageHeader
           kicker="Multisig"
           title="Open a plan to sign"

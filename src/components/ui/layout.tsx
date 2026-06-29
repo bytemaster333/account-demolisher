@@ -1,11 +1,14 @@
 import type { CSSProperties, ReactNode } from "react";
 import { RADIUS } from "./tokens";
 
-// One consistent page frame for the app pages. Default width keeps /demolish,
-// /allowances and /plan from each using a different container.
+// One consistent page frame for the app pages. The default width matches the
+// /demolish flow's content column so /allowances and /plan line up with it
+// instead of each using a different container.
+export const PAGE_CONTENT_WIDTH = 760;
+
 export function PageContainer({
   children,
-  width = 1080,
+  width = PAGE_CONTENT_WIDTH,
   style,
 }: {
   readonly children: ReactNode;

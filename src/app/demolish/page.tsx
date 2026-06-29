@@ -494,6 +494,25 @@ function DemolishFlow(): React.JSX.Element {
     if (trimmed.length === 0) return null;
     return lookupCex(trimmed);
   }, [form.destination]);
+
+  // gate the "Build & simulate" button on a usable destination so the user gets
+  // immediate feedback instead of being able to proceed and only then hit an
+  // error. Empty is left hint-free (self-evident); a bad or self address is
+  // explained inline. (onStart still re-validates as the authoritative check.)
+  const destinationGate = useMemo<{ ready: boolean; hint: string | null }>(() => {
+    const trimmed = form.destination.trim();
+    if (trimmed.length === 0) return { ready: false, hint: null };
+    if (!G_ADDRESS.safeParse(trimmed).success) {
+      return { ready: false, hint: "That isn't a valid Stellar G… address." };
+    }
+    if (trimmed === publicKey) {
+      return {
+        ready: false,
+        hint: "Destination can't be your own account — the network rejects a self-merge.",
+      };
+    }
+    return { ready: true, hint: null };
+  }, [form.destination, publicKey]);
   const useMediator = cex !== null;
 
   const setConnector = useCallback((c: Connector | null) => {
@@ -699,7 +718,7 @@ function DemolishFlow(): React.JSX.Element {
   // ────────────────────────────────────────────────────────────────────────────
 
   return (
-    <main style={{ maxWidth: 1080, margin: "0 auto", padding: "40px 24px 96px" }}>
+    <main style={{ maxWidth: 760, margin: "0 auto", padding: "40px 24px 96px" }}>
       {/* IDLE — connect */}
       {isIdle ? (
         <IdleConnect
@@ -765,7 +784,7 @@ function DemolishFlow(): React.JSX.Element {
           {/* single-column flow content — configure / review / sign-off / cancelled.
               No side rail and no modals: the plan detail lives in the sign-off step. */}
           {!(isDiscovering || isPreviewing) && !isExecuting && !isSucceeded && !isFailed ? (
-            <div style={{ maxWidth: isConfiguring ? 640 : 760, margin: "0 auto" }}>
+            <div style={{ maxWidth: 760, margin: "0 auto" }}>
               {isConfiguring ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
                   {multisigRequired && multisig ? (
@@ -792,7 +811,10 @@ function DemolishFlow(): React.JSX.Element {
                     hasMemo={hasMemo}
                     formError={formError}
                     isBusy={false}
-                    canStart={publicKey !== null && hasConnector && multisigReady}
+                    canStart={
+                      publicKey !== null && hasConnector && multisigReady && destinationGate.ready
+                    }
+                    startHint={destinationGate.hint}
                     onGeneratePlan={onStart}
                     audit={audit}
                     isDemo={isDemo}
@@ -2391,6 +2413,7 @@ function ConfigurePanel({
   formError,
   isBusy,
   canStart,
+  startHint,
   onGeneratePlan,
   audit,
   isDemo,
@@ -2402,6 +2425,8 @@ function ConfigurePanel({
   readonly formError: string | null;
   readonly isBusy: boolean;
   readonly canStart: boolean;
+  // why the Build button is disabled (bad/self destination); null = no note
+  readonly startHint: string | null;
   readonly onGeneratePlan: () => void;
   readonly audit: AccountAudit | null;
   readonly isDemo: boolean;
@@ -2819,14 +2844,24 @@ function ConfigurePanel({
           </p>
         ) : null}
 
-        <div style={{ marginTop: 20 }}>
+        {startHint !== null && !isBusy ? (
+          <p
+            role="status"
+            data-testid="demolish-start-hint"
+            style={{ margin: "12px 0 0", fontSize: 12.5, color: "var(--warning)", lineHeight: 1.5 }}
+          >
+            {startHint}
+          </p>
+        ) : null}
+
+        <div style={{ marginTop: startHint !== null && !isBusy ? 10 : 20 }}>
           <Button
             variant="primary"
             size="lg"
             onClick={onGeneratePlan}
             disabled={!canStart || isBusy}
             loading={isBusy}
-            disabledReason="Connect an account and meet any signing threshold first"
+            disabledReason={startHint ?? "Connect an account and meet any signing threshold first"}
             data-testid="demolish-start"
             style={{ width: "100%" }}
             iconRight={
