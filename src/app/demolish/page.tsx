@@ -718,7 +718,7 @@ function DemolishFlow(): React.JSX.Element {
   // ────────────────────────────────────────────────────────────────────────────
 
   return (
-    <main style={{ maxWidth: 760, margin: "0 auto", padding: "40px 24px 96px" }}>
+    <main style={{ maxWidth: 1080, margin: "0 auto", padding: "40px 24px 96px" }}>
       {/* IDLE — connect */}
       {isIdle ? (
         <IdleConnect
@@ -784,7 +784,7 @@ function DemolishFlow(): React.JSX.Element {
           {/* single-column flow content — configure / review / sign-off / cancelled.
               No side rail and no modals: the plan detail lives in the sign-off step. */}
           {!(isDiscovering || isPreviewing) && !isExecuting && !isSucceeded && !isFailed ? (
-            <div style={{ maxWidth: 760, margin: "0 auto" }}>
+            <div style={{ maxWidth: 1080, margin: "0 auto" }}>
               {isConfiguring ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
                   {multisigRequired && multisig ? (
@@ -937,7 +937,7 @@ function IdleConnect({
   // once demo setup starts it takes over the screen as a dedicated step
   const [demoActive, setDemoActive] = useState(false);
   return (
-    <div style={{ maxWidth: demoActive ? 640 : 720, margin: "8px auto 0" }}>
+    <div style={{ maxWidth: demoActive ? 640 : 1080, margin: "8px auto 0" }}>
       {!demoActive ? (
         <>
           <div
