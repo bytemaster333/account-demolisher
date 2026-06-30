@@ -753,7 +753,7 @@ function DemolishFlow(): React.JSX.Element {
               row with a single centered loading widget — no side rail, no
               form behind it. */}
           {(isDiscovering || isPreviewing) && tree === null ? (
-            <div style={{ maxWidth: 560, margin: "0 auto" }}>
+            <div style={{ maxWidth: 1080, margin: "0 auto" }}>
               <LeftLoadingCard message={isDiscovering ? "Auditing account…" : "Building plan…"} />
             </div>
           ) : null}
@@ -764,7 +764,7 @@ function DemolishFlow(): React.JSX.Element {
               body throughout, and the footer holds the right actions per state.
               no 2-column reflow when execution finishes. */}
           {(isExecuting || isSucceeded || isFailed) && tree !== null ? (
-            <div style={{ maxWidth: 640, margin: "0 auto" }}>
+            <div style={{ maxWidth: 1080, margin: "0 auto" }}>
               <DemolishStatusWidget
                 state={isSucceeded ? "succeeded" : isFailed ? "failed" : "executing"}
                 planGroups={planGroups}
@@ -937,7 +937,7 @@ function IdleConnect({
   // once demo setup starts it takes over the screen as a dedicated step
   const [demoActive, setDemoActive] = useState(false);
   return (
-    <div style={{ maxWidth: demoActive ? 640 : 1080, margin: "8px auto 0" }}>
+    <div style={{ maxWidth: 1080, margin: "8px auto 0" }}>
       {!demoActive ? (
         <>
           <div
