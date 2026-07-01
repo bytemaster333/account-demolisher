@@ -178,6 +178,64 @@ function nodeLabel(node: PlanNode): string {
   }
 }
 
+// plain, non-jargon primary label for a plan step. The protocol name from
+// nodeLabel() is still shown as secondary text so power users keep the detail.
+function nodePlainLabel(node: PlanNode): string {
+  switch (node.kind) {
+    case "RevokeAllowance":
+      return "Cancel a token spending permission";
+    case "RepayBlend":
+      return "Repay a loan on Blend";
+    case "PayFxDAODebt":
+      return "Repay your FxDAO vault";
+    case "WithdrawBlend":
+      return "Withdraw from Blend (a lending app)";
+    case "WithdrawAquarius":
+      return "Withdraw from an Aquarius pool";
+    case "WithdrawSoroswapLp":
+      return "Withdraw from a Soroswap pool";
+    case "ClaimBlendEmissions":
+      return "Collect Blend rewards";
+    case "ClaimAquariusRewards":
+      return "Collect Aquarius rewards";
+    case "ConvertSorobanToXLM":
+      return "Turn a leftover token into XLM";
+    case "TransferAsIs":
+      return "Move a leftover token out";
+    case "BackstopQueue":
+      return "Start a Blend backstop withdrawal";
+    case "FinalClassicTx":
+      return "Close the account and send everything";
+    case "MediatorForward":
+      return "Deliver your funds to the destination";
+  }
+}
+
+// plain display name for a plan phase group. The grouping key stays as
+// phaseForNode() so logic (e.g. the irreversible check) is unaffected.
+function phasePlainLabel(phase: string): string {
+  switch (phase) {
+    case "Allowances":
+      return "Token permissions";
+    case "DeFi debt":
+      return "Repay loans";
+    case "DeFi withdrawals":
+      return "Withdraw from apps";
+    case "Claim rewards":
+      return "Collect rewards";
+    case "Liquidation":
+      return "Convert leftovers to XLM";
+    case "Queued backstop":
+      return "Backstop withdrawal";
+    case "Merge":
+      return "Close the account";
+    case "Mediator forward":
+      return "Deliver to destination";
+    default:
+      return phase;
+  }
+}
+
 // network fee for a node, in stroops (0 when not simulated).
 // exported for unit tests.
 export function nodeFeeStroops(node: PlanNode): number {
@@ -235,10 +293,10 @@ function buildFlowSteps(args: {
   const labels = [
     "Connect",
     "Configure",
-    ...(hasResolve ? ["Resolve"] : []),
-    ...(hasAcknowledge ? ["Acknowledge"] : []),
+    ...(hasResolve ? ["Fix issues"] : []),
+    ...(hasAcknowledge ? ["Warnings"] : []),
     "Review",
-    "Execute",
+    "Close",
   ];
 
   const activeLabel =
@@ -247,12 +305,12 @@ function buildFlowSteps(args: {
       : phase === "configure"
         ? "Configure"
         : phase === "resolve"
-          ? "Resolve"
+          ? "Fix issues"
           : phase === "acknowledge"
-            ? "Acknowledge"
+            ? "Warnings"
             : phase === "review"
               ? "Review"
-              : "Execute";
+              : "Close";
   // a phase whose step was omitted (shouldn't happen) falls back to Review
   let activeIdx = labels.indexOf(activeLabel);
   if (activeIdx < 0) activeIdx = labels.indexOf("Review");
@@ -1569,8 +1627,8 @@ function DemolishStatusWidget({
                 {state === "succeeded"
                   ? "Account closed"
                   : state === "failed"
-                    ? "Demolition failed"
-                    : "Executing demolition"}
+                    ? "Couldn't finish closing the account"
+                    : "Closing your account"}
               </h2>
               <span
                 style={{
@@ -1595,13 +1653,22 @@ function DemolishStatusWidget({
                   <strong style={{ color: "var(--fg)", fontFamily: "'Geist Mono', monospace" }}>
                     {totalXlm} XLM
                   </strong>{" "}
-                  forwarded — the account no longer exists on the ledger.
+                  was sent to{" "}
+                  <span style={{ fontFamily: "'Geist Mono', monospace", color: "var(--fg-2)" }}>
+                    {destination.length > 10
+                      ? `${destination.slice(0, 6)}…${destination.slice(-4)}`
+                      : destination}
+                  </span>
+                  . This account is now permanently closed. If that&apos;s an exchange or another
+                  wallet, the funds will appear there shortly.
                 </>
               ) : state === "failed" ? (
                 (parsed?.summary ?? "An unknown error occurred while running the plan.")
               ) : (
                 <>
-                  Signing and submitting each step in order — your wallet may prompt for each.{" "}
+                  Your wallet will pop up to approve each step — click{" "}
+                  <strong style={{ color: "var(--fg)" }}>Sign</strong> in your wallet when it
+                  appears. If nothing seems to happen, check for a wallet window behind this tab.{" "}
                   {elapsed > 0 ? `Running for ${elapsed}s.` : ""}
                 </>
               )}
@@ -1687,9 +1754,9 @@ function DemolishStatusWidget({
               textDecoration: "none",
               font: "500 12px/1 'Geist Mono', monospace",
             }}
-            title="Open merge tx on stellar.expert"
+            title="Open the public record of this transaction on a block explorer"
           >
-            <span style={{ fontSize: 10, color: "var(--fg-3)" }}>MERGE TX</span>
+            <span style={{ fontSize: 10, color: "var(--fg-3)" }}>PROOF</span>
             <span>{truncateHash(mergeHash)}</span>
             <svg
               width="11"
@@ -1704,6 +1771,44 @@ function DemolishStatusWidget({
               <path d="M7 17 17 7M9 7h8v8" />
             </svg>
           </a>
+        ) : null}
+
+        {state === "failed" ? (
+          <div
+            role="note"
+            style={{
+              display: "flex",
+              gap: 10,
+              marginTop: 14,
+              padding: "12px 14px",
+              borderRadius: 12,
+              border: "1px solid color-mix(in srgb, var(--success) 35%, transparent)",
+              fontSize: 12.5,
+              lineHeight: 1.55,
+              color: "var(--fg-2)",
+            }}
+          >
+            <svg
+              width="17"
+              height="17"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="var(--success)"
+              strokeWidth={2.4}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              style={{ flexShrink: 0, marginTop: 1 }}
+              aria-hidden
+            >
+              <path d="M20 6L9 17l-5-5" />
+            </svg>
+            <span>
+              <strong style={{ color: "var(--fg)", fontWeight: 600 }}>Your funds are safe.</strong>{" "}
+              Your account is still open and its balance is untouched. Any step that already
+              finished (marked ✓ above) is done and recorded on Stellar — nothing was lost. Press
+              Retry to continue from where it stopped.
+            </span>
+          </div>
         ) : null}
 
         {state === "failed" && parsed && parsed.ops.length > 0 ? (
@@ -1771,7 +1876,7 @@ function DemolishStatusWidget({
                   textTransform: "uppercase",
                 }}
               >
-                {g.phase}
+                {phasePlainLabel(g.phase)}
               </span>
             </div>
             {g.nodes.map((n) => (
@@ -1839,6 +1944,7 @@ function DemolishStatusWidget({
                 type="button"
                 onClick={copyReceipt}
                 data-testid="demolish-copy-receipt"
+                title="Copies a text record of this closure and its transaction links — keep it for your records, since a closed account can't be looked up later."
                 style={{
                   height: 40,
                   padding: "0 16px",
@@ -1852,7 +1958,7 @@ function DemolishStatusWidget({
                   whiteSpace: "nowrap",
                 }}
               >
-                {copied ? "Copied ✓" : "Copy receipt"}
+                {copied ? "Copied ✓" : "Save a receipt"}
               </button>
               <Link
                 href="/"
@@ -2029,7 +2135,7 @@ function ReviewPanel({
                   padding: "11px 14px 5px",
                 }}
               >
-                <SectionLabel>{g.phase}</SectionLabel>
+                <SectionLabel>{phasePlainLabel(g.phase)}</SectionLabel>
                 {irreversible ? <Badge tone="danger">Irreversible</Badge> : null}
               </div>
               <div style={{ padding: "0 6px 6px" }}>
@@ -2350,6 +2456,14 @@ function PlanRow({
                 color: isFailed ? "var(--danger)" : "var(--fg)",
               }}
             >
+              {nodePlainLabel(node)}
+            </span>
+            <span
+              style={{
+                font: "500 10.5px/1.2 'Geist Mono', monospace",
+                color: "var(--fg-3)",
+              }}
+            >
               {nodeLabel(node)}
             </span>
             {isSkipped ? (
@@ -2417,10 +2531,10 @@ function PlanRow({
                   gap: 4,
                   whiteSpace: "nowrap",
                 }}
-                title={node.executed.txHash}
+                title={`Open the public record of this step on a block explorer (${node.executed.txHash})`}
                 onClick={(e) => e.stopPropagation()}
               >
-                <span>tx {truncateHash(node.executed.txHash)}</span>
+                <span>proof {truncateHash(node.executed.txHash)}</span>
                 <svg
                   width="10"
                   height="10"
@@ -3018,19 +3132,14 @@ function AckRow({
   checked,
   onChange,
   testId,
+  label = "I've read and understand this",
 }: {
   readonly checked: boolean;
   readonly onChange: (v: boolean) => void;
   readonly testId: string;
+  readonly label?: string;
 }): React.JSX.Element {
-  return (
-    <Checkbox
-      checked={checked}
-      onChange={onChange}
-      data-testid={testId}
-      label="I've read and understand this"
-    />
-  );
+  return <Checkbox checked={checked} onChange={onChange} data-testid={testId} label={label} />;
 }
 
 const ARROW_RIGHT = (
@@ -3074,15 +3183,16 @@ function ResolvePanel({
       <div>
         <div style={{ marginBottom: 12 }}>
           <Badge tone="warning" dot>
-            Action needed
+            You need to do something here
           </Badge>
         </div>
         <h2 style={{ margin: 0, fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em" }}>
-          Resolve before you continue
+          Fix these before continuing
         </h2>
         <p style={{ margin: "8px 0 0", fontSize: 14, lineHeight: 1.55, color: "var(--fg-2)" }}>
-          This account holds balances that block the close-out. Return each to its issuer, or
-          dispose of it yourself first, then rebuild the plan.
+          This account holds tokens that can&apos;t be turned into XLM, so it can&apos;t close while
+          it still has them. Sell or move them from another app first, or send each one back to
+          whoever created it (you&apos;ll get nothing back) — then re-check.
         </p>
       </div>
 
@@ -3120,7 +3230,7 @@ function ResolvePanel({
             </svg>
           }
         >
-          Rebuild plan
+          Re-check and continue
         </Button>
       </div>
     </div>
@@ -3181,15 +3291,15 @@ function AcknowledgePanel({
       <div>
         <div style={{ marginBottom: 12 }}>
           <Badge tone="warning" dot>
-            Before you continue
+            Just read — nothing to fix
           </Badge>
         </div>
         <h2 style={{ margin: 0, fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em" }}>
-          Read and acknowledge
+          A few things to know
         </h2>
         <p style={{ margin: "8px 0 0", fontSize: 14, lineHeight: 1.55, color: "var(--fg-2)" }}>
-          These don&apos;t block the close-out, but make sure you understand each one before you
-          continue.
+          None of these stop you from closing the account — please read each one so nothing
+          surprises you, then confirm you understand.
         </p>
       </div>
 
@@ -3231,10 +3341,12 @@ function AcknowledgePanel({
               checked={acks.autoHandled === true}
               onChange={(v) => setAck("autoHandled", v)}
               testId="ack-autohandled"
+              label="Got it"
             />
           }
         >
-          The close-out takes care of these automatically — you keep the value, no action needed:
+          Closing the account takes care of these automatically — you keep the value, nothing for
+          you to do:
           <ul
             style={{
               listStyle: "disc",
@@ -3257,7 +3369,7 @@ function AcknowledgePanel({
       {highValue ? (
         <Notice
           tone="warning"
-          title="High-value account"
+          title="Large balance — double-check before closing"
           data-testid="high-value-notice"
           footer={
             <AckRow
@@ -3267,11 +3379,22 @@ function AcknowledgePanel({
             />
           }
         >
-          This account holds {highValue.totalXlm} XLM (over {HIGH_VALUE_THRESHOLD_XLM} XLM). Once
-          merged it cannot be recovered.
+          This account holds {highValue.totalXlm} XLM — a large balance (over{" "}
+          {HIGH_VALUE_THRESHOLD_XLM} XLM). Closing it moves this XLM to your destination and
+          permanently deletes this account. Double-check the amount and the destination before you
+          continue — this can&apos;t be undone.
         </Notice>
       ) : null}
 
+      {!allAcked ? (
+        <p
+          role="status"
+          data-testid="acknowledge-hint"
+          style={{ margin: "4px 0 0", fontSize: 12.5, color: "var(--warning)", lineHeight: 1.5 }}
+        >
+          Tick every box above to continue.
+        </p>
+      ) : null}
       <div style={{ display: "flex", gap: 11, marginTop: 4 }}>
         <Button variant="secondary" onClick={onBack} data-testid="acknowledge-back">
           Back
@@ -3280,7 +3403,7 @@ function AcknowledgePanel({
           variant="primary"
           onClick={onContinue}
           disabled={!allAcked}
-          disabledReason={allAcked ? undefined : "Acknowledge every item to continue"}
+          disabledReason={allAcked ? undefined : "Tick every box above to continue"}
           data-testid="acknowledge-continue"
           style={{ flex: 1 }}
           iconRight={ARROW_RIGHT}
@@ -3347,8 +3470,12 @@ function CancelledPanel({ onResume }: { readonly onResume: () => void }): React.
         textAlign: "center",
       }}
     >
-      <p style={{ margin: "0 0 16px", fontSize: 14, color: "var(--fg-2)" }}>
-        Demolition was cancelled. No transactions were signed or submitted.
+      <h2 style={{ margin: "0 0 6px", fontSize: 18, fontWeight: 600, color: "var(--fg)" }}>
+        Nothing was changed
+      </h2>
+      <p style={{ margin: "0 0 16px", fontSize: 14, color: "var(--fg-2)", lineHeight: 1.5 }}>
+        You cancelled before anything was signed, so your account is completely untouched. You can
+        safely leave, or start over whenever you&apos;re ready.
       </p>
       <button
         type="button"
