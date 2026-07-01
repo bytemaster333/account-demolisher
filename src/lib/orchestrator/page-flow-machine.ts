@@ -159,7 +159,7 @@ const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({ input 
     } catch (e) {
       console.warn("[demolish] allowance enumeration skipped:", e);
       discoveryWarnings.push(
-        "Token-allowance scan couldn't complete, so any active SEP-41 approvals won't appear in this plan. Review them separately on the Allowances page.",
+        "We couldn't finish checking this account's token spending permissions, so any active ones might not show up in this plan. You can review them separately on the Allowances page before closing.",
       );
     }
   }
@@ -177,15 +177,19 @@ const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({ input 
     } catch (e) {
       console.warn("[demolish] position discovery skipped:", e);
       discoveryWarnings.push(
-        "DeFi position discovery couldn't complete, so any Blend / Aquarius / Soroswap / FxDAO positions may be missing from this plan.",
+        "We couldn't finish checking for DeFi positions, so anything you have in apps like Blend, Aquarius, Soroswap or FxDAO might be missing from this plan. If you've used those, check them before closing.",
       );
     }
   }
 
   // per-protocol discovery failures (e.g. Soroswap has no position index) were
-  // previously invisible; surface them so the user knows the plan may be partial
+  // previously invisible; surface them in plain language so the user knows the
+  // plan may be partial. The raw technical message is dropped from user copy —
+  // it only ever read like a developer log line.
   for (const e of positions.errors) {
-    discoveryWarnings.push(`${e.protocol}: ${e.message}`);
+    discoveryWarnings.push(
+      `We couldn't check your ${e.protocol} positions. If you've used ${e.protocol}, review it before closing.`,
+    );
   }
 
   return { audit, positions, allowances, discoveryWarnings };

@@ -795,6 +795,9 @@ function DemolishFlow(): React.JSX.Element {
       {/* FLOW */}
       {showFlow ? (
         <>
+          {/* persistent page heading for assistive tech — the flow panels below
+              are h2s; this keeps a single h1 per screen */}
+          <h1 style={SR_ONLY}>Close a Stellar account</h1>
           <StepIndicator steps={flowSteps} />
 
           {/* during the brief discover/preview transition, take over the whole
@@ -1168,96 +1171,126 @@ function IdleConnect({
   );
 }
 
+// visually hidden but read by screen readers
+const SR_ONLY: React.CSSProperties = {
+  position: "absolute",
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: "hidden",
+  clip: "rect(0 0 0 0)",
+  whiteSpace: "nowrap",
+  border: 0,
+};
+
 function StepIndicator({ steps }: { readonly steps: readonly FlowStep[] }): React.JSX.Element {
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 6,
-        marginBottom: 26,
-        flexWrap: "wrap",
-      }}
-    >
-      {steps.map((st) => (
-        <div key={st.num} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 9,
-              padding: "7px 13px 7px 8px",
-              borderRadius: 999,
-              border: st.isActive ? "1px solid var(--accent)" : "1px solid var(--border)",
-              background: "transparent",
-            }}
+    <nav aria-label="Progress">
+      <ol
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 6,
+          flexWrap: "wrap",
+          listStyle: "none",
+          padding: 0,
+          margin: "0 0 26px",
+        }}
+      >
+        {steps.map((st) => (
+          <li
+            key={st.num}
+            aria-current={st.isActive ? "step" : undefined}
+            style={{ display: "flex", alignItems: "center", gap: 10 }}
           >
-            {st.isDone ? (
-              <span
-                style={{
-                  width: 20,
-                  height: 20,
-                  borderRadius: "50%",
-                  border: "1px solid var(--success)",
-                  display: "grid",
-                  placeItems: "center",
-                }}
-              >
-                <svg
-                  width="11"
-                  height="11"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="var(--success)"
-                  strokeWidth={3}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 9,
+                padding: "7px 13px 7px 8px",
+                borderRadius: 999,
+                border: st.isActive ? "1px solid var(--accent)" : "1px solid var(--border)",
+                background: "transparent",
+              }}
+            >
+              {st.isDone ? (
+                <span
+                  style={{
+                    width: 20,
+                    height: 20,
+                    borderRadius: "50%",
+                    border: "1px solid var(--success)",
+                    display: "grid",
+                    placeItems: "center",
+                  }}
                 >
-                  <path d="M20 6L9 17l-5-5" />
-                </svg>
+                  <svg
+                    width="11"
+                    height="11"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="var(--success)"
+                    strokeWidth={3}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M20 6L9 17l-5-5" />
+                  </svg>
+                </span>
+              ) : null}
+              {st.isActive ? (
+                <span
+                  style={{
+                    width: 20,
+                    height: 20,
+                    borderRadius: "50%",
+                    border: "1px solid var(--accent)",
+                    color: "var(--accent)",
+                    display: "grid",
+                    placeItems: "center",
+                    font: "600 10px/1 Geist, sans-serif",
+                  }}
+                >
+                  {st.num}
+                </span>
+              ) : null}
+              {st.isTodo ? (
+                <span
+                  style={{
+                    width: 20,
+                    height: 20,
+                    borderRadius: "50%",
+                    border: "1.5px solid var(--border-2)",
+                    color: "var(--fg-3)",
+                    display: "grid",
+                    placeItems: "center",
+                    font: "600 10px/1 Geist, sans-serif",
+                  }}
+                >
+                  {st.num}
+                </span>
+              ) : null}
+              <span style={{ fontWeight: 600, fontSize: 13, color: "var(--fg)" }}>
+                <span style={SR_ONLY}>
+                  {st.isDone
+                    ? "Completed step: "
+                    : st.isActive
+                      ? "Current step: "
+                      : "Upcoming step: "}
+                </span>
+                {st.label}
               </span>
+            </div>
+            {st.notLast ? (
+              <span aria-hidden style={{ width: 18, height: 1, background: "var(--border-2)" }} />
             ) : null}
-            {st.isActive ? (
-              <span
-                style={{
-                  width: 20,
-                  height: 20,
-                  borderRadius: "50%",
-                  border: "1px solid var(--accent)",
-                  color: "var(--accent)",
-                  display: "grid",
-                  placeItems: "center",
-                  font: "600 10px/1 Geist, sans-serif",
-                }}
-              >
-                {st.num}
-              </span>
-            ) : null}
-            {st.isTodo ? (
-              <span
-                style={{
-                  width: 20,
-                  height: 20,
-                  borderRadius: "50%",
-                  border: "1.5px solid var(--border-2)",
-                  color: "var(--fg-3)",
-                  display: "grid",
-                  placeItems: "center",
-                  font: "600 10px/1 Geist, sans-serif",
-                }}
-              >
-                {st.num}
-              </span>
-            ) : null}
-            <span style={{ fontWeight: 600, fontSize: 13, color: "var(--fg)" }}>{st.label}</span>
-          </div>
-          {st.notLast ? (
-            <span style={{ width: 18, height: 1, background: "var(--border-2)" }} />
-          ) : null}
-        </div>
-      ))}
-    </div>
+          </li>
+        ))}
+      </ol>
+    </nav>
   );
 }
 
@@ -1324,8 +1357,8 @@ function SponsorshipAutoRevokeNotice({ count }: { readonly count: number }): Rea
             color: "var(--fg-2)",
           }}
         >
-          The demolisher will revoke {count === 1 ? "it" : "them"} as part of the close-out tx — no
-          action needed.
+          We&apos;ll release {count === 1 ? "it" : "them"} automatically while closing the account —
+          nothing for you to do.
         </div>
       </div>
     </div>
@@ -1335,6 +1368,8 @@ function SponsorshipAutoRevokeNotice({ count }: { readonly count: number }): Rea
 function LeftLoadingCard({ message }: { readonly message: string }): React.JSX.Element {
   return (
     <div
+      role="status"
+      aria-live="polite"
       style={{
         // borderless + transparent: float over the ambient page background so
         // the giant animated icon is the focal point, not a card chrome
@@ -1616,6 +1651,7 @@ function DemolishStatusWidget({
               }}
             >
               <h2
+                aria-live="polite"
                 style={{
                   margin: 0,
                   fontSize: 17,
@@ -1631,6 +1667,11 @@ function DemolishStatusWidget({
                     : "Closing your account"}
               </h2>
               <span
+                role="progressbar"
+                aria-valuenow={doneCount}
+                aria-valuemin={0}
+                aria-valuemax={activeCount}
+                aria-label={`Closing progress: ${doneCount} of ${activeCount} steps done`}
                 style={{
                   font: "600 11.5px/1 'Geist Mono', monospace",
                   color: "var(--fg-3)",
@@ -1663,7 +1704,8 @@ function DemolishStatusWidget({
                   wallet, the funds will appear there shortly.
                 </>
               ) : state === "failed" ? (
-                (parsed?.summary ?? "An unknown error occurred while running the plan.")
+                (parsed?.summary ??
+                "Something went wrong while closing the account. Your funds are safe — try again.")
               ) : (
                 <>
                   Your wallet will pop up to approve each step — click{" "}
@@ -2322,6 +2364,19 @@ function PlanRow({
             marginTop: 1,
           }}
         >
+          {mode === "live" ? (
+            <span style={SR_ONLY}>
+              {isDone
+                ? "Done: "
+                : isRunning
+                  ? "In progress: "
+                  : isFailed
+                    ? "Failed: "
+                    : isSkipped
+                      ? "Skipped: "
+                      : "Pending: "}
+            </span>
+          ) : null}
           {mode === "plan" ? (
             <span
               style={{
@@ -3423,10 +3478,47 @@ interface ParsedError {
   readonly txCode: string | null;
   readonly ops: readonly string[];
 }
+// plain-language cause for a Stellar result code, so the failure summary reads
+// like a sentence instead of a raw protocol code. Unknown codes fall through to
+// a generic phrase (the raw code is still available in the technical details).
+function plainResultCode(code: string): string {
+  // wording verified against the official Stellar result-code reference
+  // (developers.stellar.org … /errors/result-codes).
+  const map: Record<string, string> = {
+    // tx_insufficient_fee: source account can't pay the minimum fee
+    tx_insufficient_fee: "the fee offered was below the network's minimum",
+    // tx_bad_seq: sequence number does not match the source account
+    tx_bad_seq: "the account's transaction number was out of date",
+    // tx_too_late: the ledger close time was after the transaction's maxTime
+    tx_too_late: "the time window to submit it passed",
+    // tx_failed: one of the operations failed and none were applied
+    tx_failed: "one of the steps was rejected, so nothing was applied",
+    // op_underfunded: not enough balance to send while keeping the min reserve
+    op_underfunded: "there wasn't enough balance to cover it",
+    // op_low_reserve: the result would drop below the minimum reserve
+    op_low_reserve: "it would drop the account below its minimum reserve",
+    // payment_no_trust: destination has no trustline for the asset
+    op_no_trust: "the destination can't hold that asset (no trustline)",
+    // payment_src_no_trust: source no longer holds that asset
+    op_src_no_trust: "the account no longer holds the asset this step tried to send",
+    // op_line_full: destination is at its limit for the asset
+    op_line_full: "the destination can't hold any more of that asset",
+    // op_no_destination: destination account does not exist
+    op_no_destination: "the destination account doesn't exist",
+    // path_payment_strict_send_under_dest_min: swap would fall short of destMin
+    op_under_dest_min: "the swap would have returned less than allowed — the price moved",
+    // op_malformed: the operation's input was invalid
+    op_malformed: "the step was built incorrectly",
+    // payment_no_issuer: the asset's issuer does not exist
+    op_no_issuer: "the token's issuer no longer exists",
+  };
+  return map[code] ?? "the network rejected it";
+}
+
 function parseDemolishError(raw: string | null): ParsedError {
   if (!raw) {
     return {
-      summary: "An unknown error occurred while running the plan.",
+      summary: "Something went wrong while closing the account. Your funds are safe — try again.",
       txCode: null,
       ops: [],
     };
@@ -3448,8 +3540,10 @@ function parseDemolishError(raw: string | null): ParsedError {
       const firstBadIdx = ops.findIndex((o) => o !== "op_success");
       const summary =
         firstBadIdx >= 0
-          ? `Operation ${firstBadIdx + 1} of ${ops.length} rejected with ${ops[firstBadIdx]}. ${txCode ? `Transaction status: ${txCode}.` : ""}`
-          : raw.slice(0, jsonStart).trim() || (txCode ? `Transaction ${txCode}.` : raw);
+          ? `Step ${firstBadIdx + 1} of ${ops.length} couldn't complete — ${plainResultCode(ops[firstBadIdx]!)}.`
+          : txCode
+            ? `The transaction couldn't complete — ${plainResultCode(txCode)}.`
+            : raw.slice(0, jsonStart).trim() || raw;
       return { summary, txCode, ops };
     } catch {
       // fall through to raw
