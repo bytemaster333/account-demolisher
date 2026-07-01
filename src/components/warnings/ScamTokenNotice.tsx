@@ -62,7 +62,7 @@ function reasonFor(flag: ScamFlag): string {
       return `Symbol “${symbol}” contains characters outside A–Z and 0–9 (homoglyphs/accents), which legitimate issuers don’t use.`;
     }
     case "unknown_contract":
-      return "This token’s contract isn’t on the verified allow-list.";
+      return "We don’t recognize this token — it isn’t on our list of known, trusted tokens. That doesn’t prove it’s a scam, but make sure you recognize it.";
   }
 }
 
@@ -76,7 +76,7 @@ export function ScamTokenNotice({
   return (
     <Notice
       tone="danger"
-      role="alert"
+      role="note"
       data-testid="scam-token-notice"
       {...(footer !== undefined ? { footer } : {})}
       title={
@@ -137,7 +137,9 @@ export function ScamTokenNotice({
         })}
       </ul>
       <span style={{ color: "var(--fg-3)", fontSize: 12 }}>
-        These are removed as part of the close-out. Make sure you recognize them before proceeding.
+        These are removed as part of closing the account. Make sure you recognize them before
+        proceeding. Removing suspicious tokens is safe — they hold no real value, and closing the
+        account simply discards them. We&apos;re only showing you this so nothing surprises you.
       </span>
     </Notice>
   );

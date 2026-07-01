@@ -24,10 +24,6 @@ import { AuthImmutableBlock } from "@/components/warnings/AuthImmutableBlock";
 import { DiscoveryWarnings } from "@/components/warnings/DiscoveryWarnings";
 import { ResidueConsent, type ResidueConsentCredit } from "@/components/warnings/ResidueConsent";
 import { ScamTokenNotice } from "@/components/warnings/ScamTokenNotice";
-import {
-  PendingClaimableBalances,
-  type PendingClaimableBalanceEntry,
-} from "@/components/warnings/PendingClaimableBalances";
 import { SponsoringBlock } from "@/components/warnings/SponsoringBlock";
 import { ConnectButton } from "@/components/wallet/ConnectButton";
 import { CreateTestAccountButton } from "@/components/wallet/CreateTestAccountButton";
@@ -42,7 +38,7 @@ import { auditAccount } from "@/lib/stellar/account-audit";
 import { lookupCex, requireMemoEnforcement, type CexInfo } from "@/lib/safety/cex-registry";
 import { runScamHeuristics, type ScamFinding } from "@/lib/safety/scam-heuristics";
 import { topologicalOrder, type PlanNode } from "@/lib/plan/tree";
-import type { AccountAudit, AuditSigner, ClaimableBalanceEntry } from "@/lib/types/account";
+import type { AccountAudit, AuditSigner } from "@/lib/types/account";
 import type { ClassicMemo } from "@/lib/types/plan";
 import type { Connector } from "@/lib/wallet/connector";
 import { WalletKitConnector } from "@/lib/wallet/connector";
@@ -89,19 +85,6 @@ const INITIAL_FORM: FormState = {
 function shortPk(pk: string): string {
   if (pk.length <= 12) return pk;
   return `${pk.slice(0, 6)}…${pk.slice(-4)}`;
-}
-
-// map an audited claimable balance to the notice row, flagging any that the
-// account can't claim right now (left in place rather than attempted).
-function toPendingCb(cb: ClaimableBalanceEntry): PendingClaimableBalanceEntry {
-  const assetLabel =
-    cb.asset.kind === "native" ? "XLM" : cb.asset.kind === "credit" ? cb.asset.code : "POOL";
-  return {
-    id: cb.id,
-    amount: cb.amount,
-    assetLabel,
-    ...(cb.claimableNow === false ? { reason: "not claimable yet — left in place" } : {}),
-  };
 }
 
 function sumNativeBalance(audit: AccountAudit): string {
@@ -220,6 +203,13 @@ function stroopsToXlm(stroops: number): string {
   if (xlm === 0) return "0";
   const s = xlm.toFixed(7).replace(/0+$/, "").replace(/\.$/, "");
   return s === "" ? "0" : s;
+}
+
+// decimal XLM string -> integer stroops (for display-side net/fee arithmetic)
+function xlmToStroops(xlm: string): number {
+  const [whole = "0", frac = ""] = xlm.trim().split(".");
+  const fracPadded = (frac + "0000000").slice(0, 7);
+  return Number(BigInt(whole || "0") * 10_000_000n + BigInt(fracPadded || "0"));
 }
 
 interface FlowStep {
@@ -801,9 +791,9 @@ function DemolishFlow(): React.JSX.Element {
                   {audit && numCoverable > 0 ? (
                     <SponsorshipAutoRevokeNotice count={numCoverable} />
                   ) : null}
-                  {audit && audit.claimableBalances.length > 0 ? (
-                    <PendingClaimableBalances pending={audit.claimableBalances.map(toPendingCb)} />
-                  ) : null}
+                  {/* claimable balances are shown inside ConfigurePanel's own card
+                      (with per-item opt-out). The separate PendingClaimableBalances
+                      notice was removed to avoid two panels giving opposite advice. */}
                   <ConfigurePanel
                     form={form}
                     setForm={setForm}
@@ -963,7 +953,7 @@ function IdleConnect({
                 whiteSpace: "nowrap",
               }}
             >
-              STEP 1 OF 5
+              STEP 1 · CONNECT
             </span>
           </div>
           <h1
@@ -986,11 +976,14 @@ function IdleConnect({
               maxWidth: 560,
             }}
           >
-            Connect the account you want to close. The demolisher unwinds every trustline, offer,
-            data entry, signer, and Soroban position, then merges the reserve to a destination you
-            choose — all signed on your device, nothing auto-submitted.
+            Connect the account you want to close. Closing it permanently removes the account from
+            Stellar and sends all its XLM to an address you choose —{" "}
+            <strong style={{ color: "var(--fg)", fontWeight: 600 }}>this cannot be undone.</strong>{" "}
+            First we safely undo everything attached to it (trusted assets, open trades, saved data,
+            extra signers, and DeFi positions). You review and approve every step in your own wallet
+            — nothing is sent without you.
             {isTestnetLike
-              ? " New here? Spin up a throwaway demo account at the bottom to see the whole flow first."
+              ? " New here? Create a free practice account below to try the whole thing first."
               : ""}
           </p>
 
@@ -1973,30 +1966,51 @@ function ReviewPanel({
   const totalFeeStroops = allNodes.reduce((sum, n) => sum + nodeFeeStroops(n), 0);
   const indexOf = new Map(allNodes.map((n, i) => [n.id, i + 1]));
 
+  // Money math the user can trust. `totalXlm` is the WHOLE native balance — the
+  // locked reserve is already inside it, not on top. What the destination
+  // actually receives is that balance minus network fees. The freed reserve is
+  // shown only as context (part of the amount above), never as a bonus, and is
+  // the real figure: Stellar locks 0.5 XLM for the account base (×2) plus 0.5
+  // per subentry (trustline/offer/signer/data), all released on close.
+  const reserveStroops = (2 + (snapshot?.sub ?? 0)) * 5_000_000;
+  const netReceivedStroops = Math.max(0, xlmToStroops(totalXlm) - totalFeeStroops);
+
   return (
     <Card padding={24} style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div>
         <div style={{ marginBottom: 12 }}>
           <Badge tone="success" dot>
-            PLAN SIMULATED
+            PLAN READY
           </Badge>
         </div>
         <h2 style={{ margin: 0, fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em" }}>
-          Review the close-out
+          Review before closing
         </h2>
         <p style={{ margin: "8px 0 0", fontSize: 14, lineHeight: 1.55, color: "var(--fg-2)" }}>
           {activeCount} {activeCount === 1 ? "step runs" : "steps run"} in order — here is exactly
-          what will happen. Nothing is signed until you confirm.
+          what will happen. Nothing happens until you confirm below.
         </p>
       </div>
 
       <StatGrid
         stats={[
-          { label: "Forwarded to destination", value: `${totalXlm} XLM` },
-          { label: "Reserve recovered", value: "+1.0 XLM", tone: "accent" },
+          {
+            label: "Destination receives",
+            value: `≈ ${stroopsToXlm(netReceivedStroops)} XLM`,
+            tone: "accent",
+          },
           { label: "Network fees", value: `≈ ${stroopsToXlm(totalFeeStroops)} XLM` },
+          { label: "Reserve released (included)", value: `≈ ${stroopsToXlm(reserveStroops)} XLM` },
         ]}
       />
+      <p style={{ margin: "-6px 0 0", fontSize: 12, lineHeight: 1.55, color: "var(--fg-3)" }}>
+        Your whole balance is sent to the destination, minus a small{" "}
+        <strong style={{ color: "var(--fg-2)", fontWeight: 600 }}>network fee</strong> the Stellar
+        network charges to process each step (not paid to us). The{" "}
+        <strong style={{ color: "var(--fg-2)", fontWeight: 600 }}>reserve</strong> is XLM the
+        network locked while the account was open — it&apos;s unlocked on close and already part of
+        the amount above, not extra.
+      </p>
 
       {/* every operation, grouped */}
       <div style={{ border: "1px solid var(--border)", borderRadius: 14, overflow: "hidden" }}>
@@ -2044,7 +2058,9 @@ function ReviewPanel({
         }}
       >
         <div style={{ padding: "14px 16px" }}>
-          <div style={{ fontSize: 12, color: "var(--fg-3)", marginBottom: 6 }}>MERGES TO</div>
+          <div style={{ fontSize: 12, color: "var(--fg-3)", marginBottom: 6 }}>
+            SENDING EVERYTHING TO
+          </div>
           <div style={{ font: "600 13.5px/1.5 'Geist Mono', monospace", wordBreak: "break-all" }}>
             <span style={{ color: "var(--fg-2)" }}>{destHead}</span>
             <span style={{ color: "var(--accent)", fontWeight: 700, textDecoration: "underline" }}>
@@ -2052,11 +2068,12 @@ function ReviewPanel({
             </span>
           </div>
           <div style={{ marginTop: 9, fontSize: 13, color: "var(--fg-2)" }}>
-            Forwarding{" "}
+            Your balance is sent to this address and the account is permanently closed. The
+            destination receives{" "}
             <span style={{ font: "600 13px 'Geist Mono', monospace", color: "var(--fg)" }}>
-              {totalXlm} XLM
+              ≈ {stroopsToXlm(netReceivedStroops)} XLM
             </span>{" "}
-            and permanently closing the account.
+            after network fees.
           </div>
         </div>
         {snapshot ? (
@@ -2080,6 +2097,40 @@ function ReviewPanel({
         ) : null}
       </div>
 
+      <div
+        role="note"
+        style={{
+          display: "flex",
+          gap: 10,
+          padding: "12px 14px",
+          borderRadius: 12,
+          border: "1px solid color-mix(in srgb, var(--danger) 40%, transparent)",
+          fontSize: 13,
+          lineHeight: 1.5,
+          color: "var(--fg-2)",
+        }}
+      >
+        <svg
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="var(--danger)"
+          strokeWidth={2.2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{ flexShrink: 0, marginTop: 1 }}
+          aria-hidden
+        >
+          <path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+        </svg>
+        <span>
+          This permanently deletes your Stellar account and sends all its XLM to the address above.{" "}
+          <strong style={{ color: "var(--fg)", fontWeight: 600 }}>It cannot be undone.</strong>{" "}
+          Double-check the address before continuing.
+        </span>
+      </div>
+
       <div style={{ display: "flex", gap: 11 }}>
         <Button variant="secondary" onClick={onBack} data-testid="review-back">
           Back
@@ -2089,23 +2140,23 @@ function ReviewPanel({
           onClick={onDemolish}
           data-testid="demolish-confirm"
           style={{ flex: 1 }}
-          iconLeft={
+          iconRight={
             <svg
-              width="15"
-              height="15"
+              width="16"
+              height="16"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
-              strokeWidth={2}
+              strokeWidth={2.2}
               strokeLinecap="round"
               strokeLinejoin="round"
               aria-hidden
             >
-              <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+              <path d="M5 12h14M13 6l6 6-6 6" />
             </svg>
           }
         >
-          Demolish account
+          Continue to final confirmation
         </Button>
       </div>
     </Card>
@@ -2479,7 +2530,7 @@ function ConfigurePanel({
                 </svg>
               </span>
               <span style={{ fontWeight: 600, fontSize: 14.5, color: "var(--fg)" }}>
-                Unclaimed claimable balances
+                Payments waiting to be collected
               </span>
             </div>
             <span
@@ -2493,7 +2544,7 @@ function ConfigurePanel({
                 whiteSpace: "nowrap",
               }}
             >
-              OPTIONAL
+              AUTO-COLLECTED
             </span>
           </div>
           <p
@@ -2504,8 +2555,11 @@ function ConfigurePanel({
               color: "var(--fg-2)",
             }}
           >
-            These will be <strong style={{ color: "var(--fg)" }}>forfeited</strong> if you merge
-            without claiming. Pick the ones to claim before merge.
+            These are payments set aside for this account that you haven&apos;t collected yet. We
+            collect all of them into your balance automatically before closing —{" "}
+            <strong style={{ color: "var(--fg)" }}>you don&apos;t need to do anything.</strong>{" "}
+            Untick any you&apos;d rather leave behind; unticked ones are lost when the account
+            closes.
           </p>
           {claimables.map((cb) => {
             const checked = form.selectedCbIds.includes(cb.id);
@@ -2594,8 +2648,9 @@ function ConfigurePanel({
             lineHeight: 1.5,
           }}
         >
-          All non-XLM balances are converted to XLM, then the full reserve is merged to this
-          destination.
+          Every other asset in this account is swapped to XLM, then your whole XLM balance —
+          including the small amount Stellar keeps locked in every account — is sent to the address
+          below and this account is permanently closed.
         </p>
 
         <div
@@ -2608,6 +2663,7 @@ function ConfigurePanel({
           }}
         >
           <label
+            htmlFor="demolish-destination"
             style={{
               fontWeight: 600,
               fontSize: 13,
@@ -2639,6 +2695,7 @@ function ConfigurePanel({
           ) : null}
         </div>
         <input
+          id="demolish-destination"
           type="text"
           value={form.destination}
           onChange={(e) => {
@@ -2649,6 +2706,7 @@ function ConfigurePanel({
           spellCheck={false}
           autoComplete="off"
           data-testid="destination-input"
+          aria-describedby="demolish-destination-help"
           style={{
             width: "100%",
             padding: "13px 14px",
@@ -2660,6 +2718,15 @@ function ConfigurePanel({
             boxSizing: "border-box",
           }}
         />
+        <p
+          id="demolish-destination-help"
+          style={{ margin: "7px 0 0", fontSize: 12, color: "var(--fg-3)", lineHeight: 1.5 }}
+        >
+          Paste the Stellar address (it starts with{" "}
+          <strong style={{ color: "var(--fg-2)" }}>G</strong>) of the wallet or exchange account
+          that should receive everything. Double-check it — funds sent to the wrong address cannot
+          be recovered.
+        </p>
 
         {cex ? (
           <div
@@ -2691,10 +2758,10 @@ function ConfigurePanel({
               <circle cx="12" cy="12" r="9" />
             </svg>
             <span style={{ fontSize: 12.5, color: "var(--fg-2)", lineHeight: 1.45 }}>
-              <strong style={{ color: "var(--fg)" }}>CEX detected: {cex.name}.</strong> Mediator
-              routing is on automatically.{" "}
+              <strong style={{ color: "var(--fg)" }}>Exchange detected: {cex.name}.</strong>{" "}
+              We&apos;ll route the transfer so your deposit memo reaches {cex.name} correctly.{" "}
               {cex.requiresMemo
-                ? `${cex.name} requires a ${cex.memoType ?? "text"} memo. Add one below.`
+                ? `${cex.name} needs a ${cex.memoType ?? "text"} memo/tag — paste yours below, or your deposit could be lost.`
                 : ""}
             </span>
           </div>
@@ -2711,9 +2778,15 @@ function ConfigurePanel({
         >
           Memo{" "}
           <span style={{ color: "var(--fg-3)", fontWeight: 400 }}>
-            , required for most exchanges
+            {cex?.requiresMemo ? "(required by your exchange)" : "(required by most exchanges)"}
           </span>
         </label>
+        <p style={{ margin: "0 0 8px", fontSize: 12, color: "var(--fg-3)", lineHeight: 1.5 }}>
+          Exchanges share one deposit address across all customers and use the memo to know a
+          deposit is yours. If your exchange gave you a deposit memo or tag, paste it here — sending
+          to an exchange without it usually means the funds are lost. Most exchanges use Text or ID;
+          use the exact type your exchange told you.
+        </p>
         <div style={{ display: "flex", gap: 10 }}>
           <div style={{ minWidth: 130 }}>
             <Select
@@ -2738,7 +2811,13 @@ function ConfigurePanel({
               setForm((f) => ({ ...f, memoValue: v }));
             }}
             disabled={form.memoType === "none"}
-            placeholder={form.memoType === "id" ? "12345" : "Optional · text or ID memo"}
+            placeholder={
+              cex?.requiresMemo
+                ? "Required — your exchange deposit memo"
+                : form.memoType === "id"
+                  ? "12345"
+                  : "Your exchange deposit memo or tag"
+            }
             spellCheck={false}
             autoComplete="off"
             data-testid="memo-value-input"
@@ -2784,14 +2863,16 @@ function ConfigurePanel({
               <circle cx="12" cy="12" r="9" />
             </svg>
             <span style={{ fontSize: 12.5, color: "var(--fg-2)", lineHeight: 1.45 }}>
-              <strong style={{ color: "var(--fg)" }}>Mediator mode.</strong> A memo signals an
-              exchange destination, the merge routes through a mediator account so the memo is
-              preserved.
+              <strong style={{ color: "var(--fg)" }}>Memo added.</strong> Because a plain account
+              close-out can&apos;t carry a memo, we hop the funds through a temporary helper account
+              so your exchange still sees the memo and credits your deposit. Nothing extra for you
+              to do.
             </span>
           </div>
         ) : null}
 
         <label
+          htmlFor="demolish-fallback"
           style={{
             display: "block",
             fontWeight: 600,
@@ -2800,19 +2881,21 @@ function ConfigurePanel({
             color: "var(--fg)",
           }}
         >
-          Recovery address <span style={{ color: "var(--fg-3)", fontWeight: 400 }}>· optional</span>
+          Backup address <span style={{ color: "var(--fg-3)", fontWeight: 400 }}>· optional</span>
         </label>
         <input
+          id="demolish-fallback"
           type="text"
           value={form.fallback}
           onChange={(e) => {
             const v = e.currentTarget.value;
             setForm((f) => ({ ...f, fallback: v }));
           }}
-          placeholder="G… (defaults to destination)"
+          placeholder="G… (defaults to the destination above)"
           spellCheck={false}
           autoComplete="off"
           data-testid="fallback-input"
+          aria-describedby="demolish-fallback-help"
           style={{
             width: "100%",
             padding: "13px 14px",
@@ -2824,9 +2907,13 @@ function ConfigurePanel({
             boxSizing: "border-box",
           }}
         />
-        <p style={{ margin: "7px 0 0", fontSize: 12, color: "var(--fg-3)", lineHeight: 1.5 }}>
-          If an exchange (mediator) transfer can&apos;t be delivered, funds are sent here instead.
-          Leave blank to fall back to the destination above.
+        <p
+          id="demolish-fallback-help"
+          style={{ margin: "7px 0 0", fontSize: 12, color: "var(--fg-3)", lineHeight: 1.5 }}
+        >
+          A safety net: in the rare case an exchange transfer can&apos;t be delivered, your funds go
+          here instead of getting stuck. Leave blank to use the destination above. If you&apos;re
+          sending to an exchange, consider putting your own personal wallet here.
         </p>
 
         {formError ? (
@@ -2882,7 +2969,7 @@ function ConfigurePanel({
               )
             }
           >
-            {isBusy ? "Building plan…" : "Build & simulate plan"}
+            {isBusy ? "Checking your account…" : "Continue — preview the plan"}
           </Button>
         </div>
       </div>

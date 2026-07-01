@@ -100,7 +100,9 @@ export function SponsoringBlock({
           color: "var(--fg)",
         }}
       >
-        {isSoft ? "This account sponsors entries" : "This account sponsors entries for others"}
+        {isSoft
+          ? "This account covers a few network deposits"
+          : "This account is paying deposits for other accounts"}
       </h1>
       <p
         id={descriptionId}
@@ -114,32 +116,32 @@ export function SponsoringBlock({
       >
         {isSoft ? (
           <>
-            The demolisher will automatically revoke{" "}
+            It&apos;s paying{" "}
             <strong
               data-testid="sponsoring-block-count"
               style={{ color: "var(--fg)", fontFamily: "'Geist Mono', monospace" }}
             >
               {numSponsoring}
             </strong>{" "}
-            sponsorship{numSponsoring === 1 ? "" : "(s)"} as part of the close-out. You can proceed.
+            small deposit{numSponsoring === 1 ? "" : "(s)"} to keep some of its own entries on the
+            network. We&apos;ll release {numSponsoring === 1 ? "it" : "them"} automatically while
+            closing — nothing for you to do.
           </>
         ) : (
           <>
-            It is currently sponsoring reserves for{" "}
+            This account is paying deposits — called{" "}
+            <em style={{ fontStyle: "normal", color: "var(--fg)" }}>sponsorships</em>, deposits your
+            account paid to keep something on the network for another account — to keep entries on{" "}
             <strong
               data-testid="sponsoring-block-count"
               style={{ color: "var(--fg)", fontFamily: "'Geist Mono', monospace" }}
             >
-              {numSponsoring}
+              {foreign}
             </strong>{" "}
-            other accounts. An account with active sponsorships cannot be merged, the sponsorships
-            must be revoked off-platform first.{" "}
-            <span data-testid="sponsoring-block-foreign-note">
-              <strong style={{ color: "var(--fg)", fontFamily: "'Geist Mono', monospace" }}>
-                {foreign}
-              </strong>{" "}
-              of these sponsor entries on other accounts and must be revoked off-platform first.
-            </span>
+            OTHER account{foreign === 1 ? "" : "(s)"} on the network. Stellar won&apos;t let an
+            account close while it&apos;s doing that, so those must be removed first — and that has
+            to be done with another tool (for example the Stellar Laboratory), not here. Once
+            they&apos;re removed, come back and try again.
           </>
         )}
       </p>
@@ -172,7 +174,7 @@ export function SponsoringBlock({
               cursor: "pointer",
             }}
           >
-            I understand — demolish anyway
+            Continue
           </button>
         ) : null}
         <button
@@ -206,7 +208,7 @@ export function SponsoringBlock({
           >
             <path d="M19 12H5M11 6l-6 6 6 6" />
           </svg>
-          Go back
+          Disconnect and go back
         </button>
       </div>
     </div>

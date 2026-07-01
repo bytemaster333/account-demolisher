@@ -47,12 +47,16 @@ export function PendingClaimableBalances({
       }
       title={
         pending.length === 1
-          ? "1 claimable balance attached to this account"
-          : `${pending.length} claimable balances attached to this account`
+          ? "1 payment waiting to be collected"
+          : `${pending.length} payments waiting to be collected`
       }
     >
-      The demolisher will claim {pending.length === 1 ? "it" : "them"} into your account and release
-      the sponsorship reserve as part of the close-out — no action needed.
+      {pending.length === 1
+        ? "This is a claimable balance — a payment set aside for you that you haven't collected yet. "
+        : "These are claimable balances — payments set aside for you that you haven't collected yet. "}
+      We&apos;ll automatically collect {pending.length === 1 ? "it" : "them"} into your balance and
+      unlock the small deposit the network was holding, all as part of closing the account — you
+      don&apos;t need to do anything.
       <ul
         data-testid="pending-claimable-balances-list"
         style={{

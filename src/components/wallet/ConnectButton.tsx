@@ -47,14 +47,12 @@ export function ConnectButton({
       // sign with it after a client-side navigation
       setActiveConnector(next);
       setConnected(address, "kit");
-    } catch (e: unknown) {
-      const message =
-        e instanceof Error
-          ? e.message
-          : typeof e === "object" && e !== null && "message" in e
-            ? String((e as { message: unknown }).message)
-            : "Failed to connect wallet.";
-      setError(message);
+    } catch {
+      // lead with a plain, actionable message rather than a raw library error;
+      // the underlying wallet failures aren't meaningful to a beginner
+      setError(
+        "Couldn't connect to your wallet. Make sure the wallet extension is installed and unlocked, then try again.",
+      );
     } finally {
       setPending(false);
     }
@@ -92,7 +90,14 @@ export function ConnectButton({
         type="button"
         onClick={isConnected ? onDisconnect : onConnect}
         disabled={pending}
-        aria-label={isConnected ? "Disconnect wallet" : "Connect wallet"}
+        // this button only renders the button + error text, so there's no inline
+        // spot for reassurance copy; the connect screen shows the "only your public
+        // address is shared" note. keep the intent accessible on the button itself.
+        aria-label={
+          isConnected
+            ? `Wallet connected as ${publicKey}. Activate to disconnect.`
+            : "Connect wallet — this only shares your public address, never your secret key"
+        }
         data-testid="connect-button"
         data-public-key={isConnected ? publicKey : ""}
         style={{
@@ -117,14 +122,33 @@ export function ConnectButton({
         }}
       >
         {isConnected ? (
-          <span
-            style={{
-              width: 7,
-              height: 7,
-              borderRadius: "50%",
-              background: "var(--success)",
-            }}
-          />
+          <>
+            <span
+              aria-hidden
+              style={{
+                width: 7,
+                height: 7,
+                borderRadius: "50%",
+                background: "var(--success)",
+              }}
+            />
+            {/* text equivalent so the connected state isn't conveyed by color alone */}
+            <span
+              style={{
+                position: "absolute",
+                width: 1,
+                height: 1,
+                padding: 0,
+                margin: -1,
+                overflow: "hidden",
+                clip: "rect(0, 0, 0, 0)",
+                whiteSpace: "nowrap",
+                border: 0,
+              }}
+            >
+              Connected:
+            </span>
+          </>
         ) : null}
         {label}
       </button>

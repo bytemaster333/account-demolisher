@@ -133,7 +133,7 @@ export function CreateTestAccountButton({
           gap: 16,
         }}
       >
-        <Header network={network} />
+        <Header />
         <IdleBody onRun={onRun} />
       </section>
     );
@@ -154,8 +154,8 @@ export function CreateTestAccountButton({
               : "Setting up your demo account"}
         </h1>
         <p style={{ margin: "10px 0 0", fontSize: 14.5, color: "var(--fg-2)", lineHeight: 1.55 }}>
-          Populating a fresh {network.id} account with the trustlines, offers, signers, and Soroban
-          positions the demolisher knows how to clean up — so you can walk the whole flow first.
+          Setting up a fresh Testnet practice account with sample assets and positions (no real
+          money) — so you can safely walk the whole close-out flow first.
         </p>
       </div>
 
@@ -181,7 +181,7 @@ export function CreateTestAccountButton({
   );
 }
 
-function Header({ network }: { readonly network: NetworkConfig }) {
+function Header() {
   return (
     <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>
       <span
@@ -218,9 +218,9 @@ function Header({ network }: { readonly network: NetworkConfig }) {
           <Badge tone="accent">Testnet</Badge>
         </div>
         <p style={{ margin: "5px 0 0", fontSize: 13, lineHeight: 1.5, color: "var(--fg-2)" }}>
-          Generate a fresh keypair, fund it via friendbot, and populate it with trustlines, data
-          entries, an open offer, a co-signer, and a SEP-41 allowance — everything the demolisher
-          knows how to clean up. {network.id} only, never real keys.
+          New to this? We&apos;ll create a free practice account (test network only, no real money)
+          and fill it with sample assets and positions so you can safely try the whole close-out
+          flow first.
         </p>
       </div>
     </div>
@@ -250,9 +250,12 @@ function IdleBody({ onRun }: { readonly onRun: () => void }) {
             </svg>
           }
         >
-          Create demo account &amp; continue
+          Create demo account
         </Button>
       </div>
+      <p style={{ margin: 0, fontSize: 12, color: "var(--fg-3)" }}>
+        Takes about a minute — we&apos;ll create, fund, and set up the account.
+      </p>
     </div>
   );
 }
@@ -341,7 +344,7 @@ function ReadyPanel({
           textDecoration: "none",
         }}
       >
-        View on stellar.expert
+        View on Stellar.expert (public blockchain explorer)
         <svg
           width="13"
           height="13"
@@ -399,12 +402,14 @@ function SummaryLine({
   readonly skippedCount: number;
   readonly failedCount: number;
 }) {
-  const parts: string[] = [`${successfulCount} steps succeeded`];
-  if (skippedCount > 0) parts.push(`${skippedCount} skipped`);
-  if (failedCount > 0) parts.push(`${failedCount} failed`);
   return (
     <p style={{ margin: 0, fontSize: 12, color: "var(--fg-2)" }}>
-      {parts.join(" · ")} — the demolisher will surface every entry during preview.
+      {successfulCount} things set up.{" "}
+      {skippedCount > 0
+        ? `${skippedCount} optional extras were skipped (some test-network services aren't always available) — that's fine. `
+        : ""}
+      {failedCount > 0 ? `${failedCount} didn't finish. ` : ""}
+      You&apos;ll see and confirm everything on the next screen before anything is signed.
     </p>
   );
 }
@@ -428,16 +433,23 @@ function FailurePanel({
         gap: 10,
       }}
     >
-      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--danger)" }}>Demo setup failed</div>
-      <div
-        style={{
-          fontSize: 12,
-          fontFamily: "'Geist Mono', ui-monospace, monospace",
-          color: "var(--fg-2)",
-        }}
-      >
-        {error}
+      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--danger)" }}>
+        Setup didn&apos;t finish — this is usually a temporary test-network hiccup. Try again.
       </div>
+      <details style={{ fontSize: 12, color: "var(--fg-2)" }}>
+        <summary style={{ cursor: "pointer", fontSize: 12, color: "var(--fg-3)" }}>
+          Technical details
+        </summary>
+        <div
+          style={{
+            marginTop: 6,
+            fontFamily: "'Geist Mono', ui-monospace, monospace",
+            wordBreak: "break-word",
+          }}
+        >
+          {error}
+        </div>
+      </details>
       <div>
         <Button variant="danger" size="sm" onClick={onRetry}>
           Try again

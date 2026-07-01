@@ -74,7 +74,7 @@ export function AuthImmutableBlock({
           color: "var(--fg)",
         }}
       >
-        This account cannot be merged
+        This account can&apos;t be closed
       </h1>
       <p
         id={descriptionId}
@@ -86,17 +86,20 @@ export function AuthImmutableBlock({
           color: "var(--fg-2)",
         }}
       >
-        The{" "}
+        This account was permanently set so it can never be closed — that&apos;s a one-way Stellar
+        setting and no tool can change it. Your funds are safe and the account still works normally;
+        you just can&apos;t close it here. You can keep using it, or move your funds out to another
+        account yourself.
         <span
           style={{
-            font: "600 13px 'Geist Mono', monospace",
-            color: "var(--fg)",
+            display: "block",
+            marginTop: 12,
+            font: "500 12px 'Geist Mono', monospace",
+            color: "var(--fg-3)",
           }}
         >
-          AUTH_IMMUTABLE
-        </span>{" "}
-        flag is set on this account. It is a permanent Stellar protocol property, the account can
-        never be merged, and there is no override.
+          Technical detail: the account&apos;s auth_immutable flag is set.
+        </span>
       </p>
       <button
         ref={buttonRef}
@@ -130,7 +133,7 @@ export function AuthImmutableBlock({
         >
           <path d="M19 12H5M11 6l-6 6 6 6" />
         </svg>
-        Go back
+        Disconnect and go back
       </button>
     </div>
   );

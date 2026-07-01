@@ -53,72 +53,68 @@ export const DEMO_STEPS: readonly DemoStep[] = [
   {
     id: "keypair",
     label: "Generate fresh keypair",
-    description: "Ed25519 keypair created in this tab; the seed never leaves memory.",
+    description: "Creating a brand-new account key — it stays private on your device.",
   },
   {
     id: "friendbot",
     label: "Fund with friendbot",
-    description: "10,000 testnet XLM seeded from friendbot.stellar.org.",
+    description: "Adding free test-network coins so the account can do things.",
   },
   {
     id: "trustlines",
     label: "Open trustlines",
-    description: "USDC, AQUA, YXLM — three credit assets the demolisher must close.",
+    description: "Letting the account hold three sample tokens we can later remove.",
   },
   {
     id: "data-entries",
     label: "Write data entries",
-    description: "Two manageData entries: demo:protocol, demo:purpose.",
+    description: "Adding two sample saved-data notes to the account.",
   },
   {
     id: "sell-offer",
     label: "Place a sell offer",
-    description: "Sell 100 XLM for 50 USDC, far from any fill price.",
+    description: "Putting up a sample trade offer we can cancel later.",
   },
   {
     id: "co-signer",
     label: "Add a co-signer",
-    description: "Random ed25519 key added at weight 1; exercises set_options cleanup.",
+    description: "Adding a second approved signer, so we can practice removing it.",
   },
   {
     id: "credit-balances",
     label: "Issue credit balances",
-    description:
-      "AQUA + YXLM issuers (created in the trustlines step) mint tokens to your account.",
+    description: "Sending some sample tokens into the account to hold.",
   },
   {
     id: "claimable-balance",
     label: "Create a claimable balance",
-    description:
-      "5 XLM CB with yourself as the unconditional claimant; demolisher must claim and revoke its sponsorship.",
+    description: "Setting aside a small amount that has to be claimed back later.",
   },
   {
     id: "blend-supply",
     label: "Supply collateral to Blend",
-    description:
-      "Supplies 50 XLM into the Blend testnet pool as collateral; demolisher will withdraw it before merge.",
+    description: "Depositing a little into a sample lending app to withdraw later.",
   },
   {
     id: "soroswap-swap",
     label: "Swap XLM → USDC on Soroswap",
-    description:
-      "Aggregator-routed swap of 50 XLM for testnet USDC; gives the demolisher a Soroban credit balance to convert back.",
+    description: "Trading a bit of one token for another on a sample exchange.",
   },
   {
     id: "soroswap-lp",
     label: "Add liquidity to Soroswap LP",
-    description:
-      "Mints LP shares on the XLM/USDC pair; demolisher must redeem the share before merge.",
+    description: "Adding a sample deposit to an exchange pool to pull back out later.",
   },
   {
     id: "sep41-allowance",
     label: "Approve a SEP-41 allowance",
-    description: "Grants the native-XLM SAC permission to spend 100 stroops on your behalf.",
+    description:
+      "Granting a tiny spending allowance to another address — the kind of thing we'll revoke.",
   },
   {
     id: "ready",
     label: "Ready to demolish",
-    description: "Account is on-chain and discoverable. Verify on stellar.expert before signing.",
+    description: "Your practice account is ready.",
   },
 ];
 

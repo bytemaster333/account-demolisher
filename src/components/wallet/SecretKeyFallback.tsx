@@ -45,9 +45,12 @@ export function SecretKeyFallback({ onConnector }: SecretKeyFallbackProps): Reac
         setActiveConnector(connector);
         setConnected(publicKey, "secret");
         onConnector?.(connector);
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : "Failed to load secret seed.";
-        setError(message);
+      } catch {
+        // any failure here means the pasted value couldn't be used as a key;
+        // show a plain, actionable message instead of a raw library error
+        setError(
+          "That doesn't look like a valid Stellar secret key. It should start with 'S' and be 56 characters.",
+        );
       } finally {
         setPending(false);
       }
@@ -93,8 +96,8 @@ export function SecretKeyFallback({ onConnector }: SecretKeyFallbackProps): Reac
           Not recommended
         </h2>
         <p style={{ margin: 0, fontSize: 12.5, lineHeight: 1.55, color: "var(--fg-2)" }}>
-          Pasting a seed gives this page direct signing authority — prefer a wallet extension. The
-          seed stays in this tab&apos;s memory only; it is never stored or sent anywhere.
+          Anyone who has this key controls the account and can move or steal all its funds. Only
+          paste it if you trust this device and no one can see your screen.
         </p>
       </div>
 
@@ -103,7 +106,7 @@ export function SecretKeyFallback({ onConnector }: SecretKeyFallbackProps): Reac
           htmlFor="secret-key-input"
           style={{ fontSize: 13, fontWeight: 600, color: "var(--fg)" }}
         >
-          Stellar secret seed (starts with{" "}
+          Stellar secret key (starts with{" "}
           <code style={{ fontFamily: "'Geist Mono', ui-monospace, monospace" }}>S</code>)
         </label>
         <input
@@ -133,11 +136,7 @@ export function SecretKeyFallback({ onConnector }: SecretKeyFallbackProps): Reac
           }}
         />
         <p id="secret-key-help" style={{ margin: 0, fontSize: 11.5, color: "var(--fg-3)" }}>
-          Validated locally via{" "}
-          <code style={{ fontFamily: "'Geist Mono', ui-monospace, monospace" }}>
-            StrKey.isValidEd25519SecretSeed
-          </code>
-          .
+          We only check the format on your device — the key is never uploaded.
         </p>
         {error !== null ? (
           <p role="alert" style={{ margin: 0, fontSize: 12, color: "var(--danger)" }}>
@@ -161,7 +160,7 @@ export function SecretKeyFallback({ onConnector }: SecretKeyFallbackProps): Reac
             opacity: submitDisabled ? 0.55 : 1,
           }}
         >
-          {pending ? "Loading…" : "Use secret seed (I accept the risks)"}
+          {pending ? "Loading…" : "Continue with secret key"}
         </button>
       </form>
     </section>

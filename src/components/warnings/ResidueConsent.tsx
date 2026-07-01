@@ -42,7 +42,7 @@ export function ResidueConsent({
   return (
     <Notice
       tone="warning"
-      role="alert"
+      role="note"
       data-testid="residue-consent"
       title={
         credits.length === 1
@@ -50,10 +50,10 @@ export function ResidueConsent({
           : `${credits.length} balances can't be converted to XLM`
       }
     >
-      No market path to XLM was found for these assets, so the account can&apos;t be closed while it
-      holds them. Sell or move them yourself first, or tick “return to issuer” to send a balance
-      back to the asset that issued it — this is irreversible and most issuers credit nothing in
-      return.
+      We couldn&apos;t find a way to turn these tokens into XLM, so the account can&apos;t close
+      while it still holds them. Either sell or move them from another app first, then re-check — or
+      tick “return to issuer” below to send a token back to whoever created it. That&apos;s
+      permanent, you&apos;ll almost certainly get nothing back, and it can&apos;t be undone.
       <ul
         style={{
           listStyle: "none",
@@ -87,15 +87,26 @@ export function ResidueConsent({
             >
               {c.amount} {c.code}
             </span>
-            <span style={{ flex: 1, minWidth: 0 }}>
+            <span
+              style={{
+                flex: 1,
+                minWidth: 0,
+                display: "inline-flex",
+                flexDirection: "column",
+                gap: 2,
+              }}
+            >
               <CopyableAddress
                 value={c.issuer}
-                label="Issuer"
+                label="Created by"
                 head={4}
                 tail={4}
                 size={11.5}
                 href={explorerAccountUrl(network, c.issuer)}
               />
+              <span style={{ fontSize: 11, color: "var(--fg-3)", lineHeight: 1.4 }}>
+                This is where “return to issuer” would send the token.
+              </span>
             </span>
             <Checkbox
               tone="warning"
@@ -103,7 +114,24 @@ export function ResidueConsent({
               onChange={(v) => onToggle(c.key, v)}
               label={
                 <span style={{ color: "var(--warning)", fontWeight: 600, whiteSpace: "nowrap" }}>
-                  return to issuer
+                  Return to issuer (permanent — you keep nothing)
+                  {/* screen-reader-only: the full, unambiguous consequence for this
+                      specific balance, so the checkbox never reads as a bare toggle */}
+                  <span
+                    style={{
+                      position: "absolute",
+                      width: 1,
+                      height: 1,
+                      padding: 0,
+                      margin: -1,
+                      overflow: "hidden",
+                      clip: "rect(0 0 0 0)",
+                      whiteSpace: "nowrap",
+                      border: 0,
+                    }}
+                  >
+                    {` — return ${c.amount} ${c.code} to the address that created it. This is permanent, you'll almost certainly get nothing back, and it can't be undone.`}
+                  </span>
                 </span>
               }
             />

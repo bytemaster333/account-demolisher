@@ -111,7 +111,7 @@ function Row({ row, isLast }: { readonly row: DemoStepRow; readonly isLast: bool
               gap: 4,
               whiteSpace: "nowrap",
             }}
-            title="View on stellar.expert"
+            title="View on Stellar.expert (public blockchain explorer)"
           >
             <span>
               {row.txHash.slice(0, 6)}…{row.txHash.slice(-4)}
@@ -125,6 +125,7 @@ function Row({ row, isLast }: { readonly row: DemoStepRow; readonly isLast: bool
               strokeWidth={2.2}
               strokeLinecap="round"
               strokeLinejoin="round"
+              aria-hidden
             >
               <path d="M7 17 17 7M9 7h8v8" />
             </svg>
@@ -220,6 +221,7 @@ function Row({ row, isLast }: { readonly row: DemoStepRow; readonly isLast: bool
               strokeWidth={2.2}
               strokeLinecap="round"
               strokeLinejoin="round"
+              aria-hidden
             >
               <path d="M7 17 17 7M9 7h8v8" />
             </svg>
@@ -287,6 +289,7 @@ function StatusIndicator({ status }: { readonly status: DemoStepRowStatus }) {
           strokeWidth={3}
           strokeLinecap="round"
           strokeLinejoin="round"
+          aria-hidden
         >
           <path d="M5 12.5l4.5 4.5L19 7" />
         </svg>
@@ -312,6 +315,7 @@ function StatusIndicator({ status }: { readonly status: DemoStepRowStatus }) {
           strokeWidth={3}
           strokeLinecap="round"
           strokeLinejoin="round"
+          aria-hidden
         >
           <path d="M6 6l12 12M18 6L6 18" />
         </svg>
@@ -337,6 +341,7 @@ function StatusIndicator({ status }: { readonly status: DemoStepRowStatus }) {
           strokeWidth={2.5}
           strokeLinecap="round"
           strokeLinejoin="round"
+          aria-hidden
         >
           <circle cx="12" cy="12" r="9" />
           <path d="M12 7v5l3 2" />

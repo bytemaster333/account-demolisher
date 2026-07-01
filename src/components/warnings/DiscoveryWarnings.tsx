@@ -23,19 +23,24 @@ export function DiscoveryWarnings({
   return (
     <Notice
       tone="warning"
-      role="alert"
+      role="note"
       data-testid="discovery-warnings"
       {...(footer !== undefined ? { footer } : {})}
-      title="Discovery was incomplete — this plan may be missing some entries"
+      title="We couldn't finish scanning this account"
     >
+      It&apos;s possible this account has some token permissions or DeFi positions we didn&apos;t
+      find. If you&apos;ve used apps like Blend or Soroswap, check them before closing — leftover
+      items could be left behind.
       <ul
         style={{
           listStyle: "disc",
-          margin: "4px 0 0",
+          margin: "10px 0 0",
           paddingLeft: 18,
           display: "flex",
           flexDirection: "column",
           gap: 4,
+          fontSize: 12,
+          color: "var(--fg-3)",
         }}
       >
         {warnings.map((w) => (

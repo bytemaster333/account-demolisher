@@ -29,7 +29,11 @@ export function TypedConfirmation({
 }: TypedConfirmationProps): React.JSX.Element {
   const titleId = useId();
   const inputId = useId();
+  const errorId = useId();
+  const statusId = useId();
+  const tailId = useId();
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
 
   const required = destination.slice(-4);
   const destHead = destination.length > 4 ? destination.slice(0, -4) : "";
@@ -40,7 +44,14 @@ export function TypedConfirmation({
   const [elapsedMs, setElapsedMs] = useState(delayMs <= 0 ? delayMs : 0);
 
   useEffect(() => {
+    // remember what had focus so we can restore it after the dialog closes
+    const previouslyFocused = document.activeElement as HTMLElement | null;
     inputRef.current?.focus();
+    return () => {
+      if (previouslyFocused && typeof previouslyFocused.focus === "function") {
+        previouslyFocused.focus();
+      }
+    };
   }, []);
 
   // close on Escape for keyboard users
@@ -51,6 +62,35 @@ export function TypedConfirmation({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onCancel]);
+
+  // trap Tab focus inside the dialog so keyboard users can't tab into the page behind it
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Tab") return;
+      const panel = panelRef.current;
+      if (!panel) return;
+      const focusable = Array.from(
+        panel.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((el) => !el.hasAttribute("disabled") && el.offsetParent !== null);
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) return;
+      const active = document.activeElement;
+      if (e.shiftKey) {
+        if (active === first || !panel.contains(active)) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else if (active === last || !panel.contains(active)) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   useEffect(() => {
     if (delayMs <= 0) return;
@@ -66,6 +106,8 @@ export function TypedConfirmation({
   const delayElapsed = elapsedMs >= delayMs;
   const matches = typed === required && required.length > 0;
   const canConfirm = matches && delayElapsed;
+  // only flag a mismatch once the user has typed the full 4 characters
+  const showMismatch = typed.length === 4 && !matches;
   const timerPct = delayMs > 0 ? Math.min(100, (elapsedMs / delayMs) * 100) : 100;
   const timerLeft = Math.max(0, Math.ceil((delayMs - elapsedMs) / 1000));
 
@@ -93,6 +135,7 @@ export function TypedConfirmation({
       }}
     >
       <div
+        ref={panelRef}
         style={{
           width: "100%",
           maxWidth: 460,
@@ -122,7 +165,7 @@ export function TypedConfirmation({
               color: "var(--fg)",
             }}
           >
-            Confirm demolition
+            Confirm closing your account
           </h2>
           <button
             type="button"
@@ -154,8 +197,21 @@ export function TypedConfirmation({
             </svg>
           </button>
         </div>
+        <p
+          style={{
+            margin: "0 0 16px",
+            fontSize: 14.5,
+            fontWeight: 600,
+            lineHeight: 1.5,
+            color: "var(--fg)",
+          }}
+        >
+          This permanently closes your account and sends all its funds to the address below. It
+          cannot be undone.
+        </p>
         <p style={{ margin: "0 0 8px", fontSize: 13.5, color: "var(--fg-2)" }}>
-          Funds will be merged to this destination:
+          All XLM in your account will be sent to this address, and the account will be permanently
+          closed:
         </p>
         <div
           style={{
@@ -169,7 +225,10 @@ export function TypedConfirmation({
           }}
         >
           <span style={{ color: "var(--fg-2)" }}>{destHead || "(empty)"}</span>
-          <span style={{ color: "var(--accent)", fontWeight: 700, textDecoration: "underline" }}>
+          <span
+            id={tailId}
+            style={{ color: "var(--accent)", fontWeight: 700, textDecoration: "underline" }}
+          >
             {destTail}
           </span>
         </div>
@@ -183,7 +242,7 @@ export function TypedConfirmation({
             color: "var(--fg)",
           }}
         >
-          Type the last 4 characters to confirm
+          Type the last 4 characters of the destination address (underlined above) to confirm.
         </label>
         <input
           ref={inputRef}
@@ -198,14 +257,19 @@ export function TypedConfirmation({
           spellCheck={false}
           autoComplete="off"
           autoCapitalize="off"
-          placeholder="••••"
-          aria-invalid={typed.length === 4 && !matches}
+          placeholder={required || "ABCD"}
+          aria-invalid={showMismatch}
+          aria-describedby={
+            [showMismatch ? errorId : null, !delayElapsed ? statusId : null]
+              .filter(Boolean)
+              .join(" ") || undefined
+          }
           data-testid="typed-confirmation-input"
           style={{
             width: "100%",
             padding: "14px 16px",
             borderRadius: 12,
-            border: "1px solid var(--border-2)",
+            border: `1px solid ${showMismatch ? "var(--danger)" : "var(--border-2)"}`,
             background: "var(--surface-2)",
             color: "var(--fg)",
             font: "600 18px/1 'Geist Mono', monospace",
@@ -214,10 +278,71 @@ export function TypedConfirmation({
             boxSizing: "border-box",
           }}
         />
-        {canConfirm ? (
+        {showMismatch ? (
+          <div
+            id={errorId}
+            role="alert"
+            data-testid="typed-confirmation-error"
+            style={{
+              marginTop: 8,
+              fontSize: 12.5,
+              fontWeight: 500,
+              color: "var(--danger)",
+            }}
+          >
+            These don&apos;t match the last 4 characters above.
+          </div>
+        ) : null}
+        {!delayElapsed ? (
+          <div
+            id={statusId}
+            data-testid="typed-confirmation-status"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={Math.ceil(delayMs / 1000)}
+            aria-valuenow={Math.ceil(delayMs / 1000) - timerLeft}
+            aria-valuetext={`Confirm unlocks in ${timerLeft} seconds`}
+            style={{
+              position: "relative",
+              marginTop: 18,
+              width: "100%",
+              padding: 15,
+              borderRadius: 12,
+              background: "var(--surface-2)",
+              border: "1px solid var(--border)",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              aria-hidden="true"
+              style={{
+                position: "absolute",
+                left: 0,
+                top: 0,
+                bottom: 0,
+                width: `${timerPct}%`,
+                background: "var(--surface-3)",
+                transition: "width .1s linear",
+              }}
+            />
+            <div
+              style={{
+                position: "relative",
+                textAlign: "center",
+                fontWeight: 600,
+                fontSize: 14,
+                color: "var(--fg-2)",
+              }}
+            >
+              Take a moment to be sure — confirm unlocks in {timerLeft}s.
+            </div>
+          </div>
+        ) : (
           <button
             type="button"
             onClick={onConfirm}
+            disabled={!canConfirm}
+            aria-disabled={!canConfirm}
             data-testid="typed-confirmation-confirm"
             style={{
               marginTop: 18,
@@ -233,7 +358,8 @@ export function TypedConfirmation({
               color: "var(--danger)",
               fontWeight: 600,
               fontSize: 15,
-              cursor: "pointer",
+              cursor: canConfirm ? "pointer" : "not-allowed",
+              opacity: canConfirm ? 1 : 0.5,
             }}
           >
             <svg
@@ -248,49 +374,23 @@ export function TypedConfirmation({
             >
               <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
             </svg>
-            Demolish account
+            Close account
           </button>
-        ) : (
+        )}
+        {delayElapsed && !matches ? (
           <div
-            data-testid="typed-confirmation-status"
+            aria-live="polite"
             style={{
-              position: "relative",
-              marginTop: 18,
-              width: "100%",
-              padding: 15,
-              borderRadius: 12,
-              background: "var(--surface-2)",
-              border: "1px solid var(--border)",
-              overflow: "hidden",
+              margin: "8px 0 0",
+              textAlign: "center",
+              fontWeight: 500,
+              fontSize: 13,
+              color: "var(--fg-2)",
             }}
           >
-            <div
-              style={{
-                position: "absolute",
-                left: 0,
-                top: 0,
-                bottom: 0,
-                width: `${timerPct}%`,
-                background: "var(--surface-3)",
-                transition: "width .1s linear",
-              }}
-            />
-            <div
-              aria-live="polite"
-              style={{
-                position: "relative",
-                textAlign: "center",
-                fontWeight: 600,
-                fontSize: 14,
-                color: delayElapsed ? "var(--fg-3)" : "var(--fg-2)",
-              }}
-            >
-              {!delayElapsed
-                ? `Hold on, confirm unlocks in ${timerLeft}s`
-                : "Enter the last 4 characters above"}
-            </div>
+            Enter the last 4 characters above to enable this button.
           </div>
-        )}
+        ) : null}
         <p
           style={{
             margin: "12px 0 0",
@@ -300,7 +400,7 @@ export function TypedConfirmation({
             lineHeight: 1.5,
           }}
         >
-          This is irreversible. The delay and re-typing are intentional friction.
+          The short wait and the re-typing are here to prevent an accidental, irreversible click.
         </p>
       </div>
     </div>

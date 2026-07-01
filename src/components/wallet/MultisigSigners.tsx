@@ -34,6 +34,12 @@ export function MultisigSigners({
   const submit = (): void => {
     const trimmed = value.trim();
     if (trimmed.length === 0) return;
+    // a Stellar public key starts with "G"; the secret key starts with "S".
+    // catch the common paste-the-wrong-one mistake with an actionable message.
+    if (/^G[A-Z2-7]{55}$/.test(trimmed)) {
+      setError("That's a public key (G…). Paste the secret key, which starts with S.");
+      return;
+    }
     const err = onAddSecret(trimmed);
     if (err) {
       setError(err);
@@ -62,12 +68,52 @@ export function MultisigSigners({
       }}
     >
       <div>
-        <div style={{ fontSize: 13.5, fontWeight: 600 }}>
-          This account needs multiple signatures to close
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 10,
+          }}
+        >
+          <div style={{ fontSize: 13.5, fontWeight: 600 }}>
+            This account needs more than one person to approve closing it
+          </div>
+          <span
+            data-testid="multisig-status"
+            style={{
+              flexShrink: 0,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+              padding: "3px 9px",
+              borderRadius: 999,
+              fontSize: 11.5,
+              fontWeight: 700,
+              whiteSpace: "nowrap",
+              color: met ? "var(--success)" : "var(--warning)",
+              border: `1px solid color-mix(in srgb, var(--${met ? "success" : "warning"}) 40%, transparent)`,
+              background: "var(--surface)",
+            }}
+          >
+            <span aria-hidden="true">{met ? "✓" : "!"}</span>
+            {met ? "Ready" : "Not enough yet"}
+          </span>
         </div>
-        <div style={{ marginTop: 3, fontSize: 12.5, lineHeight: 1.5, color: "var(--fg-2)" }}>
-          Signing weight {currentWeight} of {threshold} required. Add the secret keys of enough
-          authorized signers to reach the threshold — they sign locally and are never sent anywhere.
+        <div
+          style={{
+            marginTop: 6,
+            fontSize: 12.5,
+            fontWeight: 600,
+            lineHeight: 1.5,
+            color: "var(--fg)",
+          }}
+        >
+          Keys are used only in your browser to sign — never uploaded or stored.
+        </div>
+        <div style={{ marginTop: 6, fontSize: 12.5, lineHeight: 1.5, color: "var(--fg-2)" }}>
+          You need signatures adding up to {threshold}; you currently have {currentWeight}. Paste
+          the secret keys of enough authorized signers to reach that total.
         </div>
       </div>
 
@@ -173,11 +219,15 @@ export function MultisigSigners({
               Add signer
             </button>
           </div>
-          {error ? <div style={{ fontSize: 12, color: "var(--danger)" }}>{error}</div> : null}
+          {error ? (
+            <div role="alert" style={{ fontSize: 12, color: "var(--danger)" }}>
+              {error}
+            </div>
+          ) : null}
         </div>
       ) : (
         <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--success)" }}>
-          Threshold met — ready to demolish.
+          <span aria-hidden="true">✓ </span>Ready — you have enough signatures to close the account.
         </div>
       )}
     </div>
