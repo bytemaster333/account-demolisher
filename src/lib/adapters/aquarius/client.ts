@@ -87,7 +87,7 @@ export async function withdraw(args: WithdrawArgs, deps: AquariusClientDeps): Pr
   const routerId = getAquariusRouterId(args.network);
   if (!isAllowedContract(routerId, args.network)) {
     throw new Error(
-      `AquariusAmmRouter ${routerId} is not on the ${args.network.id} allow-list — refusing to build withdraw`,
+      `AquariusAmmRouter ${routerId} is not on the ${args.network.id} allow-list, refusing to build withdraw`,
     );
   }
   validatePoolIndex(args.poolIndex);
@@ -115,7 +115,7 @@ export async function claim(args: ClaimArgs, deps: AquariusClientDeps): Promise<
   const routerId = getAquariusRouterId(args.network);
   if (!isAllowedContract(routerId, args.network)) {
     throw new Error(
-      `AquariusAmmRouter ${routerId} is not on the ${args.network.id} allow-list — refusing to build claim`,
+      `AquariusAmmRouter ${routerId} is not on the ${args.network.id} allow-list, refusing to build claim`,
     );
   }
   validatePoolIndex(args.poolIndex);
@@ -140,7 +140,7 @@ export async function swapChained(
   const routerId = getAquariusRouterId(args.network);
   if (!isAllowedContract(routerId, args.network)) {
     throw new Error(
-      `AquariusAmmRouter ${routerId} is not on the ${args.network.id} allow-list — refusing to build swap_chained`,
+      `AquariusAmmRouter ${routerId} is not on the ${args.network.id} allow-list, refusing to build swap_chained`,
     );
   }
   args.swapsChain.forEach((step, i) => {

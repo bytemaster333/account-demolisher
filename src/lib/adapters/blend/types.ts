@@ -1,4 +1,4 @@
-// shared blend exit-step types — the contract between the pool/client modules,
+// shared blend exit-step types: the contract between the pool/client modules,
 // minimal pool reference. UI renders name, falls back to truncated id
 export interface BlendPoolRef {
   readonly id: string;
@@ -14,7 +14,7 @@ export interface BlendAssetRef {
   readonly contractId: string;
 }
 
-// base each step extends — lets the UI pluck pool ref + summary
+// base each step extends, lets the UI pluck pool ref + summary
 interface BlendStepBase {
   readonly pool: BlendPoolRef;
   readonly summary: string;

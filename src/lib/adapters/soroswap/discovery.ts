@@ -1,4 +1,4 @@
-// on-chain Soroswap LP discovery — our own position finder, no third-party API.
+// on-chain Soroswap LP discovery: our own position finder, no third-party API.
 //
 // Soroswap has no per-user position index: every pair is its own LP-token
 // contract. So we walk the factory's pair list and probe the user's LP balance

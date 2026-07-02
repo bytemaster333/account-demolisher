@@ -114,7 +114,7 @@ export async function buildExitSequence(
     });
   }
 
-  // repays — one submit per liability
+  // repays: one submit per liability
   for (const [asset, amount] of position.liabilities) {
     if (amount <= 0n) continue;
     const tx = await buildSubmitRequestTx(
@@ -181,7 +181,7 @@ export async function buildExitSequence(
     steps.push({ kind: "claim_emissions", transaction: tx });
   }
 
-  // backstop queue withdrawal — honest about the 17-day lock
+  // backstop queue withdrawal, honest about the 17-day lock
   if (deps.backstopShares !== undefined && deps.backstopShares > 0n) {
     const tx = await buildBackstopQueueWithdrawalTx(
       server,

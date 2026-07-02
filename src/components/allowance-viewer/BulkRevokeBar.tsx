@@ -1,7 +1,7 @@
 "use client";
 
 // bulk revoke controller. sits above the AllowanceList and revokes many
-// standing approvals in one sweep — all active, or only those to unknown
+// standing approvals in one sweep: all active, or only those to unknown
 // spenders. runs strictly sequentially: each approve(amount=0) is submitted and
 // confirmed on-chain before the next, because the next tx reloads the source
 // account's sequence number and would be rejected as tx_bad_seq if the previous
@@ -80,7 +80,7 @@ export function BulkRevokeBar({
     setStopping(true);
   }, [networkId]);
 
-  // warn before a tab close / reload while a sweep is live — a partial run leaves
+  // warn before a tab close / reload while a sweep is live. A partial run leaves
   // some approvals revoked and others not, and an in-flight signature could still
   // land. Mirrors the demolish execute-phase beforeunload guard.
   useEffect(() => {
@@ -169,7 +169,7 @@ export function BulkRevokeBar({
           >
             <Spinner size={14} />
             {current !== null
-              ? `Revoking ${doneCount + 1} of ${total} — approve your wallet prompt for ${short(current.spender)}`
+              ? `Revoking ${doneCount + 1} of ${total}: approve your wallet prompt for ${short(current.spender)}`
               : stopping
                 ? "Finishing current revoke…"
                 : "Working…"}
@@ -217,7 +217,7 @@ export function BulkRevokeBar({
                   fontFamily: '"Geist Mono", monospace',
                 }}
               >
-                <span style={{ color: "var(--danger)" }}>✕</span> {short(f.record.spender)} —{" "}
+                <span style={{ color: "var(--danger)" }}>✕</span> {short(f.record.spender)}:{" "}
                 <span style={{ fontFamily: "Geist, sans-serif" }}>{f.error}</span>
               </div>
             ))}
@@ -254,7 +254,7 @@ export function BulkRevokeBar({
     return (
       <Card padding={18} style={{ marginBottom: 16 }} data-testid="bulk-revoke-confirm">
         <Notice tone="warning" title={`Revoke ${pendingTargets.length} approvals?`}>
-          Your wallet will prompt you to sign each one — {pendingTargets.length} signature
+          Your wallet will prompt you to sign each one: {pendingTargets.length} signature
           {pendingTargets.length === 1 ? "" : "s"} in total. Each revoke is submitted and confirmed
           on-chain before the next, so this can take a couple of minutes. You can stop after any
           approval.

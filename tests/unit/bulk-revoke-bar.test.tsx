@@ -38,7 +38,7 @@ const records: readonly AllowanceRecord[] = [
   makeRecord("GCCC3333333333333333333333333333333333333333333333333CCCC"),
 ];
 
-// a deferred that stays pending until we call resolve() — lets a submit hang.
+// a deferred that stays pending until we call resolve(), lets a submit hang.
 function deferred(): { promise: Promise<string>; resolve: () => void } {
   let resolve!: () => void;
   const promise = new Promise<string>((res) => {

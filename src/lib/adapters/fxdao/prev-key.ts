@@ -196,7 +196,7 @@ function buildReadOnlyTx(
   network: NetworkConfig,
   args: xdr.ScVal[],
 ): import("@stellar/stellar-sdk").Transaction {
-  // any well-formed source key works — simulation doesn't require funding
+  // any well-formed source key works: simulation doesn't require funding
   const SYNTHETIC_SOURCE = "GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3";
   const source = new Account(SYNTHETIC_SOURCE, "0");
   const contract = new Contract(contractId);

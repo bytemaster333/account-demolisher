@@ -83,7 +83,7 @@ describe("KNOWN_CEXES registry invariants", () => {
   });
 });
 
-describe("requireMemoEnforcement — non-CEX and requirement gating", () => {
+describe("requireMemoEnforcement, non-CEX and requirement gating", () => {
   it("returns ok:true for a destination that is not a known CEX", () => {
     const res = requireMemoEnforcement("GNOTACEXADDRESS", memo("text", "anything"));
     expect(res.ok).toBe(true);
@@ -121,7 +121,7 @@ describe("requireMemoEnforcement — non-CEX and requirement gating", () => {
   });
 });
 
-describe("requireMemoEnforcement — id memo validation", () => {
+describe("requireMemoEnforcement, id memo validation", () => {
   it("accepts a plain numeric id memo", () => {
     expect(requireMemoEnforcement(BINANCE_ID, memo("id", "1234567890")).ok).toBe(true);
   });
@@ -150,7 +150,7 @@ describe("requireMemoEnforcement — id memo validation", () => {
   });
 });
 
-describe("requireMemoEnforcement — text memo validation", () => {
+describe("requireMemoEnforcement, text memo validation", () => {
   it("accepts a short text memo", () => {
     expect(requireMemoEnforcement(KRAKEN_TEXT, memo("text", "user-12345")).ok).toBe(true);
   });
@@ -186,7 +186,7 @@ describe("requireMemoEnforcement — text memo validation", () => {
 // registry: a hash/return memo is rejected on the type mismatch before the
 // switch. These tests document that observable behavior rather than the (dead)
 // shape-validation logic. See cex-registry.ts:165 (guard) and :220-232 (branch).
-describe("requireMemoEnforcement — hash/return branches are gated out by type", () => {
+describe("requireMemoEnforcement, hash/return branches are gated out by type", () => {
   it("rejects a well-formed 64-char hex hash memo at a text CEX on type mismatch", () => {
     const hex = "a".repeat(64);
     const res = requireMemoEnforcement(KRAKEN_TEXT, memo("hash", hex));

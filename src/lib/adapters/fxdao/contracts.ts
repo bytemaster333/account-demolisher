@@ -76,7 +76,7 @@ export function getFxDAOVaultsContractId(): string {
   const entry = FXDAO_MAINNET_CONTRACTS.find((c) => c.kind === "vaults");
   if (!entry) {
     throw new Error(
-      "FxDAO VaultsContract not in FXDAO_MAINNET_CONTRACTS — upstream addresses unverified",
+      "FxDAO VaultsContract not in FXDAO_MAINNET_CONTRACTS: upstream addresses unverified",
     );
   }
   return entry.id;

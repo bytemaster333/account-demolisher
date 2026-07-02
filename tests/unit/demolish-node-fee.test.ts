@@ -49,7 +49,7 @@ function classicNode(estimatedFee: string): PlanNode {
   } as unknown as PlanNode;
 }
 
-describe("nodeFeeStroops — soroban fee includes the per-op inclusion fee", () => {
+describe("nodeFeeStroops, soroban fee includes the per-op inclusion fee", () => {
   it("adds BASE_FEE (100) to minResourceFee for a soroban node", () => {
     // the submitted fee assembles as minResourceFee + BASE_FEE (single-op tx),
     // so the estimate must be 12_345 + 100, not the bare 12_345.

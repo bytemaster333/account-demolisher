@@ -23,7 +23,7 @@ export const DEFAULT_SCAN_WINDOW_LEDGERS = 518_400;
 const PAGE_LIMIT = 10_000;
 
 // when getEvents reports our startLedger is below the retained event window, we
-// clamp to the floor it reports — plus this margin. The retention floor advances
+// clamp to the floor it reports, plus this margin. The retention floor advances
 // continuously (~1 ledger / 5s), so clamping to the *exact* floor races: a single
 // ledger closing between the error and the retry would drop us back below it and
 // fail again. A small margin absorbs that (skipping a few ledgers at the very
@@ -32,7 +32,7 @@ const RETENTION_RETRY_MARGIN_LEDGERS = 60;
 
 // how many times we'll re-clamp startLedger and retry after a retention-range
 // error. The floor advances ~1 ledger / 5s, so the margin above absorbs any
-// realistic retry gap in one shot — but a bounded loop keeps a second range
+// realistic retry gap in one shot, but a bounded loop keeps a second range
 // error from propagating uncaught out of enumerateAllowances.
 const MAX_RETENTION_RETRIES = 3;
 
@@ -154,7 +154,7 @@ export async function enumerateAllowances(
       }
       resp = retryResp;
     }
-    // process whatever events came back (might be 0 — a topic-filtered query
+    // process whatever events came back (might be 0, a topic-filtered query
     for (const ev of resp.events) {
       const decoded = tryDecodeApproveEvent(ev, userAddress);
       if (decoded === null) continue;
@@ -168,7 +168,7 @@ export async function enumerateAllowances(
     }
 
     // end-of-results only when there's no forward cursor. an empty page with
-    // a cursor means "no matches in this slice, keep paging" — must NOT break
+    // a cursor means "no matches in this slice, keep paging"; must NOT break
     if (!resp.cursor || resp.cursor === cursor) {
       break;
     }

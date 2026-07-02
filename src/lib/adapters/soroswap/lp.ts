@@ -1,4 +1,4 @@
-// soroswap LP exit — direct remove_liquidity invocation against the mainnet SoroswapRouter
+// soroswap LP exit: direct remove_liquidity invocation against the mainnet SoroswapRouter
 import {
   BASE_FEE,
   Contract,
@@ -84,7 +84,7 @@ export async function removeLiquidityByContractIds(
   // defensive re-check; pinned ID is in the allow-list by construction
   if (!isAllowedContract(routerId, args.network)) {
     throw new Error(
-      `SoroswapRouter ${routerId} is not on the ${args.network.id} allow-list — refusing to build remove_liquidity`,
+      `SoroswapRouter ${routerId} is not on the ${args.network.id} allow-list, refusing to build remove_liquidity`,
     );
   }
 

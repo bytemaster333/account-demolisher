@@ -19,13 +19,13 @@ import { getRpc } from "@/lib/soroban/rpc-client";
 import { buildApprove } from "@/lib/soroban/sep41";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
 
-// circle testnet usdc — issuer published in https://testanchor.stellar.org/.well-known/stellar.toml
+// circle testnet usdc: issuer published in https://testanchor.stellar.org/.well-known/stellar.toml
 const USDC_TESTNET_ISSUER = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
-// native xlm SAC on testnet — confirmed via the stellar laboratory
+// native xlm SAC on testnet: confirmed via the stellar laboratory
 const NATIVE_XLM_SAC_TESTNET = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
-// blend testnet pool TestnetV2 — from BLEND_TESTNET_POOLS in src/lib/adapters/blend/pools.ts
+// blend testnet pool TestnetV2: from BLEND_TESTNET_POOLS in src/lib/adapters/blend/pools.ts
 const BLEND_POOL_TESTNET = "CCEBVDYM32YNYCVNRXQKDFFPISJJCV557CDZEIRBEE4NCV4KHPQ44HGF";
-// soroswap testnet router — from TESTNET_SOROSWAP_ENTRIES in src/lib/config/contracts.ts
+// soroswap testnet router: from TESTNET_SOROSWAP_ENTRIES in src/lib/config/contracts.ts
 const SOROSWAP_ROUTER_TESTNET = "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD";
 
 export type DemoStepId =
@@ -53,7 +53,7 @@ export const DEMO_STEPS: readonly DemoStep[] = [
   {
     id: "keypair",
     label: "Generate fresh keypair",
-    description: "Creating a brand-new account key — it stays private on your device.",
+    description: "Creating a brand-new account key. It stays private on your device.",
   },
   {
     id: "friendbot",
@@ -109,7 +109,7 @@ export const DEMO_STEPS: readonly DemoStep[] = [
     id: "sep41-allowance",
     label: "Approve a SEP-41 allowance",
     description:
-      "Granting a tiny spending allowance to another address — the kind of thing we'll revoke.",
+      "Granting a tiny spending allowance to another address, the kind of thing we'll revoke.",
   },
   {
     id: "ready",
@@ -465,7 +465,7 @@ function formatHorizonError(e: unknown): string {
   if (codes !== undefined) parts.push(`codes ${JSON.stringify(codes)}`);
   else if (title !== undefined) parts.push(String(title));
   else if (err?.message !== undefined) parts.push(err.message);
-  return parts.length > 0 ? parts.join(" — ") : "Horizon rejected the transaction";
+  return parts.length > 0 ? parts.join("; ") : "Horizon rejected the transaction";
 }
 
 async function approveSep41(
@@ -621,7 +621,7 @@ async function soroswapSwap(
       network: network.id,
     });
   } catch (e) {
-    // most common testnet failure: "No path found" — soroswap testnet has zero
+    // most common testnet failure: "No path found". soroswap testnet has zero
     // pools at the moment, so the aggregator can't route any trade
     if (e instanceof Error && /no path|UPSTREAM_ERROR/i.test(e.message)) {
       throw new Error(

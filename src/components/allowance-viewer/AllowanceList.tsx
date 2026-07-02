@@ -38,7 +38,7 @@ const HEADER_CELL: React.CSSProperties = {
   letterSpacing: "0.06em",
 };
 
-// stellar.expert link for a stellar address — contract (C…) or account (G…)
+// stellar.expert link for a stellar address: contract (C…) or account (G…)
 function addressExplorerUrl(network: NetworkConfig, addr: string): string {
   return addr.startsWith("C")
     ? explorerContractUrl(network, addr)
@@ -276,7 +276,7 @@ function AllowanceRow({
                 >
                   <path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
                 </svg>
-                Unknown spender — verify
+                Unknown spender, verify
               </Badge>
             </span>
           </div>
@@ -334,7 +334,7 @@ function formatAmount(amount: bigint, decimals: number | null): string {
 function formatExpiry(liveUntilLedger: number, currentLedger: number): string {
   const delta = liveUntilLedger - currentLedger;
   // an allowance is live *through* its live_until_ledger, so it's only expired
-  // once the current ledger passes it — matches enumerateAllowances' `expired`.
+  // once the current ledger passes it. Matches enumerateAllowances' `expired`.
   if (delta < 0) return "expired";
   const seconds = delta * SECONDS_PER_LEDGER;
   if (seconds < 60) return `in ${seconds}s`;

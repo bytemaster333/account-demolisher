@@ -1,4 +1,4 @@
-// direct contract provider — always-available position discovery via in-process
+// direct contract provider: always-available position discovery via in-process
 import {
   loadUserPositions,
   type LoadUserPositionsResult,
@@ -192,7 +192,7 @@ export class DirectContractProvider implements IDeFiPositionProvider {
     return pools.map(aquariusPoolToSummary);
   }
 
-  // our own on-chain Soroswap LP discovery — walks the factory's pair list and
+  // our own on-chain Soroswap LP discovery: walks the factory's pair list and
   // probes the user's LP balance on each pair. No third-party position API.
   private async discoverSoroswap(
     server: rpc.Server,

@@ -1,6 +1,6 @@
 "use client";
 
-// /plan index — open a multisig signing plan by link or hash
+// /plan index: open a multisig signing plan by link or hash
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -25,7 +25,7 @@ function parsePlanInput(raw: string): string | null {
   const trimmed = raw.trim();
   if (trimmed.length === 0) return null;
 
-  // bare hex hash — refractor hashes are 64 hex chars
+  // bare hex hash: refractor hashes are 64 hex chars
   if (/^[0-9a-f]{64}$/i.test(trimmed)) return trimmed.toLowerCase();
 
   // url form. tolerate either refractor's frontend or our own /plan/<id>
@@ -36,7 +36,7 @@ function parsePlanInput(raw: string): string | null {
     const last = segments[segments.length - 1];
     if (last && /^[0-9a-f]{64}$/i.test(last)) return last.toLowerCase();
   } catch {
-    // not a url — fall through
+    // not a url; fall through
   }
 
   return null;
@@ -45,7 +45,7 @@ function parsePlanInput(raw: string): string | null {
 const STEPS: ReadonlyArray<string> = [
   "Have your multi-signature closure transaction on Refractor, then paste its link or transaction hash below. Demolisher opens a shareable /plan/<hash> view of that plan.",
   "Send that link to every co-signer. Each one opens it, reviews the exact transaction, and adds their signature with their own wallet.",
-  "Once the collected signatures meet the account's threshold, Refractor submits the transaction to the network automatically — the plan page then shows the final tx hash.",
+  "Once the collected signatures meet the account's threshold, Refractor submits the transaction to the network automatically, and the plan page then shows the final tx hash.",
 ];
 
 export default function PlanIndexPage(): React.JSX.Element {

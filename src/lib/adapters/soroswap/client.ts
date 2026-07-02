@@ -77,7 +77,7 @@ function jsonSerializeWithBigInt(value: unknown): string {
 }
 
 // the SDK types amountOut/otherAmountThreshold as `bigint`, but the proxy JSON path never
-// materializes them as such — JSON.parse yields a string or (lossily) a Number. downstream the
+// materializes them as such. JSON.parse yields a string or (lossily) a Number. downstream the
 // slippage guard depends on exact integer stroops, so reject any value that isn't a faithful
 // non-negative integer instead of silently trusting rounded/exponential digits.
 function assertStroopField(v: unknown, field: string): void {
@@ -189,7 +189,7 @@ export class SoroswapHttpClient implements SoroswapClient {
     return this.dispatch<string[]>({ op: "getProtocols", payload: { network } });
   }
 
-  // POST /quote. caller specifies protocols explicitly — proxy doesn't default it
+  // POST /quote. caller specifies protocols explicitly; proxy doesn't default it
   async quote(request: ClientQuoteRequest): Promise<QuoteResponse> {
     const payload = {
       assetIn: request.assetIn,

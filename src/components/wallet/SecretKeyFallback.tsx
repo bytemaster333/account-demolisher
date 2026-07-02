@@ -136,7 +136,7 @@ export function SecretKeyFallback({ onConnector }: SecretKeyFallbackProps): Reac
           }}
         />
         <p id="secret-key-help" style={{ margin: 0, fontSize: 11.5, color: "var(--fg-3)" }}>
-          We only check the format on your device — the key is never uploaded.
+          We only check the format on your device, and the key is never uploaded.
         </p>
         {error !== null ? (
           <p role="alert" style={{ margin: 0, fontSize: 12, color: "var(--danger)" }}>

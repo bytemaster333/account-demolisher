@@ -421,9 +421,9 @@ function DemolishFlow(): React.JSX.Element {
   }, []);
 
   // the awaiting_confirmation phase has three stages:
-  //  "resolve"     — take an action on a blocker (return-to-issuer) + rebuild
-  //  "acknowledge" — read-and-understand every warning / info card
-  //  "review"      — the clean "here is what will happen" review + demolish
+  //  "resolve"    , take an action on a blocker (return-to-issuer) + rebuild
+  //  "acknowledge", read-and-understand every warning / info card
+  //  "review"     , the clean "here is what will happen" review + demolish
   // the stage is initialised per built plan (below), skipping any empty step.
   type ConfirmStage = "resolve" | "acknowledge" | "review";
   const [confirmStage, setConfirmStage] = useState<ConfirmStage>("review");
@@ -438,7 +438,7 @@ function DemolishFlow(): React.JSX.Element {
   const tree = ctx.tree;
 
   // scam heuristics over the account's held credit balances (look-alike symbols,
-  // homoglyphs, off-allowlist contracts) — surfaced as an informational notice.
+  // homoglyphs, off-allowlist contracts), surfaced as an informational notice.
   const scamFindings = useMemo(() => (audit ? runScamHeuristics(audit.balances) : []), [audit]);
 
   const isMachineIdle = state === "idle";
@@ -462,7 +462,7 @@ function DemolishFlow(): React.JSX.Element {
   const isImmutableBlock = authImmutable;
   const blocked = isImmutableBlock || isSponsorBlock;
 
-  // total native balance + high-value flag — needed by the Resolve step and the
+  // total native balance + high-value flag, needed by the Resolve step and the
   // review summary; computed early so the flow phase / stepper can read them.
   const totalXlm = audit ? sumNativeBalance(audit) : "0";
   const isHighValue = useMemo<boolean>(() => {
@@ -482,7 +482,7 @@ function DemolishFlow(): React.JSX.Element {
   const hasAckItems = hasScam || hasDiscovery || hasAutoHandled || isHighValue;
 
   // initialise the confirm stage per built plan: resolve blockers first, then
-  // acknowledge warnings/info, then the clean review — skipping any empty step.
+  // acknowledge warnings/info, then the clean review, skipping any empty step.
   const initedTreeRef = useRef<unknown>(null);
   useEffect(() => {
     if (tree !== null && isAwaitingConfirmation) {
@@ -519,7 +519,7 @@ function DemolishFlow(): React.JSX.Element {
             : "review";
 
   // step indicator. Resolve/Acknowledge are only decided once the plan is built
-  // (tree !== null) — during "Building plan…" the tree is null and
+  // (tree !== null), during "Building plan…" the tree is null and
   // unroutableCredits is empty, so computing them then would briefly show
   // Acknowledge before the built plan reveals a blocker and flips to Resolve.
   // And Acknowledge stays hidden while a blocker is unresolved, since returning a
@@ -556,7 +556,7 @@ function DemolishFlow(): React.JSX.Element {
     if (trimmed === publicKey) {
       return {
         ready: false,
-        hint: "Destination can't be your own account — the network rejects a self-merge.",
+        hint: "Destination can't be your own account, the network rejects a self-merge.",
       };
     }
     return { ready: true, hint: null };
@@ -567,14 +567,14 @@ function DemolishFlow(): React.JSX.Element {
     connectorRef.current = c;
     setHasConnector(c !== null);
     // a new/cleared connection invalidates any collected multisig signers.
-    // Use functional updates that return the SAME reference when already reset —
+    // Use functional updates that return the SAME reference when already reset.
     // ConnectButton re-notifies every render, so a fresh `[]`/`null` here would
     // create a new reference each time and spin an infinite render loop.
     setMultisig((prev) => (prev === null ? prev : null));
     setExtraSigners((prev) => (prev.length === 0 ? prev : []));
   }, []);
 
-  // once the account is closed it no longer exists — drop the connection so a
+  // once the account is closed it no longer exists, drop the connection so a
   // later navigation back to /demolish starts at Connect, not Configure with a
   // dead account. The success screen keys off the machine + tree (not publicKey)
   // so it stays visible. Guarded by a ref so it fires once per close.
@@ -590,7 +590,7 @@ function DemolishFlow(): React.JSX.Element {
     }
   }, [isSucceeded, setConnector, disconnectWallet]);
 
-  // guard against navigating away / closing the tab mid-execution — a partial
+  // guard against navigating away / closing the tab mid-execution, a partial
   // run leaves the account half-dismantled. The native prompt is the strongest
   // signal the browser allows.
   useEffect(() => {
@@ -621,7 +621,7 @@ function DemolishFlow(): React.JSX.Element {
     }
     if (parsed.data.destination === publicKey) {
       setFormError(
-        "Destination can't be your own account — Stellar rejects a self-merge (ACCOUNT_MERGE_MALFORMED).",
+        "Destination can't be your own account, Stellar rejects a self-merge (ACCOUNT_MERGE_MALFORMED).",
       );
       return;
     }
@@ -695,7 +695,7 @@ function DemolishFlow(): React.JSX.Element {
     setShowConfirmDialog(false);
     setForm(INITIAL_FORM);
     setFormError(null);
-    // the account we operated on is gone (merged) or abandoned — fully drop the
+    // the account we operated on is gone (merged) or abandoned, fully drop the
     // connection so "Start over" returns to Connect, not Configure with a dead
     // account still selected.
     setConnector(null);
@@ -720,7 +720,7 @@ function DemolishFlow(): React.JSX.Element {
   }, []);
 
   // pre-select the claimable balances by default so the demo flow "just works".
-  // only balances claimable NOW are pre-checked — an unclaimable one would fail
+  // only balances claimable NOW are pre-checked, an unclaimable one would fail
   // on-chain, so the user must consciously leave it out (or wait).
   const [prefilledAuditId, setPrefilledAuditId] = useState<string | null>(null);
   if (
@@ -742,7 +742,7 @@ function DemolishFlow(): React.JSX.Element {
   const acctSub = audit?.subentryCount ?? 0;
   // acctThreshold is no longer surfaced now that AuditCard was dropped from preview;
   // keep the derivation for potential future re-use without tripping lint
-  void (audit ? thresholdLabel(audit) : "—");
+  void (audit ? thresholdLabel(audit) : "");
   const acctTrustlines = audit ? countTrustlines(audit) : 0;
   const acctOffers = audit?.offers.length ?? 0;
   const acctData = audit?.data.length ?? 0;
@@ -767,7 +767,7 @@ function DemolishFlow(): React.JSX.Element {
 
   return (
     <main style={{ maxWidth: 1080, margin: "0 auto", padding: "40px 24px 96px" }}>
-      {/* IDLE — connect */}
+      {/* IDLE, connect */}
       {isIdle ? (
         <IdleConnect
           advancedOpen={advancedOpen}
@@ -778,10 +778,10 @@ function DemolishFlow(): React.JSX.Element {
         />
       ) : null}
 
-      {/* BLOCKED — full takeover */}
+      {/* BLOCKED, full takeover */}
       {!isIdle && isImmutableBlock ? <AuthImmutableBlock onDismiss={onReset} /> : null}
       {!isIdle && !isImmutableBlock && isSponsorBlock ? (
-        // hard mode only — foreign sponsorships the batcher can't auto-revoke
+        // hard mode only, foreign sponsorships the batcher can't auto-revoke
         <SponsoringBlock
           numSponsoring={numSponsoring}
           coverable={numCoverable}
@@ -795,7 +795,7 @@ function DemolishFlow(): React.JSX.Element {
       {/* FLOW */}
       {showFlow ? (
         <>
-          {/* persistent page heading for assistive tech — the flow panels below
+          {/* persistent page heading for assistive tech, the flow panels below
               are h2s; this keeps a single h1 per screen */}
           <h1 style={SR_ONLY}>Close a Stellar account</h1>
           <StepIndicator steps={flowSteps} />
@@ -808,7 +808,7 @@ function DemolishFlow(): React.JSX.Element {
           </div>
 
           {/* during the brief discover/preview transition, take over the whole
-              row with a single centered loading widget — no side rail, no
+              row with a single centered loading widget, no side rail, no
               form behind it. */}
           {(isDiscovering || isPreviewing) && tree === null ? (
             <div style={{ maxWidth: 1080, margin: "0 auto" }}>
@@ -839,7 +839,7 @@ function DemolishFlow(): React.JSX.Element {
             </div>
           ) : null}
 
-          {/* single-column flow content — configure / review / sign-off / cancelled.
+          {/* single-column flow content, configure / review / sign-off / cancelled.
               No side rail and no modals: the plan detail lives in the sign-off step. */}
           {!(isDiscovering || isPreviewing) && !isExecuting && !isSucceeded && !isFailed ? (
             <div style={{ maxWidth: 1080, margin: "0 auto" }}>
@@ -880,7 +880,7 @@ function DemolishFlow(): React.JSX.Element {
                 </div>
               ) : null}
 
-              {/* RESOLVE — actions only: blockers that need a return-to-issuer
+              {/* RESOLVE, actions only: blockers that need a return-to-issuer
                   choice + rebuild. Rebuild is gated until every one is resolved. */}
               {isResolve ? (
                 <ResolvePanel
@@ -893,7 +893,7 @@ function DemolishFlow(): React.JSX.Element {
                 />
               ) : null}
 
-              {/* ACKNOWLEDGE — information only: read-and-understand each warning /
+              {/* ACKNOWLEDGE, information only: read-and-understand each warning /
                   info card. Continue is gated until all are acknowledged. */}
               {isAcknowledge ? (
                 <AcknowledgePanel
@@ -910,7 +910,7 @@ function DemolishFlow(): React.JSX.Element {
                 />
               ) : null}
 
-              {/* REVIEW — the clean "here is what will happen": plan overview,
+              {/* REVIEW, the clean "here is what will happen": plan overview,
                   every operation, destination. No cautions (all handled above). */}
               {isReview ? (
                 <ReviewPanel
@@ -946,7 +946,7 @@ function DemolishFlow(): React.JSX.Element {
             </div>
           ) : null}
 
-          {/* final gate — typed-confirmation dialog, opened from Review */}
+          {/* final gate, typed-confirmation dialog, opened from Review */}
           {showConfirmDialog ? (
             <TypedConfirmation
               destination={form.destination}
@@ -1045,11 +1045,11 @@ function IdleConnect({
             }}
           >
             Connect the account you want to close. Closing it permanently removes the account from
-            Stellar and sends all its XLM to an address you choose —{" "}
-            <strong style={{ color: "var(--fg)", fontWeight: 600 }}>this cannot be undone.</strong>{" "}
+            Stellar and sends all its XLM to an address you choose.{" "}
+            <strong style={{ color: "var(--fg)", fontWeight: 600 }}>This cannot be undone.</strong>{" "}
             First we safely undo everything attached to it (trusted assets, open trades, saved data,
             extra signers, and DeFi positions). You review and approve every step in your own wallet
-            — nothing is sent without you.
+            , nothing is sent without you.
             {isTestnetLike
               ? " New here? Create a free practice account below to try the whole thing first."
               : ""}
@@ -1075,7 +1075,7 @@ function IdleConnect({
               </span>
               <span style={{ fontSize: 12.5, color: "var(--fg-3)", lineHeight: 1.5 }}>
                 Works with Freighter, xBull, Albedo, Rabet, Lobstr, Hana and WalletConnect.
-                Connecting only shares your public address — you approve each step in your wallet,
+                Connecting only shares your public address, you approve each step in your wallet,
                 and we never see your secret key.
               </span>
             </div>
@@ -1110,27 +1110,12 @@ function IdleConnect({
                 color: "var(--fg)",
               }}
             >
-              <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <svg
-                  width="15"
-                  height="15"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="var(--fg-3)"
-                  strokeWidth={2}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden
-                >
-                  <path d="m21 2-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4" />
-                </svg>
-                <span style={{ display: "flex", flexDirection: "column", gap: 1 }}>
-                  <span style={{ fontWeight: 600, fontSize: 13.5 }}>
-                    Advanced: paste a secret key
-                  </span>
-                  <span style={{ fontSize: 11.5, color: "var(--fg-3)", fontWeight: 400 }}>
-                    For advanced users without a wallet extension — less safe.
-                  </span>
+              <span style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                <span style={{ fontWeight: 600, fontSize: 13.5 }}>
+                  Advanced: paste a secret key
+                </span>
+                <span style={{ fontSize: 11.5, color: "var(--fg-3)", fontWeight: 400 }}>
+                  For advanced users without a wallet extension. Less safe.
                 </span>
               </span>
               <svg
@@ -1177,7 +1162,7 @@ function IdleConnect({
         </>
       ) : null}
 
-      {/* demo setup — takes over as a dedicated step once it starts */}
+      {/* demo setup, takes over as a dedicated step once it starts */}
       {isTestnetLike ? (
         <CreateTestAccountButton
           network={network}
@@ -1375,8 +1360,8 @@ function SponsorshipAutoRevokeNotice({ count }: { readonly count: number }): Rea
             color: "var(--fg-2)",
           }}
         >
-          We&apos;ll release {count === 1 ? "it" : "them"} automatically while closing the account —
-          nothing for you to do.
+          We&apos;ll release {count === 1 ? "it" : "them"} automatically while closing the account.
+          Nothing for you to do.
         </div>
       </div>
     </div>
@@ -1414,7 +1399,7 @@ function LeftLoadingCard({ message }: { readonly message: string }): React.JSX.E
           placeItems: "center",
         }}
       >
-        {/* outer concentric rings — different delays for a "scanning" feel */}
+        {/* outer concentric rings, different delays for a "scanning" feel */}
         <span
           style={{
             position: "absolute",
@@ -1541,7 +1526,7 @@ function DemolishStatusWidget({
   const parsed = state === "failed" ? parseDemolishError(error) : null;
   const pct = activeCount > 0 ? Math.round((doneCount / activeCount) * 100) : 0;
 
-  // elapsed seconds while executing — the interval drives it (async setState is
+  // elapsed seconds while executing, the interval drives it (async setState is
   // fine); it's only read from the executing subtitle
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
@@ -1551,11 +1536,11 @@ function DemolishStatusWidget({
     return () => clearInterval(h);
   }, [state]);
 
-  // a plain-text receipt of an irreversible action — destination + every tx
+  // a plain-text receipt of an irreversible action, destination + every tx
   const [copied, setCopied] = useState(false);
   const copyReceipt = (): void => {
     const lines = [
-      `Account Demolisher — account closed`,
+      `Account Demolisher, account closed`,
       `Forwarded ${totalXlm} XLM to ${destination}`,
       mergeHash ? `Merge tx: ${explorerTxUrl(network, mergeHash)}` : "",
       ...planGroups.flatMap((g) =>
@@ -1571,7 +1556,7 @@ function DemolishStatusWidget({
         window.setTimeout(() => setCopied(false), 1600);
       })
       .catch(() => {
-        /* clipboard blocked — ignore */
+        /* clipboard blocked, ignore */
       });
   };
 
@@ -1723,10 +1708,10 @@ function DemolishStatusWidget({
                 </>
               ) : state === "failed" ? (
                 (parsed?.summary ??
-                "Something went wrong while closing the account. Your funds are safe — try again.")
+                "Something went wrong while closing the account. Your funds are safe, try again.")
               ) : (
                 <>
-                  Your wallet will pop up to approve each step — click{" "}
+                  Your wallet will pop up to approve each step, click{" "}
                   <strong style={{ color: "var(--fg)" }}>Sign</strong> in your wallet when it
                   appears. If nothing seems to happen, check for a wallet window behind this tab.{" "}
                   {elapsed > 0 ? `Running for ${elapsed}s.` : ""}
@@ -1865,7 +1850,7 @@ function DemolishStatusWidget({
             <span>
               <strong style={{ color: "var(--fg)", fontWeight: 600 }}>Your funds are safe.</strong>{" "}
               Your account is still open and its balance is untouched. Any step that already
-              finished (marked ✓ above) is done and recorded on Stellar — nothing was lost. Press
+              finished (marked ✓ above) is done and recorded on Stellar. Nothing was lost. Press
               Retry to continue from where it stopped.
             </span>
           </div>
@@ -2004,7 +1989,7 @@ function DemolishStatusWidget({
                 type="button"
                 onClick={copyReceipt}
                 data-testid="demolish-copy-receipt"
-                title="Copies a text record of this closure and its transaction links — keep it for your records, since a closed account can't be looked up later."
+                title="Copies a text record of this closure and its transaction links, keep it for your records, since a closed account can't be looked up later."
                 style={{
                   height: 40,
                   padding: "0 16px",
@@ -2090,11 +2075,11 @@ function DemolishStatusWidget({
   );
 }
 
-// Human QA sign-off — the dedicated step before anything executes. Lists every
+// Human QA sign-off, the dedicated step before anything executes. Lists every
 // operation to be run, requires an explicit acknowledgment and a typed
 // last-4-char confirmation (with a short unlock delay), then triggers execution.
 // This replaces the old stacked high-value + typed-confirmation modals.
-// The combined Review step — the clean "here is what will happen". Plan
+// The combined Review step, the clean "here is what will happen". Plan
 // overview, every operation grouped, destination + account snapshot. No
 // cautions or warnings (those are acknowledged in the Resolve step); the final
 // gate is the typed-confirmation dialog opened by "Demolish account".
@@ -2132,7 +2117,7 @@ function ReviewPanel({
   const totalFeeStroops = allNodes.reduce((sum, n) => sum + nodeFeeStroops(n), 0);
   const indexOf = new Map(allNodes.map((n, i) => [n.id, i + 1]));
 
-  // Money math the user can trust. `totalXlm` is the WHOLE native balance — the
+  // Money math the user can trust. `totalXlm` is the WHOLE native balance, the
   // locked reserve is already inside it, not on top. What the destination
   // actually receives is that balance minus network fees. The freed reserve is
   // shown only as context (part of the amount above), never as a bonus, and is
@@ -2153,7 +2138,7 @@ function ReviewPanel({
           Review before closing
         </h2>
         <p style={{ margin: "8px 0 0", fontSize: 14, lineHeight: 1.55, color: "var(--fg-2)" }}>
-          {activeCount} {activeCount === 1 ? "step runs" : "steps run"} in order — here is exactly
+          {activeCount} {activeCount === 1 ? "step runs" : "steps run"} in order, here is exactly
           what will happen. Nothing happens until you confirm below.
         </p>
       </div>
@@ -2174,7 +2159,7 @@ function ReviewPanel({
         <strong style={{ color: "var(--fg-2)", fontWeight: 600 }}>network fee</strong> the Stellar
         network charges to process each step (not paid to us). The{" "}
         <strong style={{ color: "var(--fg-2)", fontWeight: 600 }}>reserve</strong> is XLM the
-        network locked while the account was open — it&apos;s unlocked on close and already part of
+        network locked while the account was open, it&apos;s unlocked on close and already part of
         the amount above, not extra.
       </p>
 
@@ -2743,8 +2728,8 @@ function ConfigurePanel({
             }}
           >
             These are payments set aside for this account that you haven&apos;t collected yet. We
-            collect all of them into your balance automatically before closing —{" "}
-            <strong style={{ color: "var(--fg)" }}>you don&apos;t need to do anything.</strong>{" "}
+            collect all of them into your balance automatically before closing.{" "}
+            <strong style={{ color: "var(--fg)" }}>You don&apos;t need to do anything.</strong>{" "}
             Untick any you&apos;d rather leave behind; unticked ones are lost when the account
             closes.
           </p>
@@ -2835,8 +2820,8 @@ function ConfigurePanel({
             lineHeight: 1.5,
           }}
         >
-          Every other asset in this account is swapped to XLM, then your whole XLM balance —
-          including the small amount Stellar keeps locked in every account — is sent to the address
+          Every other asset in this account is swapped to XLM, then your whole XLM balance,
+          including the small amount Stellar keeps locked in every account, is sent to the address
           below and this account is permanently closed.
         </p>
 
@@ -2911,8 +2896,8 @@ function ConfigurePanel({
         >
           Paste the Stellar address (it starts with{" "}
           <strong style={{ color: "var(--fg-2)" }}>G</strong>) of the wallet or exchange account
-          that should receive everything. Double-check it — funds sent to the wrong address cannot
-          be recovered.
+          that should receive everything. Double-check it. Funds sent to the wrong address cannot be
+          recovered.
         </p>
 
         {cex ? (
@@ -2948,7 +2933,7 @@ function ConfigurePanel({
               <strong style={{ color: "var(--fg)" }}>Exchange detected: {cex.name}.</strong>{" "}
               We&apos;ll route the transfer so your deposit memo reaches {cex.name} correctly.{" "}
               {cex.requiresMemo
-                ? `${cex.name} needs a ${cex.memoType ?? "text"} memo/tag — paste yours below, or your deposit could be lost.`
+                ? `${cex.name} needs a ${cex.memoType ?? "text"} memo/tag, paste yours below, or your deposit could be lost.`
                 : ""}
             </span>
           </div>
@@ -2970,7 +2955,7 @@ function ConfigurePanel({
         </label>
         <p style={{ margin: "0 0 8px", fontSize: 12, color: "var(--fg-3)", lineHeight: 1.5 }}>
           Exchanges share one deposit address across all customers and use the memo to know a
-          deposit is yours. If your exchange gave you a deposit memo or tag, paste it here — sending
+          deposit is yours. If your exchange gave you a deposit memo or tag, paste it here, sending
           to an exchange without it usually means the funds are lost. Most exchanges use Text or ID;
           use the exact type your exchange told you.
         </p>
@@ -3000,7 +2985,7 @@ function ConfigurePanel({
             disabled={form.memoType === "none"}
             placeholder={
               cex?.requiresMemo
-                ? "Required — your exchange deposit memo"
+                ? "Required, your exchange deposit memo"
                 : form.memoType === "id"
                   ? "12345"
                   : "Your exchange deposit memo or tag"
@@ -3156,7 +3141,7 @@ function ConfigurePanel({
               )
             }
           >
-            {isBusy ? "Checking your account…" : "Continue — preview the plan"}
+            {isBusy ? "Checking your account…" : "Continue, preview the plan"}
           </Button>
         </div>
       </div>
@@ -3164,7 +3149,7 @@ function ConfigurePanel({
   );
 }
 
-// consolidated "handled automatically, no action needed" line — replaces the
+// consolidated "handled automatically, no action needed" line, replaces the
 // separate claimable + sponsorship notices that used to stack in Review.
 function SnapStat({
   label,
@@ -3231,10 +3216,10 @@ const ARROW_RIGHT = (
   </svg>
 );
 
-// The Resolve step — ACTIONS only. Blockers (balances with no XLM path) each
+// The Resolve step, ACTIONS only. Blockers (balances with no XLM path) each
 // need to be gone before the close-out: either return it to its issuer here, or
 // dispose of it yourself elsewhere. "Rebuild plan" re-scans with whatever choices
-// you've made — including none, for the dispose-it-yourself path (after which a
+// you've made, including none, for the dispose-it-yourself path (after which a
 // fresh scan simply finds no blocker).
 function ResolvePanel({
   credits,
@@ -3265,7 +3250,7 @@ function ResolvePanel({
         <p style={{ margin: "8px 0 0", fontSize: 14, lineHeight: 1.55, color: "var(--fg-2)" }}>
           This account holds tokens that can&apos;t be turned into XLM, so it can&apos;t close while
           it still has them. Sell or move them from another app first, or send each one back to
-          whoever created it (you&apos;ll get nothing back) — then re-check.
+          whoever created it (you&apos;ll get nothing back), then re-check.
         </p>
       </div>
 
@@ -3310,7 +3295,7 @@ function ResolvePanel({
   );
 }
 
-// The Acknowledge step — INFORMATION only. Warnings and info that don't block
+// The Acknowledge step, INFORMATION only. Warnings and info that don't block
 // the close-out but must be read and understood. "Continue to review" is gated
 // until every card is acknowledged.
 function AcknowledgePanel({
@@ -3364,15 +3349,15 @@ function AcknowledgePanel({
       <div>
         <div style={{ marginBottom: 12 }}>
           <Badge tone="warning" dot>
-            Just read — nothing to fix
+            Just read, nothing to fix
           </Badge>
         </div>
         <h2 style={{ margin: 0, fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em" }}>
           A few things to know
         </h2>
         <p style={{ margin: "8px 0 0", fontSize: 14, lineHeight: 1.55, color: "var(--fg-2)" }}>
-          None of these stop you from closing the account — please read each one so nothing
-          surprises you, then confirm you understand.
+          None of these stop you from closing the account. Please read each one so nothing surprises
+          you, then confirm you understand.
         </p>
       </div>
 
@@ -3408,7 +3393,7 @@ function AcknowledgePanel({
           tone="neutral"
           role="status"
           data-testid="auto-handled-notice"
-          title="Handled for you — nothing to do"
+          title="Handled for you, nothing to do"
           footer={
             <AckRow
               checked={acks.autoHandled === true}
@@ -3418,8 +3403,8 @@ function AcknowledgePanel({
             />
           }
         >
-          Closing the account takes care of these automatically — you keep the value, nothing for
-          you to do:
+          Closing the account takes care of these automatically. You keep the value, and there is
+          nothing for you to do:
           <ul
             style={{
               listStyle: "disc",
@@ -3442,7 +3427,7 @@ function AcknowledgePanel({
       {highValue ? (
         <Notice
           tone="warning"
-          title="Large balance — double-check before closing"
+          title="Large balance, double-check before closing"
           data-testid="high-value-notice"
           footer={
             <AckRow
@@ -3452,10 +3437,10 @@ function AcknowledgePanel({
             />
           }
         >
-          This account holds {highValue.totalXlm} XLM — a large balance (over{" "}
+          This account holds {highValue.totalXlm} XLM, a large balance (over{" "}
           {HIGH_VALUE_THRESHOLD_XLM} XLM). Closing it moves this XLM to your destination and
           permanently deletes this account. Double-check the amount and the destination before you
-          continue — this can&apos;t be undone.
+          continue. This can&apos;t be undone.
         </Notice>
       ) : null}
 
@@ -3524,7 +3509,7 @@ function plainResultCode(code: string): string {
     // op_no_destination: destination account does not exist
     op_no_destination: "the destination account doesn't exist",
     // path_payment_strict_send_under_dest_min: swap would fall short of destMin
-    op_under_dest_min: "the swap would have returned less than allowed — the price moved",
+    op_under_dest_min: "the swap would have returned less than allowed, the price moved",
     // op_malformed: the operation's input was invalid
     op_malformed: "the step was built incorrectly",
     // payment_no_issuer: the asset's issuer does not exist
@@ -3536,7 +3521,7 @@ function plainResultCode(code: string): string {
 function parseDemolishError(raw: string | null): ParsedError {
   if (!raw) {
     return {
-      summary: "Something went wrong while closing the account. Your funds are safe — try again.",
+      summary: "Something went wrong while closing the account. Your funds are safe, try again.",
       txCode: null,
       ops: [],
     };
@@ -3558,9 +3543,9 @@ function parseDemolishError(raw: string | null): ParsedError {
       const firstBadIdx = ops.findIndex((o) => o !== "op_success");
       const summary =
         firstBadIdx >= 0
-          ? `Step ${firstBadIdx + 1} of ${ops.length} couldn't complete — ${plainResultCode(ops[firstBadIdx]!)}.`
+          ? `Step ${firstBadIdx + 1} of ${ops.length} couldn't complete, ${plainResultCode(ops[firstBadIdx]!)}.`
           : txCode
-            ? `The transaction couldn't complete — ${plainResultCode(txCode)}.`
+            ? `The transaction couldn't complete, ${plainResultCode(txCode)}.`
             : raw.slice(0, jsonStart).trim() || raw;
       return { summary, txCode, ops };
     } catch {

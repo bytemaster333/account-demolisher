@@ -1,4 +1,4 @@
-// IDeFiPositionProvider — abstraction over the three position-discovery adapters
+// IDeFiPositionProvider: abstraction over the three position-discovery adapters
 import type { NetworkConfig } from "@/lib/config/networks";
 
 // all numeric balances are bigint in the protocol's smallest integer unit. no floats
@@ -44,7 +44,7 @@ export interface ProtocolPositions {
 }
 
 // only one provider now: our own on-chain discovery. (OctoPos/Orion REST shells
-// were removed — the chain doesn't index positions, so we probe contracts.)
+// were removed. The chain doesn't index positions, so we probe contracts.)
 export type DeFiPositionProviderName = "direct";
 
 // common shape every position-discovery adapter implements

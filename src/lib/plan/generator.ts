@@ -101,7 +101,7 @@ export function generatePlan(
   }
 
   // fxdao debt payments, one per vault with debt > 0. A full pay_debt closes the
-  // vault and reclaims its collateral in one call — no follow-up node needed.
+  // vault and reclaims its collateral in one call. No follow-up node needed.
   for (const vault of positions.fxdao) {
     if (vault.debt <= 0n) continue;
     const id = makeId("fxdao-pay-debt", vault.denomination);

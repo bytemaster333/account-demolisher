@@ -67,7 +67,7 @@ function richPositions(): ProtocolPositions {
   });
 }
 
-// lower-cased id parts joined with ":" — mirrors generator.ts makeId
+// lower-cased id parts joined with ":", mirrors generator.ts makeId
 function id(...parts: string[]): string {
   return parts.map((p) => p.toLowerCase()).join(":");
 }
@@ -86,7 +86,7 @@ function indexOf(order: readonly { id: string }[], nodeId: string): number {
   return i;
 }
 
-describe("generatePlan — protocol ordering invariants", () => {
+describe("generatePlan, protocol ordering invariants", () => {
   it("wires and orders Blend repay before that pool's withdraw", () => {
     const tree = generatePlan(makeAudit(), richPositions(), [], DEST);
     const repayId = id("blend-repay", POOL_ID, ASSET_A);
@@ -101,7 +101,7 @@ describe("generatePlan — protocol ordering invariants", () => {
     const tree = generatePlan(makeAudit(), richPositions(), [], DEST);
     // pay_debt (full) closes the vault and reclaims collateral in one call
     expect(tree.allNodes.has(id("fxdao-pay-debt", DENOM))).toBe(true);
-    // the old RedeemFxDAO node is gone — redeem() acts on the lowest vault, not
+    // the old RedeemFxDAO node is gone, redeem() acts on the lowest vault, not
     // the caller's, so it was never a correct close-your-vault step
     expect(tree.allNodes.has(id("fxdao-redeem", DENOM))).toBe(false);
     for (const node of tree.allNodes.values()) {
@@ -137,7 +137,7 @@ describe("generatePlan — protocol ordering invariants", () => {
   });
 });
 
-describe("generatePlan — mediator forward", () => {
+describe("generatePlan, mediator forward", () => {
   it("wires mediator-forward on the final tx and orders it last", () => {
     const tree = generatePlan(makeAudit(), richPositions(), [], DEST, {
       useMediator: true,

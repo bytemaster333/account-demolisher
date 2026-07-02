@@ -30,7 +30,7 @@ export const KNOWN_CEXES: readonly CexInfo[] = [
     memoType: "text",
     minimumDeposit: "1",
     verifiedAt: "2026-05-15",
-    source: `${STELLAR_EXPERT_DIRECTORY} — tag "memo-required". Kraken XLM deposit help (support.kraken.com) confirms a 1 XLM minimum and a required memo.`,
+    source: `${STELLAR_EXPERT_DIRECTORY}: tag "memo-required". Kraken XLM deposit help (support.kraken.com) confirms a 1 XLM minimum and a required memo.`,
   },
   {
     address: "GAHK7EEG2WWHVKDNT4CEQFZGKF2LGDSW2IVM4S5DP42RBW3K6BTODB4A",
@@ -39,7 +39,7 @@ export const KNOWN_CEXES: readonly CexInfo[] = [
     memoType: "id",
     minimumDeposit: "0.1",
     verifiedAt: "2026-05-15",
-    source: `${STELLAR_EXPERT_DIRECTORY} — tag "memo-required". Binance XLM deposit page (binance.com) requires a numeric memo per user.`,
+    source: `${STELLAR_EXPERT_DIRECTORY}: tag "memo-required". Binance XLM deposit page (binance.com) requires a numeric memo per user.`,
   },
   {
     address: "GABFQIK63R2NETJM7T673EAMZN4RJLLGP3OFUEJU5SZVTGWUKULZJNL6",
@@ -47,7 +47,7 @@ export const KNOWN_CEXES: readonly CexInfo[] = [
     requiresMemo: true,
     memoType: "id",
     verifiedAt: "2026-05-15",
-    source: `${STELLAR_EXPERT_DIRECTORY} — tag "memo-required". Secondary Binance deposit address from the directory.`,
+    source: `${STELLAR_EXPERT_DIRECTORY}: tag "memo-required". Secondary Binance deposit address from the directory.`,
   },
   {
     address: "GAWPTHY6233GRWZZ7JXDMVXDUDCVQVVQ2SXCSTG3R3CNP5LQPDAHNBKL",
@@ -55,7 +55,7 @@ export const KNOWN_CEXES: readonly CexInfo[] = [
     requiresMemo: true,
     memoType: "text",
     verifiedAt: "2026-05-15",
-    source: `${STELLAR_EXPERT_DIRECTORY} — tag "memo-required". Bitfinex deposit help (support.bitfinex.com) requires a memo on XLM deposits.`,
+    source: `${STELLAR_EXPERT_DIRECTORY}: tag "memo-required". Bitfinex deposit help (support.bitfinex.com) requires a memo on XLM deposits.`,
   },
   {
     address: "GA3NTBDIKQVDDM6ZDKJLGXJFESWJ636AGRIW34RH5WL24LUMX3YASKX2",
@@ -63,7 +63,7 @@ export const KNOWN_CEXES: readonly CexInfo[] = [
     requiresMemo: true,
     memoType: "id",
     verifiedAt: "2026-05-15",
-    source: `${STELLAR_EXPERT_DIRECTORY} — tag "memo-required". Bitstamp's XLM deposit page (bitstamp.net) requires a numeric memo per user.`,
+    source: `${STELLAR_EXPERT_DIRECTORY}: tag "memo-required". Bitstamp's XLM deposit page (bitstamp.net) requires a numeric memo per user.`,
   },
   {
     address: "GAJ4BSGJE6UQHZAZ5U5IUOABPDCYPKPS3RFS2NVNGFGFXGVQDLBQJW2P",
@@ -71,7 +71,7 @@ export const KNOWN_CEXES: readonly CexInfo[] = [
     requiresMemo: true,
     memoType: "text",
     verifiedAt: "2026-05-15",
-    source: `${STELLAR_EXPERT_DIRECTORY} — tag "memo-required". KuCoin XLM deposit page (kucoin.com) requires a per-user memo.`,
+    source: `${STELLAR_EXPERT_DIRECTORY}: tag "memo-required". KuCoin XLM deposit page (kucoin.com) requires a per-user memo.`,
   },
   {
     address: "GAW4E6NGM4NPNX2LO2BKDPCCTUX3FJLKWHPU4VQPGBIBQGD6JTVF5C7C",
@@ -79,7 +79,7 @@ export const KNOWN_CEXES: readonly CexInfo[] = [
     requiresMemo: true,
     memoType: "text",
     verifiedAt: "2026-05-15",
-    source: `${STELLAR_EXPERT_DIRECTORY} — tag "memo-required". Upbit XLM deposit page requires a per-user memo.`,
+    source: `${STELLAR_EXPERT_DIRECTORY}: tag "memo-required". Upbit XLM deposit page requires a per-user memo.`,
   },
   {
     address: "GB3RMPTL47E4ULVANHBNCXSXM2ZA5JFY5ISDRERPCXNJUDEO73QFZUNK",
@@ -87,7 +87,7 @@ export const KNOWN_CEXES: readonly CexInfo[] = [
     requiresMemo: true,
     memoType: "text",
     verifiedAt: "2026-05-15",
-    source: `${STELLAR_EXPERT_DIRECTORY} — tag "memo-required". CEX.IO deposit interface (cex.io) requires a per-user memo.`,
+    source: `${STELLAR_EXPERT_DIRECTORY}: tag "memo-required". CEX.IO deposit interface (cex.io) requires a per-user memo.`,
   },
   {
     address: "GB67TJFJO3GUA432EJ4JTODHFYSBTM44P4XQCDOFTXJNNPV2UKUJYVBF",
@@ -95,7 +95,7 @@ export const KNOWN_CEXES: readonly CexInfo[] = [
     requiresMemo: true,
     memoType: "text",
     verifiedAt: "2026-05-15",
-    source: `${STELLAR_EXPERT_DIRECTORY} — tag "memo-required". Crypto.com app's XLM deposit screen (help.crypto.com) requires a memo.`,
+    source: `${STELLAR_EXPERT_DIRECTORY}: tag "memo-required". Crypto.com app's XLM deposit screen (help.crypto.com) requires a memo.`,
   },
   {
     address: "GB2ES2N326MZK4EGJBKN3ZARCQ5RTFQSAWIJAAKFVIIIJSCC35TXIMLB",
@@ -103,7 +103,7 @@ export const KNOWN_CEXES: readonly CexInfo[] = [
     requiresMemo: true,
     memoType: "text",
     verifiedAt: "2026-05-15",
-    source: `${STELLAR_EXPERT_DIRECTORY} — tag "memo-required". Robinhood's crypto deposit flow requires a memo for XLM.`,
+    source: `${STELLAR_EXPERT_DIRECTORY}: tag "memo-required". Robinhood's crypto deposit flow requires a memo for XLM.`,
   },
   {
     address: "GB5CLRWUCBQ6DFK2LR5ZMWJ7QCVEB3XKMPTQUYCDIYB4DRZJBEW6M26D",
@@ -111,7 +111,7 @@ export const KNOWN_CEXES: readonly CexInfo[] = [
     requiresMemo: true,
     memoType: "text",
     verifiedAt: "2026-05-15",
-    source: `${STELLAR_EXPERT_DIRECTORY} — tag "memo-required". Coinbase XLM deposit help (help.coinbase.com) requires a memo.`,
+    source: `${STELLAR_EXPERT_DIRECTORY}: tag "memo-required". Coinbase XLM deposit help (help.coinbase.com) requires a memo.`,
   },
   {
     address: "GARAR5QR7WRL24MQMSO4INWV7C5SE4EE2YVXTLD6ORONYFHSUAGZYSLN",
@@ -119,7 +119,7 @@ export const KNOWN_CEXES: readonly CexInfo[] = [
     requiresMemo: true,
     memoType: "text",
     verifiedAt: "2026-05-15",
-    source: `${STELLAR_EXPERT_DIRECTORY} — tag "memo-required". Blockchain.com (wallet+exchange) requires a memo for XLM deposits.`,
+    source: `${STELLAR_EXPERT_DIRECTORY}: tag "memo-required". Blockchain.com (wallet+exchange) requires a memo for XLM deposits.`,
   },
 ];
 

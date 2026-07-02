@@ -110,7 +110,7 @@ function jsonResponse(body: Record<string, unknown>, status: number): Response {
   });
 }
 
-// preserve upstream status. only content-type on the response — never echo auth headers
+// preserve upstream status. only content-type on the response; never echo auth headers
 // the amount fields whose full integer precision the slippage guard relies on
 const AMOUNT_FIELDS = ["amountOut", "otherAmountThreshold", "amountIn"];
 const UNQUOTED_AMOUNT_RE = new RegExp(
@@ -139,7 +139,7 @@ function sanitizeMessage(message: string, apiKey: string): string {
   return message.split(apiKey).join("[redacted]");
 }
 
-// allowed ops — anything else returns 400 so this never becomes an open relay
+// allowed ops: anything else returns 400 so this never becomes an open relay
 type Op = "getProtocols" | "quote" | "build" | "send";
 
 const ALLOWED_OPS: ReadonlySet<Op> = new Set<Op>(["getProtocols", "quote", "build", "send"]);
@@ -243,7 +243,7 @@ const DEV_ALLOWED_ORIGINS = new Set<string>([
 // browser client is same-origin, so it's always allowed; a cross-origin site
 // trying to drive the user's browser into spending our Soroswap API quota is
 // rejected. A non-browser caller (no Origin header) is allowed but bounded by
-// the per-IP rate limit — a fully closed control would need request auth this
+// the per-IP rate limit. A fully closed control would need request auth this
 // proxy intentionally does not have.
 function isAllowedOrigin(request: Request): boolean {
   const origin = request.headers.get("origin");
@@ -322,7 +322,7 @@ export async function POST(request: Request): Promise<Response> {
 
   let upstreamResponse: Awaited<ReturnType<typeof undiciFetch>>;
   try {
-    // undici fetch with a custom dispatcher that uses public DNS — bypasses
+    // undici fetch with a custom dispatcher that uses public DNS: bypasses
     // local DNS sinkholes that block finance-category domains
     upstreamResponse = await undiciFetch(upstreamUrl, {
       method: plan.method,

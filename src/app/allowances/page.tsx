@@ -1,6 +1,6 @@
 "use client";
 
-// allowance viewer — paste a g/c address and list active SEP-41 allowances with per-row revoke
+// allowance viewer: paste a g/c address and list active SEP-41 allowances with per-row revoke
 
 import { StrKey } from "@stellar/stellar-sdk";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -58,7 +58,7 @@ export default function AllowancesPage(): React.JSX.Element {
 
   // resolve the live signing connector for the connected wallet. Prefer the
   // app-wide active connector (set at connect time, survives client-side
-  // navigation) — this is the ONLY way a pasted-seed connection can sign here,
+  // navigation). This is the ONLY way a pasted-seed connection can sign here,
   // since its seed is never persisted. Fall back to reconstructing a
   // WalletKitConnector for a "kit" connection whose live object was lost (the
   // kit reads its own persisted selection). A "secret" connection with no live
@@ -118,7 +118,7 @@ export default function AllowancesPage(): React.JSX.Element {
   }, [onLoad]);
 
   // revoke needs the connected wallet to own the viewed address (SEP-41 requires
-  // source == from) AND a live connector that can actually sign here — a
+  // source == from) AND a live connector that can actually sign here. A
   // pasted-seed session whose connector didn't survive to this page cannot, so
   // don't present an actionable Revoke we can't fulfill.
   const canRevoke =
@@ -138,7 +138,7 @@ export default function AllowancesPage(): React.JSX.Element {
         <PageHeader
           kicker="Allowance viewer"
           title="Active token allowances"
-          subtitle="Inspect every active SEP-41 approval on any account, then revoke standing approvals to known — or unknown — spenders. No demolition required."
+          subtitle="Inspect every active SEP-41 approval on any account, then revoke standing approvals to known (or unknown) spenders. No demolition required."
         />
 
         {/* search */}

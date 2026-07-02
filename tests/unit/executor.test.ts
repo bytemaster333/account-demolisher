@@ -6,7 +6,7 @@ import type { NetworkConfig } from "@/lib/config/networks";
 // The FinalClassicTx branch performs three live horizon reads (auditAccount,
 // resolveCreditPaths, and the per-batch loadAccount) AFTER the soroban exits
 // have already confirmed on-chain. A transient horizon 5xx must NOT abort the
-// merge — the reads are pure/idempotent, so the executor rides out the blip with
+// merge, the reads are pure/idempotent, so the executor rides out the blip with
 // a bounded retry. A deterministic answer (AccountNotFoundError / 4xx) is fatal
 // and must fail fast without wasting retries. These tests lock in both.
 
@@ -102,7 +102,7 @@ function horizon5xx(): Error {
   return err;
 }
 
-describe("executePlanTreeOnChain — horizon retry on FinalClassicTx prep", () => {
+describe("executePlanTreeOnChain, horizon retry on FinalClassicTx prep", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
@@ -141,7 +141,7 @@ describe("executePlanTreeOnChain — horizon retry on FinalClassicTx prep", () =
     expect(deps.submitClassic).toHaveBeenCalledTimes(1);
   });
 
-  it("does NOT retry AccountNotFoundError — fails fast with no wasted attempts", async () => {
+  it("does NOT retry AccountNotFoundError, fails fast with no wasted attempts", async () => {
     auditAccount.mockRejectedValue(new AccountNotFoundError("GUSER"));
 
     const { tree } = makeFinalClassicTree();
@@ -160,7 +160,7 @@ describe("executePlanTreeOnChain — horizon retry on FinalClassicTx prep", () =
     expect(deps.submitClassic).not.toHaveBeenCalled();
   });
 
-  it("does NOT retry a deterministic 4xx — fails fast", async () => {
+  it("does NOT retry a deterministic 4xx, fails fast", async () => {
     const err = new Error("Bad Request") as Error & { response: { status: number } };
     err.response = { status: 400 };
     auditAccount.mockRejectedValue(err);
@@ -219,7 +219,7 @@ describe("executePlanTreeOnChain — horizon retry on FinalClassicTx prep", () =
   });
 });
 
-describe("executePlanTreeOnChain — merge fee/reprice retry", () => {
+describe("executePlanTreeOnChain, merge fee/reprice retry", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
@@ -278,7 +278,7 @@ describe("executePlanTreeOnChain — merge fee/reprice retry", () => {
     expect(fees[1]).toBe(fees[0]);
   });
 
-  it("does NOT retry a deterministic rejection (tx_bad_seq) — fails fast", async () => {
+  it("does NOT retry a deterministic rejection (tx_bad_seq), fails fast", async () => {
     const deps = makeDeps();
     (deps.submitClassic as ReturnType<typeof vi.fn>).mockRejectedValue(
       new Error('submitClassic rejected: {"transaction":"tx_bad_seq"}'),

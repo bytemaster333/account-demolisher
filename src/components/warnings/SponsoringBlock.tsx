@@ -125,13 +125,13 @@ export function SponsoringBlock({
             </strong>{" "}
             small deposit{numSponsoring === 1 ? "" : "(s)"} to keep some of its own entries on the
             network. We&apos;ll release {numSponsoring === 1 ? "it" : "them"} automatically while
-            closing — nothing for you to do.
+            closing, with nothing for you to do.
           </>
         ) : (
           <>
-            This account is paying deposits — called{" "}
+            This account is paying deposits (called{" "}
             <em style={{ fontStyle: "normal", color: "var(--fg)" }}>sponsorships</em>, deposits your
-            account paid to keep something on the network for another account — to keep entries on{" "}
+            account paid to keep something on the network for another account) to keep entries on{" "}
             <strong
               data-testid="sponsoring-block-count"
               style={{ color: "var(--fg)", fontFamily: "'Geist Mono', monospace" }}
@@ -139,7 +139,7 @@ export function SponsoringBlock({
               {foreign}
             </strong>{" "}
             OTHER account{foreign === 1 ? "" : "(s)"} on the network. Stellar won&apos;t let an
-            account close while it&apos;s doing that, so those must be removed first — and that has
+            account close while it&apos;s doing that, so those must be removed first, and that has
             to be done with another tool (for example the Stellar Laboratory), not here. Once
             they&apos;re removed, come back and try again.
           </>

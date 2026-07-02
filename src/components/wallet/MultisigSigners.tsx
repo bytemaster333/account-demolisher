@@ -109,7 +109,7 @@ export function MultisigSigners({
             color: "var(--fg)",
           }}
         >
-          Keys are used only in your browser to sign — never uploaded or stored.
+          Keys are used only in your browser to sign, and are never uploaded or stored.
         </div>
         <div style={{ marginTop: 6, fontSize: 12.5, lineHeight: 1.5, color: "var(--fg-2)" }}>
           You need signatures adding up to {threshold}; you currently have {currentWeight}. Paste
@@ -227,7 +227,7 @@ export function MultisigSigners({
         </div>
       ) : (
         <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--success)" }}>
-          <span aria-hidden="true">✓ </span>Ready — you have enough signatures to close the account.
+          <span aria-hidden="true">✓ </span>Ready. You have enough signatures to close the account.
         </div>
       )}
     </div>

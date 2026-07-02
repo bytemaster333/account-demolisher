@@ -72,7 +72,7 @@ export class MultiSignerConnector implements Connector {
 
   // per-signer Soroban auth-entry signing isn't part of the demolition flow
   // (source-account auth is carried by the envelope signatures above), and doing
-  // it correctly for multisig is non-trivial — refuse rather than sign wrongly.
+  // it correctly for multisig is non-trivial. refuse rather than sign wrongly.
   async signAuthEntry(): Promise<{ signedXdr: string; signerAddress: string }> {
     throw new Error(
       "MultiSignerConnector: SEP-43 auth-entry signing is not supported for multisig accounts.",

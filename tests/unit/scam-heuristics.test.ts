@@ -58,7 +58,7 @@ describe("levenshtein", () => {
   });
 });
 
-describe("evaluateScamHeuristics — clean tokens", () => {
+describe("evaluateScamHeuristics, clean tokens", () => {
   it("scores a legit tier-1 asset with its canonical issuer clean", () => {
     expect(evaluateScamHeuristics({ symbol: "USDC", issuer: USDC_ISSUER })).toEqual([]);
   });
@@ -77,7 +77,7 @@ describe("evaluateScamHeuristics — clean tokens", () => {
 
   it("abstains on a null-issuer tier-1 symbol even with a differing seen issuer", () => {
     // XLM and BLND have issuer:null in the reference list, so an exact match
-    // cannot be proven a collision — the module deliberately abstains.
+    // cannot be proven a collision, the module deliberately abstains.
     expect(evaluateScamHeuristics({ symbol: "XLM", issuer: IMPOSTOR })).toEqual([]);
     expect(evaluateScamHeuristics({ symbol: "BLND", issuer: IMPOSTOR })).toEqual([]);
   });
@@ -87,7 +87,7 @@ describe("evaluateScamHeuristics — clean tokens", () => {
   });
 });
 
-describe("evaluateScamHeuristics — exact_symbol_collision", () => {
+describe("evaluateScamHeuristics, exact_symbol_collision", () => {
   it("flags critical when a tier-1 symbol carries a non-canonical issuer", () => {
     const flags = evaluateScamHeuristics({ symbol: "USDC", issuer: IMPOSTOR });
     const collision = flag(flags, "exact_symbol_collision");
@@ -117,7 +117,7 @@ describe("evaluateScamHeuristics — exact_symbol_collision", () => {
   });
 });
 
-describe("evaluateScamHeuristics — lookalike_symbol", () => {
+describe("evaluateScamHeuristics, lookalike_symbol", () => {
   it("flags edit-distance 1 as a warning", () => {
     const flags = evaluateScamHeuristics({ symbol: "USDT" });
     const look = flag(flags, "lookalike_symbol");
@@ -144,7 +144,7 @@ describe("evaluateScamHeuristics — lookalike_symbol", () => {
   });
 });
 
-describe("evaluateScamHeuristics — suspicious_character", () => {
+describe("evaluateScamHeuristics, suspicious_character", () => {
   it("flags critical for a confusable/homoglyph (cyrillic) character", () => {
     // trailing char is cyrillic 'с' (U+0441), not latin 'C'.
     const flags = evaluateScamHeuristics({ symbol: "USDс" });
@@ -153,7 +153,7 @@ describe("evaluateScamHeuristics — suspicious_character", () => {
 
   it("flags any lowercase symbol because the class check is case-sensitive", () => {
     // lowercase ASCII is a valid (if unusual) Stellar asset code and must NOT
-    // trip suspicious_character — case impersonation is caught by the lookalike
+    // trip suspicious_character, case impersonation is caught by the lookalike
     // / collision checks instead.
     const flags = evaluateScamHeuristics({ symbol: "usdt" });
     expect(ids(flags)).not.toContain("suspicious_character");
@@ -176,7 +176,7 @@ describe("evaluateScamHeuristics — suspicious_character", () => {
   });
 });
 
-describe("evaluateScamHeuristics — unknown_contract", () => {
+describe("evaluateScamHeuristics, unknown_contract", () => {
   it("flags a soroban contract that is not on the allow-list (warning)", () => {
     const flags = evaluateScamHeuristics({ contractId: UNKNOWN_CONTRACT });
     const unknown = flag(flags, "unknown_contract");

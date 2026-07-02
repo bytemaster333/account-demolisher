@@ -109,7 +109,7 @@ function mapNetworkId(network: NetworkConfig): SoroswapNetwork {
   throw new TypeError(`convertToXLM: Soroswap aggregator does not support network "${network.id}"`);
 }
 
-// resolve an AssetIdentifier to its soroban contract address. LP shares are rejected — use removeLiquidity first
+// resolve an AssetIdentifier to its soroban contract address. LP shares are rejected: use removeLiquidity first
 function resolveAssetAddress(asset: AssetIdentifier, network: NetworkConfig): string {
   switch (asset.kind) {
     case "native":

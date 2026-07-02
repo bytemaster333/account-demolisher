@@ -110,7 +110,7 @@ interface ExecuteInput {
   readonly selectedClaimableBalanceIds?: readonly string[];
   readonly positions: ProtocolPositions;
   readonly allowances: readonly AllowanceRecord[];
-  // tree from the preview pass — execute runs against this so the ui shows
+  // tree from the preview pass; execute runs against this so the ui shows
   readonly tree: PlanTree;
   readonly onProgress: (event: DemolishProgressEvent) => void;
   // fires after every node.status mutation during execution so the page can
@@ -184,7 +184,7 @@ const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({ input 
 
   // per-protocol discovery failures (e.g. Soroswap has no position index) were
   // previously invisible; surface them in plain language so the user knows the
-  // plan may be partial. The raw technical message is dropped from user copy —
+  // plan may be partial. The raw technical message is dropped from user copy;
   // it only ever read like a developer log line.
   for (const e of positions.errors) {
     discoveryWarnings.push(
@@ -235,7 +235,7 @@ const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) 
     paths,
   );
 
-  // demolition revokes every active allowance the user owns — the account is
+  // demolition revokes every active allowance the user owns. The account is
   // being closed, there's no "keep this defi protocol" outcome
   const selectedAllowances = input.allowances.map((a) => `${a.contractId}|${a.spender}`);
 
@@ -279,7 +279,7 @@ const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) 
       fetchSourceAccount: (pk) => horizon.loadAccount(pk),
     });
   } catch (err) {
-    // hydration failures here are non-fatal — the simulate loop below will
+    // hydration failures here are non-fatal; the simulate loop below will
     console.warn("[preview] hydratePlanTransactions:", err);
   }
 
@@ -299,7 +299,7 @@ const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) 
       } else if (err instanceof Error && err.message.includes("has no built transaction")) {
         // the node's transaction never got built during hydration. The adapters
         // ARE wired, so this is a real upstream failure (RPC error, or the
-        // contract's state is archived and needs a restore/bump) — say so
+        // contract's state is archived and needs a restore/bump), so say so
         // instead of implying the integration is missing.
         node.status = "skipped";
         node.error = `Could not build the ${node.kind} transaction (RPC error or archived contract state). This step was skipped; close the position manually if it persists.`;
@@ -353,7 +353,7 @@ const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ input }) 
     }
     // bounded poll (~60s). the SDK short-circuits on a definitive status, so a
     // trailing NOT_FOUND means the poll ceiling was hit while the tx was still
-    // pending — that is NOT the same as a hard on-chain FAILED, so report it
+    // pending. That is NOT the same as a hard on-chain FAILED, so report it
     // distinctly instead of asserting failure for a tx that may still confirm.
     // (kept bounded, not unbounded: the RPC's tx-retention window ages hashes
     // out of its queryable set, so polling forever is not safe either.)
@@ -399,7 +399,7 @@ const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ input }) 
     const forwardTxHash = forwardNode?.executed?.txHash;
 
     // the executor cascade-skips the merge when a dependency (a DeFi exit) fails,
-    // so a non-confirmed final node means the account did NOT close — surface it
+    // so a non-confirmed final node means the account did NOT close, so surface it
     // as a failure instead of a false "Demolition complete."
     if (finalNode !== undefined && finalNode.status !== "confirmed") {
       const reason =

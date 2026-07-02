@@ -51,7 +51,7 @@ function vaultKeyMap(account: string, denomination: string, index: bigint): xdr.
   ]);
 }
 
-// OptionalVaultKey::Some(VaultKey) — tagged enum vec [symbol("Some"), map]
+// OptionalVaultKey::Some(VaultKey), tagged enum vec [symbol("Some"), map]
 function some(m: xdr.ScVal): xdr.ScVal {
   return xdr.ScVal.scvVec([key("Some"), m]);
 }

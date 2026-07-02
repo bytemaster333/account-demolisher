@@ -60,7 +60,7 @@ const MAX_U32_FEE = 0xffffffff;
 
 function computeFee(base: number, opCount: number): string {
   // fee is u32 stroops. at the per-op minimum (base=100) a full 100-op batch is
-  // 100 * 100 = 10000, well under the ceiling — but a surge-derived base can push
+  // 100 * 100 = 10000, well under the ceiling, but a surge-derived base can push
   // a large batch toward the u32 limit, so guard the total rather than assume it
   const total = base * opCount;
   if (total > MAX_U32_FEE) {

@@ -21,9 +21,7 @@ export class AllowlistViolation extends Error {
   public readonly violations: readonly AllowlistViolationDetail[];
 
   constructor(violations: readonly AllowlistViolationDetail[]) {
-    const summary = violations
-      .map((v, i) => `  ${i + 1}. ${v.contractId} — ${v.reason}`)
-      .join("\n");
+    const summary = violations.map((v, i) => `  ${i + 1}. ${v.contractId}: ${v.reason}`).join("\n");
     super(`Allow-list violation: ${violations.length} contract invocation(s) blocked.\n${summary}`);
     this.name = "AllowlistViolation";
     this.violations = violations;
@@ -114,7 +112,7 @@ function inspectOperation(
 
     case "hostFunctionTypeCreateContract":
     case "hostFunctionTypeCreateContractV2":
-      // create_contract deploys new code — never on a pre-existing allow-list
+      // create_contract deploys new code, never on a pre-existing allow-list
       return {
         contractId: "<create-contract>",
         reason: "Contract-creation host functions are not permitted by this tool.",

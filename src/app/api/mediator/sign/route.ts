@@ -85,7 +85,7 @@ function buildCorsHeaders(origin: string | null): Record<string, string> {
 function getRemoteIp(request: Request): string {
   // Behind a single trusted reverse proxy (Caddy), a client can spoof the LEFT
   // side of X-Forwarded-For, but the proxy appends the real peer IP as the
-  // RIGHTMOST entry — so trust the last hop, not the client-controlled first.
+  // RIGHTMOST entry, so trust the last hop, not the client-controlled first.
   const xff = request.headers.get("x-forwarded-for");
   if (xff !== null && xff.length > 0) {
     const hops = xff

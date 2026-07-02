@@ -76,13 +76,13 @@ describe("buildVaultExit encoding", () => {
     expect(fn).toBe("pay_debt");
     // pay_debt(prev_key, vault_key, new_prev_key, amount)
     expect(args).toHaveLength(4);
-    // arg[2] is new_prev_key — must be None for a full-debt close
+    // arg[2] is new_prev_key, must be None for a full-debt close
     expect(isNoneOptionalVaultKey(args[2]!)).toBe(true);
-    // arg[3] is the amount — must round-trip to exactly the full vault debt
+    // arg[3] is the amount, must round-trip to exactly the full vault debt
     expect(scValToNative(args[3]!)).toBe(DEBT);
   });
 
-  it("builds only pay_debt — no redeem step (redeem targets the lowest vault, not the caller's)", async () => {
+  it("builds only pay_debt, no redeem step (redeem targets the lowest vault, not the caller's)", async () => {
     const exit = await buildVaultExit(vault(DEBT), USER, TESTNET, sourceAccount(), ISSUER, null);
     // the shape carries a single tx; a resurrected redeem field would fail here
     expect(Object.keys(exit)).toEqual(["payDebt"]);

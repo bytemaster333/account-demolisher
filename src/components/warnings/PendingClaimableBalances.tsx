@@ -52,10 +52,10 @@ export function PendingClaimableBalances({
       }
     >
       {pending.length === 1
-        ? "This is a claimable balance — a payment set aside for you that you haven't collected yet. "
-        : "These are claimable balances — payments set aside for you that you haven't collected yet. "}
+        ? "This is a claimable balance, a payment set aside for you that you haven't collected yet. "
+        : "These are claimable balances, payments set aside for you that you haven't collected yet. "}
       We&apos;ll automatically collect {pending.length === 1 ? "it" : "them"} into your balance and
-      unlock the small deposit the network was holding, all as part of closing the account — you
+      unlock the small deposit the network was holding, all as part of closing the account. You
       don&apos;t need to do anything.
       <ul
         data-testid="pending-claimable-balances-list"

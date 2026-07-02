@@ -77,7 +77,7 @@ async function tryGetVault(
   denomination: string,
   network: NetworkConfig,
 ): Promise<FxDAOVault | null> {
-  // sequence 0 is fine — simulation is read-only
+  // sequence 0 is fine. simulation is read-only
   const sourceAccount = new Account(userPublicKey, "0");
   const contract = new Contract(vaultsContractId);
   const tx = new TransactionBuilder(sourceAccount, {

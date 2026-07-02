@@ -4,7 +4,7 @@ import type { PlanNode, PlanTree } from "@/lib/plan/tree";
 
 // buildPlanTree/topologicalOrder are the ordering backbone of the demolition
 // run: every node must execute only after its dependencies are confirmed. These
-// tests lock in the DAG invariants — validation, cycle rejection, and a stable
+// tests lock in the DAG invariants, validation, cycle rejection, and a stable
 // parents-before-children order that is deterministic on input.
 
 // Minimal, real PlanNodes. TransferAsIs is the simplest concrete shape (its

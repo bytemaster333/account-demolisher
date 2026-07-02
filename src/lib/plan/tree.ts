@@ -347,7 +347,7 @@ export function topologicalOrder(tree: PlanTree): readonly PlanNode[] {
 
   if (order.length !== tree.allNodes.size) {
     throw new Error(
-      `topologicalOrder: cycle detected at runtime — produced ${order.length} of ${tree.allNodes.size} nodes`,
+      `topologicalOrder: cycle detected at runtime: produced ${order.length} of ${tree.allNodes.size} nodes`,
     );
   }
   return order;

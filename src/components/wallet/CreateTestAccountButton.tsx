@@ -155,7 +155,7 @@ export function CreateTestAccountButton({
         </h1>
         <p style={{ margin: "10px 0 0", fontSize: 14.5, color: "var(--fg-2)", lineHeight: 1.55 }}>
           Setting up a fresh Testnet practice account with sample assets and positions (no real
-          money) — so you can safely walk the whole close-out flow first.
+          money), so you can safely walk the whole close-out flow first.
         </p>
       </div>
 
@@ -254,7 +254,7 @@ function IdleBody({ onRun }: { readonly onRun: () => void }) {
         </Button>
       </div>
       <p style={{ margin: 0, fontSize: 12, color: "var(--fg-3)" }}>
-        Takes about a minute — we&apos;ll create, fund, and set up the account.
+        Takes about a minute. We&apos;ll create, fund, and set up the account.
       </p>
     </div>
   );
@@ -406,7 +406,7 @@ function SummaryLine({
     <p style={{ margin: 0, fontSize: 12, color: "var(--fg-2)" }}>
       {successfulCount} things set up.{" "}
       {skippedCount > 0
-        ? `${skippedCount} optional extras were skipped (some test-network services aren't always available) — that's fine. `
+        ? `${skippedCount} optional extras were skipped (some test-network services aren't always available), and that's fine. `
         : ""}
       {failedCount > 0 ? `${failedCount} didn't finish. ` : ""}
       You&apos;ll see and confirm everything on the next screen before anything is signed.
@@ -434,7 +434,7 @@ function FailurePanel({
       }}
     >
       <div style={{ fontSize: 13, fontWeight: 600, color: "var(--danger)" }}>
-        Setup didn&apos;t finish — this is usually a temporary test-network hiccup. Try again.
+        Setup didn&apos;t finish. This is usually a temporary test-network hiccup. Try again.
       </div>
       <details style={{ fontSize: 12, color: "var(--fg-2)" }}>
         <summary style={{ cursor: "pointer", fontSize: 12, color: "var(--fg-3)" }}>

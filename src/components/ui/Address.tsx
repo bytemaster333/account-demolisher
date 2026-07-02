@@ -37,7 +37,7 @@ export function CopyableAddress({
         window.setTimeout(() => setCopied(false), 1400);
       })
       .catch(() => {
-        /* clipboard blocked — ignore */
+        /* clipboard blocked, ignore */
       });
   };
 

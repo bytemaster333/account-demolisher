@@ -12,7 +12,7 @@ import type { Connector, ConnectorKind } from "@/lib/wallet/connector";
 export class SecretKeyConnector implements Connector {
   public readonly kind: ConnectorKind = "secret";
 
-  // the raw s... seed. we don't cache the derived keypair — it's rebuilt
+  // the raw s... seed. we don't cache the derived keypair. it's rebuilt
   // per sign so the in-memory secret-key bytes live for one method call
   readonly #seed: string;
   readonly #publicKey: string;
@@ -67,9 +67,9 @@ export class SecretKeyConnector implements Connector {
   // signing the raw base64 bytes here would produce a plain ed25519 signature,
   // not a valid network-bound Soroban auth signature: SEP-43 requires signing
   // the sha-256 hash of an xdr.HashIdPreimageSorobanAuthorization that binds the
-  // network id, nonce, and signature-expiration ledger — none of which the single
-  // authEntryXdr string carries. No production caller reaches this method, so —
-  // like MultiSignerConnector.signAuthEntry — refuse rather than sign wrongly.
+  // network id, nonce, and signature-expiration ledger, none of which the single
+  // authEntryXdr string carries. No production caller reaches this method, so,
+  // like MultiSignerConnector.signAuthEntry, it refuses rather than sign wrongly.
   async signAuthEntry(
     _authEntryXdr: string,
     _address: string,

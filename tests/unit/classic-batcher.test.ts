@@ -88,7 +88,7 @@ describe("isResidueOp", () => {
   });
 });
 
-describe("batchClassicDemolition — guards", () => {
+describe("batchClassicDemolition, guards", () => {
   it("throws when useMediator is set without a mediator public key", () => {
     expect(() =>
       batchClassicDemolition(makeAudit(), { destination: DEST, useMediator: true }),
@@ -96,7 +96,7 @@ describe("batchClassicDemolition — guards", () => {
   });
 });
 
-describe("batchClassicDemolition — minimal account", () => {
+describe("batchClassicDemolition, minimal account", () => {
   it("emits a single account_merge to the destination and nothing else", () => {
     const batches = batchClassicDemolition(makeAudit(), directOptions);
     const ops = allOps(batches);
@@ -107,7 +107,7 @@ describe("batchClassicDemolition — minimal account", () => {
   });
 });
 
-describe("batchClassicDemolition — canonical ordering", () => {
+describe("batchClassicDemolition, canonical ordering", () => {
   const richAudit = makeAudit({
     thresholds: { low: 1, medium: 2, high: 3, masterWeight: 1 },
     poolShares: [
@@ -162,7 +162,7 @@ describe("batchClassicDemolition — canonical ordering", () => {
       { key: OTHER, type: "ed25519_public_key", weight: 1 },
       { key: ACC, type: "ed25519_public_key", weight: 1 },
     ],
-    // 1 self-sponsored, claimable CB — released by its claim op, not a revoke
+    // 1 self-sponsored, claimable CB, released by its claim op, not a revoke
     sponsorship: { numSponsoring: 1, numSponsored: 0, coverable: 1 },
   });
 
@@ -209,7 +209,7 @@ describe("batchClassicDemolition — canonical ordering", () => {
   });
 });
 
-describe("batchClassicDemolition — liquidity pool withdraw minimums", () => {
+describe("batchClassicDemolition, liquidity pool withdraw minimums", () => {
   // a fractional holder: this account owns "1" of a pool's "1000" total shares,
   // whose reserves are "500"/"500". Its proportional payout is 500 * 1/1000 =
   // 0.5 of each reserve; the withdraw minimum is a 1% haircut of THAT (0.495),
@@ -268,7 +268,7 @@ describe("batchClassicDemolition — liquidity pool withdraw minimums", () => {
   });
 });
 
-describe("batchClassicDemolition — self-merge guard", () => {
+describe("batchClassicDemolition, self-merge guard", () => {
   it("throws when the direct merge destination equals the account being closed", () => {
     expect(() =>
       batchClassicDemolition(makeAudit({ accountId: ACC }), {
@@ -285,7 +285,7 @@ describe("batchClassicDemolition — self-merge guard", () => {
   });
 });
 
-describe("batchClassicDemolition — claimable-balance opt-in", () => {
+describe("batchClassicDemolition, claimable-balance opt-in", () => {
   const twoCbs = makeAudit({
     claimableBalances: [
       {
@@ -350,7 +350,7 @@ describe("batchClassicDemolition — claimable-balance opt-in", () => {
   });
 });
 
-describe("batchClassicDemolition — un-routable credit handling", () => {
+describe("batchClassicDemolition, un-routable credit handling", () => {
   const key = `USDC:${ISSUER}`;
   const withCredit = makeAudit({
     balances: [
@@ -363,7 +363,7 @@ describe("batchClassicDemolition — un-routable credit handling", () => {
     ],
   });
 
-  it("leaves an un-routable, unconsented balance untouched — no residue, trustline kept", () => {
+  it("leaves an un-routable, unconsented balance untouched, no residue, trustline kept", () => {
     const kinds = allOps(batchClassicDemolition(withCredit, directOptions)).map((o) => o.kind);
     expect(kinds).not.toContain("return_residue_to_issuer");
     expect(kinds).not.toContain("path_payment_strict_send");
@@ -409,7 +409,7 @@ describe("batchClassicDemolition — un-routable credit handling", () => {
   });
 });
 
-describe("batchClassicDemolition — MAX_OPS splitting", () => {
+describe("batchClassicDemolition, MAX_OPS splitting", () => {
   const manyOffers = makeAudit({
     offers: Array.from({ length: 150 }, (_, i) => ({
       id: String(i + 1),
@@ -431,7 +431,7 @@ describe("batchClassicDemolition — MAX_OPS splitting", () => {
   });
 });
 
-describe("batchClassicDemolition — mediator", () => {
+describe("batchClassicDemolition, mediator", () => {
   const opts: BatchOptions = { destination: DEST, useMediator: true, mediatorPublicKey: MED };
 
   it("funds the mediator first, merges into the mediator, and tags the batch", () => {

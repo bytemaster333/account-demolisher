@@ -1,7 +1,7 @@
 import { useId, type ReactNode } from "react";
 import { RADIUS, TONE_FG, toneBorder, type Tone } from "./tokens";
 
-// icon glyphs (stroke paths) per tone — the app's Feather-style vocabulary
+// icon glyphs (stroke paths) per tone: the app's Feather-style vocabulary
 const ICONS: Record<Tone, string> = {
   accent: "M12 16v-4M12 8h.01",
   neutral: "M12 16v-4M12 8h.01",

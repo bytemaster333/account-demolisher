@@ -16,7 +16,7 @@ import { BACKSTOP_QUEUE_DURATION_SECONDS } from "@/lib/adapters/blend/constants"
 // buildExitSequence orders the unwind steps for one pool and only emits an
 // acquire marker for liabilities the caller doesn't already hold. Both are
 // pure/DI-friendly (deps.assemble, deps.holdsAtLeast, deps.now, ...), so we
-// exercise them with a stubbed assemble — no RPC — and assert the step order,
+// exercise them with a stubbed assemble, no RPC, and assert the step order,
 // marker gating, and backstop lock.
 
 const USER = "GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3";
@@ -26,7 +26,7 @@ const USER = "GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3";
 const POOL_ID = "CAJJZSGMMM3PD7N33TAPHGBUGTB43OC73HVIK2L2G6BNGGGYOSSYBXBD";
 
 // real mainnet SAC contract ids used as reserve asset addresses (they only need
-// to be valid C... strkeys — the allow-list checks the invoked pool, not args).
+// to be valid C... strkeys, the allow-list checks the invoked pool, not args).
 const XLM_SAC = "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA";
 const USDC_SAC = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
 const BLND_SAC = "CD25MNVTZDL4Y3XBCPCJXGXATV5WUHHOWMYFF4YBEGU5FCPGMYTVG5JY";

@@ -1,8 +1,8 @@
 "use client";
 
 // Live-refresh island for the Refractor plan view. The page itself is a
-// force-dynamic server render, so re-fetching Refractor is just router.refresh()
-// — that re-runs the server component and streams new signer/submission state in
+// force-dynamic server render, so re-fetching Refractor is just router.refresh().
+// That re-runs the server component and streams new signer/submission state in
 // without a full navigation. Auto-polls on a light interval and offers a manual
 // refresh; the parent unmounts this whole island once the plan is submitted, so
 // there's no "stopped" branch to maintain here.

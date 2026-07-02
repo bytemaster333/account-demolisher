@@ -17,7 +17,7 @@ import type {
   SponsorshipInfo,
 } from "@/lib/types/account";
 
-// read-only audit of a classic stellar account. no caching — every call
+// read-only audit of a classic stellar account. no caching. every call
 // re-reads horizon
 export async function auditAccount(
   publicKey: string,
@@ -181,7 +181,7 @@ function parseThresholds(
   signers: readonly AuditSigner[],
   accountId: string,
 ): AuditThresholds {
-  // the master key is the signer whose key equals the account id — NOT merely
+  // the master key is the signer whose key equals the account id, NOT merely
   // the first ed25519 signer (added co-signers are ed25519 too).
   const master = signers.find((s) => s.key === accountId);
   return {

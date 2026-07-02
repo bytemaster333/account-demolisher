@@ -6,7 +6,7 @@ import type { PlanTree } from "@/lib/plan/tree";
 import type { AccountAudit } from "@/lib/types/account";
 import { EMPTY_POSITIONS } from "@/lib/adapters/positions/interface";
 
-// Minimal stand-ins — the machine only cares about identity/shape here because
+// Minimal stand-ins, the machine only cares about identity/shape here because
 // we replace the async actors with deterministic mocks.
 const fakeInput = {
   publicKey: "GTEST",
@@ -22,7 +22,7 @@ const fakeTree = { allNodes: new Map(), roots: [] } as unknown as PlanTree;
 /**
  * Drive the machine toward `failed` and return a running actor plus the execute
  * spy. When `withTree` is true, discover+preview succeed (leaving a non-null
- * tree in context) and the first execute rejects — mirroring a partial
+ * tree in context) and the first execute rejects, mirroring a partial
  * on-chain failure. When false, discover itself rejects, so the machine reaches
  * `failed` before any tree exists (context.tree stays null).
  */
@@ -31,7 +31,7 @@ function actorInFailed(opts: { withTree: boolean; onExecute: () => Promise<unkno
   const machine = pageFlowMachine.provide({
     actors: {
       // cast to `never` to sidestep the machine's strict actor output typing
-      // under exactOptionalPropertyTypes — these mocks only need to resolve/reject.
+      // under exactOptionalPropertyTypes, these mocks only need to resolve/reject.
       discover: fromPromise(async () => {
         if (!opts.withTree) throw new Error("discovery failed");
         return {

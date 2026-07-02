@@ -13,7 +13,7 @@ export interface RefractorTxStatus {
   readonly signaturesNeeded: number;
   readonly signers: readonly string[];
   // subset of `signers` whose signature refractor has already collected. derived
-  // from the `signatures` array, matched to the desired set by key — the same
+  // from the `signatures` array, matched to the desired set by key, the same
   // matching `signaturesNeeded` relies on. empty when refractor reports no
   // resolvable signer keys yet (e.g. before it inspects the envelope)
   readonly signedBy: readonly string[];
@@ -67,7 +67,7 @@ export class RefractorClient {
     const payload = await readJson(response);
     if (!response.ok) {
       throw new RefractorError(
-        `Refractor getStatus failed: ${response.status} ${response.statusText} — ${describeError(payload)}`,
+        `Refractor getStatus failed: ${response.status} ${response.statusText}: ${describeError(payload)}`,
         readErrorCode(payload, "ESTATUS"),
         response.status,
       );
@@ -77,7 +77,7 @@ export class RefractorClient {
   }
 }
 
-// hand-rolled shape validation — the response is tiny, the rules are obvious
+// hand-rolled shape validation, the response is tiny, the rules are obvious
 
 async function readJson(response: Response): Promise<unknown> {
   try {

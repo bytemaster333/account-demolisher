@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { Address, Contract, StrKey, nativeToScVal, rpc, xdr } from "@stellar/stellar-sdk";
 import { enumerateAllowances, type AllowanceRecord } from "@/lib/soroban/allowances";
 
-// A valid ed25519 public key — enumerateAllowances runs it through Address(),
+// A valid ed25519 public key, enumerateAllowances runs it through Address(),
 // which rejects anything malformed.
 const USER = "GCAWLISZMTHWMMHJE7BRYYNNKR4OL2PR4COXKH2MKGVDOH4BP6DMAHPE";
 const SPENDER = "GDLJJ5CGPWNOCBJMCPJY5HXDIAPV2UGQJWKUL35EVS7IR6JJZQ27WOPC";
@@ -117,7 +117,7 @@ describe("enumerateAllowances retention clamp", () => {
     expect(attempted[0]).toBe(4000);
   });
 
-  // Finding: retention-clamp retry was single-shot — a second range error on the
+  // Finding: retention-clamp retry was single-shot, a second range error on the
   // retry propagated uncaught. The bounded loop must re-parse the fresh floor,
   // re-clamp, and succeed on a subsequent attempt instead of throwing.
   it("re-clamps and retries when the retry itself reports a further-advanced floor", async () => {

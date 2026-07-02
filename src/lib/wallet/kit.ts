@@ -4,7 +4,7 @@ import { defaultModules } from "@creit.tech/stellar-wallets-kit/modules/utils";
 
 import type { NetworkConfig } from "@/lib/config/networks";
 
-// exported as the class type — `new StellarWalletsKit()` isn't supported
+// exported as the class type. `new StellarWalletsKit()` isn't supported
 export type KitHandle = typeof StellarWalletsKit;
 
 // the kit's enum values are the passphrase strings themselves; match by

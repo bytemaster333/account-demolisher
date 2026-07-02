@@ -298,7 +298,7 @@ function NetworkSwitcher() {
     try {
       window.localStorage.setItem(NETWORK_STORAGE_KEY, id);
     } catch {
-      // storage disabled — selection still applies for this session
+      // storage disabled; selection still applies for this session
     }
     // a connected account is network-scoped; changing network invalidates it
     disconnect();
@@ -389,40 +389,150 @@ function Footer() {
         background: "color-mix(in srgb, var(--bg) 90%, transparent)",
       }}
     >
-      <div
-        style={{
-          maxWidth: 1180,
-          margin: "0 auto",
-          padding: "32px 28px",
-          display: "flex",
-          flexWrap: "wrap",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 20,
-          color: "var(--fg-2)",
-          fontSize: 13,
-        }}
-      >
-        <span>open source · apache-2.0 · client-side signing · no telemetry</span>
-        <div style={{ display: "flex", gap: 16 }}>
-          <a
-            href="https://docs.demolisher.saliht.xyz"
-            target="_blank"
-            rel="noreferrer noopener"
-            style={{ color: "var(--fg-2)", textDecoration: "none" }}
+      <div style={{ maxWidth: 1180, margin: "0 auto", padding: "48px 28px 28px" }}>
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            justifyContent: "space-between",
+            gap: 40,
+          }}
+        >
+          {/* brand + description */}
+          <div style={{ maxWidth: 360 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 12 }}>
+              <span
+                aria-hidden
+                style={{
+                  width: 26,
+                  height: 26,
+                  borderRadius: 7,
+                  background: "var(--accent)",
+                  display: "grid",
+                  placeItems: "center",
+                }}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="var(--accent-fg)">
+                  <rect x="4" y="4.6" width="16" height="2.9" rx="1.45" />
+                  <rect x="6.7" y="10.55" width="10.6" height="2.9" rx="1.45" />
+                  <rect x="9.4" y="16.5" width="5.2" height="2.9" rx="1.45" />
+                </svg>
+              </span>
+              <span style={{ fontWeight: 600, fontSize: 15, letterSpacing: "-0.02em" }}>
+                Demolisher
+              </span>
+            </div>
+            <p style={{ margin: 0, fontSize: 13, lineHeight: 1.6, color: "var(--fg-3)" }}>
+              Close a Stellar account safely. Unwind every trustline, offer, and DeFi position,
+              convert the balances to XLM, and send everything to a destination you choose. Every
+              transaction is signed in your own browser.
+            </p>
+          </div>
+
+          {/* link groups */}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 56 }}>
+            <FooterColumn title="Product">
+              <FooterLink href="/demolish">Close an account</FooterLink>
+              <FooterLink href="/allowances">Allowances</FooterLink>
+              <FooterLink href="/plan">Multisig</FooterLink>
+            </FooterColumn>
+            <FooterColumn title="Resources">
+              <FooterLink href="https://docs.demolisher.saliht.xyz" external>
+                Documentation
+              </FooterLink>
+              <FooterLink href="https://github.com/bytemaster333/account-demolisher" external>
+                Source code
+              </FooterLink>
+            </FooterColumn>
+          </div>
+        </div>
+
+        {/* bottom bar */}
+        <div
+          style={{
+            marginTop: 36,
+            paddingTop: 20,
+            borderTop: "1px solid var(--border)",
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+          }}
+        >
+          <span style={{ fontSize: 12.5, color: "var(--fg-3)" }}>
+            © {new Date().getFullYear()} Demolisher · Apache-2.0 licensed
+          </span>
+          <span
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 16,
+              fontSize: 12.5,
+              color: "var(--fg-3)",
+            }}
           >
-            docs
-          </a>
-          <a
-            href="https://github.com/bytemaster333/account-demolisher"
-            target="_blank"
-            rel="noreferrer noopener"
-            style={{ color: "var(--fg-2)", textDecoration: "none" }}
-          >
-            github
-          </a>
+            <span>Non-custodial</span>
+            <span aria-hidden>·</span>
+            <span>Client-side signing</span>
+            <span aria-hidden>·</span>
+            <span>No telemetry</span>
+          </span>
         </div>
       </div>
     </footer>
+  );
+}
+
+function FooterColumn({
+  title,
+  children,
+}: {
+  readonly title: string;
+  readonly children: React.ReactNode;
+}): React.JSX.Element {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <span
+        style={{
+          fontSize: 11,
+          fontWeight: 600,
+          letterSpacing: "0.06em",
+          textTransform: "uppercase",
+          color: "var(--fg-3)",
+        }}
+      >
+        {title}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+function FooterLink({
+  href,
+  external = false,
+  children,
+}: {
+  readonly href: string;
+  readonly external?: boolean;
+  readonly children: React.ReactNode;
+}): React.JSX.Element {
+  const style: React.CSSProperties = {
+    fontSize: 13,
+    color: "var(--fg-2)",
+    textDecoration: "none",
+  };
+  if (external) {
+    return (
+      <a href={href} target="_blank" rel="noreferrer noopener" style={style}>
+        {children}
+      </a>
+    );
+  }
+  return (
+    <Link href={href} style={style}>
+      {children}
+    </Link>
   );
 }

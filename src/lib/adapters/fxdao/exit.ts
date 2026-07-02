@@ -25,7 +25,7 @@ const MAX_TIMEOUT_SECONDS = 300;
 // the unsigned exit for one fxdao vault. A single pay_debt(amount == total_debt)
 // closes the vault: the VaultsContract burns the caller's stablecoin AND releases
 // the full collateral back to the owner in that one call. (There is no separate
-// "redeem the collateral" step — redeem() is an unrelated protocol feature that
+// "redeem the collateral" step. redeem() is an unrelated protocol feature that
 // burns stablecoin against the LOWEST vault in the list, not the caller's.)
 export interface FxDAOVaultExit {
   readonly payDebt: Transaction;
@@ -54,7 +54,7 @@ export async function buildVaultExit(
   const vaultsContractId = resolveVaultsContractIdForNetwork(network);
   if (!isAllowedContract(vaultsContractId, network)) {
     throw new Error(
-      `FxDAO VaultsContract ${vaultsContractId} is not on the ${network.id} allow-list — refusing to build exit`,
+      `FxDAO VaultsContract ${vaultsContractId} is not on the ${network.id} allow-list: refusing to build exit`,
     );
   }
 
@@ -80,7 +80,7 @@ function resolveVaultsContractIdForNetwork(network: NetworkConfig): string {
     const entry = list.find((c) => c.protocol === "fxdao" && c.name === "FxDAO::VaultsContract");
     if (!entry) {
       throw new Error(
-        "FxDAO VaultsContract is not registered in TESTNET_ALLOWLIST — testnet vault address is unverified",
+        "FxDAO VaultsContract is not registered in TESTNET_ALLOWLIST: testnet vault address is unverified",
       );
     }
     return entry.id;
@@ -88,7 +88,7 @@ function resolveVaultsContractIdForNetwork(network: NetworkConfig): string {
   throw new Error(`FxDAO has no published ${network.id} deployment`);
 }
 
-// encode OptionalVaultKey::none — scvVec([symbol("None")])
+// encode OptionalVaultKey::none: scvVec([symbol("None")])
 function optionalVaultKeyNone(): xdr.ScVal {
   return xdr.ScVal.scvVec([nativeToScVal("None", { type: "symbol" })]);
 }
@@ -124,7 +124,7 @@ function buildPayDebtTx(
   const callArgs: xdr.ScVal[] = [
     optionalVaultKeyScVal(prevKey), // prev_key resolved by hydration via findPrevVaultKey
     vaultKeyScVal(userPublicKey, vault.denomination),
-    optionalVaultKeyNone(), // new_prev_key — None because amount == debt closes the vault
+    optionalVaultKeyNone(), // new_prev_key: None because amount == debt closes the vault
     nativeToScVal(vault.debt, { type: "u128" }), // full debt
   ];
 

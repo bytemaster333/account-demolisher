@@ -4,7 +4,7 @@
 // `@stellar/stellar-sdk` rejects with a plain object shaped `{ code, message }`
 // rather than an `Error` instance, so a bare `err instanceof Error ? err.message
 // : fallback` check silently discards the real message (e.g. "startLedger must be
-// within the ledger range: 3517481 - 3638440") — and a `String(err)` fallback
+// within the ledger range: 3517481 - 3638440"), and a `String(err)` fallback
 // renders the useless "[object Object]". This reads `.message` off plain objects
 // too, and only uses `fallback` when nothing meaningful can be extracted.
 export function errorMessage(err: unknown, fallback?: string): string {

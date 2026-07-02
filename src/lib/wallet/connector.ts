@@ -1,4 +1,4 @@
-// the in-house connector abstraction — the only signing surface anything
+// the in-house connector abstraction: the only signing surface anything
 import type { FeeBumpTransaction, Transaction } from "@stellar/stellar-sdk";
 
 import { getKit, type KitHandle } from "@/lib/wallet/kit";

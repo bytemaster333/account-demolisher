@@ -86,7 +86,7 @@ export function AuthImmutableBlock({
           color: "var(--fg-2)",
         }}
       >
-        This account was permanently set so it can never be closed — that&apos;s a one-way Stellar
+        This account was permanently set so it can never be closed. That&apos;s a one-way Stellar
         setting and no tool can change it. Your funds are safe and the account still works normally;
         you just can&apos;t close it here. You can keep using it, or move your funds out to another
         account yourself.

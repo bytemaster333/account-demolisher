@@ -18,7 +18,7 @@ function resolveBackstopMainnetId(): string {
 
 export const BLEND_BACKSTOP_MAINNET_ID: string = resolveBackstopMainnetId();
 
-// i128 max — used as the "drain all" sentinel for repay/withdraw
+// i128 max, used as the "drain all" sentinel for repay/withdraw
 export const I128_MAX: bigint = (1n << 127n) - 1n;
 
 // five-minute soroban tx timeout

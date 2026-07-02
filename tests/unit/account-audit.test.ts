@@ -150,7 +150,7 @@ describe("computeCoverableSponsorships", () => {
   });
 
   // the demolition deletes every data entry on close, releasing any
-  // self-sponsorship they carry, so each data entry must count as coverable —
+  // self-sponsorship they carry, so each data entry must count as coverable ,
   // otherwise a self-sponsored data entry produces a false IS_SPONSOR block on
   // an account the demolition can fully close.
   it("counts the account's own data entries as coverable", () => {

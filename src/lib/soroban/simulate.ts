@@ -49,7 +49,7 @@ export async function simulate(
     };
   }
 
-  // success or restore — both extend success
+  // success or restore: both extend success
   const success = resp as rpc.Api.SimulateTransactionSuccessResponse;
   const retval = success.result?.retval ?? null;
   const auth = success.result?.auth ?? [];

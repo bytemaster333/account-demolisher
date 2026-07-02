@@ -13,7 +13,7 @@ export interface ButtonProps {
   readonly size?: Size;
   readonly disabled?: boolean;
   readonly loading?: boolean;
-  // reason shown as a tooltip when disabled — makes a blocked CTA legible
+  // reason shown as a tooltip when disabled; makes a blocked CTA legible
   readonly disabledReason?: string | undefined;
   readonly iconLeft?: ReactNode;
   readonly iconRight?: ReactNode;
@@ -30,7 +30,7 @@ const SIZES: Record<Size, CSSProperties> = {
   lg: { height: 50, padding: "0 22px", fontSize: 15, borderRadius: RADIUS.md, gap: 9 },
 };
 
-// flat / outline aesthetic — no colored fills anywhere. Emphasis comes from
+// flat / outline aesthetic with no colored fills anywhere. Emphasis comes from
 // border strength and text color, not a tinted background.
 function surfaceFor(variant: Variant, hover: boolean): CSSProperties {
   switch (variant) {
@@ -104,7 +104,7 @@ export function Button({
         width: fullWidth ? "100%" : undefined,
         transition: "background .13s, color .13s, border-color .13s, opacity .13s",
         ...SIZES[size],
-        // disabled reads as an inert muted control — never as a live button
+        // disabled reads as an inert muted control, never as a live button
         ...(isDisabled
           ? {
               background: "var(--surface-2)",

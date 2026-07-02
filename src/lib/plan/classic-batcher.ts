@@ -78,7 +78,7 @@ export function batchClassicDemolition(
     options.claimableBalanceIds === undefined ? null : new Set(options.claimableBalanceIds);
   for (const cb of audit.claimableBalances) {
     if (optedIn !== null && !optedIn.has(cb.id)) continue;
-    // never attempt a balance the account can't claim yet — the op would fail
+    // never attempt a balance the account can't claim yet. The op would fail
     // on-chain. undefined (fixtures/legacy) is treated as claimable.
     if (cb.claimableNow === false) continue;
     ops.push({
@@ -94,7 +94,7 @@ export function batchClassicDemolition(
 
   // 4. convert credit balances to XLM via path payment. When no market path
   // exists the balance is EITHER returned to its issuer (only with explicit
-  // per-asset consent) OR left untouched — never silently sent to the issuer.
+  // per-asset consent) OR left untouched. Never silently sent to the issuer.
   const consentedResidue: ReadonlySet<string> = new Set(options.returnToIssuerAssetKeys ?? []);
   for (const balance of audit.balances) {
     if (balance.asset.kind !== "credit") continue;
@@ -126,12 +126,12 @@ export function batchClassicDemolition(
         },
       });
     }
-    // else: un-routable, unconsented — leave the balance in place. Its trustline
+    // else: un-routable, unconsented: leave the balance in place. Its trustline
     // is kept (below), which blocks the merge until the user resolves it. The UI
     // surfaces this rather than the plan quietly forfeiting the funds.
   }
 
-  // 5. remove trustlines — pool-share first, then underlying. A credit trustline
+  // 5. remove trustlines: pool-share first, then underlying. A credit trustline
   // is only removed once its balance is handled (zero, converted, or consented
   // to issuer); otherwise change_trust would fail on a non-zero balance.
   for (const balance of audit.balances) {
@@ -306,7 +306,7 @@ export function applySlippage(amountStr: string): string {
 // slippage-bounded minimum for one reserve of an LP withdraw. The holder's
 // expected output for a reserve is reserve * myShares / totalShares; haircut
 // THAT by the slippage tolerance. Returns "0" (accept any output) when
-// totalShares is missing/zero — better an unprotected withdraw than a min that
+// totalShares is missing/zero: better an unprotected withdraw than a min that
 // over-shoots the payout and reverts the whole close-out.
 export function proportionalWithdrawMin(
   shareBalance: string,

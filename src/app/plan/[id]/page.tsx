@@ -49,7 +49,7 @@ async function load(id: string): Promise<LoadResult> {
 // result of binding a Refractor-returned envelope to the requested link + network.
 // hashOk: status.xdr actually hashes (under the app's passphrase) to the id in
 // the URL; networkOk: status.network is the network this deployment is on.
-// verified is the conjunction — the gate for showing the sign action.
+// verified is the conjunction: the gate for showing the sign action.
 export interface EnvelopeVerification {
   readonly hashOk: boolean;
   readonly networkOk: boolean;
@@ -101,7 +101,7 @@ export default async function PlanPage({ params }: PlanPageProps): Promise<React
         <PageHeader
           kicker={`Multisig · /plan/${shortId(id)}`}
           title="Collect signatures to merge"
-          subtitle="This account needs multiple signatures. Share this link with the other key holders — each opens it, reviews the transaction, and adds their signature. The merge submits automatically once the threshold is met."
+          subtitle="This account needs multiple signatures. Share this link with the other key holders. Each opens it, reviews the transaction, and adds their signature. The merge submits automatically once the threshold is met."
         />
 
         {result.kind === "ok" ? (
@@ -195,10 +195,10 @@ function PlanStatusView({
         </div>
 
         <div style={{ padding: "22px 20px" }}>
-          {/* live refresh — polls Refractor via router.refresh(); unmounts once submitted */}
+          {/* live refresh: polls Refractor via router.refresh(); unmounts once submitted */}
           {!submitted ? <PlanLiveRefresh /> : null}
 
-          {/* progress — or indeterminate state when Refractor hasn't inspected yet */}
+          {/* progress, or indeterminate state when Refractor hasn't inspected yet */}
           {knownSigners ? (
             <Progress
               value={collected}
@@ -227,7 +227,7 @@ function PlanStatusView({
             </div>
           ) : null}
 
-          {/* primary action — sign on Refractor (its frontend collects signatures).
+          {/* primary action: sign on Refractor (its frontend collects signatures).
               suppressed when the envelope can't be bound to this link/network,
               so we never invite a signature on an unverified transaction */}
           {!submitted && !unverified ? (
@@ -271,13 +271,13 @@ function PlanStatusView({
                 style={{ margin: "10px 0 0", fontSize: 12, color: "var(--fg-3)", lineHeight: 1.5 }}
               >
                 Opens Refractor&apos;s signing page for this exact transaction. Connect your wallet
-                there, review the operations, and sign — your partial signature is added to the plan
+                there, review the operations, and sign. Your partial signature is added to the plan
                 above.
               </p>
             </div>
           ) : null}
 
-          {/* canonical XDR — collapsed by default; signers rarely need to read it */}
+          {/* canonical XDR, collapsed by default; signers rarely need to read it */}
           <details style={{ marginTop: 20 }}>
             <summary
               style={{
@@ -430,7 +430,7 @@ function SubmittedBanner({
     <div style={{ marginBottom: 16 }} data-testid="plan-submitted-banner">
       <Notice
         tone="success"
-        title="Threshold met — transaction submitted"
+        title="Threshold met: transaction submitted"
         icon={
           <svg
             width="18"
@@ -481,11 +481,11 @@ function UnverifiedBanner({
   readonly verification: EnvelopeVerification;
 }): React.JSX.Element {
   const reason = !verification.hashOk
-    ? "The returned transaction does not hash to this plan link — its contents don't match the id you opened."
+    ? "The returned transaction does not hash to this plan link: its contents don't match the id you opened."
     : "The returned transaction is for a different network than this app is configured for.";
   return (
     <div style={{ marginBottom: 16 }} data-testid="plan-unverified-banner">
-      <Notice tone="danger" title="Transaction could not be verified — do NOT sign it">
+      <Notice tone="danger" title="Transaction could not be verified: do NOT sign it">
         {reason} This can indicate a tampered or mismatched envelope; the sign action has been
         disabled. Do not add your signature.
       </Notice>
@@ -509,7 +509,7 @@ function NotFoundState({ id }: { readonly id: string }): React.JSX.Element {
         Refractor returned 404 for hash{" "}
         <code style={{ fontFamily: '"Geist Mono", monospace' }}>{shortId(id)}</code>. Either the
         envelope was already submitted and purged, the link expired, or it was never uploaded.
-        Demolisher does not cache plans locally — there is nothing to recover here.
+        Demolisher does not cache plans locally; there is nothing to recover here.
       </p>
       <Link
         href="/plan"

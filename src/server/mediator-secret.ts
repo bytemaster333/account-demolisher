@@ -12,13 +12,13 @@ import { getServerEnv } from "@/server/server-env";
 // close-out can reach a memo-required exchange. Earlier this used ONE shared
 // MEDIATOR_SECRET keypair for every user: because the sign route co-signs any
 // well-formed forward to any destination, an attacker who learned that shared
-// public key could drain whatever XLM transited it — including another user's
+// public key could drain whatever XLM transited it, including another user's
 // in-flight merge proceeds.
 //
 // Instead, MEDIATOR_SECRET is now only a MASTER key. Each close-out gets its own
 // throwaway keypair, derived deterministically from a random per-flow nonce, and
 // a signed flow token binds the sign request to that nonce. An attacker can only
-// ever act on a flow whose token they hold — i.e. their own — and that flow's
+// ever act on a flow whose token they hold (i.e. their own), and that flow's
 // account only ever holds their own funds, so cross-user theft is impossible.
 // Derivation is stateless (no per-flow seed storage), so it survives across
 // server instances.
@@ -31,7 +31,7 @@ const KEY_DERIVATION_LABEL = "mediator-flow-key";
 const TOKEN_MAC_LABEL = "mediator-flow-token";
 
 // the 32-byte ed25519 seed of MEDIATOR_SECRET, used purely as the HMAC master
-// key — never as a signing key. Memoized.
+// key, never as a signing key. Memoized.
 let cachedMaster: Buffer | null = null;
 
 function getMasterSecret(): Buffer {

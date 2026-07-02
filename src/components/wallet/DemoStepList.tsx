@@ -135,7 +135,7 @@ function Row({ row, isLast }: { readonly row: DemoStepRow; readonly isLast: bool
     );
   }
 
-  // full layout for pending / active / failed / skipped — keeps the educational
+  // full layout for pending / active / failed / skipped; keeps the educational
   // description visible while the user is still watching steps run
   return (
     <div

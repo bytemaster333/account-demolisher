@@ -54,7 +54,7 @@ export function evaluatePredicate(predicate: unknown, ledgerCloseTime: Date): bo
     return !evaluatePredicate(child, ledgerCloseTime);
   }
 
-  // abs_before / absBefore — claimable if ledger time is strictly before
+  // abs_before / absBefore: claimable if ledger time is strictly before
   const absRaw = pickStringOrNumber(p, ["abs_before", "absBefore"]);
   if (absRaw !== null) {
     const epochMs = parseAbsTime(absRaw);
@@ -69,7 +69,7 @@ export function evaluatePredicate(predicate: unknown, ledgerCloseTime: Date): bo
     return ledgerCloseTime.getTime() < seconds * 1000;
   }
 
-  // rel_before — needs the original record creation time we don't have;
+  // rel_before: needs the original record creation time we don't have;
   if ("rel_before" in p || "relBefore" in p) {
     return false;
   }

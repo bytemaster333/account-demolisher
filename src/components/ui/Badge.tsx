@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { RADIUS, TONE_FG, toneBorder, type Tone } from "./tokens";
 
-// flat chip — no tinted fill. A neutral surface with a tone-tinted border and
+// flat chip with no tinted fill. A neutral surface with a tone-tinted border and
 // tone-colored text/dot carries the meaning.
 export function Badge({
   children,

@@ -14,7 +14,7 @@ import { MAX_TIME_BOUND_SECONDS, validateMediatorForwardEnvelope } from "@/lib/m
 // The mediator co-signing validator is the primary server-side security
 // boundary. The mediator ONLY signs the forward envelope: a mediator-sourced
 // native payout + accountMerge, both to the same destination. (The old "merge"
-// variant left op1's amount/destination unbounded — a mediator-siphon surface —
+// variant left op1's amount/destination unbounded, a mediator-siphon surface ,
 // and was removed, so there is nothing else to accept.)
 
 const NET = Networks.TESTNET;

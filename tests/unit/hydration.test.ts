@@ -48,7 +48,7 @@ function baseDeps(overrides: Partial<HydrationDeps>): HydrationDeps {
   } as HydrationDeps;
 }
 
-describe("hydratePlanTransactions — WithdrawSoroswapLp slippage floor", () => {
+describe("hydratePlanTransactions, WithdrawSoroswapLp slippage floor", () => {
   it("passes a positive slippage-derived amountAMin/amountBMin, never 0", async () => {
     const expectedA = 5_000_000n; // 0.5 XLM
     const expectedB = 8_000_000n;
@@ -130,7 +130,7 @@ describe("hydratePlanTransactions — WithdrawSoroswapLp slippage floor", () => 
   });
 });
 
-describe("hydratePlanTransactions — WithdrawAquarius slippage floor", () => {
+describe("hydratePlanTransactions, WithdrawAquarius slippage floor", () => {
   it("passes positive slippage-derived minAmounts per token, never all-zero", async () => {
     const expected = [3_000_000n, 7_000_000n];
 

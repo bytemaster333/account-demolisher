@@ -38,7 +38,7 @@ function getAquariusRouterIdFromAllowlist(network: NetworkConfig = MAINNET): str
   );
   if (entry === undefined) {
     throw new Error(
-      `Aquarius router not found in ${network.id} allow-list — expected entry name 'AquariusAmmRouter'`,
+      `Aquarius router not found in ${network.id} allow-list: expected entry name 'AquariusAmmRouter'`,
     );
   }
   return entry.id;
@@ -176,7 +176,7 @@ export class AquariusAPIPoolProvider implements AquariusPoolProvider {
 
   async getUserPools(userPublicKey: string): Promise<AquariusPool[]> {
     const entries = await this.fetchUserPoolsAllPages(userPublicKey);
-    // drop zero-balance pools — user no longer an LP there
+    // drop zero-balance pools: user no longer an LP there
     const pools: AquariusPool[] = [];
     for (const entry of entries) {
       const sharesRaw = await this.getPoolShareBalance(

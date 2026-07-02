@@ -31,7 +31,7 @@ export const BLEND_MAINNET_POOLS: readonly BlendPoolEntry[] = Object.freeze([
     verified_at: VERIFIED_AT,
     source: BLEND_UTILS_SOURCE,
   } satisfies BlendPoolEntry),
-  // legacy v1 pools — retained so allow-list covers them. PoolV1.load works against these IDs
+  // legacy v1 pools, retained so allow-list covers them. PoolV1.load works against these IDs
   Object.freeze({
     pool_id: "CDVQVKOY2YSXS2IC7KN6MNASSHPAO7UN2UR2ON4OI2SKMFJNVAMDX6DP",
     name: "Fixed",

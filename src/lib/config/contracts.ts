@@ -76,9 +76,9 @@ export const MAINNET_ALLOWLIST: readonly AllowedContract[] = [
   ...FXDAO_ALLOWLIST_ENTRIES,
 ];
 
-// testnet allow-list — mirrors the four protocols on stellar testnet
+// testnet allow-list, mirrors the four protocols on stellar testnet
 
-// blend testnet infrastructure — the eight non-pool testnet contracts
+// blend testnet infrastructure, the eight non-pool testnet contracts
 // sourced from blend-utils@main/testnet.contracts.json (re-fetched 2026-05-18)
 const BLEND_TESTNET_INFRASTRUCTURE_SOURCE =
   "github.com/blend-capital/blend-utils@main/testnet.contracts.json";

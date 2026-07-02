@@ -22,7 +22,7 @@ function buildTx(passphrase: string): { xdr: string; id: string } {
 const PUBLIC = Networks.PUBLIC;
 const TESTNET = Networks.TESTNET;
 
-describe("verifyEnvelope — binds envelope to link + network", () => {
+describe("verifyEnvelope, binds envelope to link + network", () => {
   it("passes for an envelope that hashes to its id on the configured network", () => {
     const { xdr, id } = buildTx(TESTNET);
     const v = verifyEnvelope(id, { xdr, network: "testnet" }, TESTNET);
@@ -39,7 +39,7 @@ describe("verifyEnvelope — binds envelope to link + network", () => {
 
   it("fails networkOk when the returned network token differs from the app network", () => {
     // envelope legitimately hashes to id, but the app is on public while the
-    // response claims testnet — refuse to show the sign action
+    // response claims testnet, refuse to show the sign action
     const { xdr, id } = buildTx(PUBLIC);
     const v = verifyEnvelope(id, { xdr, network: "testnet" }, PUBLIC);
     expect(v.hashOk).toBe(true);

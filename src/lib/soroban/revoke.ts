@@ -2,7 +2,7 @@
 // single SEP-41 allowance, plus a confirmation poller.
 //
 // used by two callers:
-//   - the per-row RevokeButton: submitRevoke only (enqueue-and-go — it treats
+//   - the per-row RevokeButton: submitRevoke only (enqueue-and-go, it treats
 //     RPC acceptance as success and lets the user reload for finality)
 //   - bulk revoke: submitRevoke + confirmRevoke, so each tx lands in a ledger
 //     before the next reloads the source account's sequence number. submitting
@@ -22,7 +22,7 @@ import type { Connector } from "@/lib/wallet/connector";
 // source both build at N+1 and one loses to tx_bad_seq. RevokeButton's disabled
 // state is per-instance (no cross-row lock), so rapid clicks across rows could
 // otherwise race; chaining here guarantees the previous submit has fully
-// returned — and thus advanced the local view — before the next one re-reads
+// returned, and thus advanced the local view, before the next one re-reads
 // Horizon.
 const inFlight = new Map<string, Promise<unknown>>();
 
@@ -91,8 +91,8 @@ async function submitRevokeImpl(
 }
 
 // poll a submitted revoke to ledger inclusion. throws if it fails to confirm.
-// distinguishes a real on-chain FAILED (terminal — the tx was included and
-// reverted) from an exhausted poll window (NOT_FOUND — the tx may still land),
+// distinguishes a real on-chain FAILED (terminal: the tx was included and
+// reverted) from an exhausted poll window (NOT_FOUND: the tx may still land),
 // so the bulk sweep can report the right thing and not advance its sequence
 // view on a tx that never sequenced.
 export async function confirmRevoke(network: NetworkConfig, hash: string): Promise<void> {

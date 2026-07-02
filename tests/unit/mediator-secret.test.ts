@@ -4,7 +4,7 @@ import { Keypair, StrKey } from "@stellar/stellar-sdk";
 // the module is server-only; stub the guard so it imports under vitest's node env
 vi.mock("server-only", () => ({}));
 
-// a throwaway master seed (never funded) — used only as the HMAC derivation key
+// a throwaway master seed (never funded), used only as the HMAC derivation key
 process.env.MEDIATOR_SECRET = Keypair.random().secret();
 
 import {

@@ -80,7 +80,7 @@ export function evaluateScamHeuristics(subject: TokenSubject): readonly ScamFlag
         });
       }
     } else {
-      // no exact tier-1 match — look for a lookalike
+      // no exact tier-1 match, look for a lookalike
       const lookalike = nearestTier1Match(symbolUpper);
       if (lookalike !== null && lookalike.distance <= LOOKALIKE_DISTANCE_THRESHOLD) {
         flags.push({
@@ -96,9 +96,9 @@ export function evaluateScamHeuristics(subject: TokenSubject): readonly ScamFlag
       }
     }
 
-    // suspicious character class — flags non-ASCII-alphanumeric symbols
+    // suspicious character class, flags non-ASCII-alphanumeric symbols
     // (homoglyphs, cyrillic, accents). Lowercase ASCII is a valid (if unusual)
-    // Stellar asset code, so it must NOT trip this — otherwise every lowercase
+    // Stellar asset code, so it must NOT trip this. otherwise every lowercase
     // code is a false positive. Case impersonation is caught by the collision /
     // lookalike checks above, which compare upper-cased.
     if (!/^[A-Za-z0-9]+$/.test(rawSymbol)) {

@@ -5,7 +5,7 @@ import type { ClientQuoteRequest } from "@/lib/adapters/soroswap/client";
 // The proxy JSON path casts the response to the SDK's QuoteResponse, whose amountOut /
 // otherAmountThreshold are typed as `bigint` but on the wire arrive as string|number.
 // The downstream slippage guard (aggregator.ts) does quote.amountOut.toString() and
-// BigInt(quote.otherAmountThreshold.toString()) — so a silently-rounded JSON Number would
+// BigInt(quote.otherAmountThreshold.toString()), so a silently-rounded JSON Number would
 // feed wrong digits into the guard. quote() must reject values that aren't faithful
 // non-negative integers rather than trusting corrupted digits.
 

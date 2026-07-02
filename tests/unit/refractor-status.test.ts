@@ -24,7 +24,7 @@ function clientReturning(body: unknown): RefractorClient {
 
 const BASE = { hash: "abc123", network: "testnet", xdr: "AAAAxdr" };
 
-describe("refractor parseStatus — signedBy derivation", () => {
+describe("refractor parseStatus, signedBy derivation", () => {
   it("marks only the collected signers as signed, rest pending", async () => {
     const status = await clientReturning({
       ...BASE,

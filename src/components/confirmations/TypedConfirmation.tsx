@@ -1,6 +1,6 @@
 "use client";
 
-// destructive-action confirmation dialog — the final gate before a demolition.
+// destructive-action confirmation dialog: the final gate before a demolition.
 // Opened from the Review step's "Demolish account" button. Requires an unlock
 // delay to elapse AND the last 4 characters of the destination to be re-typed,
 // so the merge is never one careless click away.
@@ -334,7 +334,7 @@ export function TypedConfirmation({
                 color: "var(--fg-2)",
               }}
             >
-              Take a moment to be sure — confirm unlocks in {timerLeft}s.
+              Take a moment to be sure. Confirm unlocks in {timerLeft}s.
             </div>
           </div>
         ) : (

@@ -216,7 +216,7 @@ async function hydrateNode(
       // First build+simulate with zero floors to read the router's expected
       // per-token output, then rebuild with a slippage-bounded minimum so the
       // signed tx cannot silently accept near-zero output for any reserve token.
-      // (The executor only signs/submits — nothing downstream floors this.)
+      // (The executor only signs/submits. Nothing downstream floors this.)
       const probe = await fn(
         {
           user: userPublicKey,
@@ -270,7 +270,7 @@ async function hydrateNode(
       // First build+simulate with zero floors to read remove_liquidity's expected
       // (amountA, amountB), then rebuild with slippage-bounded minimums so the
       // signed tx cannot silently accept near-zero output for either token.
-      // (The executor only signs/submits — nothing downstream floors this.)
+      // (The executor only signs/submits. Nothing downstream floors this.)
       const probe = await fn(
         {
           tokenAAddress: node.metadata.tokenA,
@@ -424,7 +424,7 @@ function resolveContractIdForAsset(asset: AssetIdentifier, network: NetworkConfi
 // re-simulate an already-assembled withdraw/remove_liquidity tx to read the
 // router's expected per-token output vector. returns exactly `count`
 // non-negative bigints. throws (rather than falling back to a zero floor) if
-// the retval is missing or the wrong shape — a withdraw that cannot be quoted
+// the retval is missing or the wrong shape: a withdraw that cannot be quoted
 // must not be signed with an all-accepting minimum.
 async function readExpectedAmounts(
   server: rpc.Server,
@@ -453,7 +453,7 @@ async function readExpectedAmounts(
   });
 }
 
-// blend position synthesizers — buildExitSequence wants a full BlendUserPositions
+// blend position synthesizers. buildExitSequence wants a full BlendUserPositions
 
 function synthesizeBlendPositionForRepay(metadata: {
   readonly poolId: string;

@@ -1,6 +1,6 @@
 "use client";
 
-// landing page — ported from design/extracted/account demolisher.dc.html (lines 112–491)
+// landing page: ported from design/extracted/account demolisher.dc.html (lines 112-491)
 
 import Link from "next/link";
 import { useState } from "react";

@@ -65,7 +65,7 @@ export function pickTransaction(node: PlanNode) {
 // rides out transient horizon blips (5xx / network) on the pure, idempotent
 // reads that prep the final merge, so a momentary outage doesn't abort execution
 // after the soroban exits have already confirmed on-chain. Deterministic outcomes
-// (404 AccountNotFound, other 4xx) are rethrown immediately — never retried.
+// (404 AccountNotFound, other 4xx) are rethrown immediately, never retried.
 async function withHorizonRetry<T>(fn: () => Promise<T>, tries = 3): Promise<T> {
   let lastErr: unknown;
   for (let i = 0; i < tries; i++) {
@@ -73,7 +73,7 @@ async function withHorizonRetry<T>(fn: () => Promise<T>, tries = 3): Promise<T> 
       return await fn();
     } catch (err) {
       lastErr = err;
-      // a merged/missing account is a real, terminal answer — don't retry it
+      // a merged/missing account is a real, terminal answer, so don't retry it
       if (err instanceof AccountNotFoundError) throw err;
       const status = (err as { response?: { status?: number } })?.response?.status;
       if (status !== undefined && status < 500) throw err;
@@ -112,7 +112,7 @@ function classicRejectionKind(err: unknown): "fee" | "reprice" | null {
 
 // a competitive starting per-op fee from Horizon's recent fee stats, clamped to
 // [network minimum, MAX_PER_OP_FEE]. Falls back to the minimum if feeStats is
-// unavailable or malformed — the retry loop escalates from there on a fee reject.
+// unavailable or malformed; the retry loop escalates from there on a fee reject.
 async function surgeFeeBase(horizon: HorizonLike): Promise<number> {
   if (typeof horizon.feeStats !== "function") return DEFAULT_FEE_BASE;
   try {
@@ -181,7 +181,7 @@ export async function executePlanTreeOnChain(
     try {
       await deps.horizon.loadAccount(input.publicKey);
     } catch {
-      // transient horizon 5xx — continue; submit will surface a real failure
+      // transient horizon 5xx, continue; submit will surface a real failure
     }
 
     if (node.kind === "FinalClassicTx") {
@@ -189,12 +189,12 @@ export async function executePlanTreeOnChain(
       // batches (with freshly-resolved XLM paths + destMins), and submit them at
       // the given per-op fee. Returns the final receipt. Re-running this after a
       // batch confirms is SAFE: a fresh audit reflects the applied ops, so a
-      // retry rebuilds only the REMAINING work — never re-submitting a confirmed
+      // retry rebuilds only the REMAINING work, never re-submitting a confirmed
       // batch. That's what lets the bounded retry below recover from a fee/price
       // rejection without leaving the account half-closed.
       const attemptMerge = async (feeBase: number): Promise<ConfirmationReceipt> => {
         // soroban exits shift classical balances, so the cached batches are
-        // rebuilt against fresh state — including freshly-resolved XLM paths so
+        // rebuilt against fresh state, including freshly-resolved XLM paths so
         // credit balances convert via path payment instead of routing to issuer.
         const freshAudit = await withHorizonRetry(() =>
           auditAccount(input.publicKey, deps.network),
@@ -210,7 +210,7 @@ export async function executePlanTreeOnChain(
         const merge = computeMergeability(freshAudit.flags, freshAudit.sponsorship);
         if (!merge.mergeable) {
           throw new Error(
-            `account_merge blocked: ${merge.reason}${merge.detail ? ` — ${merge.detail}` : ""}`,
+            `account_merge blocked: ${merge.reason}${merge.detail ? `: ${merge.detail}` : ""}`,
           );
         }
         const stuck = unroutableCredits(
@@ -334,7 +334,7 @@ export async function executePlanTreeOnChain(
     }
     // Pre-sign allow-list gate (defense-in-depth on top of each adapter's own
     // build-time check): every DeFi-protocol node must invoke only allow-listed
-    // contracts. RevokeAllowance is the deliberate exception — it targets the
+    // contracts. RevokeAllowance is the deliberate exception: it targets the
     // user's own token contracts (chosen from an RPC allowance scan, not the DeFi
     // allow-list) and only ever builds a safe approve(0) sourced from the user.
     if (node.kind !== "RevokeAllowance") {

@@ -3,7 +3,7 @@
 // informational notice for tokens the account holds that trip the scam
 // heuristics (look-alike symbols, homoglyphs, off-allowlist contracts). The
 // demolition removes these anyway; this just makes sure the user recognizes
-// what they held. Not a blocker — the typed confirmation is the safety net.
+// what they held. Not a blocker; the typed confirmation is the safety net.
 
 import type { ReactNode } from "react";
 
@@ -42,27 +42,27 @@ function assetKey(asset: AssetIdentifier): string {
   }
 }
 
-// UI-facing reason, address-free — the address is shown separately as a
+// UI-facing reason, address-free. The address is shown separately as a
 // copyable, linkable element below (so it's readable and verifiable, not buried
 // mid-sentence).
 function reasonFor(flag: ScamFlag): string {
   switch (flag.id) {
     case "exact_symbol_collision": {
       const symbol = String(flag.detail?.symbol ?? "");
-      return `Uses the symbol “${symbol}” of a trusted tier-1 asset, but is issued by a different address than the real one — a classic impersonation.`;
+      return `Uses the symbol “${symbol}” of a trusted tier-1 asset, but is issued by a different address than the real one, a classic impersonation.`;
     }
     case "lookalike_symbol": {
       const symbol = String(flag.detail?.symbol ?? "");
       const near = String(flag.detail?.lookalikeOf ?? "");
       const d = Number(flag.detail?.distance ?? 0);
-      return `Symbol “${symbol}” is only ${d} character${d === 1 ? "" : "s"} away from “${near}” — a common look-alike trick.`;
+      return `Symbol “${symbol}” is only ${d} character${d === 1 ? "" : "s"} away from “${near}”, a common look-alike trick.`;
     }
     case "suspicious_character": {
       const symbol = String(flag.detail?.symbol ?? "");
-      return `Symbol “${symbol}” contains characters outside A–Z and 0–9 (homoglyphs/accents), which legitimate issuers don’t use.`;
+      return `Symbol “${symbol}” contains characters outside A-Z and 0-9 (homoglyphs/accents), which legitimate issuers don’t use.`;
     }
     case "unknown_contract":
-      return "We don’t recognize this token — it isn’t on our list of known, trusted tokens. That doesn’t prove it’s a scam, but make sure you recognize it.";
+      return "We don’t recognize this token: it isn’t on our list of known, trusted tokens. That doesn’t prove it’s a scam, but make sure you recognize it.";
   }
 }
 
@@ -138,7 +138,7 @@ export function ScamTokenNotice({
       </ul>
       <span style={{ color: "var(--fg-3)", fontSize: 12 }}>
         These are removed as part of closing the account. Make sure you recognize them before
-        proceeding. Removing suspicious tokens is safe — they hold no real value, and closing the
+        proceeding. Removing suspicious tokens is safe: they hold no real value, and closing the
         account simply discards them. We&apos;re only showing you this so nothing surprises you.
       </span>
     </Notice>

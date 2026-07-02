@@ -9,7 +9,7 @@ import { preserveAmountPrecision } from "@/app/api/soroswap/route";
 // preserveAmountPrecision quotes the amount fields in the raw upstream text
 // BEFORE JSON.parse so they survive as exact integer strings.
 
-const BIG = "123456789012345678"; // 1.2e17 — larger than Number.MAX_SAFE_INTEGER
+const BIG = "123456789012345678"; // 1.2e17, larger than Number.MAX_SAFE_INTEGER
 
 describe("preserveAmountPrecision", () => {
   it("quotes an unquoted big amountOut so JSON.parse keeps every digit", () => {

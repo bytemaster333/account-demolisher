@@ -3,7 +3,7 @@
 // shown when the account holds credit balances with no XLM conversion path.
 // Such balances block the merge (their trustlines can't be removed with a live
 // balance). The user must either handle them off-app, or explicitly consent to
-// return each to its issuer — an irreversible transfer we never do silently.
+// return each to its issuer, an irreversible transfer we never do silently.
 
 import { Button, Checkbox, CopyableAddress, Notice } from "@/components/ui";
 import type { NetworkConfig } from "@/lib/config/networks";
@@ -51,7 +51,7 @@ export function ResidueConsent({
       }
     >
       We couldn&apos;t find a way to turn these tokens into XLM, so the account can&apos;t close
-      while it still holds them. Either sell or move them from another app first, then re-check — or
+      while it still holds them. Either sell or move them from another app first, then re-check, or
       tick “return to issuer” below to send a token back to whoever created it. That&apos;s
       permanent, you&apos;ll almost certainly get nothing back, and it can&apos;t be undone.
       <ul
@@ -114,7 +114,7 @@ export function ResidueConsent({
               onChange={(v) => onToggle(c.key, v)}
               label={
                 <span style={{ color: "var(--warning)", fontWeight: 600, whiteSpace: "nowrap" }}>
-                  Return to issuer (permanent — you keep nothing)
+                  Return to issuer (permanent, you keep nothing)
                   {/* screen-reader-only: the full, unambiguous consequence for this
                       specific balance, so the checkbox never reads as a bare toggle */}
                   <span
@@ -130,7 +130,7 @@ export function ResidueConsent({
                       border: 0,
                     }}
                   >
-                    {` — return ${c.amount} ${c.code} to the address that created it. This is permanent, you'll almost certainly get nothing back, and it can't be undone.`}
+                    {`: return ${c.amount} ${c.code} to the address that created it. This is permanent, you'll almost certainly get nothing back, and it can't be undone.`}
                   </span>
                 </span>
               }

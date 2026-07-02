@@ -1,4 +1,4 @@
-// Shared UI primitive layer — token-driven building blocks for the app pages
+// Shared UI primitive layer: token-driven building blocks for the app pages
 // (/demolish, /allowances, /plan). See tokens.ts for the scales.
 
 export { Button, IconButton } from "./Button";

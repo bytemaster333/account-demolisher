@@ -96,7 +96,7 @@ export function ConnectButton({
         aria-label={
           isConnected
             ? `Wallet connected as ${publicKey}. Activate to disconnect.`
-            : "Connect wallet — this only shares your public address, never your secret key"
+            : "Connect wallet: this only shares your public address, never your secret key"
         }
         data-testid="connect-button"
         data-public-key={isConnected ? publicKey : ""}
