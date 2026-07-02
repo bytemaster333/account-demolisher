@@ -799,6 +799,13 @@ function DemolishFlow(): React.JSX.Element {
               are h2s; this keeps a single h1 per screen */}
           <h1 style={SR_ONLY}>Close a Stellar account</h1>
           <StepIndicator steps={flowSteps} />
+          {/* announces the current step to screen readers when the panel changes */}
+          <div aria-live="polite" style={SR_ONLY}>
+            {(() => {
+              const active = flowSteps.find((s) => s.isActive);
+              return active ? `Now on step: ${active.label}` : "";
+            })()}
+          </div>
 
           {/* during the brief discover/preview transition, take over the whole
               row with a single centered loading widget — no side rail, no
@@ -1062,12 +1069,14 @@ function IdleConnect({
               flexWrap: "wrap",
             }}
           >
-            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 2, maxWidth: 420 }}>
               <span style={{ fontSize: 15, fontWeight: 600, color: "var(--fg)" }}>
                 Connect a wallet
               </span>
-              <span style={{ fontSize: 12.5, color: "var(--fg-3)" }}>
-                Freighter, xBull, Albedo, Rabet, Lobstr, Hana, WalletConnect.
+              <span style={{ fontSize: 12.5, color: "var(--fg-3)", lineHeight: 1.5 }}>
+                Works with Freighter, xBull, Albedo, Rabet, Lobstr, Hana and WalletConnect.
+                Connecting only shares your public address — you approve each step in your wallet,
+                and we never see your secret key.
               </span>
             </div>
             <ConnectButton network={network} onConnector={onKitConnector} />
@@ -1086,6 +1095,8 @@ function IdleConnect({
             <button
               type="button"
               onClick={onToggleAdvanced}
+              aria-expanded={advancedOpen}
+              aria-controls="advanced-secret-panel"
               style={{
                 width: "100%",
                 display: "flex",
@@ -1109,11 +1120,17 @@ function IdleConnect({
                   strokeWidth={2}
                   strokeLinecap="round"
                   strokeLinejoin="round"
+                  aria-hidden
                 >
-                  <path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+                  <path d="m21 2-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4" />
                 </svg>
-                <span style={{ fontWeight: 600, fontSize: 13.5 }}>
-                  Advanced, paste a secret key
+                <span style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                  <span style={{ fontWeight: 600, fontSize: 13.5 }}>
+                    Advanced: paste a secret key
+                  </span>
+                  <span style={{ fontSize: 11.5, color: "var(--fg-3)", fontWeight: 400 }}>
+                    For advanced users without a wallet extension — less safe.
+                  </span>
                 </span>
               </span>
               <svg
@@ -1125,12 +1142,13 @@ function IdleConnect({
                 strokeWidth={2.2}
                 strokeLinecap="round"
                 style={{ transform: advancedOpen ? "rotate(180deg)" : "none" }}
+                aria-hidden
               >
                 <path d="M6 9l6 6 6-6" />
               </svg>
             </button>
             {advancedOpen ? (
-              <div style={{ padding: "0 17px 17px" }}>
+              <div id="advanced-secret-panel" style={{ padding: "0 17px 17px" }}>
                 <SecretKeyFallback onConnector={onSecretConnector} />
               </div>
             ) : null}

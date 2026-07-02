@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 import { RADIUS, TONE_FG, toneBorder, type Tone } from "./tokens";
 
 // icon glyphs (stroke paths) per tone — the app's Feather-style vocabulary
@@ -34,6 +34,11 @@ export function Notice({
   readonly "data-testid"?: string;
   readonly role?: "note" | "alert" | "status";
 }): React.JSX.Element {
+  const titleId = useId();
+  // a titled note gets a real "note" role + accessible name so screen readers
+  // can find and label it; role="note" is structural (not a live region), so it
+  // isn't announced on mount the way "alert" would be. Untitled notes stay roleless.
+  const resolvedRole = role === "note" ? (title ? "note" : undefined) : role;
   const iconNode = icon ?? (
     <svg
       width="16"
@@ -61,7 +66,8 @@ export function Notice({
 
   return (
     <div
-      role={role === "note" ? undefined : role}
+      role={resolvedRole}
+      aria-labelledby={resolvedRole === "note" && title ? titleId : undefined}
       data-testid={testId}
       style={{
         borderRadius: RADIUS.lg,
@@ -76,7 +82,9 @@ export function Notice({
         <span style={{ flexShrink: 0, marginTop: 1 }}>{iconNode}</span>
         <div style={{ flex: 1, minWidth: 0 }}>
           {title ? (
-            <div style={{ fontSize: 13.5, fontWeight: 600, color: TONE_FG[tone] }}>{title}</div>
+            <div id={titleId} style={{ fontSize: 13.5, fontWeight: 600, color: TONE_FG[tone] }}>
+              {title}
+            </div>
           ) : null}
           {children ? (
             <div
