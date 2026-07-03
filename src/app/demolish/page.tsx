@@ -1048,8 +1048,8 @@ function IdleConnect({
             Stellar and sends all its XLM to an address you choose.{" "}
             <strong style={{ color: "var(--fg)", fontWeight: 600 }}>This cannot be undone.</strong>{" "}
             First we safely undo everything attached to it (trusted assets, open trades, saved data,
-            extra signers, and DeFi positions). You review and approve every step in your own wallet
-            , nothing is sent without you.
+            extra signers, and DeFi positions). You review and approve every step in your own
+            wallet, and nothing is sent without you.
             {isTestnetLike
               ? " New here? Create a free practice account below to try the whole thing first."
               : ""}
