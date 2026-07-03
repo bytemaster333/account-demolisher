@@ -391,17 +391,6 @@ export function TypedConfirmation({
             Enter the last 4 characters above to enable this button.
           </div>
         ) : null}
-        <p
-          style={{
-            margin: "12px 0 0",
-            fontSize: 11.5,
-            color: "var(--fg-3)",
-            textAlign: "center",
-            lineHeight: 1.5,
-          }}
-        >
-          The short wait and the re-typing are here to prevent an accidental, irreversible click.
-        </p>
       </div>
     </div>
   );

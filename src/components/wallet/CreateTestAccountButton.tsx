@@ -344,7 +344,7 @@ function ReadyPanel({
           textDecoration: "none",
         }}
       >
-        View on Stellar.expert (public blockchain explorer)
+        View on Stellar.expert
         <svg
           width="13"
           height="13"

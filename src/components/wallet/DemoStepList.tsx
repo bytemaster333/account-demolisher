@@ -111,7 +111,7 @@ function Row({ row, isLast }: { readonly row: DemoStepRow; readonly isLast: bool
               gap: 4,
               whiteSpace: "nowrap",
             }}
-            title="View on Stellar.expert (public blockchain explorer)"
+            title="View on Stellar.expert"
           >
             <span>
               {row.txHash.slice(0, 6)}…{row.txHash.slice(-4)}

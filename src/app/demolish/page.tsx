@@ -1041,7 +1041,6 @@ function IdleConnect({
               fontSize: 16,
               lineHeight: 1.55,
               color: "var(--fg-2)",
-              maxWidth: 560,
             }}
           >
             Connect the account you want to close. Closing it permanently removes the account from
@@ -1108,6 +1107,7 @@ function IdleConnect({
                 border: "none",
                 cursor: "pointer",
                 color: "var(--fg)",
+                textAlign: "left",
               }}
             >
               <span style={{ display: "flex", flexDirection: "column", gap: 1 }}>
