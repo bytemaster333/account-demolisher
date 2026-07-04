@@ -16,6 +16,7 @@ import {
   Card,
   Checkbox,
   CopyableAddress,
+  InfoTip,
   Notice,
   SectionLabel,
   Select,
@@ -2160,12 +2161,15 @@ function ReviewPanel({
         ]}
       />
       <p style={{ margin: "-6px 0 0", fontSize: 12, lineHeight: 1.55, color: "var(--fg-3)" }}>
-        Your whole balance is sent to the destination, minus a small{" "}
-        <strong style={{ color: "var(--fg-2)", fontWeight: 600 }}>network fee</strong> the Stellar
-        network charges to process each step (not paid to us). The{" "}
-        <strong style={{ color: "var(--fg-2)", fontWeight: 600 }}>reserve</strong> is XLM the
-        network locked while the account was open, it&apos;s unlocked on close and already part of
-        the amount above, not extra.
+        Your whole balance goes to the destination, minus a small{" "}
+        <InfoTip tip="A small charge the Stellar network takes to process each step. It is not paid to us.">
+          network fee
+        </InfoTip>
+        . The{" "}
+        <InfoTip tip="XLM the network keeps locked in every account while it is open. It is released when the account closes, and is already included in the amount above, not extra.">
+          reserve
+        </InfoTip>{" "}
+        is already part of that amount.
       </p>
 
       {/* every operation, grouped */}
@@ -2993,10 +2997,12 @@ function ConfigurePanel({
           </span>
         </label>
         <p style={{ margin: "0 0 8px", fontSize: 12, color: "var(--fg-3)", lineHeight: 1.5 }}>
-          Exchanges share one deposit address across all customers and use the memo to know a
-          deposit is yours. If your exchange gave you a deposit memo or tag, paste it here, sending
-          to an exchange without it usually means the funds are lost. Most exchanges use Text or ID;
-          use the exact type your exchange told you.
+          If your exchange gave you a deposit{" "}
+          <InfoTip tip="A tag exchanges use to know a deposit is yours. Exchanges share one deposit address across all customers, so the memo is how they credit it to you.">
+            memo
+          </InfoTip>{" "}
+          or tag, paste it here. Sending to an exchange without it usually means the funds are lost.
+          Most exchanges use Text or ID.
         </p>
         <div style={{ display: "flex", gap: 10 }}>
           <div style={{ minWidth: 130 }}>
