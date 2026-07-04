@@ -99,8 +99,7 @@ export function ResidueConsent({
               <CopyableAddress
                 value={c.issuer}
                 label="Created by"
-                head={4}
-                tail={4}
+                full
                 size={11.5}
                 href={explorerAccountUrl(network, c.issuer)}
               />

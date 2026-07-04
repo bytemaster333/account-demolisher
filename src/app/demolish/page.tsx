@@ -1366,14 +1366,46 @@ function SponsorshipAutoRevokeNotice({ count }: { readonly count: number }): Rea
   );
 }
 
+// playful, meaningless-but-fun status quips that cycle under the real message
+const LOADING_QUIPS = [
+  "Prying open trustlines…",
+  "Counting the stardust…",
+  "Shaking loose the reserves…",
+  "Poking sleepy DeFi positions…",
+  "Herding claimable balances…",
+  "Sweeping up dust tokens…",
+  "Reticulating splines…",
+  "Negotiating with the ledger…",
+  "Untangling the multisig…",
+  "Dusting off forgotten offers…",
+  "Warming up the wrecking ball…",
+  "Checking under the floorboards…",
+];
+
+// the light sweep that passes over each skeleton row (uses the `shimmer` keyframe)
+const SCAN_SWEEP: React.CSSProperties = {
+  position: "absolute",
+  inset: 0,
+  transform: "translateX(-140%)",
+  background:
+    "linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 28%, transparent), transparent)",
+  animation: "shimmer 1.5s linear infinite",
+};
+
 function LeftLoadingCard({ message }: { readonly message: string }): React.JSX.Element {
+  // cycle the fun sub-line; setState lives in the interval callback (async), so
+  // it never runs synchronously in the effect body
+  const [quipIdx, setQuipIdx] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setQuipIdx((i) => (i + 1) % LOADING_QUIPS.length), 1700);
+    return () => clearInterval(id);
+  }, []);
+
   return (
     <div
       role="status"
       aria-live="polite"
       style={{
-        // borderless + transparent: float over the ambient page background so
-        // the giant animated icon is the focal point, not a card chrome
         background: "transparent",
         border: "none",
         padding: "60px 28px",
@@ -1382,80 +1414,49 @@ function LeftLoadingCard({ message }: { readonly message: string }): React.JSX.E
         flexDirection: "column",
         alignItems: "center",
         justifyContent: "center",
-        gap: 28,
+        gap: 30,
         position: "relative",
       }}
     >
-      {/* huge animated search/audit icon with concentric pulse rings */}
+      {/* a small stack of account "rows" being read top-to-bottom: each has a
+          light sweep passing over it (staggered), so it reads as the account
+          being scanned line by line, not a stone dropped in a pond. */}
       <div
         aria-hidden
-        style={{
-          position: "relative",
-          width: 220,
-          height: 220,
-          display: "grid",
-          placeItems: "center",
-        }}
+        style={{ width: 320, maxWidth: "100%", display: "flex", flexDirection: "column", gap: 14 }}
       >
-        {/* outer concentric rings, different delays for a "scanning" feel */}
-        <span
-          style={{
-            position: "absolute",
-            inset: 0,
-            borderRadius: "50%",
-            border: "1px solid var(--accent-line)",
-            animation: "ringPulse 1.8s ease-out infinite",
-          }}
-        />
-        <span
-          style={{
-            position: "absolute",
-            inset: 30,
-            borderRadius: "50%",
-            border: "1px solid var(--accent-line)",
-            animation: "ringPulse 1.8s ease-out infinite",
-            animationDelay: "0.45s",
-          }}
-        />
-        <span
-          style={{
-            position: "absolute",
-            inset: 60,
-            borderRadius: "50%",
-            border: "1px solid var(--accent-line)",
-            animation: "ringPulse 1.8s ease-out infinite",
-            animationDelay: "0.9s",
-          }}
-        />
-        {/* the big icon tile */}
-        <span
-          style={{
-            position: "relative",
-            width: 108,
-            height: 108,
-            borderRadius: 28,
-            background: "var(--surface-2)",
-            border: "1px solid var(--accent-line)",
-            color: "var(--accent)",
-            display: "grid",
-            placeItems: "center",
-            animation: "pulse 2.2s ease-in-out infinite",
-          }}
-        >
-          <svg
-            width="52"
-            height="52"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2.2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <circle cx="11" cy="11" r="7" />
-            <path d="M21 21l-4.3-4.3" />
-          </svg>
-        </span>
+        {[0, 1, 2, 3, 4].map((i) => {
+          const barWidth = ["82%", "94%", "66%", "88%", "74%"][i];
+          return (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 13 }}>
+              <span
+                style={{
+                  position: "relative",
+                  flexShrink: 0,
+                  width: 30,
+                  height: 30,
+                  borderRadius: 9,
+                  background: "var(--surface-2)",
+                  overflow: "hidden",
+                }}
+              >
+                <span style={{ ...SCAN_SWEEP, animationDelay: `${i * 0.16}s` }} />
+              </span>
+              <span
+                style={{
+                  position: "relative",
+                  height: 13,
+                  width: barWidth,
+                  borderRadius: 7,
+                  background: "var(--surface-2)",
+                  overflow: "hidden",
+                }}
+              >
+                <span style={{ ...SCAN_SWEEP, animationDelay: `${i * 0.16 + 0.05}s` }} />
+              </span>
+            </div>
+          );
+        })}
       </div>
 
       <div
@@ -1463,19 +1464,27 @@ function LeftLoadingCard({ message }: { readonly message: string }): React.JSX.E
           textAlign: "center",
           display: "flex",
           flexDirection: "column",
-          gap: 6,
+          gap: 7,
           position: "relative",
         }}
       >
         <div
-          style={{
-            fontSize: 15,
-            fontWeight: 600,
-            color: "var(--fg)",
-            letterSpacing: "-0.01em",
-          }}
+          style={{ fontSize: 15, fontWeight: 600, color: "var(--fg)", letterSpacing: "-0.01em" }}
         >
           {message}
+        </div>
+        {/* cycling fun quip (decorative, not announced to screen readers) */}
+        <div
+          key={quipIdx}
+          aria-hidden
+          style={{
+            fontSize: 12.5,
+            color: "var(--fg-3)",
+            animation: "fadeIn 0.4s ease-out",
+            minHeight: 18,
+          }}
+        >
+          {LOADING_QUIPS[quipIdx]}
         </div>
       </div>
     </div>
@@ -2991,18 +3000,16 @@ function ConfigurePanel({
             color: "var(--fg)",
           }}
         >
-          Memo{" "}
+          <InfoTip tip="A tag exchanges use to know a deposit is yours. Exchanges share one deposit address across all customers, so the memo is how they credit it to you.">
+            Memo
+          </InfoTip>{" "}
           <span style={{ color: "var(--fg-3)", fontWeight: 400 }}>
-            {cex?.requiresMemo ? "(required by your exchange)" : "(required by most exchanges)"}
+            {cex?.requiresMemo ? "· required by your exchange" : "· required by most exchanges"}
           </span>
         </label>
         <p style={{ margin: "0 0 8px", fontSize: 12, color: "var(--fg-3)", lineHeight: 1.5 }}>
-          If your exchange gave you a deposit{" "}
-          <InfoTip tip="A tag exchanges use to know a deposit is yours. Exchanges share one deposit address across all customers, so the memo is how they credit it to you.">
-            memo
-          </InfoTip>{" "}
-          or tag, paste it here. Sending to an exchange without it usually means the funds are lost.
-          Most exchanges use Text or ID.
+          If your exchange gave you a deposit memo or tag, paste it here. Sending to an exchange
+          without it usually means the funds are lost. Most exchanges use Text or ID.
         </p>
         <div style={{ display: "flex", gap: 10 }}>
           <div style={{ minWidth: 130 }}>

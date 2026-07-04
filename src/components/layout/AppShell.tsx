@@ -384,12 +384,12 @@ function Footer() {
   return (
     <footer
       style={{
-        marginTop: 80,
+        marginTop: 56,
         borderTop: "1px solid var(--border)",
         background: "color-mix(in srgb, var(--bg) 90%, transparent)",
       }}
     >
-      <div style={{ maxWidth: 1180, margin: "0 auto", padding: "48px 28px 28px" }}>
+      <div style={{ maxWidth: 1180, margin: "0 auto", padding: "28px 28px 22px" }}>
         <div
           style={{
             display: "flex",
@@ -450,8 +450,8 @@ function Footer() {
         {/* bottom bar */}
         <div
           style={{
-            marginTop: 36,
-            paddingTop: 20,
+            marginTop: 22,
+            paddingTop: 16,
             borderTop: "1px solid var(--border)",
             display: "flex",
             flexWrap: "wrap",

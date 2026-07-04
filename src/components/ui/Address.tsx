@@ -18,6 +18,7 @@ export function CopyableAddress({
   label,
   size = 12.5,
   href,
+  full = false,
 }: {
   readonly value: string;
   readonly head?: number;
@@ -26,8 +27,14 @@ export function CopyableAddress({
   readonly size?: number;
   // when set, adds an "open in explorer" link button next to copy
   readonly href?: string;
+  // show the whole address instead of a middle-truncated form
+  readonly full?: boolean;
 }): React.JSX.Element {
   const [copied, setCopied] = useState(false);
+  // the copy / explorer buttons stay invisible until the chip is hovered or a
+  // control inside it is focused, so a page full of addresses isn't peppered
+  // with icons. focus keeps them keyboard-reachable (tab reveals them).
+  const [active, setActive] = useState(false);
 
   const copy = (): void => {
     void navigator.clipboard
@@ -42,70 +49,77 @@ export function CopyableAddress({
   };
 
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+    <span
+      onMouseEnter={() => setActive(true)}
+      onMouseLeave={() => setActive(false)}
+      onFocus={() => setActive(true)}
+      onBlur={() => setActive(false)}
+      style={{ display: "inline-flex", alignItems: "center", gap: 7, minWidth: 0 }}
+    >
       <code
         title={label ? `${label}: ${value}` : value}
         style={{
           fontFamily: MONO,
           fontSize: size,
           color: "var(--fg)",
-          whiteSpace: "nowrap",
+          wordBreak: full ? "break-all" : "normal",
+          whiteSpace: full ? "normal" : "nowrap",
           overflow: "hidden",
           textOverflow: "ellipsis",
         }}
       >
-        {middleTruncate(value, head, tail)}
+        {full ? value : middleTruncate(value, head, tail)}
       </code>
-      <button
-        type="button"
-        onClick={copy}
-        title={copied ? "Copied" : "Copy full address"}
-        aria-label={copied ? "Copied to clipboard" : `Copy ${label ?? "address"}`}
+      <span
         style={{
-          display: "grid",
-          placeItems: "center",
-          width: 24,
-          height: 24,
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 6,
           flexShrink: 0,
-          borderRadius: RADIUS.sm,
-          border: "1px solid var(--border)",
-          background: "var(--surface-2)",
-          color: copied ? "var(--success)" : "var(--fg-3)",
-          cursor: "pointer",
+          opacity: active || copied ? 1 : 0,
+          transition: "opacity 0.12s ease",
         }}
       >
-        {copied ? (
-          <svg
-            width="13"
-            height="13"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2.4}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden
-          >
-            <path d="M20 6L9 17l-5-5" />
-          </svg>
-        ) : (
-          <svg
-            width="13"
-            height="13"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden
-          >
-            <rect x="9" y="9" width="12" height="12" rx="2" />
-            <path d="M5 15V5a2 2 0 0 1 2-2h10" />
-          </svg>
-        )}
-      </button>
-      {href !== undefined ? <ExplorerLinkButton href={href} label={label} /> : null}
+        <button
+          type="button"
+          onClick={copy}
+          title={copied ? "Copied" : "Copy full address"}
+          aria-label={copied ? "Copied to clipboard" : `Copy ${label ?? "address"}`}
+          style={{ ...ACTION_BTN, color: copied ? "var(--success)" : "var(--fg-3)" }}
+        >
+          {copied ? (
+            <svg
+              width="13"
+              height="13"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2.4}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="M20 6L9 17l-5-5" />
+            </svg>
+          ) : (
+            <svg
+              width="13"
+              height="13"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <rect x="9" y="9" width="12" height="12" rx="2" />
+              <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+            </svg>
+          )}
+        </button>
+        {href !== undefined ? <ExplorerLinkButton href={href} label={label} /> : null}
+      </span>
     </span>
   );
 }
