@@ -7,9 +7,13 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 
+import { AddressActions } from "@/components/ui";
+
 export interface TypedConfirmationProps {
   // full destination g-address; the last 4 chars are the required confirmation string
   readonly destination: string;
+  // stellar.expert link for the destination, so the user can inspect it
+  readonly explorerUrl?: string;
   // delay before confirm enables. defaults to 4000ms
   readonly delayMs?: number;
   readonly onConfirm: () => void;
@@ -22,6 +26,7 @@ const TICK_MS = 100;
 
 export function TypedConfirmation({
   destination,
+  explorerUrl,
   delayMs = DEFAULT_DELAY_MS,
   onConfirm,
   onCancel,
@@ -215,22 +220,29 @@ export function TypedConfirmation({
         </p>
         <div
           style={{
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "space-between",
+            gap: 10,
             padding: "14px 16px",
             borderRadius: 12,
             background: "var(--surface-2)",
             border: "1px solid var(--border)",
-            font: "500 13px/1.5 'Geist Mono', monospace",
-            wordBreak: "break-all",
             marginBottom: 20,
           }}
         >
-          <span style={{ color: "var(--fg-2)" }}>{destHead || "(empty)"}</span>
-          <span
-            id={tailId}
-            style={{ color: "var(--accent)", fontWeight: 700, textDecoration: "underline" }}
-          >
-            {destTail}
-          </span>
+          <div style={{ font: "500 13px/1.5 'Geist Mono', monospace", wordBreak: "break-all" }}>
+            <span style={{ color: "var(--fg-2)" }}>{destHead || "(empty)"}</span>
+            <span
+              id={tailId}
+              style={{ color: "var(--accent)", fontWeight: 700, textDecoration: "underline" }}
+            >
+              {destTail}
+            </span>
+          </div>
+          {destination.length > 0 ? (
+            <AddressActions value={destination} href={explorerUrl} label="destination" />
+          ) : null}
         </div>
         <label
           htmlFor={inputId}

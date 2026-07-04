@@ -18,7 +18,7 @@ export { Field, Checkbox } from "./Field";
 export type { FieldProps } from "./Field";
 export { Select } from "./Select";
 export type { SelectOption } from "./Select";
-export { CopyableAddress } from "./Address";
+export { CopyableAddress, AddressActions } from "./Address";
 export { Modal } from "./Modal";
 export { Spinner, Progress, EmptyState, SearchGlyph } from "./feedback";
 export { RADIUS, SPACE, MONO, TONE_FG, TONE_SOFT, toneBorder } from "./tokens";

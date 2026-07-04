@@ -10,10 +10,12 @@ import { z } from "zod";
 
 import { AppShell } from "@/components/layout/AppShell";
 import {
+  AddressActions,
   Badge,
   Button,
   Card,
   Checkbox,
+  CopyableAddress,
   Notice,
   SectionLabel,
   Select,
@@ -29,7 +31,7 @@ import { ConnectButton } from "@/components/wallet/ConnectButton";
 import { CreateTestAccountButton } from "@/components/wallet/CreateTestAccountButton";
 import { MultisigSigners, type AddedSigner } from "@/components/wallet/MultisigSigners";
 import { SecretKeyFallback } from "@/components/wallet/SecretKeyFallback";
-import { explorerTxUrl } from "@/lib/explorer";
+import { explorerAccountUrl, explorerTxUrl } from "@/lib/explorer";
 import Link from "next/link";
 import { useNetworkStore } from "@/stores/network";
 import { resolveNetwork, type NetworkConfig } from "@/lib/config/networks";
@@ -81,11 +83,6 @@ const INITIAL_FORM: FormState = {
 };
 
 // ─── derived helpers ────────────────────────────────────────────────────────
-
-function shortPk(pk: string): string {
-  if (pk.length <= 12) return pk;
-  return `${pk.slice(0, 6)}…${pk.slice(-4)}`;
-}
 
 function sumNativeBalance(audit: AccountAudit): string {
   const native = audit.balances.find((b) => b.asset.kind === "native");
@@ -738,7 +735,6 @@ function DemolishFlow(): React.JSX.Element {
 
   // account-side derived values used in the review summary (totalXlm/isHighValue
   // are computed earlier so the flow phase can read them)
-  const acctPkShort = publicKey ? shortPk(publicKey) : "";
   const acctSub = audit?.subentryCount ?? 0;
   // acctThreshold is no longer surfaced now that AuditCard was dropped from preview;
   // keep the derivation for potential future re-use without tripping lint
@@ -922,7 +918,7 @@ function DemolishFlow(): React.JSX.Element {
                   snapshot={
                     audit
                       ? {
-                          pkShort: acctPkShort,
+                          pk: publicKey ?? "",
                           sub: acctSub,
                           trustlines: acctTrustlines,
                           offers: acctOffers,
@@ -950,6 +946,7 @@ function DemolishFlow(): React.JSX.Element {
           {showConfirmDialog ? (
             <TypedConfirmation
               destination={form.destination}
+              explorerUrl={explorerAccountUrl(network, form.destination)}
               onCancel={() => setShowConfirmDialog(false)}
               onConfirm={() => {
                 setShowConfirmDialog(false);
@@ -1698,11 +1695,19 @@ function DemolishStatusWidget({
                     {totalXlm} XLM
                   </strong>{" "}
                   was sent to{" "}
-                  <span style={{ fontFamily: "'Geist Mono', monospace", color: "var(--fg-2)" }}>
+                  <span
+                    title={destination}
+                    style={{ fontFamily: "'Geist Mono', monospace", color: "var(--fg-2)" }}
+                  >
                     {destination.length > 10
                       ? `${destination.slice(0, 6)}…${destination.slice(-4)}`
                       : destination}
-                  </span>
+                  </span>{" "}
+                  <AddressActions
+                    value={destination}
+                    href={explorerAccountUrl(network, destination)}
+                    label="destination"
+                  />
                   . This account is now permanently closed. If that&apos;s an exchange or another
                   wallet, the funds will appear there shortly.
                 </>
@@ -2099,7 +2104,7 @@ function ReviewPanel({
   readonly destination: string;
   readonly network: NetworkConfig;
   readonly snapshot: {
-    readonly pkShort: string;
+    readonly pk: string;
     readonly sub: number;
     readonly trustlines: number;
     readonly offers: number;
@@ -2212,11 +2217,27 @@ function ReviewPanel({
           <div style={{ fontSize: 12, color: "var(--fg-3)", marginBottom: 6 }}>
             SENDING EVERYTHING TO
           </div>
-          <div style={{ font: "600 13.5px/1.5 'Geist Mono', monospace", wordBreak: "break-all" }}>
-            <span style={{ color: "var(--fg-2)" }}>{destHead}</span>
-            <span style={{ color: "var(--accent)", fontWeight: 700, textDecoration: "underline" }}>
-              {required}
-            </span>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              justifyContent: "space-between",
+              gap: 10,
+            }}
+          >
+            <div style={{ font: "600 13.5px/1.5 'Geist Mono', monospace", wordBreak: "break-all" }}>
+              <span style={{ color: "var(--fg-2)" }}>{destHead}</span>
+              <span
+                style={{ color: "var(--accent)", fontWeight: 700, textDecoration: "underline" }}
+              >
+                {required}
+              </span>
+            </div>
+            <AddressActions
+              value={destination}
+              href={explorerAccountUrl(network, destination)}
+              label="destination"
+            />
           </div>
           <div style={{ marginTop: 9, fontSize: 13, color: "var(--fg-2)" }}>
             Your balance is sent to this address and the account is permanently closed. The
@@ -2238,7 +2259,25 @@ function ReviewPanel({
               alignItems: "flex-start",
             }}
           >
-            <SnapStat label="Account" value={snapshot.pkShort} mono />
+            <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+              <span
+                style={{
+                  fontSize: 10,
+                  color: "var(--fg-3)",
+                  letterSpacing: "0.06em",
+                  textTransform: "uppercase",
+                  fontWeight: 600,
+                }}
+              >
+                Account
+              </span>
+              <CopyableAddress
+                value={snapshot.pk}
+                label="account"
+                size={13}
+                href={explorerAccountUrl(network, snapshot.pk)}
+              />
+            </div>
             <SnapStat label="Subentries" value={snapshot.sub} />
             <SnapStat label="Trustlines" value={snapshot.trustlines} />
             <SnapStat label="Offers" value={snapshot.offers} />
