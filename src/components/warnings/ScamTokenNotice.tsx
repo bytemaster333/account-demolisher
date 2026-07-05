@@ -66,6 +66,20 @@ function reasonFor(flag: ScamFlag): string {
   }
 }
 
+// short category chip for a flag, so the type of trick is scannable at a glance
+function flagTag(flag: ScamFlag): string {
+  switch (flag.id) {
+    case "exact_symbol_collision":
+      return "Impersonation";
+    case "lookalike_symbol":
+      return "Look-alike";
+    case "suspicious_character":
+      return "Hidden characters";
+    case "unknown_contract":
+      return "Unrecognized";
+  }
+}
+
 export function ScamTokenNotice({
   findings,
   network,
@@ -85,14 +99,18 @@ export function ScamTokenNotice({
           : `${findings.length} tokens look suspicious`
       }
     >
+      <span style={{ display: "block", fontSize: 12.5, lineHeight: 1.5, color: "var(--fg-2)" }}>
+        Closing the account discards these, which is safe, they hold no real value. We&apos;re only
+        flagging them so you recognize what you held.
+      </span>
       <ul
         style={{
           listStyle: "none",
-          margin: "2px 0 8px",
+          margin: "12px 0 0",
           padding: 0,
           display: "flex",
           flexDirection: "column",
-          gap: 11,
+          gap: 8,
         }}
       >
         {findings.map((f) => {
@@ -113,17 +131,52 @@ export function ScamTokenNotice({
           return (
             <li
               key={`${assetKey(f.asset)}-${f.flag.id}`}
-              style={{ display: "flex", flexDirection: "column", gap: 4 }}
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+                padding: "11px 12px",
+                borderRadius: 10,
+                background: "var(--surface)",
+                border: "1px solid var(--border)",
+              }}
             >
-              <span style={{ font: "600 12.5px/1 'Geist Mono', monospace", color: "var(--fg)" }}>
-                {assetCode(f.asset)}
-              </span>
+              <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" }}>
+                <span
+                  style={{
+                    font: "700 12.5px/1 'Geist Mono', monospace",
+                    color: "var(--fg)",
+                  }}
+                >
+                  {assetCode(f.asset)}
+                </span>
+                <span
+                  style={{
+                    font: "600 10px/1 Geist, sans-serif",
+                    letterSpacing: "0.04em",
+                    textTransform: "uppercase",
+                    color: "var(--danger)",
+                    padding: "3px 7px",
+                    borderRadius: 6,
+                    border: "1px solid color-mix(in srgb, var(--danger) 30%, transparent)",
+                    background: "color-mix(in srgb, var(--danger) 8%, transparent)",
+                  }}
+                >
+                  {flagTag(f.flag)}
+                </span>
+              </div>
               <span style={{ fontSize: 12.5, lineHeight: 1.45, color: "var(--fg-2)" }}>
                 {reasonFor(f.flag)}
               </span>
               {address !== null ? (
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
-                  <span style={{ fontSize: 11, color: "var(--fg-3)" }}>{addrLabel}</span>
+                <span
+                  style={{ display: "inline-flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}
+                >
+                  <span
+                    style={{ fontSize: 10.5, color: "var(--fg-3)", textTransform: "uppercase" }}
+                  >
+                    {addrLabel}
+                  </span>
                   <CopyableAddress
                     value={address}
                     label={addrLabel}
@@ -136,11 +189,6 @@ export function ScamTokenNotice({
           );
         })}
       </ul>
-      <span style={{ color: "var(--fg-3)", fontSize: 12 }}>
-        These are removed as part of closing the account. Make sure you recognize them before
-        proceeding. Removing suspicious tokens is safe: they hold no real value, and closing the
-        account simply discards them. We&apos;re only showing you this so nothing surprises you.
-      </span>
     </Notice>
   );
 }

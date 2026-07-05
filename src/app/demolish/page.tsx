@@ -1395,15 +1395,69 @@ const LOADING_QUIPS = [
   "Checking under the floorboards…",
 ];
 
-// the light sweep that passes over each skeleton row (uses the `shimmer` keyframe)
-const SCAN_SWEEP: React.CSSProperties = {
-  position: "absolute",
-  inset: 0,
-  transform: "translateX(-140%)",
-  background:
-    "linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 28%, transparent), transparent)",
-  animation: "shimmer 1.5s linear infinite",
-};
+// one tilted elliptical orbit with a glowing particle travelling along it. The
+// outer wrapper applies the tilt + vertical squash (so the circular path reads
+// as an ellipse); the inner wrapper spins, carrying the particle around.
+function OrbitRing({
+  inset,
+  tilt,
+  scaleY,
+  duration,
+  delay = 0,
+  dot = 6,
+  reverse = false,
+}: {
+  readonly inset: number;
+  readonly tilt: number;
+  readonly scaleY: number;
+  readonly duration: number;
+  readonly delay?: number;
+  readonly dot?: number;
+  readonly reverse?: boolean;
+}): React.JSX.Element {
+  return (
+    <div
+      aria-hidden
+      style={{
+        position: "absolute",
+        inset,
+        borderRadius: "50%",
+        transform: `rotate(${tilt}deg) scaleY(${scaleY})`,
+      }}
+    >
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          borderRadius: "50%",
+          border: "1px solid var(--accent-line)",
+        }}
+      />
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          animation: `spin ${duration}s linear infinite${reverse ? " reverse" : ""}`,
+          animationDelay: `${delay}s`,
+        }}
+      >
+        <span
+          style={{
+            position: "absolute",
+            top: -dot / 2,
+            left: "50%",
+            marginLeft: -dot / 2,
+            width: dot,
+            height: dot,
+            borderRadius: "50%",
+            background: "var(--accent)",
+            boxShadow: "0 0 8px 1px color-mix(in srgb, var(--accent) 70%, transparent)",
+          }}
+        />
+      </div>
+    </div>
+  );
+}
 
 function LeftLoadingCard({ message }: { readonly message: string }): React.JSX.Element {
   // cycle the fun sub-line; setState lives in the interval callback (async), so
@@ -1431,45 +1485,63 @@ function LeftLoadingCard({ message }: { readonly message: string }): React.JSX.E
         position: "relative",
       }}
     >
-      {/* a small stack of account "rows" being read top-to-bottom: each has a
-          light sweep passing over it (staggered), so it reads as the account
-          being scanned line by line, not a stone dropped in a pond. */}
+      {/* the scan icon on a raised tile, encircled by tilted orbits with glowing
+          particles travelling around it, over a soft radial glow. */}
       <div
         aria-hidden
-        style={{ width: 320, maxWidth: "100%", display: "flex", flexDirection: "column", gap: 14 }}
+        style={{
+          position: "relative",
+          width: 220,
+          height: 220,
+          display: "grid",
+          placeItems: "center",
+        }}
       >
-        {[0, 1, 2, 3, 4].map((i) => {
-          const barWidth = ["82%", "94%", "66%", "88%", "74%"][i];
-          return (
-            <div key={i} style={{ display: "flex", alignItems: "center", gap: 13 }}>
-              <span
-                style={{
-                  position: "relative",
-                  flexShrink: 0,
-                  width: 30,
-                  height: 30,
-                  borderRadius: 9,
-                  background: "var(--surface-2)",
-                  overflow: "hidden",
-                }}
-              >
-                <span style={{ ...SCAN_SWEEP, animationDelay: `${i * 0.16}s` }} />
-              </span>
-              <span
-                style={{
-                  position: "relative",
-                  height: 13,
-                  width: barWidth,
-                  borderRadius: 7,
-                  background: "var(--surface-2)",
-                  overflow: "hidden",
-                }}
-              >
-                <span style={{ ...SCAN_SWEEP, animationDelay: `${i * 0.16 + 0.05}s` }} />
-              </span>
-            </div>
-          );
-        })}
+        {/* soft glow */}
+        <span
+          style={{
+            position: "absolute",
+            inset: 30,
+            borderRadius: "50%",
+            background:
+              "radial-gradient(circle, color-mix(in srgb, var(--accent) 22%, transparent), transparent 70%)",
+            filter: "blur(10px)",
+            animation: "pulse 3s ease-in-out infinite",
+          }}
+        />
+        {/* orbits (different tilt, squash, speed, direction) */}
+        <OrbitRing inset={6} tilt={22} scaleY={0.42} duration={4.6} dot={7} />
+        <OrbitRing inset={20} tilt={-34} scaleY={0.56} duration={6.2} delay={0.6} dot={5} reverse />
+        {/* center tile with the scan icon, gently floating */}
+        <span
+          style={{
+            position: "relative",
+            width: 96,
+            height: 96,
+            borderRadius: 26,
+            background: "var(--surface-2)",
+            border: "1px solid var(--accent-line)",
+            color: "var(--accent)",
+            display: "grid",
+            placeItems: "center",
+            boxShadow: "0 0 24px -4px color-mix(in srgb, var(--accent) 45%, transparent)",
+            animation: "keyFloat 3s ease-in-out infinite",
+          }}
+        >
+          <svg
+            width="42"
+            height="42"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2.2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <circle cx="11" cy="11" r="7" />
+            <path d="M21 21l-4.3-4.3" />
+          </svg>
+        </span>
       </div>
 
       <div
@@ -1731,8 +1803,10 @@ function DemolishStatusWidget({
                     href={explorerAccountUrl(network, destination)}
                     label="destination"
                   />
-                  . This account is now permanently closed. If that&apos;s an exchange or another
-                  wallet, the funds will appear there shortly.
+                  <span style={{ display: "block", marginTop: 7 }}>
+                    This account is now permanently closed. If that&apos;s an exchange or another
+                    wallet, the funds will appear there shortly.
+                  </span>
                 </>
               ) : state === "failed" ? (
                 (parsed?.summary ??
@@ -3118,7 +3192,10 @@ function ConfigurePanel({
             color: "var(--fg)",
           }}
         >
-          Backup address <span style={{ color: "var(--fg-3)", fontWeight: 400 }}>· optional</span>
+          <InfoTip tip="A safety net: in the rare case an exchange transfer can't be delivered, your funds go here instead of getting stuck. Leave blank to use the destination above. If you're sending to an exchange, consider your own personal wallet here.">
+            Backup address
+          </InfoTip>{" "}
+          <span style={{ color: "var(--fg-3)", fontWeight: 400 }}>· optional</span>
         </label>
         <input
           id="demolish-fallback"
@@ -3132,7 +3209,6 @@ function ConfigurePanel({
           spellCheck={false}
           autoComplete="off"
           data-testid="fallback-input"
-          aria-describedby="demolish-fallback-help"
           style={{
             width: "100%",
             padding: "13px 14px",
@@ -3144,14 +3220,6 @@ function ConfigurePanel({
             boxSizing: "border-box",
           }}
         />
-        <p
-          id="demolish-fallback-help"
-          style={{ margin: "7px 0 0", fontSize: 12, color: "var(--fg-3)", lineHeight: 1.5 }}
-        >
-          A safety net: in the rare case an exchange transfer can&apos;t be delivered, your funds go
-          here instead of getting stuck. Leave blank to use the destination above. If you&apos;re
-          sending to an exchange, consider putting your own personal wallet here.
-        </p>
 
         {formError ? (
           <p

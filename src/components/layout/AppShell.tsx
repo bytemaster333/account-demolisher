@@ -423,9 +423,8 @@ function Footer() {
               </span>
             </div>
             <p style={{ margin: 0, fontSize: 13, lineHeight: 1.6, color: "var(--fg-3)" }}>
-              Close a Stellar account safely. Unwind every trustline, offer, and DeFi position,
-              convert the balances to XLM, and send everything to a destination you choose. Every
-              transaction is signed in your own browser.
+              Close a Stellar account safely, and send everything to a destination you choose.
+              Signed entirely in your browser.
             </p>
           </div>
 
@@ -473,10 +472,6 @@ function Footer() {
             }}
           >
             <span>Non-custodial</span>
-            <span aria-hidden>·</span>
-            <span>Client-side signing</span>
-            <span aria-hidden>·</span>
-            <span>No telemetry</span>
           </span>
         </div>
       </div>
