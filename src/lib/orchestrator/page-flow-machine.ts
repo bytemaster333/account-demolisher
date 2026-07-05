@@ -37,6 +37,7 @@ export interface PageFlowInput {
   readonly userFallbackAddress?: string;
   readonly selectedClaimableBalanceIds?: readonly string[];
   readonly returnToIssuerAssetKeys?: readonly string[];
+  readonly sendToDestinationAssetKeys?: readonly string[];
   readonly positions?: ProtocolPositions;
   readonly allowances?: readonly AllowanceRecord[];
 }
@@ -90,6 +91,7 @@ interface PreviewInput {
   readonly userFallbackAddress?: string;
   readonly selectedClaimableBalanceIds?: readonly string[];
   readonly returnToIssuerAssetKeys?: readonly string[];
+  readonly sendToDestinationAssetKeys?: readonly string[];
 }
 
 interface PreviewOutput {
@@ -195,12 +197,48 @@ const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({ input 
   return { audit, positions, allowances, discoveryWarnings };
 });
 
+// best-effort: the pathKey()s of credit assets the destination account already
+// trusts. Lets the UI offer "send to destination" for un-routable residue
+// without risking op_no_trust. A missing/unfunded destination trusts nothing.
+async function fetchDestinationTrustedKeys(
+  destination: string,
+  network: NetworkConfig,
+): Promise<ReadonlySet<string>> {
+  try {
+    const account = await getHorizon(network).loadAccount(destination);
+    const keys = new Set<string>();
+    for (const b of account.balances) {
+      if (b.asset_type === "credit_alphanum4" || b.asset_type === "credit_alphanum12") {
+        keys.add(`${b.asset_code}:${b.asset_issuer}`);
+      }
+    }
+    return keys;
+  } catch {
+    return new Set<string>();
+  }
+}
+
 const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) => {
   // resolve real XLM-conversion paths so credit balances convert via path
-  // payment; anything without a path (and without return-to-issuer consent) is
-  // reported as un-routable rather than silently paid to the issuer.
+  // payment; anything without a path (and without disposal consent) is reported
+  // as un-routable rather than silently paid away.
   const paths = await resolveCreditPaths(input.audit, input.network);
-  const unroutable = unroutableCredits(input.audit, paths, input.returnToIssuerAssetKeys);
+  const unroutableBase = unroutableCredits(
+    input.audit,
+    paths,
+    input.returnToIssuerAssetKeys,
+    input.sendToDestinationAssetKeys,
+  );
+  // flag which still-blocking residue assets the destination trusts, so the UI
+  // can offer sending them there instead of only burning them at the issuer.
+  const trustedKeys =
+    unroutableBase.length > 0
+      ? await fetchDestinationTrustedKeys(input.destination, input.network)
+      : new Set<string>();
+  const unroutable = unroutableBase.map((c) => ({
+    ...c,
+    destinationTrusts: trustedKeys.has(c.key),
+  }));
 
   // For a CEX (memo-required) destination the close-out routes through an
   // ephemeral, per-flow mediator account. Mint that flow now so the merge (into
@@ -229,6 +267,9 @@ const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) 
       ...(input.returnToIssuerAssetKeys
         ? { returnToIssuerAssetKeys: input.returnToIssuerAssetKeys }
         : {}),
+      ...(input.sendToDestinationAssetKeys
+        ? { sendToDestinationAssetKeys: input.sendToDestinationAssetKeys }
+        : {}),
       ...(input.userFallbackAddress ? { userFallbackAddress: input.userFallbackAddress } : {}),
       ...(input.memo ? { memo: input.memo } : {}),
     },
@@ -253,6 +294,9 @@ const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) 
       : {}),
     ...(input.returnToIssuerAssetKeys
       ? { returnToIssuerAssetKeys: input.returnToIssuerAssetKeys }
+      : {}),
+    ...(input.sendToDestinationAssetKeys
+      ? { sendToDestinationAssetKeys: input.sendToDestinationAssetKeys }
       : {}),
   });
 
@@ -524,6 +568,9 @@ export const pageFlowMachine = setup({
               : {}),
             ...(i.returnToIssuerAssetKeys
               ? { returnToIssuerAssetKeys: i.returnToIssuerAssetKeys }
+              : {}),
+            ...(i.sendToDestinationAssetKeys
+              ? { sendToDestinationAssetKeys: i.sendToDestinationAssetKeys }
               : {}),
           };
         },

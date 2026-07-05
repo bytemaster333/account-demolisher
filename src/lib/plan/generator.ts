@@ -27,6 +27,8 @@ export interface GeneratePlanOptions {
   readonly paths?: ReadonlyMap<string, PathResultRef>;
   // credit assets the user consented to return to their issuer when un-routable
   readonly returnToIssuerAssetKeys?: readonly string[];
+  // un-routable credit assets the user chose to send to the merge destination
+  readonly sendToDestinationAssetKeys?: readonly string[];
   readonly memo?: ClassicMemo;
   // fallback address if the CEX rejects the deposit
   readonly userFallbackAddress?: string;
@@ -243,6 +245,9 @@ export function generatePlan(
       : {}),
     ...(opts.returnToIssuerAssetKeys
       ? { returnToIssuerAssetKeys: opts.returnToIssuerAssetKeys }
+      : {}),
+    ...(opts.sendToDestinationAssetKeys
+      ? { sendToDestinationAssetKeys: opts.sendToDestinationAssetKeys }
       : {}),
     ...(opts.userFallbackAddress ? { userFallbackAddress: opts.userFallbackAddress } : {}),
     ...(opts.memo ? { memo: opts.memo } : {}),

@@ -96,6 +96,7 @@ export function batchClassicDemolition(
   // exists the balance is EITHER returned to its issuer (only with explicit
   // per-asset consent) OR left untouched. Never silently sent to the issuer.
   const consentedResidue: ReadonlySet<string> = new Set(options.returnToIssuerAssetKeys ?? []);
+  const sendToDestination: ReadonlySet<string> = new Set(options.sendToDestinationAssetKeys ?? []);
   for (const balance of audit.balances) {
     if (balance.asset.kind !== "credit") continue;
     if (!hasPositive(balance.amount)) continue;
@@ -113,6 +114,19 @@ export function batchClassicDemolition(
           destAsset: { kind: "native" } satisfies AssetIdentifier,
           destMin,
           path: path.path,
+        },
+      });
+    } else if (sendToDestination.has(key)) {
+      // pay the un-routable asset straight to the merge destination. Only offered
+      // when the destination already trusts the asset, so this can't fail with
+      // op_no_trust (verified at preview time).
+      ops.push({
+        kind: "send_residue_to_destination",
+        summary: `Send ${balance.amount} ${balance.asset.code} to the destination`,
+        metadata: {
+          asset: balance.asset,
+          amount: balance.amount,
+          destination: options.destination,
         },
       });
     } else if (consentedResidue.has(key)) {
@@ -144,7 +158,8 @@ export function batchClassicDemolition(
   }
   for (const balance of audit.balances) {
     if (balance.asset.kind !== "credit") continue;
-    if (!isCreditHandled(balance.asset, balance.amount, paths, consentedResidue)) continue;
+    if (!isCreditHandled(balance.asset, balance.amount, paths, consentedResidue, sendToDestination))
+      continue;
     ops.push({
       kind: "change_trust_remove",
       summary: `Remove trustline ${balance.asset.code}`,
@@ -344,20 +359,22 @@ function stroopsToDecimal(stroops: bigint): string {
 }
 
 export function isResidueOp(op: BatchedOperation): boolean {
-  return op.kind === "return_residue_to_issuer";
+  return op.kind === "return_residue_to_issuer" || op.kind === "send_residue_to_destination";
 }
 
 // a credit trustline can be removed only once its balance is dealt with: zero,
-// converted via a path, or consented to return to the issuer.
+// converted via a path, consented to return to the issuer, or consented to send
+// to the destination.
 function isCreditHandled(
   asset: AssetIdentifier,
   amount: string,
   paths: ReadonlyMap<string, PathResultRef> | undefined,
   consentedResidue: ReadonlySet<string>,
+  sendToDestination: ReadonlySet<string>,
 ): boolean {
   if (!hasPositive(amount)) return true;
   const key = pathKey(asset);
-  return Boolean(paths?.has(key)) || consentedResidue.has(key);
+  return Boolean(paths?.has(key)) || consentedResidue.has(key) || sendToDestination.has(key);
 }
 
 export interface UnroutableCredit {
@@ -365,23 +382,29 @@ export interface UnroutableCredit {
   readonly code: string;
   readonly issuer: string;
   readonly amount: string;
+  // set at preview time: true when the merge destination already holds a
+  // trustline for this asset, so "send to destination" can be offered.
+  readonly destinationTrusts?: boolean;
 }
 
-// positive credit balances with no XLM conversion path and no return-to-issuer
-// consent. While any of these exist the account cannot fully merge, since their
-// trustlines can't be removed with a live balance.
+// positive credit balances with no XLM conversion path and no disposal consent
+// (neither return-to-issuer nor send-to-destination). While any of these exist
+// the account cannot fully merge, since their trustlines can't be removed with a
+// live balance.
 export function unroutableCredits(
   audit: AccountAudit,
   paths: ReadonlyMap<string, PathResultRef> | undefined,
   returnToIssuerAssetKeys?: readonly string[],
+  sendToDestinationAssetKeys?: readonly string[],
 ): readonly UnroutableCredit[] {
   const consent = new Set(returnToIssuerAssetKeys ?? []);
+  const sendToDest = new Set(sendToDestinationAssetKeys ?? []);
   const out: UnroutableCredit[] = [];
   for (const b of audit.balances) {
     if (b.asset.kind !== "credit") continue;
     if (!hasPositive(b.amount)) continue;
     const key = pathKey(b.asset);
-    if (paths?.has(key) || consent.has(key)) continue;
+    if (paths?.has(key) || consent.has(key) || sendToDest.has(key)) continue;
     out.push({ key, code: b.asset.code, issuer: b.asset.issuer, amount: b.amount });
   }
   return out;

@@ -144,7 +144,11 @@ function addOperation(op: BatchedOperation): xdr.Operation {
       });
     }
 
-    case "return_residue_to_issuer": {
+    // both dispose of an un-routable credit balance via a plain payment; only the
+    // destination differs (the asset's issuer vs the merge destination), and it
+    // is carried in metadata by the batcher.
+    case "return_residue_to_issuer":
+    case "send_residue_to_destination": {
       const asset = toAsset(requireAsset(op.metadata, "asset"));
       return Operation.payment({
         destination: requireString(op.metadata, "destination"),

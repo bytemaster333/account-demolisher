@@ -70,6 +70,7 @@ const FORM_SCHEMA = z.object({
   // pathKey()s of un-routable credit assets the user consented to return to
   // their issuer so the account can close
   returnToIssuer: z.array(z.string()),
+  sendToDestination: z.array(z.string()),
 });
 
 type FormState = z.infer<typeof FORM_SCHEMA>;
@@ -81,6 +82,7 @@ const INITIAL_FORM: FormState = {
   fallback: "",
   selectedCbIds: [],
   returnToIssuer: [],
+  sendToDestination: [],
 };
 
 // ─── derived helpers ────────────────────────────────────────────────────────
@@ -669,6 +671,9 @@ function DemolishFlow(): React.JSX.Element {
           ? { selectedClaimableBalanceIds: form.selectedCbIds }
           : {}),
         ...(form.returnToIssuer.length > 0 ? { returnToIssuerAssetKeys: form.returnToIssuer } : {}),
+        ...(form.sendToDestination.length > 0
+          ? { sendToDestinationAssetKeys: form.sendToDestination }
+          : {}),
       },
     });
   }, [
@@ -702,14 +707,21 @@ function DemolishFlow(): React.JSX.Element {
     send({ type: "RESET" });
   }, [send, setConnector, disconnectWallet]);
   const onRetry = useCallback(() => send({ type: "RETRY" }), [send]);
-  const onToggleResidue = useCallback((key: string, consent: boolean) => {
-    setForm((f) => {
-      const set = new Set(f.returnToIssuer);
-      if (consent) set.add(key);
-      else set.delete(key);
-      return { ...f, returnToIssuer: [...set] };
-    });
-  }, []);
+  const onSetResidueDisposal = useCallback(
+    (key: string, mode: "none" | "issuer" | "destination") => {
+      setForm((f) => {
+        const issuer = new Set(f.returnToIssuer);
+        const dest = new Set(f.sendToDestination);
+        // a balance goes to at most one place; clear both, then set the choice
+        issuer.delete(key);
+        dest.delete(key);
+        if (mode === "issuer") issuer.add(key);
+        else if (mode === "destination") dest.add(key);
+        return { ...f, returnToIssuer: [...issuer], sendToDestination: [...dest] };
+      });
+    },
+    [],
+  );
 
   useEffect(() => {
     return () => {
@@ -883,8 +895,9 @@ function DemolishFlow(): React.JSX.Element {
                 <ResolvePanel
                   credits={ctx.unroutableCredits}
                   network={network}
-                  consented={form.returnToIssuer}
-                  onToggle={onToggleResidue}
+                  returnToIssuer={form.returnToIssuer}
+                  sendToDestination={form.sendToDestination}
+                  onSetDisposal={onSetResidueDisposal}
                   onRebuild={onStart}
                   onBack={onCancel}
                 />
@@ -3276,15 +3289,17 @@ const ARROW_RIGHT = (
 function ResolvePanel({
   credits,
   network,
-  consented,
-  onToggle,
+  returnToIssuer,
+  sendToDestination,
+  onSetDisposal,
   onRebuild,
   onBack,
 }: {
   readonly credits: readonly ResidueConsentCredit[];
   readonly network: NetworkConfig;
-  readonly consented: readonly string[];
-  readonly onToggle: (key: string, consent: boolean) => void;
+  readonly returnToIssuer: readonly string[];
+  readonly sendToDestination: readonly string[];
+  readonly onSetDisposal: (key: string, mode: "none" | "issuer" | "destination") => void;
   readonly onRebuild: () => void;
   readonly onBack: () => void;
 }): React.JSX.Element {
@@ -3300,17 +3315,17 @@ function ResolvePanel({
           Fix these before continuing
         </h2>
         <p style={{ margin: "8px 0 0", fontSize: 14, lineHeight: 1.55, color: "var(--fg-2)" }}>
-          This account holds tokens that can&apos;t be turned into XLM, so it can&apos;t close while
-          it still has them. Sell or move them from another app first, or send each one back to
-          whoever created it (you&apos;ll get nothing back), then re-check.
+          A few things on this account have to be cleared before it can close. Handle each one
+          below, then re-check.
         </p>
       </div>
 
       <ResidueConsent
         credits={credits}
         network={network}
-        consented={consented}
-        onToggle={onToggle}
+        returnToIssuer={returnToIssuer}
+        sendToDestination={sendToDestination}
+        onSetDisposal={onSetDisposal}
         onRebuild={onRebuild}
         hideRebuild
       />

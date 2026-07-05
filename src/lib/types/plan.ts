@@ -9,6 +9,7 @@ export type ClassicOpKind =
   | "claim_claimable_balance"
   | "path_payment_strict_send"
   | "return_residue_to_issuer"
+  | "send_residue_to_destination"
   | "change_trust_remove"
   | "manage_data_delete"
   | "set_options_clear_signers"
@@ -58,6 +59,11 @@ export interface BatchOptions {
   // un-routable balance is left in place (and blocks the merge) rather than
   // being silently paid to the issuer.
   readonly returnToIssuerAssetKeys?: readonly string[];
+  // pathKey()s of un-routable credit assets the user chose to send to the merge
+  // destination instead of the issuer. Only valid when the destination already
+  // holds a trustline for the asset (checked at preview time); otherwise the
+  // payment would fail with op_no_trust.
+  readonly sendToDestinationAssetKeys?: readonly string[];
   // forwarded into the plan summary; the actual forward tx lives in the orchestrator
   readonly userFallbackAddress?: string;
   readonly memo?: ClassicMemo;

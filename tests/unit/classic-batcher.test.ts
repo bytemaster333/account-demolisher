@@ -61,6 +61,7 @@ const PHASE: Record<ClassicOpKind, number> = {
   claim_claimable_balance: 3,
   path_payment_strict_send: 4,
   return_residue_to_issuer: 4,
+  send_residue_to_destination: 4,
   change_trust_remove: 5,
   manage_data_delete: 6,
   set_options_clear_signers: 8,
@@ -443,5 +444,70 @@ describe("batchClassicDemolition, mediator", () => {
     expect(merge.metadata.destination).toBe(MED); // merges into mediator, not the final dest
     expect(merge.metadata.ultimateDestination).toBe(DEST);
     expect(batches[batches.length - 1]!.mediator?.publicKey).toBe(MED);
+  });
+});
+
+describe("batchClassicDemolition, un-routable residue disposal", () => {
+  const CODE = "WEIRD";
+  const RES_KEY = `${CODE}:${ISSUER}`;
+  const residueAudit = makeAudit({
+    balances: [
+      {
+        asset: { kind: "credit", code: CODE, issuer: ISSUER },
+        amount: "10",
+        buyingLiabilities: "0",
+        sellingLiabilities: "0",
+      },
+    ],
+  });
+
+  it("sends the balance to the merge destination when consented (not the issuer), then removes its trustline", () => {
+    const ops = allOps(
+      batchClassicDemolition(residueAudit, {
+        ...directOptions,
+        sendToDestinationAssetKeys: [RES_KEY],
+      }),
+    );
+    const send = ops.find((o) => o.kind === "send_residue_to_destination");
+    expect(send).toBeDefined();
+    expect(send!.metadata.destination).toBe(DEST); // the merge destination, not the issuer
+    expect(send!.metadata.amount).toBe("10");
+    expect(ops.some((o) => o.kind === "return_residue_to_issuer")).toBe(false);
+    // once disposed, the trustline is removed and the account can merge
+    expect(ops.filter((o) => o.kind === "change_trust_remove")).toHaveLength(1);
+    expect(ops[ops.length - 1]!.kind).toBe("account_merge");
+  });
+
+  it("send-to-destination takes precedence over a same-asset return-to-issuer consent", () => {
+    const ops = allOps(
+      batchClassicDemolition(residueAudit, {
+        ...directOptions,
+        returnToIssuerAssetKeys: [RES_KEY],
+        sendToDestinationAssetKeys: [RES_KEY],
+      }),
+    );
+    expect(ops.some((o) => o.kind === "send_residue_to_destination")).toBe(true);
+    expect(ops.some((o) => o.kind === "return_residue_to_issuer")).toBe(false);
+  });
+
+  it("leaves the balance and its trustline in place with no disposal consent", () => {
+    const ops = allOps(batchClassicDemolition(residueAudit, directOptions));
+    expect(ops.some((o) => o.kind === "send_residue_to_destination")).toBe(false);
+    expect(ops.some((o) => o.kind === "return_residue_to_issuer")).toBe(false);
+    expect(ops.some((o) => o.kind === "change_trust_remove")).toBe(false);
+  });
+
+  it("unroutableCredits excludes assets consented to send-to-destination", () => {
+    expect(unroutableCredits(residueAudit, undefined).map((c) => c.key)).toEqual([RES_KEY]);
+    expect(unroutableCredits(residueAudit, undefined, [], [RES_KEY])).toEqual([]);
+  });
+
+  it("isResidueOp recognises the send-to-destination op", () => {
+    const op = {
+      kind: "send_residue_to_destination",
+      summary: "",
+      metadata: {},
+    } as BatchedOperation;
+    expect(isResidueOp(op)).toBe(true);
   });
 });
