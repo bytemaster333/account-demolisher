@@ -462,17 +462,6 @@ function Footer() {
           <span style={{ fontSize: 12.5, color: "var(--fg-3)" }}>
             © {new Date().getFullYear()} Demolisher · Apache-2.0 licensed
           </span>
-          <span
-            style={{
-              display: "flex",
-              flexWrap: "wrap",
-              gap: 16,
-              fontSize: 12.5,
-              color: "var(--fg-3)",
-            }}
-          >
-            <span>Non-custodial</span>
-          </span>
         </div>
       </div>
     </footer>
