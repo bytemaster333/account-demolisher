@@ -24,6 +24,30 @@ function toKitNetwork(network: NetworkConfig): KitNetworks {
   }
 }
 
+// dark theme for the kit's wallet-picker modal, matching the app palette (the
+// modal is a shadow-DOM web component, so it can't read our CSS variables and
+// needs concrete color values). Keeps the picker on-brand instead of the kit's
+// stock black/white styling.
+const KIT_THEME = {
+  background: "#141618",
+  "background-secondary": "#1a1d1f",
+  "foreground-strong": "#eef0f2",
+  foreground: "#a4a9b0",
+  "foreground-secondary": "#7e848c",
+  primary: "#46a479",
+  "primary-foreground": "#08140d",
+  transparent: "transparent",
+  lighter: "#212528",
+  light: "#1a1d1f",
+  "light-gray": "#363b40",
+  gray: "#7e848c",
+  danger: "#d9756a",
+  border: "#282b2e",
+  shadow: "rgba(0, 0, 0, 0.5)",
+  "border-radius": "12px",
+  "font-family": "Geist, ui-sans-serif, system-ui, sans-serif",
+};
+
 // tracks the passphrase the kit was last initialized for, so we can switch
 // networks but skip the init when it already matches
 let initializedPassphrase: string | null = null;
@@ -37,6 +61,10 @@ export function getKit(network: NetworkConfig): KitHandle {
     StellarWalletsKit.init({
       modules: defaultModules(),
       network: kitNetwork,
+      theme: KIT_THEME,
+      // label not-installed wallets with an "Install" link instead of hiding
+      // them, so the list is predictable
+      authModal: { showInstallLabel: true },
     });
     initializedPassphrase = network.passphrase;
     return StellarWalletsKit;

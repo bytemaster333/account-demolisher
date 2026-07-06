@@ -881,7 +881,13 @@ function DemolishFlow(): React.JSX.Element {
                     canStart={
                       publicKey !== null && hasConnector && multisigReady && destinationGate.ready
                     }
-                    startHint={destinationGate.hint}
+                    startHint={
+                      publicKey === null || !hasConnector
+                        ? "Connect a wallet to continue."
+                        : !multisigReady
+                          ? "This account needs more signatures. Add the required signers above before continuing."
+                          : destinationGate.hint
+                    }
                     onGeneratePlan={onStart}
                     audit={audit}
                     isDemo={isDemo}
