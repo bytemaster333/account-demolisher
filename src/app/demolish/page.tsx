@@ -211,6 +211,40 @@ function nodePlainLabel(node: PlanNode): string {
   }
 }
 
+// a plain-language "what this step does, and is it safe" line, shown as a tooltip
+// on each step in the Review so the plan reads clearly to a non-expert. Every
+// step before the final one is reversible on its own; only the close is not.
+function nodeExplainer(node: PlanNode): string {
+  switch (node.kind) {
+    case "RevokeAllowance":
+      return "Cancels a permission you once gave an app to spend a token for you. The account doesn't need it to close, and leaving stray permissions around is a security risk, so we clear it.";
+    case "RepayBlend":
+      return "Pays back what you borrowed on Blend, using your own balance, so your deposited collateral can be released.";
+    case "PayFxDAODebt":
+      return "Pays off your FxDAO vault so the collateral locked inside it is returned to your account.";
+    case "WithdrawBlend":
+      return "Pulls your deposit back out of Blend (a lending app) and into your account, so it can be converted and sent with everything else.";
+    case "WithdrawAquarius":
+      return "Pulls your share of an Aquarius liquidity pool back into your account.";
+    case "WithdrawSoroswapLp":
+      return "Pulls your share of a Soroswap liquidity pool back into your account.";
+    case "ClaimBlendEmissions":
+      return "Collects the reward tokens Blend owes you before you leave, so you don't leave them behind.";
+    case "ClaimAquariusRewards":
+      return "Collects the reward tokens Aquarius owes you before you leave, so you don't leave them behind.";
+    case "ConvertSorobanToXLM":
+      return "Swaps a leftover token into XLM at the market rate, so your whole account ends up as a single XLM balance.";
+    case "TransferAsIs":
+      return "Moves a leftover token out of the account so its trustline can be removed.";
+    case "BackstopQueue":
+      return "Starts the required waiting period before a Blend backstop deposit can be withdrawn. You'll finish that withdrawal later.";
+    case "FinalClassicTx":
+      return "The last step. It converts anything left to XLM, sends your whole balance to the destination, and permanently deletes the account, all in one transaction. This is the irreversible one.";
+    case "MediatorForward":
+      return "Delivers your funds to the destination through a short-lived helper account, so your exchange deposit memo is preserved along the way.";
+  }
+}
+
 // plain display name for a plan phase group. The grouping key stays as
 // phaseForNode() so logic (e.g. the irreversible check) is unaffected.
 function phasePlainLabel(phase: string): string {
@@ -2384,11 +2418,31 @@ function ReviewPanel({
                 href={explorerAccountUrl(network, snapshot.pk)}
               />
             </div>
-            <SnapStat label="Subentries" value={snapshot.sub} />
-            <SnapStat label="Trustlines" value={snapshot.trustlines} />
-            <SnapStat label="Offers" value={snapshot.offers} />
-            <SnapStat label="Data" value={snapshot.data} />
-            <SnapStat label="Claimable" value={snapshot.claimable} />
+            <SnapStat
+              label="Subentries"
+              value={snapshot.sub}
+              tip="Extra things attached to the account (trustlines, offers, saved data, signers). Each one locks a little XLM as a reserve; all of it is freed when the account closes."
+            />
+            <SnapStat
+              label="Trustlines"
+              value={snapshot.trustlines}
+              tip="Tokens the account is set up to hold, besides XLM. Each is emptied and removed as part of closing."
+            />
+            <SnapStat
+              label="Offers"
+              value={snapshot.offers}
+              tip="Open buy/sell orders on Stellar's built-in exchange. They're cancelled before the account closes."
+            />
+            <SnapStat
+              label="Data"
+              value={snapshot.data}
+              tip="Small key-value notes stored on the account. They're deleted as part of closing."
+            />
+            <SnapStat
+              label="Claimable"
+              value={snapshot.claimable}
+              tip="Payments set aside for this account that haven't been collected yet. They're claimed into your balance before closing."
+            />
           </div>
         ) : null}
       </div>
@@ -2652,15 +2706,29 @@ function PlanRow({
               flexWrap: "wrap",
             }}
           >
-            <span
-              style={{
-                fontWeight: 600,
-                fontSize: 13,
-                color: isFailed ? "var(--danger)" : "var(--fg)",
-              }}
-            >
-              {nodePlainLabel(node)}
-            </span>
+            {mode === "plan" ? (
+              <InfoTip tip={nodeExplainer(node)}>
+                <span
+                  style={{
+                    fontWeight: 600,
+                    fontSize: 13,
+                    color: isFailed ? "var(--danger)" : "var(--fg)",
+                  }}
+                >
+                  {nodePlainLabel(node)}
+                </span>
+              </InfoTip>
+            ) : (
+              <span
+                style={{
+                  fontWeight: 600,
+                  fontSize: 13,
+                  color: isFailed ? "var(--danger)" : "var(--fg)",
+                }}
+              >
+                {nodePlainLabel(node)}
+              </span>
+            )}
             <span
               style={{
                 font: "500 10.5px/1.2 'Geist Mono', monospace",
@@ -3294,24 +3362,29 @@ function SnapStat({
   label,
   value,
   mono = false,
+  tip,
 }: {
   readonly label: string;
   readonly value: string | number;
   readonly mono?: boolean;
+  readonly tip?: string;
 }): React.JSX.Element {
+  const labelStyle: React.CSSProperties = {
+    fontSize: 10,
+    color: "var(--fg-3)",
+    letterSpacing: "0.06em",
+    textTransform: "uppercase",
+    fontWeight: 600,
+  };
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-      <span
-        style={{
-          fontSize: 10,
-          color: "var(--fg-3)",
-          letterSpacing: "0.06em",
-          textTransform: "uppercase",
-          fontWeight: 600,
-        }}
-      >
-        {label}
-      </span>
+      {tip ? (
+        <InfoTip tip={tip}>
+          <span style={labelStyle}>{label}</span>
+        </InfoTip>
+      ) : (
+        <span style={labelStyle}>{label}</span>
+      )}
       <span
         style={{
           font: mono ? "500 12px/1 'Geist Mono', monospace" : "600 14px/1 'Geist Mono', monospace",
