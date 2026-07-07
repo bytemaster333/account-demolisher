@@ -1532,77 +1532,92 @@ function LeftLoadingCard({ message }: { readonly message: string }): React.JSX.E
     >
       {/* proving stage: a breathing glow, two counter-rotating ring strokes, two
           counter-rotating particle orbits, and a breathing diamond core with a
-          shield-check. Calm continuous rotation, never a ping/ripple. */}
+          search glyph. Calm continuous rotation, never a ping/ripple. The 152px
+          stage is drawn to spec, then scaled up (the wrapper reserves layout). */}
       <div
         aria-hidden
         style={{
-          position: "relative",
-          width: 152,
-          height: 152,
+          width: 228,
+          height: 228,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
         }}
       >
-        {/* ambient glow, breathing */}
-        <span
-          style={{
-            position: "absolute",
-            inset: 22,
-            borderRadius: "50%",
-            background:
-              "radial-gradient(circle, color-mix(in srgb, var(--accent) 30%, transparent), transparent 68%)",
-            animation: "loaderGlowBreathe 4s ease-in-out infinite",
-          }}
-        />
-        {/* outer ring stroke (faint, longer sweep), clockwise */}
-        <ArcRing inset={0} sweepDeg={90} dim={55} duration={4.6} />
-        {/* inner ring stroke (brighter, shorter sweep), counter-clockwise */}
-        <ArcRing inset={16} sweepDeg={65} dim={90} duration={3.4} reverse />
-        {/* outer particle orbit (3 dots), clockwise */}
-        <div style={{ position: "absolute", inset: 16, animation: "spin 6s linear infinite" }}>
-          <OrbitDot angle={0} radius={60} size={7} lead />
-          <OrbitDot angle={142} radius={60} size={5} dim={65} />
-          <OrbitDot angle={255} radius={60} size={4} dim={45} />
-        </div>
-        {/* inner particle orbit (2 dots), counter-clockwise */}
         <div
           style={{
-            position: "absolute",
-            inset: 33,
-            animation: "spin 4.2s linear infinite reverse",
-          }}
-        >
-          <OrbitDot angle={60} radius={43} size={4} dim={70} />
-          <OrbitDot angle={220} radius={43} size={3} dim={50} />
-        </div>
-        {/* diamond core, breathing */}
-        <span
-          style={{
             position: "relative",
-            width: 58,
-            height: 58,
-            borderRadius: 17,
-            border: "2px solid var(--accent)",
-            background: "color-mix(in srgb, var(--accent) 12%, transparent)",
-            display: "grid",
-            placeItems: "center",
-            animation: "loaderDiamondBreathe 3.6s ease-in-out infinite",
+            width: 152,
+            height: 152,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            transform: "scale(1.5)",
           }}
         >
-          {/* shield-check, counter-rotated so it sits upright inside the diamond */}
-          <svg width="26" height="26" viewBox="0 0 24 24" style={{ transform: "rotate(-45deg)" }}>
-            <path fill="var(--accent)" d="M12 2 4 5v6c0 5 3.4 8.5 8 10 4.6-1.5 8-5 8-10V5l-8-3z" />
-            <path
+          {/* ambient glow, breathing */}
+          <span
+            style={{
+              position: "absolute",
+              inset: 22,
+              borderRadius: "50%",
+              background:
+                "radial-gradient(circle, color-mix(in srgb, var(--accent) 30%, transparent), transparent 68%)",
+              animation: "loaderGlowBreathe 4s ease-in-out infinite",
+            }}
+          />
+          {/* outer ring stroke (faint, longer sweep), clockwise */}
+          <ArcRing inset={0} sweepDeg={90} dim={55} duration={4.6} />
+          {/* inner ring stroke (brighter, shorter sweep), counter-clockwise */}
+          <ArcRing inset={16} sweepDeg={65} dim={90} duration={3.4} reverse />
+          {/* outer particle orbit (3 dots), clockwise */}
+          <div style={{ position: "absolute", inset: 16, animation: "spin 6s linear infinite" }}>
+            <OrbitDot angle={0} radius={60} size={7} lead />
+            <OrbitDot angle={142} radius={60} size={5} dim={65} />
+            <OrbitDot angle={255} radius={60} size={4} dim={45} />
+          </div>
+          {/* inner particle orbit (2 dots), counter-clockwise */}
+          <div
+            style={{
+              position: "absolute",
+              inset: 33,
+              animation: "spin 4.2s linear infinite reverse",
+            }}
+          >
+            <OrbitDot angle={60} radius={43} size={4} dim={70} />
+            <OrbitDot angle={220} radius={43} size={3} dim={50} />
+          </div>
+          {/* diamond core, breathing */}
+          <span
+            style={{
+              position: "relative",
+              width: 58,
+              height: 58,
+              borderRadius: 17,
+              border: "2px solid var(--accent)",
+              background: "color-mix(in srgb, var(--accent) 12%, transparent)",
+              display: "grid",
+              placeItems: "center",
+              animation: "loaderDiamondBreathe 3.6s ease-in-out infinite",
+            }}
+          >
+            {/* search glyph, counter-rotated so it sits upright inside the diamond */}
+            <svg
+              width="27"
+              height="27"
+              viewBox="0 0 24 24"
               fill="none"
-              stroke="var(--accent-fg)"
-              strokeWidth={2.4}
+              stroke="var(--accent)"
+              strokeWidth={2.2}
               strokeLinecap="round"
               strokeLinejoin="round"
-              d="M8.5 12l2.5 2.5 4.5-5"
-            />
-          </svg>
-        </span>
+              style={{ transform: "rotate(-45deg)" }}
+            >
+              <circle cx="11" cy="11" r="7" />
+              <path d="M21 21l-4.3-4.3" />
+            </svg>
+          </span>
+        </div>
       </div>
 
       <div
