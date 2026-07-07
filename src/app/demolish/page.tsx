@@ -1435,67 +1435,72 @@ const LOADING_QUIPS = [
   "Checking under the floorboards…",
 ];
 
-// one tilted elliptical orbit with a glowing particle travelling along it. The
-// outer wrapper applies the tilt + vertical squash (so the circular path reads
-// as an ellipse); the inner wrapper spins, carrying the particle around.
-function OrbitRing({
+// a thin (2px) concentric ring stroke: a conic-gradient with one bright accent
+// sweep fading to transparent, cut to a ring by a radial mask, rotating slowly.
+const RING_MASK =
+  "radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1px))";
+function ArcRing({
   inset,
-  tilt,
-  scaleY,
+  sweepDeg,
+  dim,
   duration,
-  delay = 0,
-  dot = 6,
   reverse = false,
 }: {
   readonly inset: number;
-  readonly tilt: number;
-  readonly scaleY: number;
+  readonly sweepDeg: number;
+  readonly dim: number;
   readonly duration: number;
-  readonly delay?: number;
-  readonly dot?: number;
   readonly reverse?: boolean;
 }): React.JSX.Element {
   return (
-    <div
+    <span
       aria-hidden
       style={{
         position: "absolute",
         inset,
         borderRadius: "50%",
-        transform: `rotate(${tilt}deg) scaleY(${scaleY})`,
+        background: `conic-gradient(from 0deg, color-mix(in srgb, var(--accent) ${dim}%, transparent), transparent ${sweepDeg}deg, transparent 360deg)`,
+        maskImage: RING_MASK,
+        WebkitMaskImage: RING_MASK,
+        animation: `spin ${duration}s linear infinite${reverse ? " reverse" : ""}`,
       }}
-    >
-      <div
-        style={{
-          position: "absolute",
-          inset: 0,
-          borderRadius: "50%",
-          border: "1px solid var(--accent-line)",
-        }}
-      />
-      <div
-        style={{
-          position: "absolute",
-          inset: 0,
-          animation: `spin ${duration}s linear infinite${reverse ? " reverse" : ""}`,
-          animationDelay: `${delay}s`,
-        }}
-      >
-        <span
-          style={{
-            position: "absolute",
-            top: -dot / 2,
-            left: "50%",
-            marginLeft: -dot / 2,
-            width: dot,
-            height: dot,
-            borderRadius: "50%",
-            background: "var(--accent)",
-            boxShadow: "0 0 8px 1px color-mix(in srgb, var(--accent) 70%, transparent)",
-          }}
-        />
-      </div>
-    </div>
+    />
+  );
+}
+
+// one glowing dot placed on an orbit of the given radius at a given angle. The
+// lead dot is full accent with a glow; the rest are dimmer accent mixes.
+function OrbitDot({
+  angle,
+  radius,
+  size,
+  lead = false,
+  dim = 100,
+}: {
+  readonly angle: number;
+  readonly radius: number;
+  readonly size: number;
+  readonly lead?: boolean;
+  readonly dim?: number;
+}): React.JSX.Element {
+  return (
+    <span
+      style={{
+        position: "absolute",
+        top: "50%",
+        left: "50%",
+        width: size,
+        height: size,
+        borderRadius: "50%",
+        transform: `translate(-50%, -50%) rotate(${angle}deg) translateY(-${radius}px)`,
+        background: lead
+          ? "var(--accent)"
+          : `color-mix(in srgb, var(--accent) ${dim}%, transparent)`,
+        ...(lead
+          ? { boxShadow: "0 0 8px 1px color-mix(in srgb, var(--accent) 70%, transparent)" }
+          : {}),
+      }}
+    />
   );
 }
 
@@ -1525,61 +1530,77 @@ function LeftLoadingCard({ message }: { readonly message: string }): React.JSX.E
         position: "relative",
       }}
     >
-      {/* the scan icon on a raised tile, encircled by tilted orbits with glowing
-          particles travelling around it, over a soft radial glow. */}
+      {/* proving stage: a breathing glow, two counter-rotating ring strokes, two
+          counter-rotating particle orbits, and a breathing diamond core with a
+          shield-check. Calm continuous rotation, never a ping/ripple. */}
       <div
         aria-hidden
         style={{
           position: "relative",
-          width: 220,
-          height: 220,
-          display: "grid",
-          placeItems: "center",
+          width: 152,
+          height: 152,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
         }}
       >
-        {/* soft glow */}
+        {/* ambient glow, breathing */}
         <span
           style={{
             position: "absolute",
-            inset: 30,
+            inset: 22,
             borderRadius: "50%",
             background:
-              "radial-gradient(circle, color-mix(in srgb, var(--accent) 22%, transparent), transparent 70%)",
-            filter: "blur(10px)",
-            animation: "pulse 3s ease-in-out infinite",
+              "radial-gradient(circle, color-mix(in srgb, var(--accent) 30%, transparent), transparent 68%)",
+            animation: "loaderGlowBreathe 4s ease-in-out infinite",
           }}
         />
-        {/* orbits (different tilt, squash, speed, direction) */}
-        <OrbitRing inset={6} tilt={22} scaleY={0.42} duration={4.6} dot={7} />
-        <OrbitRing inset={20} tilt={-34} scaleY={0.56} duration={6.2} delay={0.6} dot={5} reverse />
-        {/* center tile with the scan icon, gently floating */}
+        {/* outer ring stroke (faint, longer sweep), clockwise */}
+        <ArcRing inset={0} sweepDeg={90} dim={55} duration={4.6} />
+        {/* inner ring stroke (brighter, shorter sweep), counter-clockwise */}
+        <ArcRing inset={16} sweepDeg={65} dim={90} duration={3.4} reverse />
+        {/* outer particle orbit (3 dots), clockwise */}
+        <div style={{ position: "absolute", inset: 16, animation: "spin 6s linear infinite" }}>
+          <OrbitDot angle={0} radius={60} size={7} lead />
+          <OrbitDot angle={142} radius={60} size={5} dim={65} />
+          <OrbitDot angle={255} radius={60} size={4} dim={45} />
+        </div>
+        {/* inner particle orbit (2 dots), counter-clockwise */}
+        <div
+          style={{
+            position: "absolute",
+            inset: 33,
+            animation: "spin 4.2s linear infinite reverse",
+          }}
+        >
+          <OrbitDot angle={60} radius={43} size={4} dim={70} />
+          <OrbitDot angle={220} radius={43} size={3} dim={50} />
+        </div>
+        {/* diamond core, breathing */}
         <span
           style={{
             position: "relative",
-            width: 96,
-            height: 96,
-            borderRadius: 26,
-            background: "var(--surface-2)",
-            border: "1px solid var(--accent-line)",
-            color: "var(--accent)",
+            width: 58,
+            height: 58,
+            borderRadius: 17,
+            border: "2px solid var(--accent)",
+            background: "color-mix(in srgb, var(--accent) 12%, transparent)",
             display: "grid",
             placeItems: "center",
-            boxShadow: "0 0 24px -4px color-mix(in srgb, var(--accent) 45%, transparent)",
-            animation: "keyFloat 3s ease-in-out infinite",
+            animation: "loaderDiamondBreathe 3.6s ease-in-out infinite",
           }}
         >
-          <svg
-            width="42"
-            height="42"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2.2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <circle cx="11" cy="11" r="7" />
-            <path d="M21 21l-4.3-4.3" />
+          {/* shield-check, counter-rotated so it sits upright inside the diamond */}
+          <svg width="26" height="26" viewBox="0 0 24 24" style={{ transform: "rotate(-45deg)" }}>
+            <path fill="var(--accent)" d="M12 2 4 5v6c0 5 3.4 8.5 8 10 4.6-1.5 8-5 8-10V5l-8-3z" />
+            <path
+              fill="none"
+              stroke="var(--accent-fg)"
+              strokeWidth={2.4}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M8.5 12l2.5 2.5 4.5-5"
+            />
           </svg>
         </span>
       </div>
