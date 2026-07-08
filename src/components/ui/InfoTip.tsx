@@ -39,7 +39,14 @@ export function InfoTip({
         type="button"
         aria-describedby={open ? tipId : undefined}
         aria-expanded={open}
-        onClick={() => (open ? hide() : show())}
+        onClick={(e) => {
+          // self-contained control: don't let a tip toggle bubble to a parent
+          // click handler (e.g. a <summary> that would also collapse a <details>)
+          e.preventDefault();
+          e.stopPropagation();
+          if (open) hide();
+          else show();
+        }}
         onMouseEnter={show}
         onMouseLeave={hide}
         onFocus={show}

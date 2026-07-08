@@ -13,8 +13,10 @@ import {
   Button,
   Card,
   Checkbox,
+  CopyableAddress,
   EmptyState,
   Field,
+  InfoTip,
   Notice,
   PageContainer,
   PageHeader,
@@ -23,6 +25,7 @@ import {
 } from "@/components/ui";
 import { errorMessage } from "@/lib/errors";
 import { resolveNetwork, type NetworkConfig } from "@/lib/config/networks";
+import { explorerAccountUrl } from "@/lib/explorer";
 import { enumerateAllowances, type AllowanceRecord } from "@/lib/soroban/allowances";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import type { Connector } from "@/lib/wallet/connector";
@@ -138,7 +141,16 @@ export default function AllowancesPage(): React.JSX.Element {
         <PageHeader
           kicker="Allowance viewer"
           title="Active token allowances"
-          subtitle="Inspect every active SEP-41 approval on any account, then revoke standing approvals to known (or unknown) spenders. No demolition required."
+          subtitle={
+            <>
+              Inspect every active{" "}
+              <InfoTip tip="SEP-41 is Stellar's standard for smart-contract (Soroban) tokens. An allowance is a standing approval that lets another address spend your tokens up to a limit, until it expires or you revoke it.">
+                SEP-41
+              </InfoTip>{" "}
+              approval on any account, then revoke standing approvals to known (or unknown)
+              spenders. No demolition required.
+            </>
+          }
         />
 
         {/* search */}
@@ -196,11 +208,20 @@ export default function AllowancesPage(): React.JSX.Element {
           {wrongWallet ? (
             <div style={{ marginTop: 12 }}>
               <Notice tone="warning" role="status">
-                Viewing{" "}
-                <code style={{ fontFamily: '"Geist Mono", monospace' }}>
-                  {viewedAddress!.slice(0, 6)}…{viewedAddress!.slice(-6)}
-                </code>{" "}
-                in read-only mode. To revoke, connect the wallet that owns this address.
+                <span
+                  style={{ display: "inline-flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}
+                >
+                  Viewing
+                  <CopyableAddress
+                    value={viewedAddress!}
+                    label="Viewed address"
+                    head={6}
+                    tail={6}
+                    size={12}
+                    href={explorerAccountUrl(network, viewedAddress!)}
+                  />
+                  in read-only mode. To revoke, connect the wallet that owns this address.
+                </span>
               </Notice>
             </div>
           ) : null}

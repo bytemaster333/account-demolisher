@@ -22,18 +22,38 @@ export function PageContainer({
   );
 }
 
+// Kicker pill: a rounded, bordered chip with an accent dot and an uppercase
+// label. Mirrors the /demolish hero's "STEP 1 · CONNECT" pill so every app page
+// leads with the same signature element instead of a plain line of small caps.
 export function Kicker({ children }: { readonly children: ReactNode }): React.JSX.Element {
   return (
-    <div
-      style={{
-        font: "600 12px/1 Geist, sans-serif",
-        color: "var(--accent)",
-        letterSpacing: "0.08em",
-        textTransform: "uppercase",
-        marginBottom: 12,
-      }}
-    >
-      {children}
+    <div style={{ marginBottom: 16 }}>
+      <span
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "5px 11px",
+          borderRadius: 999,
+          border: "1px solid var(--border-2)",
+        }}
+      >
+        <span
+          aria-hidden
+          style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)" }}
+        />
+        <span
+          style={{
+            font: "600 11px/1 Geist, sans-serif",
+            color: "var(--fg-2)",
+            letterSpacing: "0.06em",
+            textTransform: "uppercase",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {children}
+        </span>
+      </span>
     </div>
   );
 }
@@ -65,7 +85,7 @@ export function PageHeader({
         <h1
           style={{
             margin: 0,
-            fontSize: 34,
+            fontSize: 36,
             fontWeight: 600,
             letterSpacing: "-0.03em",
             lineHeight: 1.1,
@@ -76,11 +96,11 @@ export function PageHeader({
         {subtitle ? (
           <p
             style={{
-              margin: "12px 0 0",
-              fontSize: 15,
+              margin: "13px 0 0",
+              fontSize: 16,
               lineHeight: 1.55,
               color: "var(--fg-2)",
-              maxWidth: 620,
+              maxWidth: 720,
             }}
           >
             {subtitle}

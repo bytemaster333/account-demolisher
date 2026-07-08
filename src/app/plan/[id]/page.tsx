@@ -8,6 +8,7 @@ import {
   Badge,
   Card,
   CopyableAddress,
+  InfoTip,
   Notice,
   PageContainer,
   PageHeader,
@@ -101,7 +102,17 @@ export default async function PlanPage({ params }: PlanPageProps): Promise<React
         <PageHeader
           kicker={`Multisig · /plan/${shortId(id)}`}
           title="Collect signatures to merge"
-          subtitle="This account needs multiple signatures. Share this link with the other key holders. Each opens it, reviews the transaction, and adds their signature. The merge submits automatically once the threshold is met."
+          subtitle={
+            <>
+              This account needs multiple signatures. Share this link with the other key holders.
+              Each opens it, reviews the transaction, and adds their signature. The merge submits
+              automatically once the{" "}
+              <InfoTip tip="The account's required signing weight. Each signer's key carries a weight; once the collected signatures add up to the account's threshold, the transaction can be submitted.">
+                threshold
+              </InfoTip>{" "}
+              is met.
+            </>
+          }
         />
 
         {result.kind === "ok" ? (
@@ -288,7 +299,11 @@ function PlanStatusView({
                 listStyle: "none",
               }}
             >
-              Show canonical transaction (XDR) · {status.network}
+              Show canonical transaction (
+              <InfoTip tip="XDR is Stellar's binary encoding for a transaction. This is the exact, canonical transaction every signer commits to; its hash is what this plan link is bound to.">
+                XDR
+              </InfoTip>
+              ) · {status.network}
             </summary>
             <div
               data-testid="plan-xdr"

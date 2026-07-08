@@ -11,6 +11,7 @@ import {
   Button,
   Card,
   Field,
+  InfoTip,
   Notice,
   PageContainer,
   PageHeader,
@@ -67,7 +68,16 @@ export default function PlanIndexPage(): React.JSX.Element {
         <PageHeader
           kicker="Multisig"
           title="Open a plan to sign"
-          subtitle="Closing a multi-signature account needs every key holder to sign the same transaction. Paste the plan link (or its hash) a co-signer shared with you to open its live signing status."
+          subtitle={
+            <>
+              Closing a{" "}
+              <InfoTip tip="A multi-signature account requires more than one key to authorize a transaction. Every required signer has to sign the same closure transaction before the network will accept it.">
+                multi-signature
+              </InfoTip>{" "}
+              account needs every key holder to sign the same transaction. Paste the plan link (or
+              its hash) a co-signer shared with you to open its live signing status.
+            </>
+          }
         />
 
         <Card padding={22}>
@@ -155,8 +165,10 @@ export default function PlanIndexPage(): React.JSX.Element {
         <div style={{ marginTop: 16 }}>
           <Notice tone="neutral">
             Signature collection is coordinated through{" "}
-            <strong style={{ color: "var(--fg-2)" }}>Refractor</strong>, a third-party service.
-            Demolisher does not store any envelope state itself.
+            <InfoTip tip="Refractor is a third-party service that collects each key holder's partial signature and submits the transaction once enough have signed. Demolisher never stores your envelope.">
+              <strong style={{ color: "var(--fg-2)" }}>Refractor</strong>
+            </InfoTip>
+            , a third-party service. Demolisher does not store any envelope state itself.
           </Notice>
         </div>
       </PageContainer>
