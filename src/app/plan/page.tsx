@@ -127,22 +127,41 @@ export default function PlanIndexPage(): React.JSX.Element {
         </Card>
 
         <div style={{ marginTop: 22 }}>
-          <Card padding={20} style={{ background: "var(--surface-2)" }}>
+          <Card padding={22} style={{ background: "var(--surface-2)" }}>
             <SectionLabel>How it works</SectionLabel>
+            {/* numbered steps: the app resets native list markers (Tailwind
+                preflight), so each step carries its own numbered badge */}
             <ol
               style={{
-                margin: "12px 0 0",
-                padding: "0 0 0 20px",
-                fontSize: 13.5,
-                lineHeight: 1.65,
-                color: "var(--fg-2)",
+                listStyle: "none",
+                margin: "16px 0 0",
+                padding: 0,
                 display: "flex",
                 flexDirection: "column",
-                gap: 8,
+                gap: 16,
               }}
             >
               {STEPS.map((s, i) => (
-                <li key={i}>{s}</li>
+                <li key={i} style={{ display: "flex", alignItems: "flex-start", gap: 13 }}>
+                  <span
+                    aria-hidden
+                    style={{
+                      flexShrink: 0,
+                      width: 25,
+                      height: 25,
+                      borderRadius: "50%",
+                      border: "1.5px solid var(--border-2)",
+                      display: "grid",
+                      placeItems: "center",
+                      font: "600 11.5px/1 'Geist Mono', monospace",
+                      color: "var(--fg-3)",
+                      marginTop: 1,
+                    }}
+                  >
+                    {i + 1}
+                  </span>
+                  <span style={{ fontSize: 13.5, lineHeight: 1.6, color: "var(--fg-2)" }}>{s}</span>
+                </li>
               ))}
             </ol>
             <Link
@@ -151,7 +170,8 @@ export default function PlanIndexPage(): React.JSX.Element {
               rel="noreferrer noopener"
               style={{
                 display: "inline-block",
-                marginTop: 14,
+                marginTop: 18,
+                marginLeft: 38,
                 font: "600 12.5px/1 Geist, sans-serif",
                 color: "var(--accent)",
                 textDecoration: "none",
