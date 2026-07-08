@@ -473,7 +473,10 @@ function DemolishFlow(): React.JSX.Element {
 
   // scam heuristics over the account's held credit balances (look-alike symbols,
   // homoglyphs, off-allowlist contracts), surfaced as an informational notice.
-  const scamFindings = useMemo(() => (audit ? runScamHeuristics(audit.balances) : []), [audit]);
+  const scamFindings = useMemo(
+    () => (audit ? runScamHeuristics(audit.balances, network.id) : []),
+    [audit, network.id],
+  );
 
   const isMachineIdle = state === "idle";
   const isDiscovering = state === "discovering";

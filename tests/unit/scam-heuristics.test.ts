@@ -4,6 +4,8 @@ import {
   levenshtein,
   runScamHeuristics,
   TIER1_ASSETS,
+  TIER1_MAINNET,
+  TIER1_TESTNET,
   type ScamFlag,
   type ScamHeuristicId,
 } from "@/lib/safety/scam-heuristics";
@@ -235,5 +237,44 @@ describe("runScamHeuristics", () => {
     const flagIds = findings.map((f) => f.flag.id);
     expect(flagIds).toContain("suspicious_character");
     expect(flagIds).toContain("lookalike_symbol");
+  });
+});
+
+describe("evaluateScamHeuristics, network gating", () => {
+  const USDC_MAINNET = TIER1_MAINNET.find((a) => a.symbol === "USDC")!.issuer!;
+  const USDC_TESTNET = TIER1_TESTNET.find((a) => a.symbol === "USDC")!.issuer!;
+  const AQUA_MAINNET = TIER1_MAINNET.find((a) => a.symbol === "AQUA")!.issuer!;
+
+  it("clears the real testnet USDC issuer on testnet, but flags the mainnet issuer there", () => {
+    expect(evaluateScamHeuristics({ symbol: "USDC", issuer: USDC_TESTNET }, "testnet")).toEqual([]);
+    const mainnetOnTestnet = evaluateScamHeuristics(
+      { symbol: "USDC", issuer: USDC_MAINNET },
+      "testnet",
+    );
+    expect(ids(mainnetOnTestnet)).toContain("exact_symbol_collision");
+    // and the canonical it points at is the testnet issuer, not the mainnet one
+    expect(flag(mainnetOnTestnet, "exact_symbol_collision").detail?.canonicalIssuer).toBe(
+      USDC_TESTNET,
+    );
+  });
+
+  it("clears the real mainnet USDC issuer on mainnet, but flags the testnet issuer there", () => {
+    expect(evaluateScamHeuristics({ symbol: "USDC", issuer: USDC_MAINNET }, "mainnet")).toEqual([]);
+    expect(
+      ids(evaluateScamHeuristics({ symbol: "USDC", issuer: USDC_TESTNET }, "mainnet")),
+    ).toContain("exact_symbol_collision");
+  });
+
+  it("abstains on AQUA on testnet (no official testnet issuer) even with a differing issuer", () => {
+    // AQUA has issuer:null on testnet, so a collision can't be proven there.
+    expect(evaluateScamHeuristics({ symbol: "AQUA", issuer: AQUA_MAINNET }, "testnet")).toEqual([]);
+    // but the same asset on mainnet does collide (mainnet knows AQUA's issuer)
+    expect(ids(evaluateScamHeuristics({ symbol: "AQUA", issuer: IMPOSTOR }, "mainnet"))).toContain(
+      "exact_symbol_collision",
+    );
+  });
+
+  it("has no canonical issuers on futurenet, so nothing collides", () => {
+    expect(evaluateScamHeuristics({ symbol: "USDC", issuer: IMPOSTOR }, "futurenet")).toEqual([]);
   });
 });

@@ -49,7 +49,7 @@ function reasonFor(flag: ScamFlag): string {
   switch (flag.id) {
     case "exact_symbol_collision": {
       const symbol = String(flag.detail?.symbol ?? "");
-      return `Uses the symbol “${symbol}” of a trusted tier-1 asset, but is issued by a different address than the real one, a classic impersonation.`;
+      return `Uses the symbol “${symbol}” of a well-known asset, but a different issuer than the official one on record (shown below). A classic impersonation.`;
     }
     case "lookalike_symbol": {
       const symbol = String(flag.detail?.symbol ?? "");
@@ -128,6 +128,12 @@ export function ScamTokenNotice({
               : isContract
                 ? explorerContractUrl(network, address)
                 : explorerAccountUrl(network, address);
+          // the verified official issuer for this symbol, so the user can compare
+          // it against the impersonator above instead of trusting our word
+          const canonicalIssuer =
+            f.flag.id === "exact_symbol_collision" && f.flag.detail?.canonicalIssuer
+              ? String(f.flag.detail.canonicalIssuer)
+              : null;
           return (
             <li
               key={`${assetKey(f.asset)}-${f.flag.id}`}
@@ -173,15 +179,32 @@ export function ScamTokenNotice({
                   style={{ display: "inline-flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}
                 >
                   <span
-                    style={{ fontSize: 10.5, color: "var(--fg-3)", textTransform: "uppercase" }}
+                    style={{ fontSize: 10.5, color: "var(--danger)", textTransform: "uppercase" }}
                   >
-                    {addrLabel}
+                    {addrLabel} on account
                   </span>
                   <CopyableAddress
                     value={address}
                     label={addrLabel}
                     size={11.5}
                     {...(href !== undefined ? { href } : {})}
+                  />
+                </span>
+              ) : null}
+              {canonicalIssuer !== null ? (
+                <span
+                  style={{ display: "inline-flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}
+                >
+                  <span
+                    style={{ fontSize: 10.5, color: "var(--accent)", textTransform: "uppercase" }}
+                  >
+                    Official issuer
+                  </span>
+                  <CopyableAddress
+                    value={canonicalIssuer}
+                    label="Official issuer"
+                    size={11.5}
+                    href={explorerAccountUrl(network, canonicalIssuer)}
                   />
                 </span>
               ) : null}

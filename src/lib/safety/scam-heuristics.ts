@@ -1,6 +1,7 @@
 // scam-token heuristics
 
 import { isAllowedContract } from "@/lib/config/contracts";
+import type { StellarNetwork } from "@/lib/config/networks";
 import type { AssetIdentifier, AuditBalance } from "@/lib/types/account";
 
 export type ScamSeverity = "info" | "warning" | "critical";
@@ -39,7 +40,12 @@ export interface Tier1Asset {
   readonly issuer: string | null;
 }
 
-export const TIER1_ASSETS: readonly Tier1Asset[] = [
+// Canonical issuers, per network. Every non-null address below was verified
+// against the issuer's official source (Circle's contract-address docs for
+// USDC/EURC; Aquarius's stellar.toml for AQUA). null = no canonical issuer we
+// can vouch for on that network, so the collision check abstains rather than
+// compare against the wrong address (e.g. AQUA has no official testnet issuer).
+export const TIER1_MAINNET: readonly Tier1Asset[] = [
   { symbol: "XLM", issuer: null },
   { symbol: "USDC", issuer: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN" },
   { symbol: "EURC", issuer: "GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4ITNPP2" },
@@ -47,21 +53,38 @@ export const TIER1_ASSETS: readonly Tier1Asset[] = [
   { symbol: "BLND", issuer: null },
 ];
 
-const TIER1_BY_SYMBOL: ReadonlyMap<string, Tier1Asset> = new Map(
-  TIER1_ASSETS.map((a) => [a.symbol.toUpperCase(), a]),
-);
+export const TIER1_TESTNET: readonly Tier1Asset[] = [
+  { symbol: "XLM", issuer: null },
+  { symbol: "USDC", issuer: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5" },
+  { symbol: "EURC", issuer: "GB3Q6QDZYTHWT7E5PVS3W7FUT5GVAFC5KSZFFLPU25GO7VTC3NM2ZTVO" },
+  { symbol: "AQUA", issuer: null },
+  { symbol: "BLND", issuer: null },
+];
+
+// mainnet is the default reference set (kept as TIER1_ASSETS for compatibility)
+export const TIER1_ASSETS = TIER1_MAINNET;
+
+function tier1For(network: StellarNetwork): readonly Tier1Asset[] {
+  return network === "mainnet" ? TIER1_MAINNET : network === "testnet" ? TIER1_TESTNET : [];
+}
 
 // edit distance <= this (and > 0) counts as suspicious
 const LOOKALIKE_DISTANCE_THRESHOLD = 2;
 
-// run all heuristics against the subject
-export function evaluateScamHeuristics(subject: TokenSubject): readonly ScamFlag[] {
+// run all heuristics against the subject, using the canonical issuer set for the
+// given network (defaults to mainnet)
+export function evaluateScamHeuristics(
+  subject: TokenSubject,
+  network: StellarNetwork = "mainnet",
+): readonly ScamFlag[] {
   const flags: ScamFlag[] = [];
+  const tier1List = tier1For(network);
+  const tier1BySymbol = new Map(tier1List.map((a) => [a.symbol.toUpperCase(), a]));
 
   const rawSymbol = (subject.symbol ?? "").trim();
   if (rawSymbol.length > 0) {
     const symbolUpper = rawSymbol.toUpperCase();
-    const tier1 = TIER1_BY_SYMBOL.get(symbolUpper);
+    const tier1 = tier1BySymbol.get(symbolUpper);
 
     if (tier1 !== undefined) {
       // exact symbol match: collision iff canonical issuer exists AND
@@ -81,7 +104,7 @@ export function evaluateScamHeuristics(subject: TokenSubject): readonly ScamFlag
       }
     } else {
       // no exact tier-1 match, look for a lookalike
-      const lookalike = nearestTier1Match(symbolUpper);
+      const lookalike = nearestTier1Match(symbolUpper, tier1List);
       if (lookalike !== null && lookalike.distance <= LOOKALIKE_DISTANCE_THRESHOLD) {
         flags.push({
           id: "lookalike_symbol",
@@ -131,9 +154,12 @@ interface LookalikeMatch {
   readonly distance: number;
 }
 
-function nearestTier1Match(symbolUpper: string): LookalikeMatch | null {
+function nearestTier1Match(
+  symbolUpper: string,
+  tier1List: readonly Tier1Asset[],
+): LookalikeMatch | null {
   let best: LookalikeMatch | null = null;
-  for (const tier1 of TIER1_ASSETS) {
+  for (const tier1 of tier1List) {
     const t = tier1.symbol.toUpperCase();
     if (t === symbolUpper) continue; // exact match handled separately
     const d = levenshtein(symbolUpper, t);
@@ -183,12 +209,15 @@ export function levenshtein(a: string, b: string): number {
 
 // run scam heuristics across every credit balance in an audit. one finding
 // per (asset, flag) hit
-export function runScamHeuristics(balances: readonly AuditBalance[]): readonly ScamFinding[] {
+export function runScamHeuristics(
+  balances: readonly AuditBalance[],
+  network: StellarNetwork = "mainnet",
+): readonly ScamFinding[] {
   const findings: ScamFinding[] = [];
   for (const balance of balances) {
     if (balance.asset.kind !== "credit") continue;
     const { code, issuer } = balance.asset;
-    const flags = evaluateScamHeuristics({ symbol: code, issuer });
+    const flags = evaluateScamHeuristics({ symbol: code, issuer }, network);
     for (const flag of flags) {
       findings.push({ flag, asset: balance.asset });
     }

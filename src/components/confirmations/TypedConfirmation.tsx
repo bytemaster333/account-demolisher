@@ -204,19 +204,15 @@ export function TypedConfirmation({
         </div>
         <p
           style={{
-            margin: "0 0 16px",
+            margin: "0 0 14px",
             fontSize: 14.5,
             fontWeight: 600,
             lineHeight: 1.5,
             color: "var(--fg)",
           }}
         >
-          This permanently closes your account and sends all its funds to the address below. It
+          This sends all your funds to the address below and permanently closes the account. It
           cannot be undone.
-        </p>
-        <p style={{ margin: "0 0 8px", fontSize: 13.5, color: "var(--fg-2)" }}>
-          All XLM in your account will be sent to this address, and the account will be permanently
-          closed:
         </p>
         <div
           style={{
@@ -254,7 +250,7 @@ export function TypedConfirmation({
             color: "var(--fg)",
           }}
         >
-          Type the last 4 characters of the destination address (underlined above) to confirm.
+          Type the last 4 characters (underlined) to confirm.
         </label>
         <input
           ref={inputRef}
