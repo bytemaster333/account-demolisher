@@ -15,6 +15,7 @@ import {
   type DemoStepId,
   type DemoStepResult,
 } from "@/lib/wallet/demo-account";
+import { setActiveConnector } from "@/lib/wallet/active-connector";
 import type { SecretKeyConnector } from "@/lib/wallet/secret-key";
 import { useWalletStore } from "@/stores/wallet";
 
@@ -108,6 +109,11 @@ export function CreateTestAccountButton({
 
   const onContinue = useCallback(() => {
     if (ready === null) return;
+    // publish the live connector app-wide, exactly as SecretKeyFallback does, so
+    // pages reached by client-side navigation (e.g. /allowances) can actually
+    // sign with the demo account. Without this the demo account connects for
+    // display only and every Revoke stays disabled ("connect the owning wallet").
+    setActiveConnector(ready.connector);
     setConnected(ready.publicKey, "secret", true);
     onConnector(ready.connector);
   }, [ready, setConnected, onConnector]);

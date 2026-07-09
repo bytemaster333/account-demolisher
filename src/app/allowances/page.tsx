@@ -21,7 +21,6 @@ import {
   PageContainer,
   PageHeader,
   SearchGlyph,
-  Spinner,
 } from "@/components/ui";
 import { errorMessage } from "@/lib/errors";
 import { resolveNetwork, type NetworkConfig } from "@/lib/config/networks";
@@ -85,7 +84,13 @@ export default function AllowancesPage(): React.JSX.Element {
     }
   }, [publicKey]);
 
+  // monotonic scan id. every scan captures its id and only commits results if it
+  // is still the latest, so a slow scan that a network switch (or a newer scan)
+  // superseded can't write stale, cross-network results into state.
+  const loadSeq = useRef(0);
+
   const onLoad = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setError(null);
     setRecords(null);
     setCurrentLedger(null);
@@ -105,15 +110,33 @@ export default function AllowancesPage(): React.JSX.Element {
       const list = await enumerateAllowances(rpc, target, ledger, undefined, {
         includeExpired: true,
       });
+      if (loadSeq.current !== seq) return; // superseded (network switch or newer scan)
       setRecords(list);
       setCurrentLedger(ledger);
       setViewedAddress(target);
     } catch (e: unknown) {
+      if (loadSeq.current !== seq) return;
       setError(errorMessage(e, "Failed to load allowances."));
     } finally {
-      setLoading(false);
+      if (loadSeq.current === seq) setLoading(false);
     }
   }, [address, network]);
+
+  // switching networks invalidates any results and any in-flight scan: the
+  // viewed address, ledger, and per-row token metadata are all network-scoped.
+  // clear them and bump the scan id so a pending scan's late completion is
+  // ignored. skip the initial mount (only an actual switch should clear).
+  const seenNetworkId = useRef(networkId);
+  useEffect(() => {
+    if (seenNetworkId.current === networkId) return;
+    seenNetworkId.current = networkId;
+    loadSeq.current++;
+    setRecords(null);
+    setViewedAddress(null);
+    setCurrentLedger(null);
+    setError(null);
+    setLoading(false);
+  }, [networkId]);
 
   const onRevoked = useCallback(() => {
     // re-enumerate after a revoke instead of mutating the list locally
@@ -143,12 +166,13 @@ export default function AllowancesPage(): React.JSX.Element {
           title="Active token allowances"
           subtitle={
             <>
-              Inspect every active{" "}
+              An allowance is a standing permission you gave another app or address to spend your
+              tokens, up to a limit, until it expires or you cancel it. This page lists every active{" "}
               <InfoTip tip="SEP-41 is Stellar's standard for smart-contract (Soroban) tokens. An allowance is a standing approval that lets another address spend your tokens up to a limit, until it expires or you revoke it.">
                 SEP-41
               </InfoTip>{" "}
-              approval on any account, then revoke standing approvals to known (or unknown)
-              spenders. No demolition required.
+              allowance on an account so you can review it and cancel the ones you no longer want.
+              No demolition required.
             </>
           }
         />
@@ -201,10 +225,14 @@ export default function AllowancesPage(): React.JSX.Element {
                 onClick={onUseWallet}
                 data-testid="use-wallet-button"
               >
-                Use connected wallet
+                Scan my own address
               </Button>
             ) : null}
           </div>
+          <p style={{ margin: "10px 0 0", fontSize: 12, color: "var(--fg-3)", lineHeight: 1.5 }}>
+            Looking up an address is read-only and free. You only need a connected wallet later, to
+            cancel an allowance on an account you own.
+          </p>
           {wrongWallet ? (
             <div style={{ marginTop: 12 }}>
               <Notice tone="warning" role="status">
@@ -220,7 +248,8 @@ export default function AllowancesPage(): React.JSX.Element {
                     size={12}
                     href={explorerAccountUrl(network, viewedAddress!)}
                   />
-                  in read-only mode. To revoke, connect the wallet that owns this address.
+                  in read-only mode, which is fine for inspecting. Only the wallet that controls
+                  this address can cancel its allowances, so to revoke, connect that wallet.
                 </span>
               </Notice>
             </div>
@@ -237,14 +266,7 @@ export default function AllowancesPage(): React.JSX.Element {
             />
           ) : null}
 
-          {loading ? (
-            <Card style={{ padding: "48px 24px", textAlign: "center" }}>
-              <div style={{ display: "grid", placeItems: "center", marginBottom: 16 }}>
-                <Spinner size={38} />
-              </div>
-              <div style={{ fontWeight: 600, fontSize: 15 }}>Scanning approve events…</div>
-            </Card>
-          ) : null}
+          {loading ? <ScanningCard /> : null}
 
           {records !== null && !loading ? (
             allowEmpty ? (
@@ -252,7 +274,7 @@ export default function AllowancesPage(): React.JSX.Element {
                 dashed={false}
                 data-testid="allowance-list-empty-wrapper"
                 title="No active allowances found"
-                body="This address has no standing approvals in the scanned window."
+                body="No approvals were found for this address in about the last 7 days of on-chain history (the RPC's event-retention limit). An older, still-standing approval may not be discoverable by this scan."
               />
             ) : (
               <>
@@ -278,5 +300,65 @@ export default function AllowancesPage(): React.JSX.Element {
         </div>
       </PageContainer>
     </AppShell>
+  );
+}
+
+const SCAN_QUIPS: readonly string[] = [
+  "Reading approve events…",
+  "Checking the spender directory…",
+  "Measuring current spend limits…",
+  "Sorting active from expired…",
+];
+
+// scanning stage: a medallion with a search glyph inside a slowly-rotating accent
+// ring, plus a cycling sub-line. A step up from a bare spinner, in the spirit of
+// the demolish "proving stage" loader, without pulling in its bespoke animation.
+function ScanningCard(): React.JSX.Element {
+  const [quip, setQuip] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setQuip((q) => (q + 1) % SCAN_QUIPS.length), 1600);
+    return () => clearInterval(id);
+  }, []);
+
+  return (
+    <Card style={{ padding: "44px 24px", textAlign: "center" }} data-testid="allowance-scanning">
+      <div style={{ display: "grid", placeItems: "center", marginBottom: 18 }}>
+        <div style={{ position: "relative", width: 58, height: 58 }}>
+          <span
+            aria-hidden
+            style={{
+              position: "absolute",
+              inset: 0,
+              borderRadius: "50%",
+              border: "3px solid var(--accent-soft)",
+              borderTopColor: "var(--accent)",
+              animation: "spin .9s linear infinite",
+            }}
+          />
+          <span
+            aria-hidden
+            style={{
+              position: "absolute",
+              inset: 8,
+              borderRadius: "50%",
+              background: "var(--surface-2)",
+              border: "1px solid var(--accent-line)",
+              color: "var(--accent)",
+              display: "grid",
+              placeItems: "center",
+            }}
+          >
+            <SearchGlyph size={18} />
+          </span>
+        </div>
+      </div>
+      <div style={{ fontWeight: 600, fontSize: 15 }}>Looking up allowances on-chain…</div>
+      <div
+        aria-live="polite"
+        style={{ marginTop: 6, fontSize: 12.5, color: "var(--fg-3)", minHeight: 18 }}
+      >
+        {SCAN_QUIPS[quip]}
+      </div>
+    </Card>
   );
 }

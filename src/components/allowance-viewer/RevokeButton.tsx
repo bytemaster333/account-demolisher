@@ -9,7 +9,7 @@ import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import { explorerTxUrl } from "@/lib/explorer";
 import { type AllowanceRecord } from "@/lib/soroban/allowances";
-import { submitRevoke } from "@/lib/soroban/revoke";
+import { confirmRevoke, submitRevoke } from "@/lib/soroban/revoke";
 import type { Connector } from "@/lib/wallet/connector";
 
 export interface RevokeButtonProps {
@@ -45,13 +45,19 @@ export function RevokeButton({
     }
     try {
       setPhase("submitting");
-      // submit-only (enqueue-and-go). PENDING is success; the list can be
-      // reloaded to confirm finality. bulk revoke additionally waits via
-      // confirmRevoke because it depends on sequence advancement.
+      // submit-only (enqueue-and-go). PENDING flips the row to a confirmed
+      // "Revoked" state optimistically. The list re-scan, however, must wait for
+      // ledger inclusion: a re-enumeration run between PENDING (~150ms) and
+      // inclusion (~3-4s) still reads the OLD non-zero allowance and the row
+      // would pop back as active. So confirm in the background, then re-scan; a
+      // confirm timeout just skips the auto-refresh and leaves the optimistic
+      // state (the user can refresh manually).
       const submitHash = await submitRevoke(network, connector, record, userAddress);
       setTxHash(submitHash);
       setPhase("confirmed");
-      onRevoked?.(record, submitHash);
+      void confirmRevoke(network, submitHash)
+        .then(() => onRevoked?.(record, submitHash))
+        .catch(() => {});
     } catch (e: unknown) {
       const message = errorMessage(e, "Revoke failed.");
       setError(message);

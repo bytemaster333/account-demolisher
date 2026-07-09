@@ -18,21 +18,28 @@ export function Spinner({ size = 16 }: { readonly size?: number }): React.JSX.El
   );
 }
 
-// Labeled progress track (X / Y weight, reserve recovered, signatures…)
+// Labeled progress track (X / Y weight, reserve recovered, signatures…).
+// `tone="accent"` fills with the accent while collecting and flips to success
+// once value reaches max, so a met threshold reads as done rather than staying a
+// flat grey bar. Omitting `tone` keeps the neutral grey fill.
 export function Progress({
   value,
   max,
   label,
   valueLabel,
+  tone = "neutral",
   "data-testid": testId,
 }: {
   readonly value: number;
   readonly max: number;
   readonly label?: ReactNode;
   readonly valueLabel?: ReactNode;
+  readonly tone?: "neutral" | "accent";
   readonly "data-testid"?: string;
 }): React.JSX.Element {
   const pct = max > 0 ? Math.min(100, Math.max(0, (value / max) * 100)) : 0;
+  const complete = max > 0 && value >= max;
+  const fill = complete ? "var(--success)" : tone === "accent" ? "var(--accent)" : "var(--fg-2)";
   return (
     <div>
       {label || valueLabel ? (
@@ -72,8 +79,8 @@ export function Progress({
             height: "100%",
             width: `${pct}%`,
             borderRadius: RADIUS.pill,
-            background: "var(--fg-2)",
-            transition: "width .4s ease",
+            background: fill,
+            transition: "width .4s ease, background .4s ease",
           }}
         />
       </div>

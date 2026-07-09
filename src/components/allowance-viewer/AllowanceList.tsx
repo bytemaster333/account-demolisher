@@ -4,7 +4,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-import { Badge, Card, CopyableAddress, Dot } from "@/components/ui";
+import { Badge, Card, CopyableAddress, Dot, InfoTip } from "@/components/ui";
 import { errorMessage } from "@/lib/errors";
 import { explorerAccountUrl, explorerContractUrl } from "@/lib/explorer";
 import type { NetworkConfig } from "@/lib/config/networks";
@@ -75,7 +75,11 @@ export function AllowanceList({
         <span style={{ fontWeight: 600, fontSize: 14 }}>
           {activeCount} active {activeCount === 1 ? "approval" : "approvals"}
         </span>
-        <span style={{ fontSize: 12, color: "var(--fg-3)" }}>{records.length} scanned</span>
+        <span style={{ fontSize: 12, color: "var(--fg-3)" }}>
+          <InfoTip tip="We looked back about the last 7 days of on-chain history (the RPC's event-retention limit). 'Active' approvals can still be used; the rest have already expired.">
+            {records.length} found
+          </InfoTip>
+        </span>
       </div>
 
       <div
@@ -89,8 +93,16 @@ export function AllowanceList({
       >
         <span style={HEADER_CELL}>TOKEN</span>
         <span style={HEADER_CELL}>SPENDER</span>
-        <span style={HEADER_CELL}>ALLOWANCE</span>
-        <span style={HEADER_CELL}>EXPIRES</span>
+        <span style={HEADER_CELL}>
+          <InfoTip tip="The most this spender is still allowed to move of this token. Revoking sets it to zero.">
+            SPEND LIMIT
+          </InfoTip>
+        </span>
+        <span style={HEADER_CELL}>
+          <InfoTip tip="After this time the approval ends on its own and the spender can no longer move your tokens. Expired approvals are already harmless.">
+            EXPIRES
+          </InfoTip>
+        </span>
         <span />
       </div>
 
@@ -102,7 +114,7 @@ export function AllowanceList({
           <div style={{ fontWeight: 600, fontSize: 15 }}>No active allowances found</div>
           <div style={{ fontSize: 13, color: "var(--fg-2)", marginTop: 6 }}>
             {records.length === 0
-              ? "This address has no standing approvals in the scanned window."
+              ? "No approvals were found for this address in about the last 7 days of on-chain history."
               : "All allowances for this address are expired. Toggle “Show expired” to view them."}
           </div>
         </div>
@@ -170,11 +182,14 @@ function AllowanceRow({
   }, [network, record.contractId, userAddress]);
 
   const spenderInfo: SpenderInfo | null = useMemo(
-    () => lookupSpender(record.spender),
-    [record.spender],
+    () => lookupSpender(record.spender, network),
+    [record.spender, network],
   );
 
   const avatarText = tokenSymbol ? tokenSymbol.slice(0, 2).toUpperCase() : tokenError ? "?" : "…";
+  // reserve the accent avatar for a resolved token; a still-loading ("…") or
+  // errored ("?") token gets a neutral chip so its state reads at a glance
+  const avatarResolved = tokenSymbol !== null;
 
   return (
     <div
@@ -198,8 +213,8 @@ function AllowanceRow({
             height: 34,
             borderRadius: 9,
             background: "var(--surface-2)",
-            border: "1px solid var(--accent-line)",
-            color: "var(--accent)",
+            border: avatarResolved ? "1px solid var(--accent-line)" : "1px solid var(--border-2)",
+            color: avatarResolved ? "var(--accent)" : "var(--fg-3)",
             display: "grid",
             placeItems: "center",
             font: '700 12px/1 "Geist Mono", monospace',
@@ -261,8 +276,8 @@ function AllowanceRow({
               size={12}
               href={addressExplorerUrl(network, record.spender)}
             />
-            <span data-testid="unknown-spender-badge">
-              <Badge tone="danger" bordered>
+            <span data-testid="unknown-spender-badge" style={{ fontSize: 11.5 }}>
+              <Badge tone="warning" bordered>
                 <svg
                   width="12"
                   height="12"
@@ -276,28 +291,40 @@ function AllowanceRow({
                 >
                   <path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
                 </svg>
-                Unknown spender, verify
+                <InfoTip tip="We don't recognize this address as a known app or protocol on this network. That doesn't make it malicious, only that we can't vouch for it. It can spend up to the limit shown. Inspect it with the explorer link, and if you don't recognize it, revoking is the safe choice.">
+                  Unrecognized spender
+                </InfoTip>
               </Badge>
             </span>
           </div>
         )}
       </div>
 
-      {/* amount */}
+      {/* amount (spend limit) */}
       <div
         data-testid="row-amount"
-        style={{ font: "600 13px/1 'Geist Mono', monospace" }}
+        style={{ display: "flex", alignItems: "baseline", gap: 5, minWidth: 0 }}
         title={tokenDecimals !== null ? `${tokenDecimals} decimals` : undefined}
       >
-        {formatAmount(record.amount, tokenDecimals)}
+        <span style={{ font: "600 13px/1 'Geist Mono', monospace" }}>
+          {formatAmount(record.amount, tokenDecimals)}
+        </span>
+        {tokenSymbol !== null ? (
+          <span style={{ fontSize: 11, color: "var(--fg-3)", fontWeight: 500 }}>{tokenSymbol}</span>
+        ) : null}
       </div>
 
       {/* expires */}
-      <div data-testid="row-expires" title={`ledger ${record.live_until_ledger}`}>
+      <div data-testid="row-expires">
         {record.expired ? (
-          <Badge tone="warning">expired</Badge>
+          <span title="This approval has already ended, so the spender can no longer move your tokens. There's nothing to revoke.">
+            <Badge tone="warning">expired</Badge>
+          </span>
         ) : (
-          <span style={{ font: "500 12.5px/1 'Geist Mono', monospace", color: "var(--fg-2)" }}>
+          <span
+            style={{ font: "500 12.5px/1 'Geist Mono', monospace", color: "var(--fg-2)" }}
+            title="Time left until this approval ends on its own."
+          >
             {formatExpiry(record.live_until_ledger, currentLedger)}
           </span>
         )}
@@ -344,8 +371,14 @@ function formatExpiry(liveUntilLedger: number, currentLedger: number): string {
   if (hours < 24) return `in ${hours}h`;
   const days = Math.floor(hours / 24);
   if (days < 30) return `in ${days}d`;
-  const months = Math.floor(days / 30);
-  if (months < 12) return `in ${months}mo`;
+  // only escalate to years once we're genuinely at/over a year. Using 30-day
+  // months and 365-day years together left a dead zone (360-364 days floored to
+  // "12 months" but rounded to "0 years" -> "in 0y"). Guard on the same 365-day
+  // boundary the year bucket uses.
+  if (days < 365) {
+    const months = Math.floor(days / 30);
+    return `in ${months}mo`;
+  }
   const years = Math.floor(days / 365);
   return `in ${years}y`;
 }

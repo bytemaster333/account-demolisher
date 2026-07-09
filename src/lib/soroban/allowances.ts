@@ -16,8 +16,19 @@ export interface AllowanceRecord {
   readonly expired: boolean;
 }
 
-// ~30 days of ledgers at 5s cadence
-export const DEFAULT_SCAN_WINDOW_LEDGERS = 518_400;
+// Soroban RPC only retains events for ~7 days, so a wider window is not just
+// wasted work — it is dishonest, since anything older simply cannot be found via
+// getEvents. Match the real retention (~7 days of ledgers at 5s cadence:
+// 7 * 24 * 60 * 60 / 5 = 120_960). The retention-floor retry below still clamps
+// gracefully if a given RPC retains slightly less. NOTE: an allowance whose last
+// approve is older than this window is not discoverable by event scan alone; the
+// UI surfaces this ~7-day caveat so the empty/partial result isn't mistaken for
+// "no allowances exist".
+export const DEFAULT_SCAN_WINDOW_LEDGERS = 120_960;
+
+// human-facing description of the scan window, kept next to the constant so copy
+// and behavior can't drift. update both together.
+export const SCAN_WINDOW_DESCRIPTION = "about the last 7 days";
 
 // per-page event cap on the rpc
 const PAGE_LIMIT = 10_000;

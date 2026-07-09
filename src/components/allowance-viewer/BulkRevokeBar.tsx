@@ -43,8 +43,8 @@ export function BulkRevokeBar({
 }: BulkRevokeBarProps): React.JSX.Element | null {
   const activeRevocable = useMemo(() => records.filter((r) => !r.expired), [records]);
   const unknownActive = useMemo(
-    () => activeRevocable.filter((r) => lookupSpender(r.spender) === null),
-    [activeRevocable],
+    () => activeRevocable.filter((r) => lookupSpender(r.spender, network) === null),
+    [activeRevocable, network],
   );
 
   const [phase, setPhase] = useState<Phase>("idle");
@@ -144,10 +144,27 @@ export function BulkRevokeBar({
         <Progress
           value={doneCount}
           max={total}
+          tone="accent"
           label="Revoking approvals"
           valueLabel={`${doneCount} / ${total}`}
           data-testid="bulk-revoke-progress"
         />
+        <div
+          role="alert"
+          style={{
+            marginTop: 12,
+            padding: "9px 12px",
+            borderRadius: 10,
+            border: "1px solid color-mix(in srgb, var(--warning) 35%, transparent)",
+            background: "color-mix(in srgb, var(--warning) 8%, transparent)",
+            fontSize: 11.5,
+            lineHeight: 1.5,
+            color: "var(--fg-2)",
+          }}
+        >
+          Keep this tab open until the sweep finishes. Each approval is a separate signature and
+          transaction; leaving now would revoke some but not others.
+        </div>
         <div
           style={{
             display: "flex",
@@ -297,21 +314,24 @@ export function BulkRevokeBar({
           <strong style={{ color: "var(--fg)", fontWeight: 600 }}>
             {activeRevocable.length} active approvals
           </strong>{" "}
-          on this account. Revoke them in one sweep instead of row by row.
+          on this account. Revoke them in one sweep instead of row by row.{" "}
+          {hasUnknownSubset
+            ? "Revoking all also cancels approvals for apps you may still use (you'd re-approve them next time), so if you're just cleaning up, start with the ones we don't recognize."
+            : "Revoking cancels approvals for apps you may still use; you'd re-approve them next time."}
         </span>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           {hasUnknownSubset ? (
             <Button
-              variant="secondary"
+              variant="danger"
               size="sm"
               onClick={() => ask(unknownActive)}
               data-testid="bulk-revoke-unknown"
             >
-              Revoke {unknownActive.length} unknown
+              Revoke {unknownActive.length} unrecognized
             </Button>
           ) : null}
           <Button
-            variant="danger"
+            variant={hasUnknownSubset ? "secondary" : "danger"}
             size="sm"
             onClick={() => ask(activeRevocable)}
             data-testid="bulk-revoke-all"

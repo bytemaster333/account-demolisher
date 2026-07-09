@@ -17,32 +17,64 @@ import { getRpc } from "@/lib/soroban/rpc-client";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import type { Connector } from "@/lib/wallet/connector";
 
-// serialize submits per source account. every revoke is built at Horizon's
-// current sequence N and lands at N+1, so two concurrent submits for the same
-// source both build at N+1 and one loses to tx_bad_seq. RevokeButton's disabled
-// state is per-instance (no cross-row lock), so rapid clicks across rows could
-// otherwise race; chaining here guarantees the previous submit has fully
-// returned, and thus advanced the local view, before the next one re-reads
-// Horizon.
-const inFlight = new Map<string, Promise<unknown>>();
+// serialize revokes per source account so the next one only *builds* after the
+// previous one has landed in a ledger. This is the subtle part: submit-only
+// acceptance (PENDING) does NOT advance Horizon's account sequence, only ledger
+// inclusion does. So merely chaining the builds — as this used to — is not
+// enough: two rapid per-row revokes for the same source would both build at the
+// same sequence N+1 and the second loses to tx_bad_seq / TRY_AGAIN_LATER. The
+// per-source gate below only opens once the previous revoke is confirmed
+// included, so the next build reads an advanced sequence. RevokeButton's disabled
+// state is per-instance (no cross-row lock), so this shared gate is what keeps
+// rapid clicks across different rows correct. The bulk sweep is already
+// inclusion-serialized by its own loop; the extra confirm here is a fast no-op
+// for it (the tx is already included).
+//
+// value = a promise that resolves when it is safe to build the NEXT revoke for
+// that source. A best-effort confirm opens it even on poll failure, so a tx that
+// never lands can't deadlock the queue forever (worst case the next build waits
+// out the poll window, still safer than a guaranteed sequence collision).
+const sourceGate = new Map<string, Promise<void>>();
 
 // build, sign and submit a revoke. resolves with the tx hash once the RPC
-// accepts it (PENDING/DUPLICATE). does NOT wait for ledger inclusion.
+// accepts it (PENDING/DUPLICATE). does NOT wait for ledger inclusion before
+// resolving to the caller, but internally holds the per-source gate closed until
+// this tx is included so the next build for the same source is sequence-safe.
 export async function submitRevoke(
   network: NetworkConfig,
   connector: Connector,
   record: AllowanceRecord,
   userAddress: string,
 ): Promise<string> {
-  const prev = inFlight.get(userAddress) ?? Promise.resolve();
-  const run = prev
-    .catch(() => {})
-    .then(() => submitRevokeImpl(network, connector, record, userAddress));
-  inFlight.set(userAddress, run);
+  const prevGate = sourceGate.get(userAddress) ?? Promise.resolve();
+  let openNext!: () => void;
+  const nextGate = new Promise<void>((resolve) => {
+    openNext = resolve;
+  });
+  // the next caller for this source waits on `nextGate`, which we only open once
+  // this revoke is confirmed included
+  sourceGate.set(
+    userAddress,
+    prevGate.then(
+      () => nextGate,
+      () => nextGate,
+    ),
+  );
+
+  // wait our turn: the previous revoke for this source must have landed
+  await prevGate.catch(() => {});
   try {
-    return await run;
-  } finally {
-    if (inFlight.get(userAddress) === run) inFlight.delete(userAddress);
+    const hash = await submitRevokeImpl(network, connector, record, userAddress);
+    // open the gate for the next build only after inclusion; best-effort so a
+    // stuck confirm still eventually releases the queue
+    void confirmRevoke(network, hash)
+      .catch(() => {})
+      .finally(() => openNext());
+    return hash;
+  } catch (e) {
+    // we never submitted (or it errored before enqueue); don't hold up the queue
+    openNext();
+    throw e;
   }
 }
 
