@@ -15,6 +15,8 @@ const config = [
       "test-results/**",
       "design/**",
       "docs/**",
+      // standalone Node QA seeders (testnet), not part of the app build
+      "scripts/**",
       "next-env.d.ts",
     ],
   },
