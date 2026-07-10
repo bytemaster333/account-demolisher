@@ -84,6 +84,20 @@ async function submitRevokeImpl(
   record: AllowanceRecord,
   userAddress: string,
 ): Promise<string> {
+  // guard against the wallet's active account drifting from the one this revoke
+  // is built for. A kit connector signs with whatever account the extension
+  // currently holds, so a user switching accounts inside the wallet after
+  // connecting would otherwise sign as the wrong key; SEP-41 requires
+  // source == from, so it would fail opaquely at submit. Assert up front and
+  // refuse with a clear message. (A pasted-seed connector's key is fixed, so
+  // this is a no-op for it.)
+  const signerKey = await connector.getPublicKey();
+  if (signerKey !== userAddress) {
+    throw new Error(
+      "Your wallet's active account changed. Switch back to the account that owns this address, or reconnect it, to revoke.",
+    );
+  }
+
   const rpc = getRpc(network);
   const { sequence: currentLedger } = await rpc.getLatestLedger();
 

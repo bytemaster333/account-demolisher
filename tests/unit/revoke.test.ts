@@ -33,6 +33,9 @@ const USER = "GCAWLISZMTHWMMHJE7BRYYNNKR4OL2PR4COXKH2MKGVDOH4BP6DMAHPE";
 
 function connector(): Connector {
   return {
+    // revoke asserts the wallet's active account still matches the address it's
+    // revoking for before building; this mock reports the expected owner.
+    getPublicKey: vi.fn(async () => USER),
     signTransaction: vi.fn(async () => ({ signedXdr: "AAAA", signerAddress: USER })),
   } as unknown as Connector;
 }
@@ -77,6 +80,20 @@ describe("submitRevoke enqueue guard", () => {
     await expect(submitRevoke(NETWORK, connector(), RECORD, USER)).rejects.toThrow(
       /did not enqueue.*txBadSeq/,
     );
+  });
+
+  it("refuses to build/submit when the wallet's active account drifted from the owner", async () => {
+    // a kit wallet signing as a different account than the one we're revoking for
+    // (user switched accounts in the extension) must be caught up front, not sent
+    const OTHER = "GDLJJ5CGPWNOCBJMCPJY5HXDIAPV2UGQJWKUL35EVS7IR6JJZQ27WOPC";
+    const drifted = {
+      getPublicKey: vi.fn(async () => OTHER),
+      signTransaction: vi.fn(),
+    } as unknown as Connector;
+    await expect(submitRevoke(NETWORK, drifted, RECORD, USER)).rejects.toThrow(
+      /active account changed/,
+    );
+    expect(sendTransaction).not.toHaveBeenCalled();
   });
 });
 

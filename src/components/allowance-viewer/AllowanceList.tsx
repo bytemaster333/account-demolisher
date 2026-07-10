@@ -82,30 +82,6 @@ export function AllowanceList({
         </span>
       </div>
 
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: GRID_COLS,
-          gap: 14,
-          padding: "11px 20px",
-          borderBottom: "1px solid var(--border)",
-        }}
-      >
-        <span style={HEADER_CELL}>TOKEN</span>
-        <span style={HEADER_CELL}>SPENDER</span>
-        <span style={HEADER_CELL}>
-          <InfoTip tip="The most this spender is still allowed to move of this token. Revoking sets it to zero.">
-            SPEND LIMIT
-          </InfoTip>
-        </span>
-        <span style={HEADER_CELL}>
-          <InfoTip tip="After this time the approval ends on its own and the spender can no longer move your tokens. Expired approvals are already harmless.">
-            EXPIRES
-          </InfoTip>
-        </span>
-        <span />
-      </div>
-
       {visible.length === 0 ? (
         <div
           data-testid="allowance-list-empty"
@@ -119,17 +95,47 @@ export function AllowanceList({
           </div>
         </div>
       ) : (
-        visible.map((record) => (
-          <AllowanceRow
-            key={`${record.contractId}|${record.spender}`}
-            record={record}
-            userAddress={userAddress}
-            network={network}
-            currentLedger={currentLedger}
-            connectorRef={connectorRef}
-            onRevoked={onRevoked}
-          />
-        ))
+        // horizontal scroll on narrow viewports: the five fixed columns would
+        // otherwise crush the mono addresses and badges below legibility. The
+        // header and rows share one min-width track so they scroll as a unit.
+        <div style={{ overflowX: "auto" }}>
+          <div style={{ minWidth: 620 }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: GRID_COLS,
+                gap: 14,
+                padding: "11px 20px",
+                borderBottom: "1px solid var(--border)",
+              }}
+            >
+              <span style={HEADER_CELL}>TOKEN</span>
+              <span style={HEADER_CELL}>SPENDER</span>
+              <span style={HEADER_CELL}>
+                <InfoTip tip="The most this spender is still allowed to move of this token. Revoking sets it to zero.">
+                  SPEND LIMIT
+                </InfoTip>
+              </span>
+              <span style={HEADER_CELL}>
+                <InfoTip tip="After this time the approval ends on its own and the spender can no longer move your tokens. Expired approvals are already harmless.">
+                  EXPIRES
+                </InfoTip>
+              </span>
+              <span />
+            </div>
+            {visible.map((record) => (
+              <AllowanceRow
+                key={`${record.contractId}|${record.spender}`}
+                record={record}
+                userAddress={userAddress}
+                network={network}
+                currentLedger={currentLedger}
+                connectorRef={connectorRef}
+                onRevoked={onRevoked}
+              />
+            ))}
+          </div>
+        </div>
       )}
     </Card>
   );
