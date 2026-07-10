@@ -17,6 +17,15 @@ export interface RefractorTxStatus {
   // matching `signaturesNeeded` relies on. empty when refractor reports no
   // resolvable signer keys yet (e.g. before it inspects the envelope)
   readonly signedBy: readonly string[];
+  // total signatures collected so far, regardless of whether the required signer
+  // set is known. lets the UI say "N collected" even in the indeterminate state
+  readonly collectedCount: number;
+  // refractor's own lifecycle string ("ready" / "pending" / "failed" / …) and
+  // the error it attaches on failure. IMPORTANT: refractor reports "failed" even
+  // for transactions that actually landed on-chain, so these are hints to
+  // reconcile against Horizon, never a final verdict on their own.
+  readonly status?: string;
+  readonly error?: string;
   // unix-seconds expiry after which refractor purges the envelope
   readonly expiresAt?: number;
   readonly callbackUrl?: string;
@@ -161,20 +170,23 @@ function parseStatus(payload: unknown): RefractorTxStatus {
   const desiredKeys = collectSignerKeys(desiredSignersRaw);
   const collectedKeys = collectSignerKeys(signaturesRaw);
 
-  // when refractor knows the desired set, signaturesNeeded is the count still
-  // outstanding. when it doesn't, default to 1 so the poller keeps watching
-  // until the user sees signatures land or aborts
-  let signaturesNeeded: number;
-  if (Array.isArray(desiredSignersRaw) && desiredSignersRaw.length > 0) {
-    const outstanding = desiredKeys.filter((k) => !collectedKeys.includes(k)).length;
-    signaturesNeeded = outstanding;
-  } else {
-    signaturesNeeded = obj.submitted === true ? 0 : 1;
-  }
+  // only surface a signer list when refractor has actually resolved the required
+  // set. when it hasn't (desiredSigners null/empty), we do NOT fall back to the
+  // collected keys: doing so renders a "complete-looking" list of already-signed
+  // signers while hiding the ones still missing, and contradicts the progress
+  // count above it. an empty `signers` routes the UI to its honest indeterminate
+  // state instead.
+  const hasDesired = desiredKeys.length > 0;
+  const signers: readonly string[] = hasDesired ? desiredKeys : [];
 
-  // surfaced signer list: prefer the desired set so the UI can list who still
-  // needs to sign; fall back to whoever has already signed
-  const signers: readonly string[] = desiredKeys.length > 0 ? desiredKeys : collectedKeys;
+  // signaturesNeeded is only meaningful when the desired set is known; in the
+  // indeterminate case it isn't displayed (the signer list is suppressed), so a
+  // conservative non-zero value just keeps the poller alive
+  const signaturesNeeded = hasDesired
+    ? desiredKeys.filter((k) => !collectedKeys.includes(k)).length
+    : obj.submitted === true
+      ? 0
+      : 1;
 
   // which of the surfaced signers have already signed. intersect against the
   // surfaced set so a collected key outside it can't mark a non-listed signer
@@ -190,7 +202,14 @@ function parseStatus(payload: unknown): RefractorTxStatus {
     signaturesNeeded,
     signers,
     signedBy,
+    collectedCount: collectedKeys.length,
   };
+
+  const refractorStatus = readString(obj, "status");
+  if (refractorStatus !== null) status.status = refractorStatus;
+
+  const refractorError = readString(obj, "error");
+  if (refractorError !== null) status.error = refractorError;
 
   const expiresAt = readNumber(obj, "expiresAt");
   if (expiresAt !== null) status.expiresAt = expiresAt;

@@ -61,15 +61,20 @@ describe("refractor parseStatus, signedBy derivation", () => {
     expect(status.signedBy).toEqual([A]);
   });
 
-  it("falls back to collected keys when desiredSigners is absent, all shown signed", async () => {
+  it("stays indeterminate (no fabricated signer list) when desiredSigners is absent", async () => {
+    // when refractor hasn't resolved the required set, surfacing only the
+    // already-collected keys would render a complete-looking list that hides the
+    // missing signer(s). the surfaced list must be empty so the UI shows its
+    // honest indeterminate state, while collectedCount still exposes progress.
     const status = await clientReturning({
       ...BASE,
       desiredSigners: null,
       signatures: [{ key: A }],
     }).getStatus(BASE.hash);
 
-    expect(status.signers).toEqual([A]);
-    expect(status.signedBy).toEqual([A]);
+    expect(status.signers).toEqual([]);
+    expect(status.signedBy).toEqual([]);
+    expect(status.collectedCount).toBe(1);
   });
 
   it("reports no signers signed when signatures is empty", async () => {
@@ -81,5 +86,19 @@ describe("refractor parseStatus, signedBy derivation", () => {
 
     expect(status.signedBy).toEqual([]);
     expect(status.signaturesNeeded).toBe(2);
+    expect(status.collectedCount).toBe(0);
+  });
+
+  it("surfaces refractor's own status/error strings for reconciliation", async () => {
+    const status = await clientReturning({
+      ...BASE,
+      desiredSigners: [A, B],
+      signatures: [A, B],
+      status: "failed",
+      error: "Failed to submit transaction",
+    }).getStatus(BASE.hash);
+
+    expect(status.status).toBe("failed");
+    expect(status.error).toBe("Failed to submit transaction");
   });
 });

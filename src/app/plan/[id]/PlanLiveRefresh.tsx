@@ -80,21 +80,14 @@ export function PlanLiveRefresh(): React.JSX.Element {
         {statusText}
       </span>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={() => setAuto((a) => !a)}
           data-testid="plan-live-toggle"
-          style={{
-            background: "none",
-            border: "none",
-            padding: 0,
-            cursor: "pointer",
-            font: "600 12px/1 Geist, sans-serif",
-            color: "var(--fg-3)",
-          }}
         >
           {auto ? "Pause" : "Resume"}
-        </button>
+        </Button>
         <Button
           variant="secondary"
           size="sm"
