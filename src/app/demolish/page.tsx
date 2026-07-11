@@ -35,6 +35,7 @@ import { SecretKeyFallback } from "@/components/wallet/SecretKeyFallback";
 import { explorerAccountUrl, explorerTxUrl } from "@/lib/explorer";
 import Link from "next/link";
 import { useNetworkStore } from "@/stores/network";
+import { CreatePlanPanel } from "@/components/multisig/CreatePlanPanel";
 import { resolveNetwork, type NetworkConfig } from "@/lib/config/networks";
 import { pageFlowMachine } from "@/lib/orchestrator/page-flow-machine";
 import { auditAccount } from "@/lib/stellar/account-audit";
@@ -390,6 +391,10 @@ function DemolishFlow(): React.JSX.Element {
     readonly threshold: number;
     readonly signers: readonly AuditSigner[];
   } | null>(null);
+  // the full audit from the multisig preflight. The machine's ctx.audit isn't
+  // populated until the plan is generated (after signers are gathered), but the
+  // "create a signing plan" path needs the audit up-front at the configure gate.
+  const [preflightAudit, setPreflightAudit] = useState<AccountAudit | null>(null);
   const [extraSigners, setExtraSigners] = useState<
     readonly {
       readonly publicKey: string;
@@ -412,9 +417,13 @@ function DemolishFlow(): React.JSX.Element {
           threshold: a.thresholds.high,
           signers: a.signers,
         });
+        setPreflightAudit(a);
       })
       .catch(() => {
-        if (!cancelled) setMultisig(null);
+        if (!cancelled) {
+          setMultisig(null);
+          setPreflightAudit(null);
+        }
       });
     return () => {
       cancelled = true;
@@ -470,6 +479,15 @@ function DemolishFlow(): React.JSX.Element {
 
   const audit = ctx.audit;
   const tree = ctx.tree;
+
+  // whether the account holds Soroban (smart-contract) positions. Those each need
+  // their own transaction, so they can't be bundled into a single multisig
+  // signing plan; the CreatePlanPanel uses this to gate the async path.
+  const hasSorobanPositions =
+    ctx.positions.blend.length > 0 ||
+    ctx.positions.aquarius.length > 0 ||
+    ctx.positions.soroswap.length > 0 ||
+    ctx.positions.fxdao.length > 0;
 
   // scam heuristics over the account's held credit balances (look-alike symbols,
   // homoglyphs, off-allowlist contracts), surfaced as an informational notice.
@@ -608,6 +626,7 @@ function DemolishFlow(): React.JSX.Element {
     // ConnectButton re-notifies every render, so a fresh `[]`/`null` here would
     // create a new reference each time and spin an infinite render loop.
     setMultisig((prev) => (prev === null ? prev : null));
+    setPreflightAudit((prev) => (prev === null ? prev : null));
     setExtraSigners((prev) => (prev.length === 0 ? prev : []));
   }, []);
 
@@ -900,6 +919,23 @@ function DemolishFlow(): React.JSX.Element {
                       )}
                       onAddSecret={onAddSecretSigner}
                       onRemove={onRemoveSigner}
+                    />
+                  ) : null}
+                  {multisigRequired && (audit ?? preflightAudit) ? (
+                    <CreatePlanPanel
+                      audit={(audit ?? preflightAudit)!}
+                      destination={form.destination}
+                      destinationReady={destinationGate.ready}
+                      network={network}
+                      connectorRef={connectorRef}
+                      hasConnector={hasConnector}
+                      disposal={{
+                        returnToIssuer: form.returnToIssuer,
+                        sendToDestination: form.sendToDestination,
+                      }}
+                      hasSorobanPositions={hasSorobanPositions}
+                      hasSelectedAllowances={false}
+                      useMediator={useMediator}
                     />
                   ) : null}
                   {audit && numCoverable > 0 ? (
