@@ -84,6 +84,71 @@ export class RefractorClient {
 
     return parseStatus(payload);
   }
+
+  // upload a transaction to create a signing plan. Refractor slices the
+  // signatures off the posted envelope, records them, and (when submit=true)
+  // submits automatically once the required signatures are collected. Returns
+  // the hash the plan is keyed under (== the transaction hash), used for the
+  // /plan/<hash> link. `desiredSigners` is the account's signer set, so the
+  // /plan viewer can list who still needs to sign; Refractor leaves it null
+  // otherwise and the viewer can't resolve the required set.
+  async createPlan(params: CreatePlanParams): Promise<CreatePlanResult> {
+    if (typeof params.xdr !== "string" || params.xdr.length === 0) {
+      throw new RefractorError("Refractor createPlan: xdr must be non-empty.", "EARG");
+    }
+
+    const body: Record<string, unknown> = {
+      network: params.network,
+      xdr: params.xdr,
+      submit: params.submit ?? true,
+    };
+    if (params.desiredSigners && params.desiredSigners.length > 0) {
+      body.desiredSigners = params.desiredSigners;
+    }
+    if (params.callbackUrl) body.callbackUrl = params.callbackUrl;
+
+    const response = await this.#fetch(`${this.#apiUrl}/tx`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    const payload = await readJson(response);
+    if (!response.ok) {
+      throw new RefractorError(
+        `Refractor createPlan failed: ${response.status} ${response.statusText}: ${describeError(payload)}`,
+        readErrorCode(payload, "ECREATE"),
+        response.status,
+      );
+    }
+
+    const hash = readString(payload, "hash");
+    if (!hash) {
+      throw new RefractorError(
+        "Refractor createPlan: response is missing the plan hash.",
+        "EBADRESP",
+      );
+    }
+    const network = readString(payload, "network") ?? params.network;
+    return { hash, network };
+  }
+}
+
+export interface CreatePlanParams {
+  // signed (at least partially) transaction envelope, base64 XDR
+  readonly xdr: string;
+  // refractor's network token
+  readonly network: "public" | "testnet" | "futurenet";
+  // the account's required signer set, so the viewer can show who must sign
+  readonly desiredSigners?: readonly string[];
+  // auto-submit once the threshold is met (default true)
+  readonly submit?: boolean;
+  readonly callbackUrl?: string;
+}
+
+export interface CreatePlanResult {
+  readonly hash: string;
+  readonly network: string;
 }
 
 // hand-rolled shape validation, the response is tiny, the rules are obvious
@@ -236,4 +301,8 @@ function stripTrailingSlash(url: string): string {
 
 export async function getStatus(hash: string): Promise<RefractorTxStatus> {
   return new RefractorClient().getStatus(hash);
+}
+
+export async function createPlan(params: CreatePlanParams): Promise<CreatePlanResult> {
+  return new RefractorClient().createPlan(params);
 }

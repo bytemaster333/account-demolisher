@@ -26,6 +26,11 @@ export function buildClassicTransaction(
   account: Horizon.AccountResponse,
   network: NetworkConfig,
   feeBase: number = Number.parseInt(BASE_FEE, 10),
+  // signing window. The live execute path signs+submits within minutes, so the
+  // default is short. A multisig signing plan circulates for hours/days, so its
+  // builder passes a much longer window (the tx must still be valid when the last
+  // co-signer signs).
+  timeoutSeconds: number = FIVE_MINUTES_SECONDS,
 ): TransactionBuildResult {
   if (batch.operations.length === 0) {
     throw new Error("buildClassicTransaction: batch has no operations");
@@ -42,7 +47,7 @@ export function buildClassicTransaction(
     builder.addOperation(addOperation(op));
   }
 
-  builder.setTimeout(FIVE_MINUTES_SECONDS);
+  builder.setTimeout(timeoutSeconds);
 
   const tx = builder.build();
   const envelopeXdr = tx.toEnvelope().toXDR("base64");
