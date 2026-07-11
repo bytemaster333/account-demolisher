@@ -273,28 +273,35 @@ async function resolveOutcome(
   status: RefractorTxStatus,
   net: NetworkConfig,
 ): Promise<Outcome> {
+  // the plan id IS the classic tx hash, so Horizon is the source of truth for
+  // whether this exact transaction has already landed, whatever Refractor
+  // reports. Refractor lags, mislabels 'failed' for transactions that actually
+  // succeeded, AND never learns about out-of-band submissions (a co-signer who
+  // submits the completed envelope themselves). So we always reconcile against
+  // Horizon first, then fall back to Refractor's own hints.
+  const onChain = await fetchHorizonTx(id, net);
+  if (onChain?.successful === true) return { kind: "submitted", txHash: id };
+  if (onChain?.successful === false) {
+    return { kind: "failed", reason: "The transaction was submitted but failed on the network." };
+  }
+
+  // not on-chain (yet): trust Refractor's terminal hints if it has any, else
+  // we're still collecting signatures
   const refractorSubmitted = status.submitted === true;
   const refractorFailed =
     (status.status ?? "").toLowerCase() === "failed" ||
     (typeof status.error === "string" && status.error.length > 0);
-
-  // still gathering signatures: no need to touch Horizon
-  if (!refractorSubmitted && !refractorFailed) return { kind: "collecting" };
-
-  const onChain = await fetchHorizonTx(id, net);
-  if (onChain?.successful === true) return { kind: "submitted", txHash: id };
-  if (onChain !== null && onChain.successful === false) {
-    return { kind: "failed", reason: "The transaction was submitted but failed on the network." };
-  }
-  // not found on Horizon (or Horizon unreachable): trust refractor's own hint
   if (refractorSubmitted) return { kind: "submitted", txHash: null };
-  return {
-    kind: "failed",
-    reason:
-      typeof status.error === "string" && status.error.length > 0
-        ? status.error
-        : "Refractor reported that this transaction could not be submitted.",
-  };
+  if (refractorFailed) {
+    return {
+      kind: "failed",
+      reason:
+        typeof status.error === "string" && status.error.length > 0
+          ? status.error
+          : "Refractor reported that this transaction could not be submitted.",
+    };
+  }
+  return { kind: "collecting" };
 }
 
 export default async function PlanPage({ params }: PlanPageProps): Promise<React.JSX.Element> {
