@@ -54,67 +54,19 @@ export function MultisigSigners({
       role="group"
       aria-label="Multisig signers"
       data-testid="multisig-signers"
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 12,
-        padding: "14px 16px",
-        borderRadius: 12,
-        background: met
-          ? "color-mix(in srgb, var(--success-soft) 55%, transparent)"
-          : "color-mix(in srgb, var(--warning-soft) 60%, transparent)",
-        border: `1px solid color-mix(in srgb, var(--${met ? "success" : "warning"}) 26%, transparent)`,
-        color: "var(--fg)",
-      }}
+      style={{ display: "flex", flexDirection: "column", gap: 12 }}
     >
-      <div>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 10,
-          }}
+      <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "var(--fg-2)" }}>
+        Add each authorized signer&apos;s secret key until the combined weight reaches{" "}
+        <strong style={{ color: "var(--fg)", fontWeight: 600 }}>{threshold}</strong>. You currently
+        have{" "}
+        <strong
+          data-testid="multisig-status"
+          style={{ color: met ? "var(--success)" : "var(--fg)", fontWeight: 600 }}
         >
-          <div style={{ fontSize: 13.5, fontWeight: 600 }}>
-            This account needs more than one person to approve closing it
-          </div>
-          <span
-            data-testid="multisig-status"
-            style={{
-              flexShrink: 0,
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 5,
-              padding: "3px 9px",
-              borderRadius: 999,
-              fontSize: 11.5,
-              fontWeight: 700,
-              whiteSpace: "nowrap",
-              color: met ? "var(--success)" : "var(--warning)",
-              border: `1px solid color-mix(in srgb, var(--${met ? "success" : "warning"}) 40%, transparent)`,
-              background: "var(--surface)",
-            }}
-          >
-            <span aria-hidden="true">{met ? "✓" : "!"}</span>
-            {met ? "Ready" : "Not enough yet"}
-          </span>
-        </div>
-        <div
-          style={{
-            marginTop: 6,
-            fontSize: 12.5,
-            fontWeight: 600,
-            lineHeight: 1.5,
-            color: "var(--fg)",
-          }}
-        >
-          Keys are used only in your browser to sign, and are never uploaded or stored.
-        </div>
-        <div style={{ marginTop: 6, fontSize: 12.5, lineHeight: 1.5, color: "var(--fg-2)" }}>
-          You need signatures adding up to {threshold}; you currently have {currentWeight}. Paste
-          the secret keys of enough authorized signers to reach that total.
-        </div>
+          {currentWeight}
+        </strong>
+        . Keys are used only in your browser to sign, and are never uploaded or stored.
       </div>
 
       {added.length > 0 ? (
@@ -137,7 +89,7 @@ export function MultisigSigners({
                 gap: 10,
                 padding: "7px 11px",
                 borderRadius: 8,
-                background: "var(--surface)",
+                background: "var(--surface-2)",
                 border: "1px solid var(--border)",
               }}
             >
@@ -196,7 +148,7 @@ export function MultisigSigners({
                 padding: "10px 12px",
                 borderRadius: 9,
                 border: "1px solid var(--border-2)",
-                background: "var(--surface)",
+                background: "var(--surface-2)",
                 color: "var(--fg)",
                 font: "500 13px/1 'Geist Mono', monospace",
               }}
@@ -209,7 +161,7 @@ export function MultisigSigners({
                 padding: "10px 14px",
                 borderRadius: 9,
                 border: "1px solid var(--border-2)",
-                background: "var(--surface)",
+                background: "var(--surface-2)",
                 color: "var(--fg)",
                 fontWeight: 600,
                 fontSize: 13,
@@ -226,8 +178,18 @@ export function MultisigSigners({
           ) : null}
         </div>
       ) : (
-        <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--success)" }}>
-          <span aria-hidden="true">✓ </span>Ready. You have enough signatures to close the account.
+        <div
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            fontSize: 12.5,
+            fontWeight: 600,
+            color: "var(--success)",
+          }}
+        >
+          <span aria-hidden="true">✓</span> Enough signatures. Continue to review, then close the
+          account live.
         </div>
       )}
     </div>

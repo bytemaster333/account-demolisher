@@ -40,6 +40,11 @@ export interface PageFlowInput {
   readonly sendToDestinationAssetKeys?: readonly string[];
   readonly positions?: ProtocolPositions;
   readonly allowances?: readonly AllowanceRecord[];
+  // when true, do NOT resolve market-conversion paths: every non-XLM balance is
+  // treated as un-routable so the user must choose issuer/destination disposal.
+  // Used for a multisig signing plan, where a market sell could fail and sink the
+  // one bundled transaction everyone signs.
+  readonly deterministicDisposal?: boolean;
 }
 
 export interface PageFlowContext {
@@ -92,6 +97,7 @@ interface PreviewInput {
   readonly selectedClaimableBalanceIds?: readonly string[];
   readonly returnToIssuerAssetKeys?: readonly string[];
   readonly sendToDestinationAssetKeys?: readonly string[];
+  readonly deterministicDisposal?: boolean;
 }
 
 interface PreviewOutput {
@@ -221,8 +227,13 @@ async function fetchDestinationTrustedKeys(
 const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) => {
   // resolve real XLM-conversion paths so credit balances convert via path
   // payment; anything without a path (and without disposal consent) is reported
-  // as un-routable rather than silently paid away.
-  const paths = await resolveCreditPaths(input.audit, input.network);
+  // as un-routable rather than silently paid away. In deterministic mode
+  // (multisig signing plan) we skip path resolution entirely, so EVERY non-XLM
+  // balance is un-routable and must be sent to its issuer or the destination, no
+  // market sells that could fail and sink the one transaction everyone signs.
+  const paths: Awaited<ReturnType<typeof resolveCreditPaths>> = input.deterministicDisposal
+    ? new Map()
+    : await resolveCreditPaths(input.audit, input.network);
   const unroutableBase = unroutableCredits(
     input.audit,
     paths,
@@ -572,6 +583,7 @@ export const pageFlowMachine = setup({
             ...(i.sendToDestinationAssetKeys
               ? { sendToDestinationAssetKeys: i.sendToDestinationAssetKeys }
               : {}),
+            ...(i.deterministicDisposal ? { deterministicDisposal: true } : {}),
           };
         },
         onDone: {

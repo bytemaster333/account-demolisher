@@ -36,8 +36,14 @@ import { explorerAccountUrl, explorerTxUrl } from "@/lib/explorer";
 import Link from "next/link";
 import { useNetworkStore } from "@/stores/network";
 import { CollectSignaturesStep } from "@/components/multisig/CollectSignaturesStep";
-import { CreatePlanPanel } from "@/components/multisig/CreatePlanPanel";
 import { resolveNetwork, type NetworkConfig } from "@/lib/config/networks";
+import { errorMessage } from "@/lib/errors";
+import {
+  assessBundleability,
+  createClosurePlan,
+  type ClosurePlanDisposal,
+} from "@/lib/multisig/closure-plan";
+import { getHorizon } from "@/lib/stellar/horizon-client";
 import { pageFlowMachine } from "@/lib/orchestrator/page-flow-machine";
 import { auditAccount } from "@/lib/stellar/account-audit";
 import { lookupCex, requireMemoEnforcement, type CexInfo } from "@/lib/safety/cex-registry";
@@ -706,16 +712,14 @@ function DemolishFlow(): React.JSX.Element {
       return;
     }
 
-    // for a multisig account, gather every collected signer into one connector
-    // that signs each transaction with all of them (meeting the threshold).
+    // For a multisig account with every key present, combine them into one
+    // connector that signs with all of them (meeting the threshold) so we can
+    // execute live. WITHOUT all the keys, proceed with just the initiator's key:
+    // the account still gets audited, the plan built + simulated, and shown in
+    // Review, exactly like any other close. The remaining signatures are then
+    // collected via the shareable signing plan (the Review terminal action).
     let connector: Connector = connectorRef.current;
-    if (multisigRequired) {
-      if (!multisigReady) {
-        setFormError(
-          `This account needs signing weight ${multisig?.threshold ?? 0}; you have ${collectedWeight}. Add more signer keys.`,
-        );
-        return;
-      }
+    if (multisigRequired && multisigReady) {
       const members: MultiSignerMember[] = [
         { connector: connectorRef.current, publicKey, weight: primaryWeight },
         ...extraSigners.map((s) => ({
@@ -744,6 +748,10 @@ function DemolishFlow(): React.JSX.Element {
         ...(form.sendToDestination.length > 0
           ? { sendToDestinationAssetKeys: form.sendToDestination }
           : {}),
+        // a shared close is signed as ONE bundled transaction, so it can't rely
+        // on a market sell (which could fail and sink it). Force deterministic
+        // disposal: every token goes through Fix issues -> return to issuer / send.
+        ...(multisigRequired ? { deterministicDisposal: true } : {}),
       },
     });
   }, [
@@ -754,8 +762,6 @@ function DemolishFlow(): React.JSX.Element {
     send,
     multisigRequired,
     multisigReady,
-    multisig,
-    collectedWeight,
     primaryWeight,
     extraSigners,
   ]);
@@ -764,6 +770,49 @@ function DemolishFlow(): React.JSX.Element {
     setShowConfirmDialog(false);
     send({ type: "CANCEL" });
   }, [send]);
+
+  const [creatingPlan, setCreatingPlan] = useState(false);
+  const [createPlanError, setCreatePlanError] = useState<string | null>(null);
+  // create the shareable signing plan from the REVIEWED close: the same audit,
+  // destination and deterministic disposal the user just approved in Review.
+  // Sign the initiator's part, upload to Refractor, then advance to the inline
+  // collect step. The plan the co-signers get is exactly what was reviewed.
+  const onCreatePlan = useCallback(async () => {
+    const a = audit ?? preflightAudit;
+    const connector = connectorRef.current;
+    if (a === null || connector === null) return;
+    setCreatingPlan(true);
+    setCreatePlanError(null);
+    try {
+      const sourceAccount = await getHorizon(network).loadAccount(a.accountId);
+      const disposal: ClosurePlanDisposal = {
+        ...(form.returnToIssuer.length > 0 ? { returnToIssuerAssetKeys: form.returnToIssuer } : {}),
+        ...(form.sendToDestination.length > 0
+          ? { sendToDestinationAssetKeys: form.sendToDestination }
+          : {}),
+      };
+      const { hash } = await createClosurePlan({
+        audit: a,
+        destination: form.destination,
+        network,
+        sourceAccount,
+        connector,
+        disposal,
+      });
+      setPlanHash(hash);
+    } catch (e: unknown) {
+      setCreatePlanError(errorMessage(e, "Couldn't create the signing plan."));
+    } finally {
+      setCreatingPlan(false);
+    }
+  }, [
+    audit,
+    preflightAudit,
+    network,
+    form.destination,
+    form.returnToIssuer,
+    form.sendToDestination,
+  ]);
   const onReset = useCallback(() => {
     setShowConfirmDialog(false);
     setForm(INITIAL_FORM);
@@ -922,191 +971,175 @@ function DemolishFlow(): React.JSX.Element {
               No side rail and no modals: the plan detail lives in the sign-off step. */}
           {!(isDiscovering || isPreviewing) && !isExecuting && !isSucceeded && !isFailed ? (
             <div style={{ maxWidth: 1080, margin: "0 auto" }}>
-              {isConfiguring ? (
-                planHash !== null ? (
-                  /* a shared plan was created: watch the signatures come in, in
-                     place. No navigating off to /plan and losing the flow. */
-                  <CollectSignaturesStep
-                    hash={planHash}
-                    network={network}
-                    connectedKey={publicKey}
-                  />
-                ) : multisigRequired && (audit ?? preflightAudit) ? (
-                  /* shared account, plan-first: configure the close, then the
-                     recommended shareable plan, with the live paste-all-keys
-                     path tucked into an advanced disclosure. */
-                  <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                    <MultisigContextBar threshold={multisig?.threshold ?? 0} have={primaryWeight} />
-                    {audit && numCoverable > 0 ? (
-                      <SponsorshipAutoRevokeNotice count={numCoverable} />
-                    ) : null}
-                    <FlowSectionLabel>Set up the close</FlowSectionLabel>
-                    <ConfigurePanel
-                      form={form}
-                      setForm={setForm}
-                      cex={cex}
-                      hasMemo={hasMemo}
-                      formError={formError}
-                      isBusy={false}
-                      canStart={false}
-                      startHint={null}
-                      onGeneratePlan={onStart}
-                      audit={audit}
-                      isDemo={isDemo}
-                      hideContinue
-                      assetIntro="Your whole XLM balance, including the small reserve every account locks, goes to the address below and the account is permanently closed. Any tokens are returned to their issuers, since a shared close can't safely sell them on the market."
-                    />
-                    <FlowSectionLabel>Get it signed</FlowSectionLabel>
-                    <CreatePlanPanel
-                      audit={(audit ?? preflightAudit)!}
-                      destination={form.destination}
-                      destinationReady={destinationGate.ready}
-                      network={network}
-                      connectorRef={connectorRef}
-                      hasConnector={hasConnector}
-                      disposal={{
-                        returnToIssuer: form.returnToIssuer,
-                        sendToDestination: form.sendToDestination,
-                      }}
-                      hasSorobanPositions={hasSorobanPositions}
-                      hasSelectedAllowances={false}
-                      useMediator={useMediator}
-                      onPlanCreated={setPlanHash}
-                    />
-                    <AdvancedSignSection
-                      open={advancedSignOpen}
-                      onToggle={() => setAdvancedSignOpen((o) => !o)}
-                    >
-                      {multisig ? (
-                        <MultisigSigners
-                          threshold={multisig.threshold}
-                          currentWeight={collectedWeight}
-                          added={extraSigners.map(
-                            (s): AddedSigner => ({ publicKey: s.publicKey, weight: s.weight }),
-                          )}
-                          onAddSecret={onAddSecretSigner}
-                          onRemove={onRemoveSigner}
+              {planHash !== null ? (
+                /* a shared signing plan was created at Review: collect the
+                   signatures right here. No navigating off to /plan and losing
+                   the close flow. */
+                <CollectSignaturesStep hash={planHash} network={network} connectedKey={publicKey} />
+              ) : (
+                <>
+                  {isConfiguring ? (
+                    multisigRequired ? (
+                      /* shared account: the SAME audit -> configure -> preview ->
+                         review flow as any close. The signing-plan terminal lives
+                         at Review; this step just configures the close (and can
+                         optionally gather signer keys for the live path). */
+                      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                        <MultisigContextBar
+                          threshold={multisig?.threshold ?? 0}
+                          have={primaryWeight}
                         />
-                      ) : null}
-                      <div style={{ marginTop: 14 }}>
-                        <Button
-                          variant="secondary"
-                          size="lg"
-                          style={{ width: "100%" }}
-                          onClick={onStart}
-                          disabled={
-                            !(
-                              publicKey !== null &&
-                              hasConnector &&
-                              multisigReady &&
-                              destinationGate.ready
-                            )
+                        {audit && numCoverable > 0 ? (
+                          <SponsorshipAutoRevokeNotice count={numCoverable} />
+                        ) : null}
+                        <ConfigurePanel
+                          form={form}
+                          setForm={setForm}
+                          cex={cex}
+                          hasMemo={hasMemo}
+                          formError={formError}
+                          isBusy={false}
+                          canStart={publicKey !== null && hasConnector && destinationGate.ready}
+                          startHint={
+                            publicKey === null || !hasConnector
+                              ? "Connect a wallet to continue."
+                              : destinationGate.hint
                           }
-                          disabledReason={
-                            !multisigReady
-                              ? "Add signer keys above until the total weight is met"
-                              : !destinationGate.ready
-                                ? (destinationGate.hint ?? "Choose a valid destination above first")
-                                : undefined
-                          }
-                          data-testid="demolish-start"
+                          onGeneratePlan={onStart}
+                          audit={audit}
+                          isDemo={isDemo}
+                          assetIntro="Your whole XLM balance, including the small reserve every account locks, goes to the address below and the account is permanently closed. You'll choose what happens to any tokens in the next step; a shared close can't safely sell them on the market."
+                        />
+                        <AdvancedSignSection
+                          open={advancedSignOpen}
+                          onToggle={() => setAdvancedSignOpen((o) => !o)}
                         >
-                          Continue, preview the plan
-                        </Button>
+                          {multisig ? (
+                            <MultisigSigners
+                              threshold={multisig.threshold}
+                              currentWeight={collectedWeight}
+                              added={extraSigners.map(
+                                (s): AddedSigner => ({
+                                  publicKey: s.publicKey,
+                                  weight: s.weight,
+                                }),
+                              )}
+                              onAddSecret={onAddSecretSigner}
+                              onRemove={onRemoveSigner}
+                            />
+                          ) : null}
+                        </AdvancedSignSection>
                       </div>
-                    </AdvancedSignSection>
-                  </div>
-                ) : (
-                  /* single-signer account: unchanged config + live continue */
-                  <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                    {audit && numCoverable > 0 ? (
-                      <SponsorshipAutoRevokeNotice count={numCoverable} />
-                    ) : null}
-                    <ConfigurePanel
-                      form={form}
-                      setForm={setForm}
-                      cex={cex}
-                      hasMemo={hasMemo}
-                      formError={formError}
-                      isBusy={false}
-                      canStart={publicKey !== null && hasConnector && destinationGate.ready}
-                      startHint={
-                        publicKey === null || !hasConnector
-                          ? "Connect a wallet to continue."
-                          : destinationGate.hint
-                      }
-                      onGeneratePlan={onStart}
-                      audit={audit}
-                      isDemo={isDemo}
+                    ) : (
+                      /* single-signer account */
+                      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                        {audit && numCoverable > 0 ? (
+                          <SponsorshipAutoRevokeNotice count={numCoverable} />
+                        ) : null}
+                        <ConfigurePanel
+                          form={form}
+                          setForm={setForm}
+                          cex={cex}
+                          hasMemo={hasMemo}
+                          formError={formError}
+                          isBusy={false}
+                          canStart={publicKey !== null && hasConnector && destinationGate.ready}
+                          startHint={
+                            publicKey === null || !hasConnector
+                              ? "Connect a wallet to continue."
+                              : destinationGate.hint
+                          }
+                          onGeneratePlan={onStart}
+                          audit={audit}
+                          isDemo={isDemo}
+                        />
+                      </div>
+                    )
+                  ) : null}
+
+                  {/* RESOLVE, actions only: blockers that need a return-to-issuer
+                      choice + rebuild. Rebuild is gated until every one is resolved. */}
+                  {isResolve ? (
+                    <ResolvePanel
+                      credits={ctx.unroutableCredits}
+                      network={network}
+                      returnToIssuer={form.returnToIssuer}
+                      sendToDestination={form.sendToDestination}
+                      onSetDisposal={onSetResidueDisposal}
+                      onRebuild={onStart}
+                      onBack={onCancel}
                     />
-                  </div>
-                )
-              ) : null}
+                  ) : null}
 
-              {/* RESOLVE, actions only: blockers that need a return-to-issuer
-                  choice + rebuild. Rebuild is gated until every one is resolved. */}
-              {isResolve ? (
-                <ResolvePanel
-                  credits={ctx.unroutableCredits}
-                  network={network}
-                  returnToIssuer={form.returnToIssuer}
-                  sendToDestination={form.sendToDestination}
-                  onSetDisposal={onSetResidueDisposal}
-                  onRebuild={onStart}
-                  onBack={onCancel}
-                />
-              ) : null}
+                  {/* ACKNOWLEDGE, information only: read-and-understand each warning /
+                      info card. Continue is gated until all are acknowledged. */}
+                  {isAcknowledge ? (
+                    <AcknowledgePanel
+                      network={network}
+                      scamFindings={scamFindings}
+                      discoveryWarnings={ctx.discoveryWarnings}
+                      autoHandled={{
+                        claimableCount: audit?.claimableBalances.length ?? 0,
+                        sponsorshipCount: numCoverable,
+                      }}
+                      highValue={isHighValue ? { totalXlm } : null}
+                      onBack={onCancel}
+                      onContinue={() => setConfirmStage("review")}
+                    />
+                  ) : null}
 
-              {/* ACKNOWLEDGE, information only: read-and-understand each warning /
-                  info card. Continue is gated until all are acknowledged. */}
-              {isAcknowledge ? (
-                <AcknowledgePanel
-                  network={network}
-                  scamFindings={scamFindings}
-                  discoveryWarnings={ctx.discoveryWarnings}
-                  autoHandled={{
-                    claimableCount: audit?.claimableBalances.length ?? 0,
-                    sponsorshipCount: numCoverable,
-                  }}
-                  highValue={isHighValue ? { totalXlm } : null}
-                  onBack={onCancel}
-                  onContinue={() => setConfirmStage("review")}
-                />
-              ) : null}
+                  {/* REVIEW, the clean "here is what will happen": plan overview,
+                      every operation, destination. For a shared account whose keys
+                      aren't all present, the terminal action is "Create signing
+                      plan" (packages this exact reviewed close for the co-signers)
+                      instead of an immediate execute. */}
+                  {isReview ? (
+                    <ReviewPanel
+                      planGroups={planGroups}
+                      totalXlm={totalXlm}
+                      activeCount={activeCount}
+                      destination={form.destination}
+                      network={network}
+                      snapshot={
+                        audit
+                          ? {
+                              pk: publicKey ?? "",
+                              sub: acctSub,
+                              trustlines: acctTrustlines,
+                              offers: acctOffers,
+                              data: acctData,
+                              claimable: acctClaimable,
+                            }
+                          : null
+                      }
+                      onBack={
+                        hasAckItems
+                          ? () => setConfirmStage("acknowledge")
+                          : hasBlocker
+                            ? () => setConfirmStage("resolve")
+                            : onCancel
+                      }
+                      onDemolish={() => setShowConfirmDialog(true)}
+                      {...(multisigRequired && !multisigReady
+                        ? {
+                            createPlan: {
+                              onCreate: () => void onCreatePlan(),
+                              creating: creatingPlan,
+                              error: createPlanError,
+                              bundleable: assessBundleability({
+                                hasSorobanPositions,
+                                hasSelectedAllowances: false,
+                                useMediator,
+                              }),
+                            },
+                          }
+                        : {})}
+                    />
+                  ) : null}
 
-              {/* REVIEW, the clean "here is what will happen": plan overview,
-                  every operation, destination. No cautions (all handled above). */}
-              {isReview ? (
-                <ReviewPanel
-                  planGroups={planGroups}
-                  totalXlm={totalXlm}
-                  activeCount={activeCount}
-                  destination={form.destination}
-                  network={network}
-                  snapshot={
-                    audit
-                      ? {
-                          pk: publicKey ?? "",
-                          sub: acctSub,
-                          trustlines: acctTrustlines,
-                          offers: acctOffers,
-                          data: acctData,
-                          claimable: acctClaimable,
-                        }
-                      : null
-                  }
-                  onBack={
-                    hasAckItems
-                      ? () => setConfirmStage("acknowledge")
-                      : hasBlocker
-                        ? () => setConfirmStage("resolve")
-                        : onCancel
-                  }
-                  onDemolish={() => setShowConfirmDialog(true)}
-                />
-              ) : null}
-
-              {isCancelled ? <CancelledPanel onResume={() => send({ type: "RESET" })} /> : null}
+                  {isCancelled ? <CancelledPanel onResume={() => send({ type: "RESET" })} /> : null}
+                </>
+              )}
             </div>
           ) : null}
 
@@ -2384,6 +2417,7 @@ function ReviewPanel({
   snapshot,
   onBack,
   onDemolish,
+  createPlan,
 }: {
   readonly planGroups: ReadonlyArray<{ phase: string; nodes: readonly PlanNode[] }>;
   readonly totalXlm: string;
@@ -2400,6 +2434,15 @@ function ReviewPanel({
   } | null;
   readonly onBack: () => void;
   readonly onDemolish: () => void;
+  // present for a shared account whose keys aren't all on this device: the
+  // terminal action packages this reviewed close as a signing plan for the
+  // co-signers, instead of executing it immediately.
+  readonly createPlan?: {
+    readonly onCreate: () => void;
+    readonly creating: boolean;
+    readonly error: string | null;
+    readonly bundleable: { readonly ok: boolean; readonly reason?: string };
+  };
 }): React.JSX.Element {
   const required = destination.length >= 4 ? destination.slice(-4) : destination;
   const destHead = destination.length > 4 ? destination.slice(0, -4) : "";
@@ -2597,68 +2640,160 @@ function ReviewPanel({
         ) : null}
       </div>
 
-      <div
-        role="note"
-        style={{
-          display: "flex",
-          gap: 10,
-          padding: "12px 14px",
-          borderRadius: 12,
-          border: "1px solid color-mix(in srgb, var(--danger) 40%, transparent)",
-          fontSize: 13,
-          lineHeight: 1.5,
-          color: "var(--fg-2)",
-        }}
-      >
-        <svg
-          width="18"
-          height="18"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="var(--danger)"
-          strokeWidth={2.2}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          style={{ flexShrink: 0, marginTop: 1 }}
-          aria-hidden
-        >
-          <path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
-        </svg>
-        <span>
-          This permanently deletes your Stellar account and sends all its XLM to the address above.{" "}
-          <strong style={{ color: "var(--fg)", fontWeight: 600 }}>It cannot be undone.</strong>{" "}
-          Double-check the address before continuing.
-        </span>
-      </div>
+      {createPlan ? (
+        createPlan.bundleable.ok ? (
+          <>
+            <div
+              role="note"
+              style={{
+                display: "flex",
+                gap: 10,
+                padding: "12px 14px",
+                borderRadius: 12,
+                border: "1px solid var(--accent-line)",
+                background: "var(--surface-2)",
+                fontSize: 13,
+                lineHeight: 1.5,
+                color: "var(--fg-2)",
+              }}
+            >
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="var(--accent)"
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{ flexShrink: 0, marginTop: 1 }}
+                aria-hidden
+              >
+                <path d="M12 16v-4M12 8h.01" />
+                <circle cx="12" cy="12" r="9" />
+              </svg>
+              <span>
+                This packages the exact close above into one transaction and gives you a link for
+                the other signers. Nothing is submitted and{" "}
+                <strong style={{ color: "var(--fg)", fontWeight: 600 }}>
+                  the account stays open until enough of them sign.
+                </strong>{" "}
+                You&apos;ll watch the progress here.
+              </span>
+            </div>
 
-      <div style={{ display: "flex", gap: 11 }}>
-        <Button variant="secondary" onClick={onBack} data-testid="review-back">
-          Back
-        </Button>
-        <Button
-          variant="danger"
-          onClick={onDemolish}
-          data-testid="demolish-confirm"
-          style={{ flex: 1 }}
-          iconRight={
+            {createPlan.error !== null ? (
+              <p role="alert" style={{ margin: 0, fontSize: 12.5, color: "var(--danger)" }}>
+                {createPlan.error}
+              </p>
+            ) : null}
+
+            <div style={{ display: "flex", gap: 11 }}>
+              <Button variant="secondary" onClick={onBack} data-testid="review-back">
+                Back
+              </Button>
+              <Button
+                onClick={createPlan.onCreate}
+                loading={createPlan.creating}
+                disabled={createPlan.creating}
+                data-testid="review-create-plan"
+                style={{ flex: 1 }}
+              >
+                {createPlan.creating ? "Creating plan…" : "Create signing plan"}
+              </Button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div
+              role="status"
+              style={{
+                padding: "12px 14px",
+                borderRadius: 12,
+                border: "1px solid color-mix(in srgb, var(--warning) 40%, transparent)",
+                background: "var(--surface-2)",
+                fontSize: 13,
+                lineHeight: 1.5,
+                color: "var(--fg-2)",
+              }}
+            >
+              {createPlan.bundleable.reason} To close this account, add every required signer&apos;s
+              key under &ldquo;Advanced&rdquo; and sign it live instead.
+            </div>
+            <div style={{ display: "flex", gap: 11 }}>
+              <Button variant="secondary" onClick={onBack} data-testid="review-back">
+                Back
+              </Button>
+            </div>
+          </>
+        )
+      ) : (
+        <>
+          <div
+            role="note"
+            style={{
+              display: "flex",
+              gap: 10,
+              padding: "12px 14px",
+              borderRadius: 12,
+              border: "1px solid color-mix(in srgb, var(--danger) 40%, transparent)",
+              fontSize: 13,
+              lineHeight: 1.5,
+              color: "var(--fg-2)",
+            }}
+          >
             <svg
-              width="16"
-              height="16"
+              width="18"
+              height="18"
               viewBox="0 0 24 24"
               fill="none"
-              stroke="currentColor"
+              stroke="var(--danger)"
               strokeWidth={2.2}
               strokeLinecap="round"
               strokeLinejoin="round"
+              style={{ flexShrink: 0, marginTop: 1 }}
               aria-hidden
             >
-              <path d="M5 12h14M13 6l6 6-6 6" />
+              <path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
             </svg>
-          }
-        >
-          Continue to final confirmation
-        </Button>
-      </div>
+            <span>
+              This permanently deletes your Stellar account and sends all its XLM to the address
+              above.{" "}
+              <strong style={{ color: "var(--fg)", fontWeight: 600 }}>It cannot be undone.</strong>{" "}
+              Double-check the address before continuing.
+            </span>
+          </div>
+
+          <div style={{ display: "flex", gap: 11 }}>
+            <Button variant="secondary" onClick={onBack} data-testid="review-back">
+              Back
+            </Button>
+            <Button
+              variant="danger"
+              onClick={onDemolish}
+              data-testid="demolish-confirm"
+              style={{ flex: 1 }}
+              iconRight={
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2.2}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <path d="M5 12h14M13 6l6 6-6 6" />
+                </svg>
+              }
+            >
+              Continue to final confirmation
+            </Button>
+          </div>
+        </>
+      )}
     </Card>
   );
 }
@@ -2992,22 +3127,6 @@ function PlanRow({
 const DEMO_DESTINATION_ADDRESS = "GCAWLISZMTHWMMHJE7BRYYNNKR4OL2PR4COXKH2MKGVDOH4BP6DMAHPE";
 
 // small uppercase label that groups the multisig configure sections
-function FlowSectionLabel({ children }: { readonly children: React.ReactNode }): React.JSX.Element {
-  return (
-    <div
-      style={{
-        font: "600 10.5px/1 Geist, sans-serif",
-        letterSpacing: "0.08em",
-        color: "var(--fg-3)",
-        textTransform: "uppercase",
-        margin: "6px 0 -4px 2px",
-      }}
-    >
-      {children}
-    </div>
-  );
-}
-
 // thin neutral orientation bar for a shared account (not an alarm)
 function MultisigContextBar({
   threshold,
@@ -3103,11 +3222,11 @@ function AdvancedSignSection({
       >
         <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
           <span style={{ fontWeight: 600, fontSize: 13.5 }}>
-            Advanced: I hold all the keys, sign here now
+            Advanced: sign live with every key on this device
           </span>
           <span style={{ fontSize: 11.5, color: "var(--fg-3)", fontWeight: 400, lineHeight: 1.45 }}>
-            Only if every required key is on this device. That means one browser briefly holds them
-            all, which is why the shared plan above is safer.
+            Only if every required signer&apos;s key is here. Add them and continue to close in one
+            session instead of sharing a plan. Less private, since one browser holds every key.
           </span>
         </span>
         <svg
