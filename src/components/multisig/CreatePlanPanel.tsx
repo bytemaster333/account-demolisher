@@ -1,14 +1,17 @@
 "use client";
 
-// The /demolish -> /plan bridge (initiator side). For a shared (multisig)
-// account, instead of gathering every signer's key here to sign live, the
-// initiator can bundle the whole close into one transaction and upload it to
-// Refractor, producing a /plan/<hash> link to share so each co-signer signs
-// once, on their own, over time.
+// The /demolish -> /plan bridge (initiator side), the PRIMARY way to close a
+// shared account: bundle the whole close into one transaction, sign your part,
+// and get a link to share so each co-signer signs once, on their own device,
+// with their own key. Nobody has to hand their secret key to one browser (which
+// is what the "paste every key" advanced path does, and why this is preferred).
+//
+// On success it hands the plan hash back to the page, which advances the close
+// flow to an inline "collect signatures" step, no navigation away.
 
 import { useCallback, useState } from "react";
 
-import { Button, Card, Notice } from "@/components/ui";
+import { Badge, Button, Card, Notice } from "@/components/ui";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import {
@@ -36,9 +39,11 @@ export interface CreatePlanPanelProps {
   readonly hasSorobanPositions: boolean;
   readonly hasSelectedAllowances: boolean;
   readonly useMediator: boolean;
+  // called with the created plan hash; the page advances to the collect step
+  readonly onPlanCreated: (hash: string) => void;
 }
 
-type Phase = "idle" | "creating" | "created" | "error";
+type Phase = "idle" | "creating" | "error";
 
 export function CreatePlanPanel({
   audit,
@@ -51,11 +56,10 @@ export function CreatePlanPanel({
   hasSorobanPositions,
   hasSelectedAllowances,
   useMediator,
+  onPlanCreated,
 }: CreatePlanPanelProps): React.JSX.Element {
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
-  const [planUrl, setPlanUrl] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
 
   const bundleability = assessBundleability({
     hasSorobanPositions,
@@ -63,11 +67,10 @@ export function CreatePlanPanel({
     useMediator,
   });
 
-  // non-XLM balances block the merge until they're cleared. In a shared plan the
-  // disposal has to be decided up-front and can't rely on a market (a sell could
-  // fail and sink the signed bundle), so default every token to the always-safe
-  // deterministic option: return it to its issuer. A token the user explicitly
-  // routed to the destination (form state) is honored instead.
+  // non-XLM balances block the merge until cleared. A shared plan can't rely on a
+  // market (a sell could fail and sink the signed bundle), so default every token
+  // to the always-safe deterministic option: return it to its issuer. A token the
+  // user explicitly routed to the destination is honored instead.
   const creditBalances = audit.balances.filter((b) => b.asset.kind === "credit");
   const tokenCount = creditBalances.length;
 
@@ -92,7 +95,7 @@ export function CreatePlanPanel({
           ? { sendToDestinationAssetKeys: disposal.sendToDestination }
           : {}),
       };
-      const { planPath } = await createClosurePlan({
+      const { hash } = await createClosurePlan({
         audit,
         destination,
         network,
@@ -100,28 +103,21 @@ export function CreatePlanPanel({
         connector,
         disposal: chosen,
       });
-      setPlanUrl(`${window.location.origin}${planPath}`);
-      setPhase("created");
+      onPlanCreated(hash);
     } catch (e: unknown) {
       setError(errorMessage(e, "Couldn't create the signing plan."));
       setPhase("error");
     }
-  }, [audit, creditBalances, destination, network, connectorRef, disposal]);
-
-  const onCopy = useCallback(() => {
-    if (planUrl === null) return;
-    void navigator.clipboard?.writeText(planUrl);
-    setCopied(true);
-  }, [planUrl]);
+  }, [audit, creditBalances, destination, network, connectorRef, disposal, onPlanCreated]);
 
   return (
-    <Card padding={20} data-testid="create-plan-panel">
+    <Card padding={22} data-testid="create-plan-panel">
       <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
         <span
           aria-hidden
           style={{
-            width: 34,
-            height: 34,
+            width: 36,
+            height: 36,
             borderRadius: 9,
             flexShrink: 0,
             background: "var(--surface-2)",
@@ -132,8 +128,8 @@ export function CreatePlanPanel({
           }}
         >
           <svg
-            width="17"
-            height="17"
+            width="18"
+            height="18"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
@@ -146,13 +142,16 @@ export function CreatePlanPanel({
           </svg>
         </span>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <h3 style={{ margin: 0, fontSize: 15.5, fontWeight: 600, letterSpacing: "-0.01em" }}>
-            Sign separately, over time
-          </h3>
-          <p style={{ margin: "6px 0 0", fontSize: 13, lineHeight: 1.55, color: "var(--fg-2)" }}>
-            Rather than pasting every signer&apos;s key here, package this close into one
-            transaction and share a link. Each co-signer opens it, reviews it, and signs once, on
-            their own. Once enough have signed, it submits and the account closes.
+          <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" }}>
+            <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, letterSpacing: "-0.01em" }}>
+              Create a shareable signing plan
+            </h3>
+            <Badge tone="accent">Recommended</Badge>
+          </div>
+          <p style={{ margin: "7px 0 0", fontSize: 13, lineHeight: 1.55, color: "var(--fg-2)" }}>
+            Each co-signer signs on their own device, with their own key, nobody shares a secret.
+            You sign your part now and get a link to send them; the account closes automatically
+            once enough have signed. You&apos;ll watch the progress right here.
           </p>
         </div>
       </div>
@@ -160,68 +159,23 @@ export function CreatePlanPanel({
       <div style={{ marginTop: 16 }}>
         {!bundleability.ok ? (
           <Notice tone="warning" role="status">
-            {bundleability.reason} For this account, add the required signers above and sign here
-            instead.
-          </Notice>
-        ) : phase === "created" && planUrl !== null ? (
-          <Notice tone="success" title="Signing plan created" role="status">
-            Share this link with the other signers. It shows a live signing status; once enough have
-            signed, the account closes automatically.
-            <div
-              style={{
-                marginTop: 12,
-                display: "flex",
-                gap: 8,
-                alignItems: "center",
-                flexWrap: "wrap",
-              }}
-            >
-              <code
-                data-testid="create-plan-url"
-                style={{
-                  flex: 1,
-                  minWidth: 200,
-                  padding: "9px 11px",
-                  borderRadius: 9,
-                  background: "var(--bg-2)",
-                  border: "1px solid var(--border)",
-                  font: "500 12px/1.4 'Geist Mono', monospace",
-                  color: "var(--fg-2)",
-                  wordBreak: "break-all",
-                }}
-              >
-                {planUrl}
-              </code>
-              <Button variant="secondary" size="sm" onClick={onCopy}>
-                {copied ? "Copied" : "Copy link"}
-              </Button>
-              <a
-                href={planUrl}
-                target="_blank"
-                rel="noreferrer noopener"
-                style={{
-                  font: "600 13px/1 Geist, sans-serif",
-                  color: "var(--accent)",
-                  textDecoration: "none",
-                }}
-              >
-                Open ↗
-              </a>
-            </div>
+            {bundleability.reason} For this account, use the advanced &ldquo;sign here now&rdquo;
+            option below instead.
           </Notice>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {tokenCount > 0 ? (
               <Notice tone="neutral" role="status">
-                This account holds {tokenCount} non-XLM token{tokenCount === 1 ? "" : "s"}. In a
-                shared plan {tokenCount === 1 ? "it is" : "they are"} returned to{" "}
-                {tokenCount === 1 ? "its" : "their"} issuer so the account can close (a market sell
-                could fail and sink the signed plan). The account&apos;s XLM goes to your
+                This account holds {tokenCount} non-XLM token{tokenCount === 1 ? "" : "s"}.{" "}
+                {tokenCount === 1 ? "It is" : "They are"} returned to{" "}
+                {tokenCount === 1 ? "its" : "their"} issuer so the account can close, a market sell
+                could fail and sink the signed plan. The account&apos;s XLM goes to your
                 destination.
               </Notice>
             ) : null}
             <div>
               <Button
+                size="lg"
                 onClick={() => void onCreate()}
                 loading={phase === "creating"}
                 disabled={!hasConnector || !destinationReady || phase === "creating"}
@@ -243,9 +197,8 @@ export function CreatePlanPanel({
               </p>
             ) : null}
             <p style={{ margin: 0, fontSize: 11.5, color: "var(--fg-3)", lineHeight: 1.5 }}>
-              You sign your part now; the transaction is uploaded to Refractor (a third-party
-              signing service). Market sells aren&apos;t included in a shared plan, so it can&apos;t
-              fail once signed.
+              Your part is signed in your browser; the transaction is uploaded to Refractor (a
+              third-party signing service). It never holds your secret key.
             </p>
           </div>
         )}
