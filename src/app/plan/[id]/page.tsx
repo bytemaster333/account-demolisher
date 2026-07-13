@@ -15,6 +15,7 @@ import {
   PageHeader,
   Progress,
   SectionLabel,
+  StatGrid,
 } from "@/components/ui";
 import { getPublicEnv } from "@/lib/config/env";
 import { resolveNetwork, type NetworkConfig } from "@/lib/config/networks";
@@ -249,6 +250,9 @@ interface Timing {
   readonly notYetValid: boolean;
   readonly validFrom: number;
   readonly validUntil: number;
+  // seconds until the deadline (0 when there is no upper time bound). Computed
+  // server-side so the view never reads the clock during render.
+  readonly secondsLeft: number;
 }
 
 function nowUnix(): number {
@@ -257,7 +261,9 @@ function nowUnix(): number {
 
 function evaluateTiming(details: EnvelopeDetails | null): Timing {
   const tb = details?.timeBounds ?? null;
-  if (tb === null) return { expired: false, notYetValid: false, validFrom: 0, validUntil: 0 };
+  if (tb === null) {
+    return { expired: false, notYetValid: false, validFrom: 0, validUntil: 0, secondsLeft: 0 };
+  }
   const now = nowUnix();
   return {
     // maxTime 0 means "no upper bound"; only a real, past deadline is expired
@@ -265,7 +271,19 @@ function evaluateTiming(details: EnvelopeDetails | null): Timing {
     notYetValid: tb.minTime > now,
     validFrom: tb.minTime,
     validUntil: tb.maxTime,
+    secondsLeft: tb.maxTime === 0 ? 0 : Math.max(0, tb.maxTime - now),
   };
+}
+
+// compact "in 3d" / "in 5h" / "in 12m" from a positive seconds count
+function shortDuration(seconds: number): string {
+  if (seconds <= 0) return "expired";
+  const days = Math.floor(seconds / 86400);
+  if (days >= 1) return `in ${days}d`;
+  const hours = Math.floor(seconds / 3600);
+  if (hours >= 1) return `in ${hours}h`;
+  const mins = Math.floor(seconds / 60);
+  return `in ${Math.max(1, mins)}m`;
 }
 
 async function resolveOutcome(
@@ -343,29 +361,14 @@ export default async function PlanPage({ params }: PlanPageProps): Promise<React
           title="Collect signatures to close this account"
           subtitle={
             <>
-              This account is shared, so closing it needs a signature from every required key
-              holder. Closing sends any remaining XLM to a destination account and permanently
-              deletes this account. Share this link so each key holder can review the exact
-              transaction and add their signature; once enough have signed,{" "}
-              <InfoTip tip={REFRACTOR_TIP}>Refractor</InfoTip> submits it automatically. Opening
-              this page is safe, nothing happens until the required signatures are collected.
+              Everyone who controls this shared account signs the same transaction to close it.
+              Review it below, then sign or send the link to the other signers. Coordinated through{" "}
+              <InfoTip tip={REFRACTOR_TIP}>Refractor</InfoTip>.
             </>
           }
         />
 
         {body}
-
-        <div style={{ marginTop: 16 }} data-testid="plan-disclaimer">
-          <Notice tone="neutral">
-            Signature collection is coordinated through{" "}
-            <InfoTip tip={REFRACTOR_TIP}>
-              <strong style={{ color: "var(--fg-2)" }}>Refractor</strong>
-            </InfoTip>
-            , a third-party service. Demolisher verifies the returned transaction hashes to this
-            link and matches the configured network before showing the sign action, and never stores
-            any transaction itself.
-          </Notice>
-        </div>
       </PageContainer>
     </AppShell>
   );
@@ -419,6 +422,29 @@ function PlanStatusView({
   // expired time bound all suppress the sign action and stop the poller.
   const collecting = outcome.kind === "collecting" && !expired;
 
+  // the account being sent everything (the accountMerge destination), surfaced
+  // in the summary and highlighted among the operations
+  const mergeDestination =
+    details?.operations.find((o) => o.type === "Close this account")?.destination ??
+    details?.operations.find((o) => o.destination !== undefined)?.destination ??
+    null;
+
+  const summaryStats: ReadonlyArray<{
+    label: string;
+    value: React.ReactNode;
+    tone?: "default" | "accent";
+  }> = [
+    {
+      label: "Signatures",
+      value: knownSigners ? `${collected} of ${signerCount}` : "resolving…",
+      tone: "accent",
+    },
+    ...(mergeDestination ? [{ label: "Closes to", value: shortId(mergeDestination) }] : []),
+    ...(timing.secondsLeft > 0
+      ? [{ label: "Deadline", value: shortDuration(timing.secondsLeft) }]
+      : []),
+  ];
+
   return (
     <>
       {outcome.kind === "submitted" ? (
@@ -429,15 +455,24 @@ function PlanStatusView({
         <ExpiredBanner validUntil={timing.validUntil} />
       ) : null}
 
+      {/* status + at-a-glance summary, in the Review step's visual language */}
+      {collecting ? (
+        <>
+          <div style={{ marginBottom: 13 }}>
+            <Badge tone="accent" dot>
+              Collecting signatures
+            </Badge>
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            <StatGrid stats={summaryStats} />
+          </div>
+        </>
+      ) : null}
+
       <Card padding={0} data-testid="plan-card" style={{ overflow: "hidden" }}>
-        <LinkRow id={id} />
+        <LinkRow id={id} extra={collecting ? <PlanLiveRefresh /> : undefined} />
 
-        <div style={{ padding: "22px 20px" }}>
-          {/* live refresh: polls Refractor via router.refresh(); only while we're
-              still collecting signatures (not once the plan reaches a terminal
-              state, or the poll would run forever) */}
-          {collecting ? <PlanLiveRefresh /> : null}
-
+        <div style={{ padding: "20px 20px 22px" }}>
           {/* what the transaction actually does (decoded from the verified XDR) */}
           {details !== null && outcome.kind !== "submitted" ? (
             <OperationsView
@@ -451,27 +486,23 @@ function PlanStatusView({
           {collecting ? (
             <>
               {knownSigners ? (
-                <div style={{ marginTop: 22 }}>
-                  <Progress
-                    value={collected}
-                    max={signerCount}
-                    tone="accent"
-                    label={
-                      <span>
-                        Signatures collected{" "}
-                        <InfoTip tip="Each signer's key can carry a different weight. This account is closed once the collected signatures meet its required threshold, which may be reached before every listed signer has signed.">
-                          <span style={{ fontWeight: 500, color: "var(--fg-3)" }}>
-                            (of known signers)
-                          </span>
-                        </InfoTip>
-                      </span>
-                    }
-                    valueLabel={`${collected} of ${signerCount}`}
-                    data-testid="plan-counts"
-                  />
-
-                  <div style={{ marginTop: 22 }}>
-                    <SectionLabel>Signers</SectionLabel>
+                <div style={{ marginTop: 24 }}>
+                  <SectionLabel>
+                    Signers{" "}
+                    <InfoTip tip="Each signer's key can carry a different weight. This account is closed once the collected signatures meet its required threshold, which may be reached before every listed signer has signed.">
+                      <span style={{ fontWeight: 400, color: "var(--fg-3)" }}>(of known)</span>
+                    </InfoTip>
+                  </SectionLabel>
+                  <div style={{ marginTop: 12 }}>
+                    <Progress
+                      value={collected}
+                      max={signerCount}
+                      tone="accent"
+                      valueLabel={`${collected} of ${signerCount}`}
+                      data-testid="plan-counts"
+                    />
+                  </div>
+                  <div style={{ marginTop: 14 }}>
                     <SignersList
                       signers={status.signers}
                       signedBy={status.signedBy}
@@ -518,8 +549,15 @@ function PlanStatusView({
   );
 }
 
-// shareable /plan/<hash> link row with copy button
-function LinkRow({ id }: { readonly id: string }): React.JSX.Element {
+// shareable /plan/<hash> link row with copy button; `extra` renders just before
+// the copy button (used for the live-refresh status)
+function LinkRow({
+  id,
+  extra,
+}: {
+  readonly id: string;
+  readonly extra?: React.ReactNode;
+}): React.JSX.Element {
   return (
     <div
       style={{
@@ -558,6 +596,7 @@ function LinkRow({ id }: { readonly id: string }): React.JSX.Element {
       >
         /plan/{shortId(id)}
       </span>
+      {extra}
       <CopyLinkButton />
     </div>
   );
@@ -578,60 +617,68 @@ function OperationsView({
   readonly validFrom: number;
 }): React.JSX.Element {
   return (
-    <div style={{ marginTop: 2 }} data-testid="plan-operations">
+    <div data-testid="plan-operations">
       <SectionLabel>What this transaction does</SectionLabel>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 11 }}>
+      <div
+        style={{
+          marginTop: 10,
+          border: "1px solid var(--border)",
+          borderRadius: 12,
+          overflow: "hidden",
+        }}
+      >
         {details.operations.map((op, i) => (
           <div
             key={i}
             style={{
-              padding: "12px 14px",
-              borderRadius: 12,
-              border: op.danger
-                ? "1px solid color-mix(in srgb, var(--warning) 32%, transparent)"
-                : "1px solid var(--border)",
-              background: "var(--surface-2)",
+              display: "flex",
+              gap: 12,
+              padding: "13px 14px",
+              borderTop: i > 0 ? "1px solid var(--border)" : "none",
             }}
           >
-            <div
+            <span
+              aria-hidden
               style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                fontWeight: 600,
-                fontSize: 13.5,
+                flexShrink: 0,
+                width: 22,
+                height: 22,
+                borderRadius: "50%",
+                border: "1.5px solid var(--border-2)",
+                display: "grid",
+                placeItems: "center",
+                font: "600 11px/1 'Geist Mono', monospace",
+                color: "var(--fg-3)",
+                marginTop: 1,
               }}
             >
-              {op.danger ? <Badge tone="warning">moves funds</Badge> : null}
-              {op.type}
-            </div>
-            {op.detail ? (
-              <div style={{ marginTop: 5, fontSize: 12.5, color: "var(--fg-2)", lineHeight: 1.5 }}>
-                {op.detail}
+              {i + 1}
+            </span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ fontWeight: 600, fontSize: 13.5 }}>{op.type}</span>
+                {op.danger ? <Badge tone="warning">moves funds</Badge> : null}
               </div>
-            ) : null}
-            {op.destination ? (
-              <div style={{ marginTop: 9 }}>
+              {op.detail ? (
                 <div
-                  style={{
-                    fontSize: 10.5,
-                    color: "var(--fg-3)",
-                    letterSpacing: "0.05em",
-                    marginBottom: 4,
-                  }}
+                  style={{ marginTop: 4, fontSize: 12.5, color: "var(--fg-2)", lineHeight: 1.5 }}
                 >
-                  DESTINATION
+                  {op.detail}
                 </div>
-                <CopyableAddress
-                  value={op.destination}
-                  label="Destination"
-                  head={8}
-                  tail={6}
-                  size={12.5}
-                  href={explorerAccountUrl(net, op.destination)}
-                />
-              </div>
-            ) : null}
+              ) : null}
+              {op.destination ? (
+                <div style={{ marginTop: 8 }}>
+                  <CopyableAddress
+                    value={op.destination}
+                    label="Destination"
+                    head={8}
+                    tail={6}
+                    size={12}
+                    href={explorerAccountUrl(net, op.destination)}
+                  />
+                </div>
+              ) : null}
+            </div>
           </div>
         ))}
       </div>
@@ -683,10 +730,6 @@ function SignCta({ id }: { readonly id: string }): React.JSX.Element {
         </svg>
         Review &amp; sign on Refractor ↗
       </a>
-      <p style={{ margin: "10px 0 0", fontSize: 12, color: "var(--fg-3)", lineHeight: 1.5 }}>
-        Opens Refractor&apos;s signing page for this exact transaction. Connect your wallet there,
-        check what the transaction does, and sign. Your signature is added to the plan above.
-      </p>
     </div>
   );
 }
@@ -755,89 +798,82 @@ function SignersList({
   // Pending rather than implying nobody has signed
   const attributable = signedBy.length > 0;
   return (
-    <div
-      style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 11 }}
-      data-testid="plan-signers"
-    >
-      {signers.map((key) => {
-        const signed = signedSet.has(key);
-        return (
-          <div
-            key={key}
-            data-testid={`plan-signer-${key}`}
-            data-signed={signed ? "true" : "false"}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 12,
-              padding: "11px 14px",
-              borderRadius: 12,
-              border: signed
-                ? "1px solid color-mix(in srgb, var(--success) 30%, transparent)"
-                : "1px solid var(--border)",
-              background: "var(--surface-2)",
-            }}
-          >
-            <span
-              aria-hidden
+    <div data-testid="plan-signers">
+      <div style={{ border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden" }}>
+        {signers.map((key, i) => {
+          const signed = signedSet.has(key);
+          return (
+            <div
+              key={key}
+              data-testid={`plan-signer-${key}`}
+              data-signed={signed ? "true" : "false"}
               style={{
-                width: 30,
-                height: 30,
-                borderRadius: 9,
-                background: "var(--surface)",
-                border: signed ? "1px solid var(--success)" : "1px solid var(--border-2)",
-                display: "grid",
-                placeItems: "center",
-                font: "600 12px/1 'Geist Mono', monospace",
-                color: signed ? "var(--success)" : "var(--fg-2)",
-                flexShrink: 0,
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                padding: "12px 14px",
+                borderTop: i > 0 ? "1px solid var(--border)" : "none",
               }}
             >
+              <span
+                aria-hidden
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 8,
+                  background: "var(--surface-2)",
+                  border: "1px solid var(--border-2)",
+                  display: "grid",
+                  placeItems: "center",
+                  font: "600 11px/1 'Geist Mono', monospace",
+                  color: signed ? "var(--success)" : "var(--fg-3)",
+                  flexShrink: 0,
+                }}
+              >
+                {signed ? (
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2.6}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden
+                  >
+                    <path d="M20 6L9 17l-5-5" />
+                  </svg>
+                ) : (
+                  key.slice(0, 2)
+                )}
+              </span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <CopyableAddress
+                  value={key}
+                  label="Signer"
+                  head={8}
+                  tail={6}
+                  size={12.5}
+                  href={explorerAccountUrl(net, key)}
+                />
+              </div>
               {signed ? (
-                <svg
-                  width="15"
-                  height="15"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={2.6}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden
-                >
-                  <path d="M20 6L9 17l-5-5" />
-                </svg>
+                <Badge tone="success">Signed</Badge>
               ) : (
-                key.slice(0, 2)
+                <Badge tone={attributable ? "warning" : "neutral"}>Pending</Badge>
               )}
-            </span>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <CopyableAddress
-                value={key}
-                label="Signer"
-                head={8}
-                tail={6}
-                size={12.5}
-                href={explorerAccountUrl(net, key)}
-              />
             </div>
-            {signed ? (
-              <Badge tone="success">Signed</Badge>
-            ) : (
-              <Badge tone={attributable ? "warning" : "neutral"}>Pending</Badge>
-            )}
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
       <div
-        style={{ fontSize: 11.5, color: "var(--fg-3)", marginTop: 2 }}
+        style={{ fontSize: 11.5, color: "var(--fg-3)", marginTop: 8 }}
         data-testid="plan-signers-needed"
       >
         {signaturesNeeded > 0
-          ? `Waiting on ${signaturesNeeded} more of the listed signer${
-              signaturesNeeded === 1 ? "" : "s"
-            }. The account's own threshold may be met before every signer signs.`
-          : "Every listed signer has signed."}
+          ? `${signaturesNeeded} more signature${signaturesNeeded === 1 ? "" : "s"} needed.`
+          : "All listed signers have signed."}
       </div>
     </div>
   );

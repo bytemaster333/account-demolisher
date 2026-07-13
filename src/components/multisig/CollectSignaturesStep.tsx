@@ -123,9 +123,8 @@ export function CollectSignaturesStep({
         </h3>
       </div>
       <p style={{ margin: "8px 0 0", fontSize: 13, lineHeight: 1.55, color: "var(--fg-2)" }}>
-        Your signature is in. Send the link below to the other signers, they each open it and sign
-        on their own device. Once enough have signed, the account closes automatically and this page
-        updates, no need to keep it open.
+        Your signature is in. Send the link to the other signers; it closes automatically once
+        enough have signed.
       </p>
 
       {/* share link, the one thing the initiator does next */}
@@ -183,10 +182,15 @@ export function CollectSignaturesStep({
               data-testid="collect-progress"
             />
             <div
-              style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 16 }}
+              style={{
+                marginTop: 14,
+                border: "1px solid var(--border)",
+                borderRadius: 12,
+                overflow: "hidden",
+              }}
               data-testid="collect-signers"
             >
-              {status.signers.map((key) => {
+              {status.signers.map((key, i) => {
                 const signed = signedSet.has(key);
                 const isYou = connectedKey !== null && key === connectedKey;
                 return (
@@ -196,26 +200,22 @@ export function CollectSignaturesStep({
                       display: "flex",
                       alignItems: "center",
                       gap: 12,
-                      padding: "10px 13px",
-                      borderRadius: 11,
-                      border: signed
-                        ? "1px solid color-mix(in srgb, var(--success) 30%, transparent)"
-                        : "1px solid var(--border)",
-                      background: "var(--surface-2)",
+                      padding: "12px 14px",
+                      borderTop: i > 0 ? "1px solid var(--border)" : "none",
                     }}
                   >
                     <span
                       aria-hidden
                       style={{
-                        width: 26,
-                        height: 26,
+                        width: 28,
+                        height: 28,
                         borderRadius: 8,
-                        background: "var(--surface)",
-                        border: signed ? "1px solid var(--success)" : "1px solid var(--border-2)",
+                        background: "var(--surface-2)",
+                        border: "1px solid var(--border-2)",
                         display: "grid",
                         placeItems: "center",
                         font: "600 11px/1 'Geist Mono', monospace",
-                        color: signed ? "var(--success)" : "var(--fg-2)",
+                        color: signed ? "var(--success)" : "var(--fg-3)",
                         flexShrink: 0,
                       }}
                     >
