@@ -552,7 +552,11 @@ function DemolishFlow(): React.JSX.Element {
   const hasScam = scamFindings.length > 0;
   const hasDiscovery = ctx.discoveryWarnings.length > 0;
   const hasAutoHandled = audit !== null && (audit.claimableBalances.length > 0 || numCoverable > 0);
-  const hasAckItems = hasScam || hasDiscovery || hasAutoHandled || isHighValue;
+  // a shared close packaged as a signing plan has its own thing to acknowledge
+  // (it's uploaded to a third-party, shared, and irreversible once enough sign),
+  // so the Warnings step always appears for the plan path.
+  const sharedPlanWarning = multisigRequired && !multisigReady;
+  const hasAckItems = hasScam || hasDiscovery || hasAutoHandled || isHighValue || sharedPlanWarning;
 
   // initialise the confirm stage per built plan: resolve blockers first, then
   // acknowledge warnings/info, then the clean review, skipping any empty step.
@@ -1083,6 +1087,7 @@ function DemolishFlow(): React.JSX.Element {
                         sponsorshipCount: numCoverable,
                       }}
                       highValue={isHighValue ? { totalXlm } : null}
+                      sharedPlan={sharedPlanWarning}
                       onBack={onCancel}
                       onContinue={() => setConfirmStage("review")}
                     />
@@ -3943,6 +3948,7 @@ function AcknowledgePanel({
   discoveryWarnings,
   autoHandled,
   highValue,
+  sharedPlan = false,
   onBack,
   onContinue,
 }: {
@@ -3951,6 +3957,8 @@ function AcknowledgePanel({
   readonly discoveryWarnings: readonly string[];
   readonly autoHandled: { readonly claimableCount: number; readonly sponsorshipCount: number };
   readonly highValue: { readonly totalXlm: string } | null;
+  // shared (multisig) close packaged as a signing plan for the co-signers
+  readonly sharedPlan?: boolean;
   readonly onBack: () => void;
   readonly onContinue: () => void;
 }): React.JSX.Element {
@@ -3976,6 +3984,7 @@ function AcknowledgePanel({
   const hasHighValue = highValue !== null;
 
   const requiredAckKeys: string[] = [
+    sharedPlan ? "sharedPlan" : null,
     hasScam ? "scam" : null,
     hasDiscovery ? "discovery" : null,
     hasAutoHandled ? "autoHandled" : null,
@@ -3999,6 +4008,31 @@ function AcknowledgePanel({
           you, then confirm you understand.
         </p>
       </div>
+
+      {sharedPlan ? (
+        <Notice
+          tone="warning"
+          role="status"
+          data-testid="shared-plan-notice"
+          title="The other signers will sign this exact transaction"
+          footer={
+            <AckRow
+              checked={acks.sharedPlan === true}
+              onChange={(v) => setAck("sharedPlan", v)}
+              testId="ack-shared-plan"
+            />
+          }
+        >
+          This account has more than one required signer, so closing it is packaged into a single
+          transaction and uploaded to{" "}
+          <strong style={{ color: "var(--fg-2)", fontWeight: 600 }}>Refractor</strong>, a
+          third-party signing service, to collect the remaining signatures. You share a link; any
+          authorized signer who opens it can add their signature, and once enough have signed it
+          submits on its own and the account is permanently closed. Everything above, including the
+          destination, is locked into the plan once you create it, so double-check it now, it
+          can&apos;t be changed afterward.
+        </Notice>
+      ) : null}
 
       {hasScam ? (
         <ScamTokenNotice
