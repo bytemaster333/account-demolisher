@@ -42,7 +42,6 @@ function Navbar() {
 
   const isDemolish = pathname?.startsWith("/demolish") ?? false;
   const isAllowances = pathname?.startsWith("/allowances") ?? false;
-  const isPlan = pathname?.startsWith("/plan") ?? false;
 
   const walletShort = publicKey ? `${publicKey.slice(0, 6)}…${publicKey.slice(-4)}` : null;
 
@@ -107,9 +106,6 @@ function Navbar() {
           </NavLink>
           <NavLink href="/allowances" active={isAllowances}>
             Allowances
-          </NavLink>
-          <NavLink href="/plan" active={isPlan}>
-            Multisig
           </NavLink>
           <a
             href="https://docs.demolisher.saliht.xyz"
@@ -433,7 +429,6 @@ function Footer() {
             <FooterColumn title="Product">
               <FooterLink href="/demolish">Close an account</FooterLink>
               <FooterLink href="/allowances">Allowances</FooterLink>
-              <FooterLink href="/plan">Multisig</FooterLink>
             </FooterColumn>
             <FooterColumn title="Resources">
               <FooterLink href="https://docs.demolisher.saliht.xyz" external>
