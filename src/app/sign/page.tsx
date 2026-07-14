@@ -1,11 +1,12 @@
 "use client";
 
 // Co-signer page for a shared-account close. Someone closing a multisig account
-// sends this link; it carries the reviewed transaction in the URL fragment (never
-// on any server). The co-signer sees exactly what they're authorizing, signs with
-// THEIR OWN wallet or key on THEIR device, and sends the signed request back (or
-// submits it directly if their signature completes the threshold). No secret ever
-// leaves this browser and nothing is uploaded anywhere.
+// sends a short link (/sign?id=<hash>). This page fetches the transaction from
+// the relay, verifies its hash matches the id in the link (so a tampered server
+// can't swap in a different transaction), shows the co-signer exactly what they're
+// authorizing, and lets them sign with THEIR OWN wallet or key. The signature is
+// posted back to the relay so the person closing the account sees it instantly.
+// No secret ever leaves this browser; co-signers sign, they don't submit.
 
 import { TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -24,14 +25,9 @@ import {
 } from "@/components/ui";
 import { resolveNetwork, type NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
-import { explorerAccountUrl, explorerTxUrl } from "@/lib/explorer";
-import {
-  decodeSigningRequest,
-  encodeSigningRequest,
-  inspectClose,
-  signedSigners,
-  type CloseInspection,
-} from "@/lib/multisig/signing-request";
+import { explorerAccountUrl } from "@/lib/explorer";
+import { fetchPlan, submitSignature, subscribePlan } from "@/lib/multisig/plan-client";
+import { inspectClose, signedSigners, type CloseInspection } from "@/lib/multisig/signing-request";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { WalletKitConnector } from "@/lib/wallet/connector";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
@@ -41,63 +37,88 @@ interface AccountFacts {
   readonly threshold: number;
 }
 
-type Outcome =
-  | { readonly kind: "none" }
-  | { readonly kind: "submitting" }
-  | { readonly kind: "submitted"; readonly hash: string }
-  | { readonly kind: "error"; readonly message: string };
+type Load =
+  | { readonly kind: "loading" }
+  | { readonly kind: "error"; readonly message: string }
+  | { readonly kind: "ready"; readonly network: NetworkConfig; readonly xdr: string };
+
+function idFromLocation(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const url = new URL(window.location.href);
+    return url.searchParams.get("id");
+  } catch {
+    return null;
+  }
+}
 
 export default function SignPage(): React.JSX.Element {
-  // the signing request, read from the URL fragment on mount
-  const [network, setNetwork] = useState<NetworkConfig | null>(null);
+  const [planId, setPlanId] = useState<string | null>(null);
+  const [load, setLoad] = useState<Load>({ kind: "loading" });
   const [xdr, setXdr] = useState<string | null>(null);
-  const [parseError, setParseError] = useState<string | null>(null);
-  const [pasteValue, setPasteValue] = useState("");
 
-  // account facts (who must sign, their weights, threshold), loaded from Horizon
   const [facts, setFacts] = useState<AccountFacts | null>(null);
   const [signerWeights, setSignerWeights] = useState<Map<string, number>>(new Map());
   const [factsError, setFactsError] = useState<string | null>(null);
 
   const [signing, setSigning] = useState(false);
   const [signError, setSignError] = useState<string | null>(null);
-  // the key that just signed here, to flag a non-signer paste that won't count
+  const [signedHere, setSignedHere] = useState(false);
   const [lastSigner, setLastSigner] = useState<string | null>(null);
-  const [outcome, setOutcome] = useState<Outcome>({ kind: "none" });
-  const [copied, setCopied] = useState(false);
+  const [secret, setSecret] = useState("");
 
-  const parseRequest = useCallback((raw: string): boolean => {
-    // accept a full link (…/sign#<token>) or the bare token
-    const token = raw.includes("#") ? raw.slice(raw.lastIndexOf("#") + 1) : raw.trim();
-    const decoded = decodeSigningRequest(token);
-    if (decoded === null) {
-      setParseError(
-        "This signing request couldn't be read. Ask the sender for a fresh link, or paste the request text.",
-      );
-      return false;
-    }
-    setNetwork(resolveNetwork(decoded.network));
-    setXdr(decoded.xdr);
-    setParseError(null);
-    return true;
+  const network = load.kind === "ready" ? load.network : null;
+
+  // read the id and fetch the transaction; verify its hash matches the id so a
+  // tampered server can't substitute a different transaction.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const id = idFromLocation();
+      if (id === null || id.length === 0) {
+        if (!cancelled) setLoad({ kind: "error", message: "No signing request id in this link." });
+        return;
+      }
+      setPlanId(id);
+      try {
+        const plan = await fetchPlan(id);
+        if (cancelled) return;
+        const net = resolveNetwork(plan.network);
+        const hash = Buffer.from(
+          (TransactionBuilder.fromXDR(plan.xdr, net.passphrase) as Transaction).hash(),
+        ).toString("hex");
+        if (hash !== id) {
+          setLoad({
+            kind: "error",
+            message: "This request couldn't be verified (its transaction doesn't match the link).",
+          });
+          return;
+        }
+        setXdr(plan.xdr);
+        setLoad({ kind: "ready", network: net, xdr: plan.xdr });
+      } catch (e: unknown) {
+        if (!cancelled)
+          setLoad({ kind: "error", message: errorMessage(e, "Couldn't load this signing request.") });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  // read the request from the fragment on mount. Deferred so the parse's state
-  // updates land after mount rather than synchronously during the effect.
+  // live progress: reflect signatures other co-signers add
   useEffect(() => {
-    const hash = typeof window !== "undefined" ? window.location.hash.replace(/^#/, "") : "";
-    if (hash.length === 0) return;
-    const t = setTimeout(() => parseRequest(hash), 0);
-    return () => clearTimeout(t);
-  }, [parseRequest]);
+    if (planId === null || load.kind !== "ready") return;
+    const unsubscribe = subscribePlan(planId, (plan) => setXdr(plan.xdr));
+    return unsubscribe;
+  }, [planId, load.kind]);
 
   const inspection: CloseInspection | null = useMemo(
     () => (network && xdr ? inspectClose(xdr, network.passphrase) : null),
     [network, xdr],
   );
 
-  // load who must sign, their weights, and the threshold from the account being
-  // closed. accountMerge is a high-threshold operation.
+  // load who must sign, weights, and threshold from the account being closed
   useEffect(() => {
     if (network === null || inspection === null || inspection.source.length === 0) return;
     let cancelled = false;
@@ -131,35 +152,26 @@ export default function SignPage(): React.JSX.Element {
   );
   const thresholdMet = facts !== null && weight >= facts.threshold;
 
-  const encodedRequest = useMemo(
-    () => (network && xdr ? encodeSigningRequest({ network: network.id, xdr }) : null),
-    [network, xdr],
-  );
-  const returnLink =
-    encodedRequest !== null && typeof window !== "undefined"
-      ? `${window.location.origin}/sign#${encodedRequest}`
-      : null;
-
-  // sign the current envelope with a co-signer's connector; the returned XDR
-  // carries every prior signature plus the new one. `sign` produces the connector
-  // from the co-signer's own wallet or key, on their device.
+  // sign with the co-signer's own connector, then post the signature to the relay
   const signWith = useCallback(
     async (sign: (tx: Transaction) => Promise<{ signedXdr: string; signerPublicKey: string }>) => {
-      if (network === null || xdr === null) return;
+      if (network === null || xdr === null || planId === null) return;
       setSigning(true);
       setSignError(null);
       try {
         const tx = TransactionBuilder.fromXDR(xdr, network.passphrase) as Transaction;
         const { signedXdr, signerPublicKey } = await sign(tx);
-        setXdr(signedXdr);
+        const merged = await submitSignature(planId, signedXdr);
+        setXdr(merged.xdr);
         setLastSigner(signerPublicKey);
+        setSignedHere(true);
       } catch (e: unknown) {
         setSignError(errorMessage(e, "Couldn't sign the transaction."));
       } finally {
         setSigning(false);
       }
     },
-    [network, xdr],
+    [network, xdr, planId],
   );
 
   const signWithWallet = useCallback(() => {
@@ -171,7 +183,6 @@ export default function SignPage(): React.JSX.Element {
     });
   }, [signWith, network]);
 
-  const [secret, setSecret] = useState("");
   const signWithSecret = useCallback(() => {
     if (network === null) return;
     const seed = secret.trim();
@@ -182,116 +193,53 @@ export default function SignPage(): React.JSX.Element {
     });
   }, [signWith, secret, network]);
 
-  const onSubmit = useCallback(async () => {
-    if (network === null || xdr === null) return;
-    setOutcome({ kind: "submitting" });
-    try {
-      const tx = TransactionBuilder.fromXDR(xdr, network.passphrase) as Transaction;
-      const res = (await getHorizon(network).submitTransaction(tx)) as { hash: string };
-      setOutcome({ kind: "submitted", hash: res.hash });
-    } catch (e: unknown) {
-      setOutcome({ kind: "error", message: errorMessage(e, "The network rejected the transaction.") });
-    }
-  }, [network, xdr]);
-
-  const onCopyReturn = useCallback(() => {
-    if (returnLink === null) return;
-    void navigator.clipboard?.writeText(returnLink);
-    setCopied(true);
-  }, [returnLink]);
-
   // ── render ─────────────────────────────────────────────────────────────────
 
-  // no request yet: paste box
-  if (xdr === null) {
+  if (load.kind === "loading") {
     return (
       <AppShell>
-        <PageContainer width={720}>
-          <PageHeader
-            kicker="Co-sign a close"
-            title="Sign a shared-account close"
-            subtitle="Paste the signing request you were sent, or open the link. You'll see exactly what it does before you sign anything."
-          />
-          <Card padding={20} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <textarea
-              value={pasteValue}
-              onChange={(e) => setPasteValue(e.currentTarget.value)}
-              placeholder="Paste the signing request link or text…"
-              spellCheck={false}
-              data-testid="sign-paste"
-              style={{
-                minHeight: 96,
-                padding: "12px 13px",
-                borderRadius: 10,
-                border: "1px solid var(--border-2)",
-                background: "var(--surface-2)",
-                color: "var(--fg)",
-                font: "500 12px/1.5 'Geist Mono', monospace",
-                resize: "vertical",
-              }}
-            />
-            {parseError !== null ? (
-              <p role="alert" style={{ margin: 0, fontSize: 12.5, color: "var(--danger)" }}>
-                {parseError}
-              </p>
-            ) : null}
-            <Button
-              onClick={() => parseRequest(pasteValue)}
-              disabled={pasteValue.trim().length === 0}
-              data-testid="sign-load"
-            >
-              Load request
-            </Button>
-          </Card>
+        <PageContainer>
+          <PageHeader kicker="Co-sign a close" title="Loading the signing request…" />
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 9, fontSize: 13, color: "var(--fg-2)" }}>
+            <Spinner size={14} /> Fetching the transaction to review.
+          </div>
         </PageContainer>
       </AppShell>
     );
   }
 
-  // request present but not a valid close
+  if (load.kind === "error") {
+    return (
+      <AppShell>
+        <PageContainer>
+          <PageHeader kicker="Co-sign a close" title="This request can't be opened" />
+          <Notice tone="danger" role="alert" title="Couldn't load a valid signing request">
+            {load.message} Ask the sender for a fresh link.
+          </Notice>
+        </PageContainer>
+      </AppShell>
+    );
+  }
+
   if (inspection === null || !inspection.isClose) {
     return (
       <AppShell>
-        <PageContainer width={720}>
+        <PageContainer>
           <PageHeader kicker="Co-sign a close" title="This request can't be verified" />
           <Notice tone="danger" role="alert" title="Not a recognizable account close">
-            The request decoded, but it isn&apos;t a single account-close transaction on{" "}
-            {network?.id ?? "this network"}. Don&apos;t sign it. Ask the sender to regenerate the
-            request from the close flow.
+            The transaction isn&apos;t a single account-close on {network?.id ?? "this network"}.
+            Don&apos;t sign it.
           </Notice>
         </PageContainer>
       </AppShell>
     );
   }
 
-  if (outcome.kind === "submitted") {
-    return (
-      <AppShell>
-        <PageContainer width={720}>
-          <PageHeader kicker="Co-sign a close" title="Signed and submitted" />
-          <Notice tone="success" role="status" title="The account has been closed">
-            Enough signatures were collected and the transaction was submitted.{" "}
-            <a
-              href={explorerTxUrl(network!, outcome.hash)}
-              target="_blank"
-              rel="noreferrer noopener"
-              style={{ color: "var(--accent)", textDecoration: "none", fontWeight: 600 }}
-            >
-              View transaction ↗
-            </a>
-          </Notice>
-        </PageContainer>
-      </AppShell>
-    );
-  }
-
-  const alreadySigned = lastSigner !== null;
-  const nonSigner =
-    lastSigner !== null && facts !== null && !facts.signerKeys.includes(lastSigner);
+  const nonSigner = lastSigner !== null && facts !== null && !facts.signerKeys.includes(lastSigner);
 
   return (
     <AppShell>
-      <PageContainer width={760}>
+      <PageContainer>
         <PageHeader
           kicker="Co-sign a close"
           title="Review, then sign"
@@ -334,11 +282,7 @@ export default function SignPage(): React.JSX.Element {
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span
                     aria-hidden
-                    style={{
-                      font: "600 11px/1 'Geist Mono', monospace",
-                      color: "var(--fg-3)",
-                      minWidth: 20,
-                    }}
+                    style={{ font: "600 11px/1 'Geist Mono', monospace", color: "var(--fg-3)", minWidth: 20 }}
                   >
                     {String(i + 1).padStart(2, "0")}
                   </span>
@@ -434,8 +378,8 @@ export default function SignPage(): React.JSX.Element {
           </div>
         ) : null}
 
-        {/* sign controls, or the return/submit step once signed */}
-        {!alreadySigned ? (
+        {/* sign, or the confirmation once signed */}
+        {!signedHere ? (
           <Card padding={20} style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 14 }}>
             <h2 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>Add your signature</h2>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -488,67 +432,13 @@ export default function SignPage(): React.JSX.Element {
             ) : null}
           </Card>
         ) : (
-          <Card padding={20} style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 14 }}>
-            <h2 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>
-              {thresholdMet ? "Enough signatures, ready to close" : "Your signature is in"}
-            </h2>
-            {thresholdMet ? (
-              <>
-                <p style={{ margin: 0, fontSize: 13, color: "var(--fg-2)", lineHeight: 1.55 }}>
-                  This transaction now has enough weight to submit. You can close the account now, or
-                  send the signed request back for someone else to submit.
-                </p>
-                {outcome.kind === "error" ? (
-                  <p role="alert" style={{ margin: 0, fontSize: 12.5, color: "var(--danger)" }}>
-                    {outcome.message}
-                  </p>
-                ) : null}
-                <Button
-                  variant="danger"
-                  onClick={() => void onSubmit()}
-                  loading={outcome.kind === "submitting"}
-                  disabled={outcome.kind === "submitting"}
-                  data-testid="sign-submit"
-                >
-                  Submit and close the account
-                </Button>
-              </>
-            ) : (
-              <p style={{ margin: 0, fontSize: 13, color: "var(--fg-2)", lineHeight: 1.55 }}>
-                Send the updated request back to whoever is coordinating the close, or on to the next
-                signer. It still needs more signing weight to reach the threshold.
-              </p>
-            )}
-
-            <div>
-              <div style={{ fontSize: 11.5, color: "var(--fg-3)", letterSpacing: "0.05em", marginBottom: 6 }}>
-                SIGNED REQUEST TO SEND BACK
-              </div>
-              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                <code
-                  data-testid="sign-return-link"
-                  style={{
-                    flex: 1,
-                    minWidth: 220,
-                    padding: "10px 12px",
-                    borderRadius: 9,
-                    background: "var(--bg-2)",
-                    border: "1px solid var(--border)",
-                    font: "500 12px/1.4 'Geist Mono', monospace",
-                    color: "var(--fg-2)",
-                    wordBreak: "break-all",
-                    maxHeight: 96,
-                    overflow: "auto",
-                  }}
-                >
-                  {returnLink}
-                </code>
-                <Button variant="secondary" size="sm" onClick={onCopyReturn} data-testid="sign-copy-return">
-                  {copied ? "Copied" : "Copy link"}
-                </Button>
-              </div>
-            </div>
-          </Card>
+          <div style={{ marginTop: 16 }}>
+            <Notice tone="success" role="status" title="Your signature is in">
+              {thresholdMet
+                ? "This close now has enough signatures. The person closing the account can see it and will submit it."
+                : "The person closing the account can now see your signature. It still needs more signers to reach the threshold."}
+            </Notice>
+          </div>
         )}
       </PageContainer>
     </AppShell>

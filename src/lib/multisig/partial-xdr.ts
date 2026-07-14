@@ -39,6 +39,17 @@ export function mergeSignatures(
     options.expectedSigners,
   );
 
+  // dedup by the RECOVERED SIGNER KEY, not by wire bytes. The decorated
+  // signature's 4-byte hint is attacker-chosen, so keying on wire bytes lets one
+  // captured signature be replayed under many hints to bloat the envelope to the
+  // 20-signature XDR cap and wedge the plan. One signature per authorized key is
+  // exactly what weighted multisig needs, so recover each key and admit it once.
+  const presentKeys = new Set<string>();
+  for (const sig of canonical.signatures) {
+    const k = recoverSigningKey(sig, canonicalHash, candidates);
+    if (k) presentKeys.add(k);
+  }
+
   for (const partialXdr of partialXdrs) {
     if (typeof partialXdr !== "string" || partialXdr.length === 0) {
       throw new Error("mergeSignatures: every partialXdr must be a non-empty base64 string.");
@@ -67,8 +78,17 @@ export function mergeSignatures(
         );
       }
 
-      if (alreadyPresent(canonical.signatures, decorated)) continue;
-      canonical.signatures.push(decorated);
+      if (presentKeys.has(signingKey)) continue;
+      // store with the canonical hint for the recovered key, so a forged hint
+      // can never occupy a parallel slot for a signer that already signed.
+      const kp = Keypair.fromPublicKey(signingKey);
+      canonical.signatures.push(
+        new xdr.DecoratedSignature({
+          hint: kp.signatureHint(),
+          signature: Buffer.from(decorated.signature()),
+        }),
+      );
+      presentKeys.add(signingKey);
     }
   }
 
@@ -144,14 +164,3 @@ function recoverSigningKey(
   return null;
 }
 
-// dedup decorated signatures by their wire-format bytes
-function alreadyPresent(
-  existing: readonly xdr.DecoratedSignature[],
-  candidate: xdr.DecoratedSignature,
-): boolean {
-  const candidateBytes = candidate.toXDR();
-  for (const sig of existing) {
-    if (Buffer.from(sig.toXDR()).equals(Buffer.from(candidateBytes))) return true;
-  }
-  return false;
-}

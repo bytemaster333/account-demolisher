@@ -7,6 +7,7 @@ import {
   Networks,
   Operation,
   TransactionBuilder,
+  xdr,
 } from "@stellar/stellar-sdk";
 import { mergeSignatures } from "@/lib/multisig/partial-xdr";
 
@@ -30,6 +31,45 @@ function signPartial(sourcePk: string, seq: string, kp: Keypair): string {
   clone.sign(kp);
   return clone.toXDR();
 }
+
+// a partial envelope carrying one signer's SAME signature under `count` forged
+// hints, the shape an attacker would use to try to bloat the canonical envelope.
+function forgedHintPartial(sourcePk: string, seq: string, kp: Keypair, count: number): string {
+  const signedOnce = TransactionBuilder.fromXDR(signPartial(sourcePk, seq, kp), NET);
+  const sig = Buffer.from(signedOnce.signatures[0]!.signature());
+  const forged = TransactionBuilder.fromXDR(buildTx(sourcePk, seq).toXDR(), NET);
+  for (let i = 0; i < count; i++) {
+    forged.signatures.push(
+      new xdr.DecoratedSignature({ hint: Buffer.from([i, i, i, i]), signature: sig }),
+    );
+  }
+  return forged.toXDR();
+}
+
+describe("mergeSignatures signature-wedge hardening", () => {
+  it("collapses one signer's signature replayed under many forged hints to a single slot", () => {
+    const a = Keypair.random();
+    const b = Keypair.random();
+    const source = a.publicKey();
+    const signers = [a.publicKey(), b.publicKey()];
+
+    const canonicalXdr = signPartial(source, "1", a);
+    // attacker floods with 15 forged-hint copies of a's one signature (one partial
+    // can hold at most 20 signatures; without dedup-by-key these would each take a
+    // slot and, across a few requests, wedge the envelope at the 20-signature cap)
+    const merged = mergeSignatures(canonicalXdr, [forgedHintPartial(source, "1", a, 15)], NET, {
+      expectedSigners: signers,
+    });
+    // still exactly one slot for a, nowhere near the 20-signature XDR cap
+    expect(TransactionBuilder.fromXDR(merged, NET).signatures).toHaveLength(1);
+
+    // a genuine second signer still merges cleanly afterwards
+    const withB = mergeSignatures(merged, [signPartial(source, "1", b)], NET, {
+      expectedSigners: signers,
+    });
+    expect(TransactionBuilder.fromXDR(withB, NET).signatures).toHaveLength(2);
+  });
+});
 
 describe("mergeSignatures", () => {
   it("merges a co-signer's signature into the canonical envelope", () => {

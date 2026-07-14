@@ -14,8 +14,6 @@ import {
   assessBundleability,
   closeThreshold,
   collectedWeight,
-  decodeSigningRequest,
-  encodeSigningRequest,
   inspectClose,
   requiredSigners,
   signedSigners,
@@ -48,27 +46,6 @@ function auditWith(signers: AuditSigner[], high: number): AccountAudit {
     thresholds: { low: 0, medium: 0, high, masterWeight: signers[0]?.weight ?? 0 },
   } as unknown as AccountAudit;
 }
-
-describe("encodeSigningRequest / decodeSigningRequest", () => {
-  it("round-trips a request", () => {
-    const xdr = buildClose(Keypair.random().publicKey(), Keypair.random().publicKey()).toXDR();
-    const encoded = encodeSigningRequest({ network: "testnet", xdr });
-    expect(decodeSigningRequest(encoded)).toEqual({ network: "testnet", xdr });
-  });
-
-  it("rejects garbage, wrong version, and unknown networks", () => {
-    expect(decodeSigningRequest("not-base64url!!!")).toBeNull();
-    // valid base64url but not our payload shape
-    const wrongVersion = Buffer.from(JSON.stringify({ v: 2, n: "testnet", x: "x" })).toString(
-      "base64url",
-    );
-    expect(decodeSigningRequest(wrongVersion)).toBeNull();
-    const badNetwork = Buffer.from(JSON.stringify({ v: 1, n: "dogenet", x: "x" })).toString(
-      "base64url",
-    );
-    expect(decodeSigningRequest(badNetwork)).toBeNull();
-  });
-});
 
 describe("inspectClose", () => {
   it("decodes an account-close and flags it as a close", () => {

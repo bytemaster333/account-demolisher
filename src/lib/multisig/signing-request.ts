@@ -11,7 +11,7 @@
 
 import { Keypair, TransactionBuilder, type Horizon, type Transaction } from "@stellar/stellar-sdk";
 
-import { NETWORKS, type NetworkConfig, type StellarNetwork } from "@/lib/config/networks";
+import type { NetworkConfig } from "@/lib/config/networks";
 import { mergeSignatures } from "@/lib/multisig/partial-xdr";
 import { batchClassicDemolition } from "@/lib/plan/classic-batcher";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
@@ -135,48 +135,6 @@ export function buildCloseTransaction(params: {
   );
   // classic batches always build a classic Transaction (never a fee-bump)
   return result.transaction as Transaction;
-}
-
-// ── portable signing request ─────────────────────────────────────────────────
-// The request is the transaction XDR plus the network it's for, encoded as a
-// single opaque token. It carries NO secret material. It rides in a URL fragment
-// (never sent to a server) or is copied as text between signers.
-
-export interface SigningRequest {
-  readonly network: StellarNetwork;
-  readonly xdr: string;
-}
-
-interface SigningRequestPayload {
-  readonly v: 1;
-  readonly n: StellarNetwork;
-  readonly x: string;
-}
-
-// base64url, done by hand: the browser's Buffer polyfill (shipped by
-// stellar-sdk) doesn't accept the "base64url" encoding name, so we encode as
-// plain base64 and make it URL-safe ourselves. Reversing tolerates the padding
-// being stripped, and also accepts native base64url input (same alphabet).
-export function encodeSigningRequest(req: SigningRequest): string {
-  const payload: SigningRequestPayload = { v: 1, n: req.network, x: req.xdr };
-  return Buffer.from(JSON.stringify(payload), "utf8")
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
-
-export function decodeSigningRequest(encoded: string): SigningRequest | null {
-  try {
-    const b64 = encoded.trim().replace(/-/g, "+").replace(/_/g, "/");
-    const json = Buffer.from(b64, "base64").toString("utf8");
-    const p = JSON.parse(json) as Partial<SigningRequestPayload>;
-    if (p.v !== 1 || typeof p.x !== "string" || typeof p.n !== "string") return null;
-    if (!(p.n in NETWORKS)) return null;
-    return { network: p.n, xdr: p.x };
-  } catch {
-    return null;
-  }
 }
 
 // ── envelope inspection (never blind-sign) ───────────────────────────────────

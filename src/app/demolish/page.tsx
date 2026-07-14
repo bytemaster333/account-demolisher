@@ -4,7 +4,7 @@
 // wires the page-flow xstate machine and the plan tree
 
 import { useMachine } from "@xstate/react";
-import { BASE_FEE, Keypair, StrKey } from "@stellar/stellar-sdk";
+import { BASE_FEE, StrKey } from "@stellar/stellar-sdk";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
 
@@ -31,7 +31,6 @@ import { SponsoringBlock } from "@/components/warnings/SponsoringBlock";
 import { ConnectButton } from "@/components/wallet/ConnectButton";
 import { CreateTestAccountButton } from "@/components/wallet/CreateTestAccountButton";
 import { CollectSignatures } from "@/components/multisig/CollectSignatures";
-import { MultisigSigners, type AddedSigner } from "@/components/wallet/MultisigSigners";
 import { SecretKeyFallback } from "@/components/wallet/SecretKeyFallback";
 import { errorMessage } from "@/lib/errors";
 import { explorerAccountUrl, explorerTxUrl } from "@/lib/explorer";
@@ -39,6 +38,7 @@ import Link from "next/link";
 import { useNetworkStore } from "@/stores/network";
 import { resolveNetwork, type NetworkConfig } from "@/lib/config/networks";
 import { pageFlowMachine } from "@/lib/orchestrator/page-flow-machine";
+import { publishPlan } from "@/lib/multisig/plan-client";
 import {
   assessBundleability,
   buildCloseTransaction,
@@ -54,7 +54,6 @@ import type { ClassicMemo } from "@/lib/types/plan";
 import type { Connector } from "@/lib/wallet/connector";
 import { WalletKitConnector } from "@/lib/wallet/connector";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
-import { MultiSignerConnector, type MultiSignerMember } from "@/lib/wallet/multi-signer";
 import { setActiveConnector } from "@/lib/wallet/active-connector";
 import { useWalletStore } from "@/stores/wallet";
 
@@ -330,19 +329,25 @@ function buildFlowSteps(args: {
   readonly hasResolve: boolean;
   readonly hasAcknowledge: boolean;
   readonly isSucceeded: boolean;
+  // shared accounts gain a "Signatures" step after Review, where the other
+  // signers' signatures are collected before the close is submitted.
+  readonly hasCollect: boolean;
+  readonly collecting: boolean;
 }): readonly FlowStep[] {
-  const { phase, hasResolve, hasAcknowledge, isSucceeded } = args;
+  const { phase, hasResolve, hasAcknowledge, isSucceeded, hasCollect, collecting } = args;
   const labels = [
     "Connect",
     "Configure",
     ...(hasResolve ? ["Fix issues"] : []),
     ...(hasAcknowledge ? ["Warnings"] : []),
     "Review",
+    ...(hasCollect ? ["Signatures"] : []),
     "Close",
   ];
 
-  const activeLabel =
-    phase === "connect"
+  const activeLabel = collecting
+    ? "Signatures"
+    : phase === "connect"
       ? "Connect"
       : phase === "configure"
         ? "Configure"
@@ -398,14 +403,6 @@ function DemolishFlow(): React.JSX.Element {
     readonly threshold: number;
     readonly signers: readonly AuditSigner[];
   } | null>(null);
-  const [extraSigners, setExtraSigners] = useState<
-    readonly {
-      readonly publicKey: string;
-      readonly weight: number;
-      readonly connector: Connector;
-    }[]
-  >([]);
-
   // preflight the connected account so the configure step knows up-front whether
   // it needs multiple signatures (a lightweight, read-only audit). Disconnect
   // resets are handled in setConnector, so the effect only does the async load.
@@ -429,38 +426,12 @@ function DemolishFlow(): React.JSX.Element {
     };
   }, [publicKey, network]);
 
+  // the initiator's own signing weight on the shared account (their key alone)
   const primaryWeight = useMemo(() => {
     if (!multisig || !publicKey) return 0;
     return multisig.signers.find((s) => s.key === publicKey)?.weight ?? 0;
   }, [multisig, publicKey]);
-  const collectedWeight = primaryWeight + extraSigners.reduce((sum, s) => sum + s.weight, 0);
   const multisigRequired = publicKey !== null && multisig?.required === true;
-  const multisigReady = !multisigRequired || collectedWeight >= (multisig?.threshold ?? 0);
-
-  const onAddSecretSigner = useCallback(
-    (secret: string): string | null => {
-      if (!multisig || !publicKey) return "Connect an account first.";
-      if (!StrKey.isValidEd25519SecretSeed(secret)) return "Not a valid Stellar secret key (S…).";
-      let pk: string;
-      try {
-        pk = Keypair.fromSecret(secret).publicKey();
-      } catch {
-        return "Could not derive a public key from that secret.";
-      }
-      if (pk === publicKey) return "That is the already-connected signer.";
-      if (extraSigners.some((s) => s.publicKey === pk)) return "That signer is already added.";
-      const signer = multisig.signers.find((s) => s.key === pk && s.weight > 0);
-      if (!signer) return "That key is not an authorized signer on this account.";
-      const connector = new SecretKeyConnector(secret);
-      setExtraSigners((prev) => [...prev, { publicKey: pk, weight: signer.weight, connector }]);
-      return null;
-    },
-    [multisig, publicKey, extraSigners],
-  );
-
-  const onRemoveSigner = useCallback((pk: string) => {
-    setExtraSigners((prev) => prev.filter((s) => s.publicKey !== pk));
-  }, []);
 
   // the awaiting_confirmation phase has three stages:
   //  "resolve"    , take an action on a blocker (return-to-issuer) + rebuild
@@ -569,16 +540,28 @@ function DemolishFlow(): React.JSX.Element {
   // Acknowledge before the built plan reveals a blocker and flips to Resolve.
   // And Acknowledge stays hidden while a blocker is unresolved, since returning a
   // token to its issuer can drop that token's warnings after the rebuild.
+  // set once the initiator turns the reviewed close into a signing request (their
+  // key already signed, published to the relay); the Collect step then renders in
+  // place of Review. `id` is the relay handle; `xdr` seeds the initial view.
+  const [signingRequestId, setSigningRequestId] = useState<string | null>(null);
+  const [signingRequestXdr, setSigningRequestXdr] = useState<string | null>(null);
+  const [multisigClosed, setMultisigClosed] = useState(false);
+  const [creatingRequest, setCreatingRequest] = useState(false);
+  const [createRequestError, setCreateRequestError] = useState<string | null>(null);
+
   const planBuilt = tree !== null;
+  const collecting = signingRequestId !== null && !multisigClosed;
   const flowSteps = useMemo(
     () =>
       buildFlowSteps({
         phase: flowPhase,
         hasResolve: planBuilt && hasBlocker,
         hasAcknowledge: planBuilt && hasAckItems && !hasBlocker,
-        isSucceeded,
+        isSucceeded: isSucceeded || multisigClosed,
+        hasCollect: multisigRequired,
+        collecting,
       }),
-    [flowPhase, planBuilt, hasBlocker, hasAckItems, isSucceeded],
+    [flowPhase, planBuilt, hasBlocker, hasAckItems, isSucceeded, multisigClosed, multisigRequired, collecting],
   );
 
   // cex / mediator
@@ -626,22 +609,17 @@ function DemolishFlow(): React.JSX.Element {
   });
   const canUseSigningRequest = multisigRequired && bundleability.ok;
 
-  // set once the initiator turns the reviewed close into a signing request (their
-  // key already signed); the Collect step then renders in place of Review.
-  const [signingRequestXdr, setSigningRequestXdr] = useState<string | null>(null);
-  const [creatingRequest, setCreatingRequest] = useState(false);
-  const [createRequestError, setCreateRequestError] = useState<string | null>(null);
-
   const setConnector = useCallback((c: Connector | null) => {
     connectorRef.current = c;
     setHasConnector(c !== null);
-    // a new/cleared connection invalidates any collected multisig signers.
+    // a new/cleared connection invalidates any in-progress signing request.
     // Use functional updates that return the SAME reference when already reset.
-    // ConnectButton re-notifies every render, so a fresh `[]`/`null` here would
-    // create a new reference each time and spin an infinite render loop.
+    // ConnectButton re-notifies every render, so a fresh `null` here would create
+    // a new reference each time and spin an infinite render loop.
     setMultisig((prev) => (prev === null ? prev : null));
-    setExtraSigners((prev) => (prev.length === 0 ? prev : []));
+    setSigningRequestId((prev) => (prev === null ? prev : null));
     setSigningRequestXdr((prev) => (prev === null ? prev : null));
+    setMultisigClosed((prev) => (prev === false ? prev : false));
   }, []);
 
   // once the account is closed it no longer exists, drop the connection so a
@@ -706,49 +684,31 @@ function DemolishFlow(): React.JSX.Element {
       return;
     }
 
-    // Shared account. Two ways to close it, decided by whether every required key
-    // is present in this browser:
-    //   - all keys here  -> combine them into one connector and close LIVE, a
-    //     single reviewed sequence (market sells are fine, we're signing now).
-    //   - keys missing   -> proceed with just the initiator's key. The close is
-    //     built as ONE deterministic bundled transaction (no market sell that
-    //     could sink the signed bundle) and, at Review, packaged as a signing
-    //     request for the other signers to add their signatures.
-    // If the close can't be bundled into one transaction (Soroban/mediator), the
-    // signing-request path is impossible, so every key must be present.
-    let connector: Connector = connectorRef.current;
-    if (multisigRequired) {
-      if (!multisigReady && !canUseSigningRequest) {
-        setFormError(
-          bundleability.reason ??
-            "Add every required signer's secret key to meet the account's threshold.",
-        );
-        return;
-      }
-      if (multisigReady) {
-        const members: MultiSignerMember[] = [
-          { connector: connectorRef.current, publicKey, weight: primaryWeight },
-          ...extraSigners.map((s) => ({
-            connector: s.connector,
-            publicKey: s.publicKey,
-            weight: s.weight,
-          })),
-        ];
-        connector = new MultiSignerConnector(publicKey, members);
-      }
+    // A shared account is always closed the same way: the initiator signs with
+    // their own key, and the reviewed close is built as ONE deterministic bundled
+    // transaction (no market sell that could sink the signed bundle) and, after
+    // Review, published as a signing request the other signers add signatures to.
+    // If the close can't be bundled into one transaction (Soroban/mediator), that
+    // path is impossible, so refuse rather than start.
+    if (multisigRequired && !canUseSigningRequest) {
+      setFormError(
+        bundleability.reason ??
+          "This shared account's close can't be bundled into a single signing request.",
+      );
+      return;
     }
 
     // the signing-request path signs ONE bundled transaction, so it can't rely on
     // a market sell: force deterministic disposal so the reviewed plan is exactly
     // the transaction every signer signs.
-    const deterministic = multisigRequired && !multisigReady;
+    const deterministic = multisigRequired;
 
     send({
       type: "START",
       input: {
         publicKey,
         network,
-        connector,
+        connector: connectorRef.current,
         destination: parsed.data.destination,
         useMediator,
         ...(memo ? { memo } : {}),
@@ -770,11 +730,8 @@ function DemolishFlow(): React.JSX.Element {
     useMediator,
     send,
     multisigRequired,
-    multisigReady,
     canUseSigningRequest,
     bundleability.reason,
-    primaryWeight,
-    extraSigners,
   ]);
 
   const onCancel = useCallback(() => {
@@ -809,7 +766,11 @@ function DemolishFlow(): React.JSX.Element {
         disposal,
       });
       const { signedXdr } = await connector.signTransaction(tx, network.passphrase);
+      // publish to the relay so co-signers can add signatures from their own
+      // devices and this page sees each one arrive live.
+      const id = await publishPlan(network.id, signedXdr);
       setSigningRequestXdr(signedXdr);
+      setSigningRequestId(id);
     } catch (e: unknown) {
       setCreateRequestError(errorMessage(e, "Couldn't create the signing request."));
     } finally {
@@ -975,58 +936,38 @@ function DemolishFlow(): React.JSX.Element {
               No side rail and no modals: the plan detail lives in the sign-off step. */}
           {!(isDiscovering || isPreviewing) && !isExecuting && !isSucceeded && !isFailed ? (
             <div style={{ maxWidth: 1080, margin: "0 auto" }}>
-              {signingRequestXdr !== null && audit !== null ? (
-                /* a signing request was created at Review: collect the other
-                   signatures right here, in place. No navigating off and losing
-                   the close flow. /sign is the page the OTHER signers open. */
+              {signingRequestId !== null && signingRequestXdr !== null && audit !== null ? (
+                /* the Signatures step: the reviewed close was published; collect
+                   the other signatures live here, then the initiator closes. /sign
+                   is the page the OTHER signers open. */
                 <CollectSignatures
+                  planId={signingRequestId}
                   audit={audit}
                   network={network}
                   initialXdr={signingRequestXdr}
+                  destination={form.destination}
                   connectedKey={publicKey}
+                  onClosed={() => setMultisigClosed(true)}
                 />
               ) : (
                 <>
                   {isConfiguring ? (
                     multisigRequired ? (
-                      /* shared account: either gather every required key and close
-                         LIVE, or continue with just yours and, at Review, package
-                         the reviewed close as a signing request for the others.
-                         Either way it runs the SAME audit -> configure -> preview
-                         -> review flow. */
+                      /* shared account: configure the close here (no signer keys
+                         asked at this step). After Review it's published as a
+                         signing request and the other signatures are collected in
+                         the dedicated Signatures step. */
                       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
                         <MultisigContextBar
                           threshold={multisig?.threshold ?? 0}
-                          have={collectedWeight}
+                          have={primaryWeight}
                         />
-                        {multisig ? (
-                          <MultisigSigners
-                            threshold={multisig.threshold}
-                            currentWeight={collectedWeight}
-                            added={extraSigners.map(
-                              (s): AddedSigner => ({
-                                publicKey: s.publicKey,
-                                weight: s.weight,
-                              }),
-                            )}
-                            onAddSecret={onAddSecretSigner}
-                            onRemove={onRemoveSigner}
-                          />
-                        ) : null}
-                        {canUseSigningRequest && !multisigReady ? (
-                          <p
-                            style={{
-                              margin: 0,
-                              fontSize: 12.5,
-                              lineHeight: 1.5,
-                              color: "var(--fg-3)",
-                            }}
-                          >
-                            Don&apos;t have the other keys here? Continue with just yours. After you
-                            review the close, you&apos;ll get a link to share so the other signers can
-                            add their signatures from their own devices.
-                          </p>
-                        ) : null}
+                        <p
+                          style={{ margin: 0, fontSize: 12.5, lineHeight: 1.5, color: "var(--fg-3)" }}
+                        >
+                          You&apos;ll gather the other signatures after you review the close, no
+                          signer keys needed here.
+                        </p>
                         {audit && numCoverable > 0 ? (
                           <SponsorshipAutoRevokeNotice count={numCoverable} />
                         ) : null}
@@ -1041,14 +982,14 @@ function DemolishFlow(): React.JSX.Element {
                             publicKey !== null &&
                             hasConnector &&
                             destinationGate.ready &&
-                            (multisigReady || canUseSigningRequest)
+                            canUseSigningRequest
                           }
                           startHint={
                             publicKey === null || !hasConnector
                               ? "Connect a wallet to continue."
-                              : !multisigReady && !canUseSigningRequest
+                              : !canUseSigningRequest
                                 ? (bundleability.reason ??
-                                  "Add every required signer's key to meet the account's threshold.")
+                                  "This shared account's close can't be gathered into one signing request.")
                                 : destinationGate.hint
                           }
                           onGeneratePlan={onStart}
@@ -1143,7 +1084,7 @@ function DemolishFlow(): React.JSX.Element {
                             : onCancel
                       }
                       onDemolish={() => setShowConfirmDialog(true)}
-                      {...(multisigRequired && !multisigReady
+                      {...(multisigRequired
                         ? {
                             createRequest: {
                               onCreate: () => void onCreateRequest(),
