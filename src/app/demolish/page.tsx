@@ -30,14 +30,22 @@ import { ScamTokenNotice } from "@/components/warnings/ScamTokenNotice";
 import { SponsoringBlock } from "@/components/warnings/SponsoringBlock";
 import { ConnectButton } from "@/components/wallet/ConnectButton";
 import { CreateTestAccountButton } from "@/components/wallet/CreateTestAccountButton";
+import { CollectSignatures } from "@/components/multisig/CollectSignatures";
 import { MultisigSigners, type AddedSigner } from "@/components/wallet/MultisigSigners";
 import { SecretKeyFallback } from "@/components/wallet/SecretKeyFallback";
+import { errorMessage } from "@/lib/errors";
 import { explorerAccountUrl, explorerTxUrl } from "@/lib/explorer";
 import Link from "next/link";
 import { useNetworkStore } from "@/stores/network";
 import { resolveNetwork, type NetworkConfig } from "@/lib/config/networks";
 import { pageFlowMachine } from "@/lib/orchestrator/page-flow-machine";
+import {
+  assessBundleability,
+  buildCloseTransaction,
+  type CloseDisposal,
+} from "@/lib/multisig/signing-request";
 import { auditAccount } from "@/lib/stellar/account-audit";
+import { getHorizon } from "@/lib/stellar/horizon-client";
 import { lookupCex, requireMemoEnforcement, type CexInfo } from "@/lib/safety/cex-registry";
 import { runScamHeuristics, type ScamFinding } from "@/lib/safety/scam-heuristics";
 import { topologicalOrder, type PlanNode } from "@/lib/plan/tree";
@@ -600,6 +608,30 @@ function DemolishFlow(): React.JSX.Element {
   }, [form.destination, publicKey]);
   const useMediator = cex !== null;
 
+  // whether the account holds Soroban (smart-contract) positions. Those each need
+  // their own transaction, so they can't be bundled into a single signable close.
+  const hasSorobanPositions =
+    ctx.positions.blend.length > 0 ||
+    ctx.positions.aquarius.length > 0 ||
+    ctx.positions.soroswap.length > 0 ||
+    ctx.positions.fxdao.length > 0;
+
+  // a shared account whose close fits in ONE bundled transaction can be closed by
+  // collecting signatures (the signing-request path). Otherwise it can only be
+  // closed live with every required key present in this browser.
+  const bundleability = assessBundleability({
+    hasSorobanPositions,
+    hasSelectedAllowances: false,
+    useMediator,
+  });
+  const canUseSigningRequest = multisigRequired && bundleability.ok;
+
+  // set once the initiator turns the reviewed close into a signing request (their
+  // key already signed); the Collect step then renders in place of Review.
+  const [signingRequestXdr, setSigningRequestXdr] = useState<string | null>(null);
+  const [creatingRequest, setCreatingRequest] = useState(false);
+  const [createRequestError, setCreateRequestError] = useState<string | null>(null);
+
   const setConnector = useCallback((c: Connector | null) => {
     connectorRef.current = c;
     setHasConnector(c !== null);
@@ -609,6 +641,7 @@ function DemolishFlow(): React.JSX.Element {
     // create a new reference each time and spin an infinite render loop.
     setMultisig((prev) => (prev === null ? prev : null));
     setExtraSigners((prev) => (prev.length === 0 ? prev : []));
+    setSigningRequestXdr((prev) => (prev === null ? prev : null));
   }, []);
 
   // once the account is closed it no longer exists, drop the connection so a
@@ -673,25 +706,42 @@ function DemolishFlow(): React.JSX.Element {
       return;
     }
 
-    // For a multisig account, every required key must be present before we start:
-    // combine them into one connector that signs with all of them (meeting the
-    // threshold) so the close executes live in a single reviewed sequence.
+    // Shared account. Two ways to close it, decided by whether every required key
+    // is present in this browser:
+    //   - all keys here  -> combine them into one connector and close LIVE, a
+    //     single reviewed sequence (market sells are fine, we're signing now).
+    //   - keys missing   -> proceed with just the initiator's key. The close is
+    //     built as ONE deterministic bundled transaction (no market sell that
+    //     could sink the signed bundle) and, at Review, packaged as a signing
+    //     request for the other signers to add their signatures.
+    // If the close can't be bundled into one transaction (Soroban/mediator), the
+    // signing-request path is impossible, so every key must be present.
     let connector: Connector = connectorRef.current;
     if (multisigRequired) {
-      if (!multisigReady) {
-        setFormError("Add every required signer's secret key to meet the account's threshold.");
+      if (!multisigReady && !canUseSigningRequest) {
+        setFormError(
+          bundleability.reason ??
+            "Add every required signer's secret key to meet the account's threshold.",
+        );
         return;
       }
-      const members: MultiSignerMember[] = [
-        { connector: connectorRef.current, publicKey, weight: primaryWeight },
-        ...extraSigners.map((s) => ({
-          connector: s.connector,
-          publicKey: s.publicKey,
-          weight: s.weight,
-        })),
-      ];
-      connector = new MultiSignerConnector(publicKey, members);
+      if (multisigReady) {
+        const members: MultiSignerMember[] = [
+          { connector: connectorRef.current, publicKey, weight: primaryWeight },
+          ...extraSigners.map((s) => ({
+            connector: s.connector,
+            publicKey: s.publicKey,
+            weight: s.weight,
+          })),
+        ];
+        connector = new MultiSignerConnector(publicKey, members);
+      }
     }
+
+    // the signing-request path signs ONE bundled transaction, so it can't rely on
+    // a market sell: force deterministic disposal so the reviewed plan is exactly
+    // the transaction every signer signs.
+    const deterministic = multisigRequired && !multisigReady;
 
     send({
       type: "START",
@@ -710,6 +760,7 @@ function DemolishFlow(): React.JSX.Element {
         ...(form.sendToDestination.length > 0
           ? { sendToDestinationAssetKeys: form.sendToDestination }
           : {}),
+        ...(deterministic ? { deterministicDisposal: true } : {}),
       },
     });
   }, [
@@ -720,6 +771,8 @@ function DemolishFlow(): React.JSX.Element {
     send,
     multisigRequired,
     multisigReady,
+    canUseSigningRequest,
+    bundleability.reason,
     primaryWeight,
     extraSigners,
   ]);
@@ -728,6 +781,41 @@ function DemolishFlow(): React.JSX.Element {
     setShowConfirmDialog(false);
     send({ type: "CANCEL" });
   }, [send]);
+
+  // turn the REVIEWED close into a signing request: rebuild the exact bundled
+  // transaction the user just reviewed (same audit, destination, deterministic
+  // disposal), sign the initiator's part, and hand it to the Collect step. The
+  // batcher inputs match the machine's deterministic preview, so what co-signers
+  // sign is exactly what was reviewed.
+  const onCreateRequest = useCallback(async () => {
+    const a = ctx.audit;
+    const connector = connectorRef.current;
+    if (a === null || connector === null) return;
+    setCreatingRequest(true);
+    setCreateRequestError(null);
+    try {
+      const sourceAccount = await getHorizon(network).loadAccount(a.accountId);
+      const disposal: CloseDisposal = {
+        ...(form.returnToIssuer.length > 0 ? { returnToIssuerAssetKeys: form.returnToIssuer } : {}),
+        ...(form.sendToDestination.length > 0
+          ? { sendToDestinationAssetKeys: form.sendToDestination }
+          : {}),
+      };
+      const tx = buildCloseTransaction({
+        audit: a,
+        destination: form.destination,
+        network,
+        sourceAccount,
+        disposal,
+      });
+      const { signedXdr } = await connector.signTransaction(tx, network.passphrase);
+      setSigningRequestXdr(signedXdr);
+    } catch (e: unknown) {
+      setCreateRequestError(errorMessage(e, "Couldn't create the signing request."));
+    } finally {
+      setCreatingRequest(false);
+    }
+  }, [ctx.audit, network, form.destination, form.returnToIssuer, form.sendToDestination]);
 
   const onReset = useCallback(() => {
     setShowConfirmDialog(false);
@@ -887,12 +975,25 @@ function DemolishFlow(): React.JSX.Element {
               No side rail and no modals: the plan detail lives in the sign-off step. */}
           {!(isDiscovering || isPreviewing) && !isExecuting && !isSucceeded && !isFailed ? (
             <div style={{ maxWidth: 1080, margin: "0 auto" }}>
+              {signingRequestXdr !== null && audit !== null ? (
+                /* a signing request was created at Review: collect the other
+                   signatures right here, in place. No navigating off and losing
+                   the close flow. /sign is the page the OTHER signers open. */
+                <CollectSignatures
+                  audit={audit}
+                  network={network}
+                  initialXdr={signingRequestXdr}
+                  connectedKey={publicKey}
+                />
+              ) : (
                 <>
                   {isConfiguring ? (
                     multisigRequired ? (
-                      /* shared account: gather every required signer's key, then
-                         run the SAME audit -> configure -> preview -> review ->
-                         execute flow as any close, signed live as one sequence. */
+                      /* shared account: either gather every required key and close
+                         LIVE, or continue with just yours and, at Review, package
+                         the reviewed close as a signing request for the others.
+                         Either way it runs the SAME audit -> configure -> preview
+                         -> review flow. */
                       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
                         <MultisigContextBar
                           threshold={multisig?.threshold ?? 0}
@@ -912,6 +1013,20 @@ function DemolishFlow(): React.JSX.Element {
                             onRemove={onRemoveSigner}
                           />
                         ) : null}
+                        {canUseSigningRequest && !multisigReady ? (
+                          <p
+                            style={{
+                              margin: 0,
+                              fontSize: 12.5,
+                              lineHeight: 1.5,
+                              color: "var(--fg-3)",
+                            }}
+                          >
+                            Don&apos;t have the other keys here? Continue with just yours. After you
+                            review the close, you&apos;ll get a link to share so the other signers can
+                            add their signatures from their own devices.
+                          </p>
+                        ) : null}
                         {audit && numCoverable > 0 ? (
                           <SponsorshipAutoRevokeNotice count={numCoverable} />
                         ) : null}
@@ -926,13 +1041,14 @@ function DemolishFlow(): React.JSX.Element {
                             publicKey !== null &&
                             hasConnector &&
                             destinationGate.ready &&
-                            multisigReady
+                            (multisigReady || canUseSigningRequest)
                           }
                           startHint={
                             publicKey === null || !hasConnector
                               ? "Connect a wallet to continue."
-                              : !multisigReady
-                                ? "Add every required signer's key to meet the account's threshold."
+                              : !multisigReady && !canUseSigningRequest
+                                ? (bundleability.reason ??
+                                  "Add every required signer's key to meet the account's threshold.")
                                 : destinationGate.hint
                           }
                           onGeneratePlan={onStart}
@@ -1027,11 +1143,21 @@ function DemolishFlow(): React.JSX.Element {
                             : onCancel
                       }
                       onDemolish={() => setShowConfirmDialog(true)}
+                      {...(multisigRequired && !multisigReady
+                        ? {
+                            createRequest: {
+                              onCreate: () => void onCreateRequest(),
+                              creating: creatingRequest,
+                              error: createRequestError,
+                            },
+                          }
+                        : {})}
                     />
                   ) : null}
 
                   {isCancelled ? <CancelledPanel onResume={() => send({ type: "RESET" })} /> : null}
                 </>
+              )}
             </div>
           ) : null}
 
@@ -2309,6 +2435,7 @@ function ReviewPanel({
   snapshot,
   onBack,
   onDemolish,
+  createRequest,
 }: {
   readonly planGroups: ReadonlyArray<{ phase: string; nodes: readonly PlanNode[] }>;
   readonly totalXlm: string;
@@ -2325,6 +2452,14 @@ function ReviewPanel({
   } | null;
   readonly onBack: () => void;
   readonly onDemolish: () => void;
+  // present for a shared account whose keys aren't all on this device: the
+  // terminal packages this exact reviewed close as a signing request for the
+  // other signers, instead of executing it immediately.
+  readonly createRequest?: {
+    readonly onCreate: () => void;
+    readonly creating: boolean;
+    readonly error: string | null;
+  };
 }): React.JSX.Element {
   const required = destination.length >= 4 ? destination.slice(-4) : destination;
   const destHead = destination.length > 4 ? destination.slice(0, -4) : "";
@@ -2522,68 +2657,135 @@ function ReviewPanel({
         ) : null}
       </div>
 
-      <div
-        role="note"
-        style={{
-          display: "flex",
-          gap: 10,
-          padding: "12px 14px",
-          borderRadius: 12,
-          border: "1px solid color-mix(in srgb, var(--danger) 40%, transparent)",
-          fontSize: 13,
-          lineHeight: 1.5,
-          color: "var(--fg-2)",
-        }}
-      >
-        <svg
-          width="18"
-          height="18"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="var(--danger)"
-          strokeWidth={2.2}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          style={{ flexShrink: 0, marginTop: 1 }}
-          aria-hidden
-        >
-          <path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
-        </svg>
-        <span>
-          This permanently deletes your Stellar account and sends all its XLM to the address above.{" "}
-          <strong style={{ color: "var(--fg)", fontWeight: 600 }}>It cannot be undone.</strong>{" "}
-          Double-check the address before continuing.
-        </span>
-      </div>
-
-      <div style={{ display: "flex", gap: 11 }}>
-        <Button variant="secondary" onClick={onBack} data-testid="review-back">
-          Back
-        </Button>
-        <Button
-          variant="danger"
-          onClick={onDemolish}
-          data-testid="demolish-confirm"
-          style={{ flex: 1 }}
-          iconRight={
+      {createRequest ? (
+        <>
+          <div
+            role="note"
+            style={{
+              display: "flex",
+              gap: 10,
+              padding: "12px 14px",
+              borderRadius: 12,
+              border: "1px solid var(--border-2)",
+              background: "var(--surface-2)",
+              fontSize: 13,
+              lineHeight: 1.5,
+              color: "var(--fg-2)",
+            }}
+          >
             <svg
-              width="16"
-              height="16"
+              width="18"
+              height="18"
               viewBox="0 0 24 24"
               fill="none"
-              stroke="currentColor"
+              stroke="var(--fg-3)"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              style={{ flexShrink: 0, marginTop: 1 }}
+              aria-hidden
+            >
+              <path d="M12 16v-4M12 8h.01" />
+              <circle cx="12" cy="12" r="9" />
+            </svg>
+            <span>
+              This packages the exact close above into one transaction and signs it with your key.
+              Nothing is submitted yet, and{" "}
+              <strong style={{ color: "var(--fg)", fontWeight: 600 }}>
+                the account stays open until enough signers sign.
+              </strong>{" "}
+              You&apos;ll get a link to share, and collect the rest here.
+            </span>
+          </div>
+
+          {createRequest.error !== null ? (
+            <p role="alert" style={{ margin: 0, fontSize: 12.5, color: "var(--danger)" }}>
+              {createRequest.error}
+            </p>
+          ) : null}
+
+          <div style={{ display: "flex", gap: 11 }}>
+            <Button variant="secondary" onClick={onBack} data-testid="review-back">
+              Back
+            </Button>
+            <Button
+              onClick={createRequest.onCreate}
+              loading={createRequest.creating}
+              disabled={createRequest.creating}
+              data-testid="review-create-request"
+              style={{ flex: 1 }}
+            >
+              {createRequest.creating ? "Creating request…" : "Create signing request"}
+            </Button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div
+            role="note"
+            style={{
+              display: "flex",
+              gap: 10,
+              padding: "12px 14px",
+              borderRadius: 12,
+              border: "1px solid color-mix(in srgb, var(--danger) 40%, transparent)",
+              fontSize: 13,
+              lineHeight: 1.5,
+              color: "var(--fg-2)",
+            }}
+          >
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="var(--danger)"
               strokeWidth={2.2}
               strokeLinecap="round"
               strokeLinejoin="round"
+              style={{ flexShrink: 0, marginTop: 1 }}
               aria-hidden
             >
-              <path d="M5 12h14M13 6l6 6-6 6" />
+              <path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
             </svg>
-          }
-        >
-          Continue to final confirmation
-        </Button>
-      </div>
+            <span>
+              This permanently deletes your Stellar account and sends all its XLM to the address
+              above.{" "}
+              <strong style={{ color: "var(--fg)", fontWeight: 600 }}>It cannot be undone.</strong>{" "}
+              Double-check the address before continuing.
+            </span>
+          </div>
+
+          <div style={{ display: "flex", gap: 11 }}>
+            <Button variant="secondary" onClick={onBack} data-testid="review-back">
+              Back
+            </Button>
+            <Button
+              variant="danger"
+              onClick={onDemolish}
+              data-testid="demolish-confirm"
+              style={{ flex: 1 }}
+              iconRight={
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2.2}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <path d="M5 12h14M13 6l6 6-6 6" />
+                </svg>
+              }
+            >
+              Continue to final confirmation
+            </Button>
+          </div>
+        </>
+      )}
     </Card>
   );
 }
