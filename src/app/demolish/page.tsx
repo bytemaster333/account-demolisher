@@ -624,19 +624,24 @@ function DemolishFlow(): React.JSX.Element {
 
   // once the account is closed it no longer exists, drop the connection so a
   // later navigation back to /demolish starts at Connect, not Configure with a
-  // dead account. The success screen keys off the machine + tree (not publicKey)
-  // so it stays visible. Guarded by a ref so it fires once per close.
+  // dead account. This covers BOTH a single-signer close (machine "succeeded")
+  // and a shared close submitted from the Signatures step (multisigClosed). We
+  // clear the wallet/connector directly rather than via setConnector, so the
+  // current success view (which keys off the machine/tree or the signing-request
+  // state, not the live wallet) stays visible. Guarded by a ref to fire once.
   const closedRef = useRef(false);
   useEffect(() => {
-    if (isSucceeded && !closedRef.current) {
+    const closed = isSucceeded || multisigClosed;
+    if (closed && !closedRef.current) {
       closedRef.current = true;
-      setConnector(null);
+      connectorRef.current = null;
+      setHasConnector(false);
       setActiveConnector(null);
       disconnectWallet();
-    } else if (!isSucceeded && closedRef.current) {
+    } else if (!closed && closedRef.current) {
       closedRef.current = false;
     }
-  }, [isSucceeded, setConnector, disconnectWallet]);
+  }, [isSucceeded, multisigClosed, disconnectWallet]);
 
   // guard against navigating away / closing the tab mid-execution, a partial
   // run leaves the account half-dismantled. The native prompt is the strongest

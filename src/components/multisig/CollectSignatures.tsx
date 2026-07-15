@@ -287,22 +287,88 @@ export function CollectSignatures({
         </p>
       </div>
 
-      {submit.kind === "error" ? (
-        <p role="alert" style={{ margin: 0, fontSize: 12.5, color: "var(--danger)" }}>
-          {submit.message}
-        </p>
-      ) : null}
+      {/* once enough signatures are in, the close terminal matches the
+          single-signer Review flow: the same danger notice + "Continue to final
+          confirmation", then the typed-confirmation dialog. */}
+      {thresholdMet ? (
+        <>
+          <div
+            role="note"
+            style={{
+              display: "flex",
+              gap: 10,
+              padding: "12px 14px",
+              borderRadius: 12,
+              border: "1px solid color-mix(in srgb, var(--danger) 40%, transparent)",
+              fontSize: 13,
+              lineHeight: 1.5,
+              color: "var(--fg-2)",
+            }}
+          >
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="var(--danger)"
+              strokeWidth={2.2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              style={{ flexShrink: 0, marginTop: 1 }}
+              aria-hidden
+            >
+              <path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+            </svg>
+            <span>
+              This permanently deletes the account and sends all its XLM to your destination.{" "}
+              <strong style={{ color: "var(--fg)", fontWeight: 600 }}>It cannot be undone.</strong>{" "}
+              Double-check the destination before continuing.
+            </span>
+          </div>
 
-      <Button
-        variant="danger"
-        onClick={() => setShowConfirm(true)}
-        loading={submit.kind === "submitting"}
-        disabled={!thresholdMet || submit.kind === "submitting"}
-        disabledReason={thresholdMet ? undefined : "Collect enough signatures to reach the threshold first"}
-        data-testid="collect-close"
-      >
-        {thresholdMet ? "Close the account" : "Waiting for enough signatures"}
-      </Button>
+          {submit.kind === "error" ? (
+            <p role="alert" style={{ margin: 0, fontSize: 12.5, color: "var(--danger)" }}>
+              {submit.message}
+            </p>
+          ) : null}
+
+          <Button
+            variant="danger"
+            onClick={() => setShowConfirm(true)}
+            loading={submit.kind === "submitting"}
+            disabled={submit.kind === "submitting"}
+            data-testid="collect-close"
+            style={{ width: "100%" }}
+            iconRight={
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2.2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <path d="M5 12h14M13 6l6 6-6 6" />
+              </svg>
+            }
+          >
+            Continue to final confirmation
+          </Button>
+        </>
+      ) : (
+        <Button
+          variant="danger"
+          disabled
+          disabledReason="Collect enough signatures to reach the threshold first"
+          data-testid="collect-close"
+          style={{ width: "100%" }}
+        >
+          Waiting for enough signatures
+        </Button>
+      )}
 
       {showConfirm ? (
         <TypedConfirmation
