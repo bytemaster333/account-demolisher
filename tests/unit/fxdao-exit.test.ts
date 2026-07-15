@@ -5,6 +5,11 @@ import { buildVaultExit } from "@/lib/adapters/fxdao/exit";
 import type { FxDAOVault } from "@/lib/adapters/fxdao/client";
 import { TESTNET } from "@/lib/config/networks";
 
+// identity "prepare": stands in for the RPC prepareTransaction so encoding can be
+// asserted offline. Preparing only attaches Soroban footprint/resource data; it
+// never changes the operations we decode, so the op-arg assertions still hold.
+const IDENTITY_ASSEMBLE = { assemble: async (_s: unknown, tx: unknown) => tx } as never;
+
 // buildVaultExit encodes ONE real VaultsContract call, pay_debt, whose arg shape
 // must match the on-chain host: new_prev_key = None and amount = the full
 // vault.debt (u128). A full pay_debt closes the vault and releases its collateral
@@ -57,6 +62,12 @@ describe("buildVaultExit guards", () => {
       buildVaultExit(vault(1_000_0000000n), USER, TESTNET, sourceAccount(), "", null),
     ).rejects.toThrow(TypeError);
   });
+
+  it("refuses to build without an rpc server (would submit an unprepared Soroban tx)", async () => {
+    await expect(
+      buildVaultExit(vault(1_000_0000000n), USER, TESTNET, sourceAccount(), ISSUER, null),
+    ).rejects.toThrow(/rpc server is required to prepare/);
+  });
 });
 
 describe("buildVaultExit encoding", () => {
@@ -70,6 +81,7 @@ describe("buildVaultExit encoding", () => {
       sourceAccount(),
       ISSUER,
       null,
+      IDENTITY_ASSEMBLE,
     );
 
     const { fn, args } = invokeArgs(payDebt);
@@ -83,7 +95,15 @@ describe("buildVaultExit encoding", () => {
   });
 
   it("builds only pay_debt, no redeem step (redeem targets the lowest vault, not the caller's)", async () => {
-    const exit = await buildVaultExit(vault(DEBT), USER, TESTNET, sourceAccount(), ISSUER, null);
+    const exit = await buildVaultExit(
+      vault(DEBT),
+      USER,
+      TESTNET,
+      sourceAccount(),
+      ISSUER,
+      null,
+      IDENTITY_ASSEMBLE,
+    );
     // the shape carries a single tx; a resurrected redeem field would fail here
     expect(Object.keys(exit)).toEqual(["payDebt"]);
     expect((exit as unknown as Record<string, unknown>).redeem).toBeUndefined();

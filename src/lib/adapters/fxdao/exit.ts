@@ -7,12 +7,14 @@ import {
   nativeToScVal,
   xdr,
   type Horizon,
+  type rpc,
   type Transaction,
 } from "@stellar/stellar-sdk";
 
 import { getAllowlistForNetwork, isAllowedContract } from "@/lib/config/contracts";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { address as scvAddress } from "@/lib/soroban/scval";
+import { assembleSubmittable } from "@/lib/soroban/simulate";
 import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
 
 import { getFxDAOVaultsContractId } from "./contracts";
@@ -31,7 +33,17 @@ export interface FxDAOVaultExit {
   readonly payDebt: Transaction;
 }
 
-// build the unsigned close for one vault
+export interface FxDAOExitDeps {
+  // Soroban RPC used to prepare (attach footprint + resource fee) the pay_debt
+  // invocation. Required for a real, submittable transaction.
+  readonly server?: rpc.Server;
+  // override for tests; defaults to server.prepareTransaction
+  readonly assemble?: typeof assembleSubmittable;
+}
+
+// build the unsigned close for one vault. The pay_debt call is a Soroban host
+// invocation, so it MUST be prepared (footprint + resource fee attached) or the
+// network rejects it as malformed; every other adapter prepares its calls too.
 export async function buildVaultExit(
   vault: FxDAOVault,
   userPublicKey: string,
@@ -39,6 +51,7 @@ export async function buildVaultExit(
   sourceAccount: Horizon.AccountResponse,
   syntheticAssetIssuer: string,
   prevKey: VaultKey | null,
+  deps: FxDAOExitDeps = {},
 ): Promise<FxDAOVaultExit> {
   if (vault.debt <= 0n) {
     throw new RangeError(
@@ -58,7 +71,7 @@ export async function buildVaultExit(
     );
   }
 
-  const payDebt = buildPayDebtTx(
+  const built = buildPayDebtTx(
     vault,
     userPublicKey,
     sourceAccount,
@@ -67,9 +80,21 @@ export async function buildVaultExit(
     prevKey,
   );
 
-  assertTransactionAllowed(payDebt, network);
+  const assemble = deps.assemble ?? assembleSubmittable;
+  if (deps.assemble === undefined && deps.server === undefined) {
+    throw new Error(
+      "FxDAO buildVaultExit: an rpc server is required to prepare the pay_debt transaction " +
+        "(a Soroban call submitted without a prepared footprint is rejected on-chain)",
+    );
+  }
+  const prepared = await assemble(deps.server as rpc.Server, built);
+  if ("innerTransaction" in prepared) {
+    throw new Error("FxDAO buildVaultExit: prepareTransaction returned a FeeBumpTransaction unexpectedly");
+  }
 
-  return { payDebt };
+  assertTransactionAllowed(prepared, network);
+
+  return { payDebt: prepared };
 }
 
 // resolve the VaultsContract id for the target network. fxdao has no futurenet deployment

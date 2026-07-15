@@ -156,6 +156,22 @@ describe("generatePlan, mediator forward", () => {
     );
   });
 
+  it("carries the FULL deposit memo (incl. numeric 'id') to the forward, not just text", () => {
+    // regression: an 'id' (numeric) CEX memo was dropped because only 'text' was
+    // propagated, so the forward reached the exchange with no memo (fund loss).
+    const tree = generatePlan(makeAudit(), richPositions(), [], DEST, {
+      useMediator: true,
+      mediatorPublicKey: MED,
+      flowToken: "nonce.exp.mac",
+      memo: { type: "id", value: "1234567890" },
+    });
+    const fwd = tree.allNodes.get("mediator-forward");
+    expect(fwd?.metadata.kind).toBe("MediatorForward");
+    if (fwd?.metadata.kind === "MediatorForward") {
+      expect(fwd.metadata.memo).toEqual({ type: "id", value: "1234567890" });
+    }
+  });
+
   it("throws when useMediator is set without a mediator public key", () => {
     expect(() =>
       generatePlan(makeAudit(), emptyPositions(), [], DEST, { useMediator: true }),

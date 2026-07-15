@@ -27,6 +27,17 @@ function singleOpBatch(): ClassicBatch {
   };
 }
 
+function multiOpBatch(opCount: number): ClassicBatch {
+  return {
+    operations: Array.from({ length: opCount }, (_, i) => ({
+      kind: "manage_data_delete" as const,
+      summary: `delete data k${i}`,
+      metadata: { name: `k${i}` },
+    })),
+    destination: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+  };
+}
+
 function newSource(): Horizon.AccountResponse {
   // sequence value is irrelevant for fee computation; the builder only reads
   // accountId()/sequenceNumber(), so an Account stands in for AccountResponse
@@ -50,5 +61,13 @@ describe("buildClassicTransaction fee computation", () => {
     expect(() =>
       buildClassicTransaction(singleOpBatch(), newSource(), TEST_NET, 0xffffffff + 1),
     ).toThrow(/exceeds the u32 ceiling/);
+  });
+
+  it("charges feeBase * opCount total, NOT feeBase * opCount² (SDK multiplies by op count)", () => {
+    // regression: feeBase was pre-multiplied AND the SDK multiplied again, so a
+    // 5-op batch at base 100 was charged 100*5*5 = 2500 instead of 100*5 = 500.
+    const built = buildClassicTransaction(multiOpBatch(5), newSource(), TEST_NET, 100);
+    expect(built.transaction.fee).toBe("500");
+    expect(built.estimatedFee).toBe("500");
   });
 });

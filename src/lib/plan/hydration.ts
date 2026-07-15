@@ -324,6 +324,7 @@ async function hydrateNode(
         sourceAccount,
         FXDAO_MAINNET_STABLE_ISSUER,
         prevKey,
+        { server: deps.rpc },
       );
       setTransaction(node, exit.payDebt);
       return;

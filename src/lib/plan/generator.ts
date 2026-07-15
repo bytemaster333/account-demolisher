@@ -296,7 +296,9 @@ export function generatePlan(
         mediatorPublicKey: opts.mediatorPublicKey,
         flowToken: opts.flowToken ?? "",
         ultimateDestination: destination,
-        ...(opts.memo?.type === "text" ? { memo: opts.memo.value } : {}),
+        // carry the FULL memo (any type) to the forward: this is the hop that
+        // reaches the CEX, so a numeric/hash deposit memo must survive here.
+        ...(opts.memo ? { memo: opts.memo } : {}),
       },
     });
   }

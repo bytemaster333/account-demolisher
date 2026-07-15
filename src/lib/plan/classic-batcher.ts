@@ -276,8 +276,13 @@ function buildBatch(
   isFinal: boolean,
 ): ClassicBatch {
   const usesMediator = ops.some((o) => o.kind === "create_account_mediator");
-  const includeMediator =
-    options.useMediator && !!options.mediatorPublicKey && (usesMediator || isFinal);
+  const mediatorPath = options.useMediator && !!options.mediatorPublicKey;
+  const includeMediator = mediatorPath && (usesMediator || isFinal);
+  // the deposit memo only belongs on the hop that actually reaches the intended
+  // recipient. On the mediator path that's the separate forward (which carries
+  // the full memo), never a classic batch that merges into the ephemeral account;
+  // otherwise it's the final merge batch that sends straight to the destination.
+  const memoOnThisBatch = isFinal && !mediatorPath;
   return {
     operations: ops,
     destination: options.destination,
@@ -289,7 +294,7 @@ function buildBatch(
           },
         }
       : {}),
-    ...(options.memo ? { memo: options.memo } : {}),
+    ...(options.memo && memoOnThisBatch ? { memo: options.memo } : {}),
   };
 }
 

@@ -308,9 +308,8 @@ export async function executePlanTreeOnChain(
         flowToken: node.metadata.flowToken,
         destination: node.metadata.ultimateDestination,
         network: deps.network,
-        ...(node.metadata.memo
-          ? { memo: { type: "text" as const, value: node.metadata.memo } }
-          : {}),
+        // the full memo (any type) reaches the CEX on this forward hop
+        ...(node.metadata.memo ? { memo: node.metadata.memo } : {}),
       };
       node.status = "signed";
       notify(node);

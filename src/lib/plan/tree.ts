@@ -4,7 +4,7 @@
 import type { rpc as RpcNS, Transaction, xdr as XdrNS } from "@stellar/stellar-sdk";
 
 import type { AssetIdentifier } from "@/lib/types/account";
-import type { ClassicBatch } from "@/lib/types/plan";
+import type { ClassicBatch, ClassicMemo } from "@/lib/types/plan";
 
 // soroban nodes carry the full simulation response; classic nodes
 // just confirm well-formedness and emit envelope xdr
@@ -165,7 +165,10 @@ export interface MediatorForwardMetadata {
   // this flow's ephemeral mediator account
   readonly flowToken: string;
   readonly ultimateDestination: string;
-  readonly memo?: string;
+  // the user's CEX deposit memo (full type + value). This forward is the ONLY
+  // hop that reaches the exchange, so it must carry the memo verbatim; a numeric
+  // ("id") or hash memo dropped here means the deposit isn't credited.
+  readonly memo?: ClassicMemo;
 }
 
 export interface RevokeAllowanceNode extends PlanNodeBase {

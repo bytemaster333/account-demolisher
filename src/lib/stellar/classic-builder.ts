@@ -35,10 +35,16 @@ export function buildClassicTransaction(
   if (batch.operations.length === 0) {
     throw new Error("buildClassicTransaction: batch has no operations");
   }
-  const fee = computeFee(feeBase, batch.operations.length);
+  // validate the TOTAL fee (feeBase per op × opCount, which is what the SDK and
+  // Horizon actually charge) against the u32 ceiling before building.
+  const totalFee = computeFee(feeBase, batch.operations.length);
 
   const builder = new TransactionBuilder(account, {
-    fee,
+    // the SDK's `fee` option is the PER-OPERATION base fee; it multiplies by the
+    // operation count internally. Pass feeBase, NOT the pre-multiplied total, or
+    // the on-chain fee becomes feeBase × opCount² (a silent over-charge that also
+    // defeats the surge cap and the u32 guard).
+    fee: String(feeBase),
     networkPassphrase: network.passphrase,
     ...(batch.memo ? { memo: toSdkMemo(batch.memo) } : {}),
   });
@@ -54,7 +60,8 @@ export function buildClassicTransaction(
   return {
     transaction: tx,
     xdr: envelopeXdr,
-    estimatedFee: fee,
+    // matches tx.fee now (feeBase × opCount), so what's shown equals what's spent
+    estimatedFee: totalFee,
     description: batch.operations,
   };
 }
