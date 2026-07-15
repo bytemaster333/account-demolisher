@@ -58,11 +58,14 @@ export interface PageFlowContext {
   readonly progress: readonly DemolishProgressEvent[];
   readonly result: DemolishResult | null;
   readonly error: string | null;
+  // set when a multisig close's collected bundle is submitted (SUBMIT_BUNDLE)
+  readonly signedBundleXdr: string | null;
 }
 
 export type PageFlowEvent =
   | { type: "START"; input: PageFlowInput }
   | { type: "CONFIRM" }
+  | { type: "SUBMIT_BUNDLE"; signedXdr: string }
   | { type: "CANCEL" }
   | { type: "RETRY" }
   | { type: "RESET" }
@@ -120,6 +123,9 @@ interface ExecuteInput {
   readonly allowances: readonly AllowanceRecord[];
   // tree from the preview pass; execute runs against this so the ui shows
   readonly tree: PlanTree;
+  // present for a multisig close: the fully-signed bundled transaction to submit
+  // as-is, instead of re-building/signing the tree node by node.
+  readonly signedBundleXdr?: string;
   readonly onProgress: (event: DemolishProgressEvent) => void;
   // fires after every node.status mutation during execution so the page can
   readonly onNodeTick: () => void;
@@ -374,16 +380,6 @@ const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ input }) 
   const horizon = getHorizon(input.network);
   const tree = input.tree;
 
-  // re-hydrate the tree against fresh sequence numbers / ledger state
-  const ledger = await rpc.getLatestLedger();
-  await hydratePlanTransactions(tree, input.publicKey, {
-    rpc,
-    horizon,
-    network: input.network,
-    currentLedger: ledger.sequence,
-    fetchSourceAccount: (pk) => horizon.loadAccount(pk),
-  });
-
   const submitClassic = async (signedXdr: string): Promise<ConfirmationReceipt> => {
     const signed = TransactionBuilder.fromXDR(signedXdr, input.network.passphrase) as Transaction;
     try {
@@ -400,6 +396,45 @@ const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ input }) 
       );
     }
   };
+
+  // A multisig close arrives here as ONE fully-signed bundled transaction: every
+  // required signature was collected in the Signatures step. Submit it as-is and
+  // mark the reviewed plan confirmed, so the SAME Close step + status UI runs as
+  // a single-signer close. No re-hydration and no re-signing (it's already signed
+  // to threshold; rebuilding it would invalidate the collected signatures).
+  if (input.signedBundleXdr) {
+    input.onProgress({ kind: "submitting", message: "Submitting the signed close…" });
+    try {
+      const receipt = await submitClassic(input.signedBundleXdr);
+      for (const node of tree.allNodes.values()) {
+        if (node.status !== "skipped") {
+          node.status = "confirmed";
+          node.executed = receipt;
+        }
+      }
+      input.onNodeTick();
+      input.onProgress({
+        kind: "complete",
+        message: "Demolition complete.",
+        ...(receipt.txHash ? { txHash: receipt.txHash } : {}),
+      });
+      return { result: { ok: true, errors: [], mergedTxHash: receipt.txHash }, tree };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      input.onProgress({ kind: "blocked", message });
+      return { result: { ok: false, errors: [message] }, tree };
+    }
+  }
+
+  // re-hydrate the tree against fresh sequence numbers / ledger state
+  const ledger = await rpc.getLatestLedger();
+  await hydratePlanTransactions(tree, input.publicKey, {
+    rpc,
+    horizon,
+    network: input.network,
+    currentLedger: ledger.sequence,
+    fetchSourceAccount: (pk) => horizon.loadAccount(pk),
+  });
   const submitSoroban = async (signedXdr: string): Promise<ConfirmationReceipt> => {
     const signed = TransactionBuilder.fromXDR(signedXdr, input.network.passphrase) as Transaction;
     const send = await rpc.sendTransaction(signed);
@@ -496,6 +531,7 @@ const initialContext: PageFlowContext = {
   progress: [],
   result: null,
   error: null,
+  signedBundleXdr: null,
 };
 
 export const pageFlowMachine = setup({
@@ -614,9 +650,15 @@ export const pageFlowMachine = setup({
             progress: [],
             result: null,
             error: null,
+            signedBundleXdr: null,
           }),
         },
         CONFIRM: "executing",
+        // a multisig close: submit the collected, fully-signed bundle as-is
+        SUBMIT_BUNDLE: {
+          target: "executing",
+          actions: assign({ signedBundleXdr: ({ event }) => event.signedXdr }),
+        },
         CANCEL: "cancelled",
       },
     },
@@ -636,6 +678,7 @@ export const pageFlowMachine = setup({
             positions: context.positions,
             allowances: context.allowances,
             tree: context.tree,
+            ...(context.signedBundleXdr ? { signedBundleXdr: context.signedBundleXdr } : {}),
             ...(i.memo ? { memo: i.memo } : {}),
             ...(i.userFallbackAddress ? { userFallbackAddress: i.userFallbackAddress } : {}),
             ...(i.selectedClaimableBalanceIds

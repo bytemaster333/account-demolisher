@@ -247,9 +247,11 @@ export default function SignPage(): React.JSX.Element {
         />
 
         {/* what this transaction does, decoded, never blind base64 */}
-        <Card padding={22} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <Card padding={24} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-            <h2 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>What you&apos;re signing</h2>
+            <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600, letterSpacing: "-0.01em" }}>
+              What you&apos;re signing
+            </h2>
             <Badge tone="neutral">{network?.id}</Badge>
           </div>
 
@@ -260,8 +262,7 @@ export default function SignPage(): React.JSX.Element {
             <CopyableAddress
               value={inspection.source}
               label="Account"
-              head={8}
-              tail={6}
+              full
               size={12.5}
               href={explorerAccountUrl(network!, inspection.source)}
             />
@@ -300,8 +301,7 @@ export default function SignPage(): React.JSX.Element {
                     <CopyableAddress
                       value={op.destination}
                       label="Destination"
-                      head={8}
-                      tail={6}
+                      full
                       size={11.5}
                       href={explorerAccountUrl(network!, op.destination)}
                     />
@@ -321,7 +321,7 @@ export default function SignPage(): React.JSX.Element {
             </Notice>
           </div>
         ) : facts !== null ? (
-          <Card padding={20} style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 14 }}>
+          <Card padding={24} style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 14 }}>
             <Progress
               value={weight}
               max={facts.threshold}
@@ -348,8 +348,7 @@ export default function SignPage(): React.JSX.Element {
                       <CopyableAddress
                         value={key}
                         label="Signer"
-                        head={8}
-                        tail={6}
+                        full
                         size={12}
                         href={explorerAccountUrl(network!, key)}
                       />
@@ -380,13 +379,34 @@ export default function SignPage(): React.JSX.Element {
 
         {/* sign, or the confirmation once signed */}
         {!signedHere ? (
-          <Card padding={20} style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 14 }}>
-            <h2 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>Add your signature</h2>
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <Button onClick={signWithWallet} loading={signing} disabled={signing} data-testid="sign-wallet">
-                Connect wallet and sign
-              </Button>
+          <Card padding={24} style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 16 }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600, letterSpacing: "-0.01em" }}>
+                Add your signature
+              </h2>
+              <p style={{ margin: "6px 0 0", fontSize: 12.5, color: "var(--fg-2)", lineHeight: 1.5 }}>
+                Sign with your own wallet (recommended), or paste your secret key. Your key is used
+                only in this browser and is never uploaded or shared.
+              </p>
             </div>
+
+            <Button
+              onClick={signWithWallet}
+              loading={signing}
+              disabled={signing}
+              data-testid="sign-wallet"
+              style={{ width: "100%" }}
+            >
+              Connect wallet and sign
+            </Button>
+
+            {/* subtle "or" divider */}
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
+              <span style={{ fontSize: 11, color: "var(--fg-3)", letterSpacing: "0.06em" }}>OR</span>
+              <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
+            </div>
+
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <input
                 type="password"
@@ -395,7 +415,7 @@ export default function SignPage(): React.JSX.Element {
                 onKeyDown={(e) => {
                   if (e.key === "Enter") signWithSecret();
                 }}
-                placeholder="…or paste your secret key (S…)"
+                placeholder="Paste your secret key (S…)"
                 aria-label="Your signer secret key"
                 autoComplete="off"
                 spellCheck={false}
@@ -422,9 +442,6 @@ export default function SignPage(): React.JSX.Element {
                 Sign
               </Button>
             </div>
-            <p style={{ margin: 0, fontSize: 11.5, color: "var(--fg-3)", lineHeight: 1.5 }}>
-              Your key is used only in this browser to sign, and is never uploaded or shared.
-            </p>
             {signError !== null ? (
               <p role="alert" style={{ margin: 0, fontSize: 12.5, color: "var(--danger)" }}>
                 {signError}

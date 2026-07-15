@@ -545,23 +545,25 @@ function DemolishFlow(): React.JSX.Element {
   // place of Review. `id` is the relay handle; `xdr` seeds the initial view.
   const [signingRequestId, setSigningRequestId] = useState<string | null>(null);
   const [signingRequestXdr, setSigningRequestXdr] = useState<string | null>(null);
-  const [multisigClosed, setMultisigClosed] = useState(false);
   const [creatingRequest, setCreatingRequest] = useState(false);
   const [createRequestError, setCreateRequestError] = useState<string | null>(null);
 
   const planBuilt = tree !== null;
-  const collecting = signingRequestId !== null && !multisigClosed;
+  // the Signatures step is active only while still gathering signatures (machine
+  // parked at awaiting_confirmation); once the bundle is submitted the machine
+  // moves to executing/succeeded and the Close step takes over, same as any close.
+  const collecting = signingRequestId !== null && isAwaitingConfirmation;
   const flowSteps = useMemo(
     () =>
       buildFlowSteps({
         phase: flowPhase,
         hasResolve: planBuilt && hasBlocker,
         hasAcknowledge: planBuilt && hasAckItems && !hasBlocker,
-        isSucceeded: isSucceeded || multisigClosed,
+        isSucceeded,
         hasCollect: multisigRequired,
         collecting,
       }),
-    [flowPhase, planBuilt, hasBlocker, hasAckItems, isSucceeded, multisigClosed, multisigRequired, collecting],
+    [flowPhase, planBuilt, hasBlocker, hasAckItems, isSucceeded, multisigRequired, collecting],
   );
 
   // cex / mediator
@@ -619,29 +621,26 @@ function DemolishFlow(): React.JSX.Element {
     setMultisig((prev) => (prev === null ? prev : null));
     setSigningRequestId((prev) => (prev === null ? prev : null));
     setSigningRequestXdr((prev) => (prev === null ? prev : null));
-    setMultisigClosed((prev) => (prev === false ? prev : false));
   }, []);
 
   // once the account is closed it no longer exists, drop the connection so a
   // later navigation back to /demolish starts at Connect, not Configure with a
-  // dead account. This covers BOTH a single-signer close (machine "succeeded")
-  // and a shared close submitted from the Signatures step (multisigClosed). We
-  // clear the wallet/connector directly rather than via setConnector, so the
-  // current success view (which keys off the machine/tree or the signing-request
-  // state, not the live wallet) stays visible. Guarded by a ref to fire once.
+  // dead account. A shared close now also ends in the machine "succeeded" state
+  // (the collected bundle is submitted via SUBMIT_BUNDLE), so this one guard
+  // covers both flows. Cleared directly (not via setConnector) so the success
+  // view, which keys off the machine/tree, stays visible. Guarded to fire once.
   const closedRef = useRef(false);
   useEffect(() => {
-    const closed = isSucceeded || multisigClosed;
-    if (closed && !closedRef.current) {
+    if (isSucceeded && !closedRef.current) {
       closedRef.current = true;
       connectorRef.current = null;
       setHasConnector(false);
       setActiveConnector(null);
       disconnectWallet();
-    } else if (!closed && closedRef.current) {
+    } else if (!isSucceeded && closedRef.current) {
       closedRef.current = false;
     }
-  }, [isSucceeded, multisigClosed, disconnectWallet]);
+  }, [isSucceeded, disconnectWallet]);
 
   // guard against navigating away / closing the tab mid-execution, a partial
   // run leaves the account half-dismantled. The native prompt is the strongest
@@ -952,7 +951,7 @@ function DemolishFlow(): React.JSX.Element {
                   initialXdr={signingRequestXdr}
                   destination={form.destination}
                   connectedKey={publicKey}
-                  onClosed={() => setMultisigClosed(true)}
+                  onClose={(finalXdr) => send({ type: "SUBMIT_BUNDLE", signedXdr: finalXdr })}
                 />
               ) : (
                 <>

@@ -4,17 +4,18 @@
 // published to the relay (signed with the initiator's key). Here the initiator
 // shares a short link for remote signers AND/OR pastes a co-signer's key to sign
 // locally; each accepted signature arrives live over Server-Sent Events. When the
-// threshold is met the initiator explicitly clicks Close, confirms, and submits.
-// It never auto-closes, and no secret ever leaves this browser.
+// threshold is met the initiator confirms, and the fully-signed bundle is handed
+// UP (onClose) so the shared Close step submits it, exactly like any close. It
+// never auto-closes, and no secret ever leaves this browser.
 
 import { TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { TypedConfirmation } from "@/components/confirmations/TypedConfirmation";
-import { Badge, Button, Card, CopyableAddress, Notice, Progress } from "@/components/ui";
+import { Badge, Button, Card, CopyableAddress, Progress } from "@/components/ui";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
-import { explorerAccountUrl, explorerTxUrl } from "@/lib/explorer";
+import { explorerAccountUrl } from "@/lib/explorer";
 import { submitSignature, subscribePlan } from "@/lib/multisig/plan-client";
 import {
   closeThreshold,
@@ -22,7 +23,6 @@ import {
   requiredSigners,
   signedSigners,
 } from "@/lib/multisig/signing-request";
-import { getHorizon } from "@/lib/stellar/horizon-client";
 import type { AccountAudit } from "@/lib/types/account";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
 
@@ -35,13 +35,9 @@ export interface CollectSignaturesProps {
   readonly initialXdr: string;
   readonly destination: string;
   readonly connectedKey: string | null;
-  readonly onClosed: () => void;
+  // hand the fully-signed bundle up to be submitted through the shared Close step
+  readonly onClose: (signedXdr: string) => void;
 }
-
-type Submit =
-  | { readonly kind: "idle" }
-  | { readonly kind: "submitting" }
-  | { readonly kind: "error"; readonly message: string };
 
 export function CollectSignatures({
   planId,
@@ -50,15 +46,14 @@ export function CollectSignatures({
   initialXdr,
   destination,
   connectedKey,
-  onClosed,
+  onClose,
 }: CollectSignaturesProps): React.JSX.Element {
   const [xdr, setXdr] = useState(initialXdr);
-  const [closed, setClosed] = useState<{ hash: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const [secret, setSecret] = useState("");
   const [secretError, setSecretError] = useState<string | null>(null);
+  const [lastAdded, setLastAdded] = useState<string | null>(null);
   const [signingLocal, setSigningLocal] = useState(false);
-  const [submit, setSubmit] = useState<Submit>({ kind: "idle" });
   const [showConfirm, setShowConfirm] = useState(false);
 
   const required = useMemo(() => requiredSigners(audit), [audit]);
@@ -91,11 +86,13 @@ export function CollectSignatures({
 
   // sign locally with a pasted signer key, then publish the signature to the
   // relay so the merged envelope (and progress) stays canonical for everyone.
+  // Signs ONE key per submit; paste the next key to add another signer.
   const onAddKey = useCallback(async () => {
     const seed = secret.trim();
     if (seed.length === 0) return;
     setSecret("");
     setSecretError(null);
+    setLastAdded(null);
     setSigningLocal(true);
     try {
       const connector = new SecretKeyConnector(seed);
@@ -104,46 +101,28 @@ export function CollectSignatures({
         setSecretError("That key isn't a signer on this account.");
         return;
       }
+      if (signed.includes(pk)) {
+        setSecretError("That signer already signed.");
+        return;
+      }
       const tx = TransactionBuilder.fromXDR(xdr, network.passphrase) as Transaction;
       const { signedXdr } = await connector.signTransaction(tx, network.passphrase);
       const merged = await submitSignature(planId, signedXdr);
       setXdr(merged.xdr);
+      setLastAdded(pk);
     } catch (e: unknown) {
       setSecretError(errorMessage(e, "Couldn't add that signature."));
     } finally {
       setSigningLocal(false);
     }
-  }, [secret, xdr, network.passphrase, signerKeys, planId]);
+  }, [secret, xdr, network.passphrase, signerKeys, signed, planId]);
 
-  const onConfirmClose = useCallback(async () => {
+  // hand the fully-signed bundle up to the shared Close step (the machine submits
+  // it and shows the same executing -> succeeded status as a single-signer close).
+  const onConfirmClose = useCallback(() => {
     setShowConfirm(false);
-    setSubmit({ kind: "submitting" });
-    try {
-      const tx = TransactionBuilder.fromXDR(xdr, network.passphrase) as Transaction;
-      const res = (await getHorizon(network).submitTransaction(tx)) as { hash: string };
-      setClosed({ hash: res.hash });
-      onClosed();
-    } catch (e: unknown) {
-      setSubmit({ kind: "error", message: errorMessage(e, "The network rejected the transaction.") });
-    }
-  }, [xdr, network, onClosed]);
-
-  if (closed !== null) {
-    return (
-      <Notice tone="success" role="status" title="The account has been closed">
-        You collected enough signatures and submitted the close. Any remaining XLM was sent to your
-        destination.{" "}
-        <a
-          href={explorerTxUrl(network, closed.hash)}
-          target="_blank"
-          rel="noreferrer noopener"
-          style={{ color: "var(--accent)", textDecoration: "none", fontWeight: 600 }}
-        >
-          View transaction ↗
-        </a>
-      </Notice>
-    );
-  }
+    onClose(xdr);
+  }, [xdr, onClose]);
 
   return (
     <Card padding={24} style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -218,8 +197,7 @@ export function CollectSignatures({
                   <CopyableAddress
                     value={s.key}
                     label="Signer"
-                    head={8}
-                    tail={6}
+                    full
                     size={12}
                     href={explorerAccountUrl(network, s.key)}
                   />
@@ -233,10 +211,10 @@ export function CollectSignatures({
         </div>
       </div>
 
-      {/* sign locally with a pasted key */}
+      {/* sign locally with a pasted key, one signer at a time */}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <div style={{ fontSize: 11.5, color: "var(--fg-3)", letterSpacing: "0.05em" }}>
-          HAVE A SIGNER KEY HERE? SIGN IT LOCALLY
+          HAVE SIGNER KEYS HERE? SIGN THEM LOCALLY
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <input
@@ -281,9 +259,18 @@ export function CollectSignatures({
           <p role="alert" style={{ margin: 0, fontSize: 12, color: "var(--danger)" }}>
             {secretError}
           </p>
+        ) : lastAdded !== null ? (
+          <p
+            role="status"
+            style={{ margin: 0, fontSize: 12, color: "var(--success)", fontWeight: 600 }}
+          >
+            ✓ Signed as {lastAdded.slice(0, 8)}…{lastAdded.slice(-6)}. Paste the next key to add
+            another signer.
+          </p>
         ) : null}
         <p style={{ margin: 0, fontSize: 11.5, color: "var(--fg-3)", lineHeight: 1.5 }}>
-          Keys are used only in this browser to sign, and are never uploaded or stored.
+          Hold more than one key? Paste and sign each one; every signature moves the bar up. Keys
+          are used only in this browser to sign, and are never uploaded or stored.
         </p>
       </div>
 
@@ -326,17 +313,9 @@ export function CollectSignatures({
             </span>
           </div>
 
-          {submit.kind === "error" ? (
-            <p role="alert" style={{ margin: 0, fontSize: 12.5, color: "var(--danger)" }}>
-              {submit.message}
-            </p>
-          ) : null}
-
           <Button
             variant="danger"
             onClick={() => setShowConfirm(true)}
-            loading={submit.kind === "submitting"}
-            disabled={submit.kind === "submitting"}
             data-testid="collect-close"
             style={{ width: "100%" }}
             iconRight={
