@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
 import type { CexInfo, MemoLike } from "@/lib/safety/cex-registry";
-import { KNOWN_CEXES, lookupCex, requireMemoEnforcement } from "@/lib/safety/cex-registry";
+import {
+  KNOWN_CEXES,
+  lookupCex,
+  requireMemoEnforcement,
+  validateMemoFormat,
+} from "@/lib/safety/cex-registry";
 
 // cex-registry is the last line of defense against depositing to an exchange
 // hot wallet without the per-user memo that routes the funds. These tests pin
@@ -200,5 +205,39 @@ describe("requireMemoEnforcement, hash/return branches are gated out by type", (
     const res = requireMemoEnforcement(BINANCE_ID, memo("return", hex));
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toContain('got "return"');
+  });
+});
+
+describe("validateMemoFormat (shape validation for ALL destinations)", () => {
+  it("accepts well-formed memos of each type", () => {
+    expect(validateMemoFormat("id", "1234567890")).toBeNull();
+    expect(validateMemoFormat("id", "0")).toBeNull();
+    expect(validateMemoFormat("text", "hello")).toBeNull();
+    expect(validateMemoFormat("hash", "0123456789abcdef".repeat(4))).toBeNull(); // 64 hex
+    expect(validateMemoFormat("return", "0123456789abcdef".repeat(4))).toBeNull();
+  });
+
+  it("rejects a non-numeric id memo (would throw in Memo.id at execute time)", () => {
+    expect(validateMemoFormat("id", "notanumber")).toContain("numeric memo");
+  });
+
+  it("rejects an id above the uint64 range", () => {
+    expect(validateMemoFormat("id", "18446744073709551616")).toContain("out of range");
+  });
+
+  it("rejects a text memo over 28 bytes", () => {
+    expect(validateMemoFormat("text", "x".repeat(29))).toContain("≤ 28 bytes");
+  });
+
+  it("rejects a hash/return memo that is not 32 bytes", () => {
+    expect(validateMemoFormat("hash", "deadbeef")).toContain("32 bytes");
+    // a 44-char string without valid padding is not accepted as 32-byte base64
+    expect(validateMemoFormat("return", "A".repeat(44))).not.toBeNull();
+    // ...but a correctly-padded 44-char base64 (decodes to 32 bytes) IS accepted
+    expect(validateMemoFormat("hash", "A".repeat(43) + "=")).toBeNull();
+  });
+
+  it("rejects an empty value", () => {
+    expect(validateMemoFormat("id", "  ")).not.toBeNull();
   });
 });

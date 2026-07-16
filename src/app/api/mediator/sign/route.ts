@@ -4,47 +4,21 @@ import { getPublicEnv } from "@/lib/config/env";
 import { resolveNetwork } from "@/lib/config/networks";
 import { validateMediatorForwardEnvelope } from "@/lib/mediator/validator";
 import { resolveMediatorFlow, startMediatorFlow } from "@/server/mediator-secret";
+import { createLimiter, getRemoteIp } from "@/server/rate-limit";
 
 // node runtime: the flow-key derivation (node:crypto) and the validator pull in
 // stellar-sdk / node crypto, which aren't edge-compatible
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// 5 requests per 60s per IP
-const RATE_LIMIT_CAPACITY = 5;
-const RATE_LIMIT_WINDOW_MS = 60_000;
-
-interface Bucket {
-  tokens: number;
-  lastRefill: number;
-}
-
-const buckets = new Map<string, Bucket>();
-
-// token-bucket throttle keyed by remote IP. returns true when a token is consumed
-// in-process map, so multi-instance deployments throttle per instance
-function consumeToken(ip: string, now: number = Date.now()): boolean {
-  const existing = buckets.get(ip);
-  if (existing === undefined) {
-    buckets.set(ip, { tokens: RATE_LIMIT_CAPACITY - 1, lastRefill: now });
-    return true;
-  }
-  const elapsed = now - existing.lastRefill;
-  if (elapsed > 0) {
-    const refill = (elapsed / RATE_LIMIT_WINDOW_MS) * RATE_LIMIT_CAPACITY;
-    existing.tokens = Math.min(RATE_LIMIT_CAPACITY, existing.tokens + refill);
-    existing.lastRefill = now;
-  }
-  if (existing.tokens >= 1) {
-    existing.tokens -= 1;
-    return true;
-  }
-  return false;
-}
+// 5 requests per 60s per IP. The shared limiter is bounded (evicts idle keys) and
+// keys on TRUSTED_PROXY_HOPS-aware getRemoteIp, so a forged-XFF flood can't
+// exhaust memory or mint fresh buckets per request.
+const limiter = createLimiter(5, 60_000);
 
 // test-only: reset the per-IP buckets
 export function __resetRateLimiterForTests(): void {
-  buckets.clear();
+  limiter.reset();
 }
 
 const DEV_ALLOWED_ORIGINS = new Set<string>(["http://localhost:3000", "http://localhost:3001"]);
@@ -82,28 +56,6 @@ function buildCorsHeaders(origin: string | null): Record<string, string> {
   };
 }
 
-function getRemoteIp(request: Request): string {
-  // Behind a single trusted reverse proxy (Caddy), a client can spoof the LEFT
-  // side of X-Forwarded-For, but the proxy appends the real peer IP as the
-  // RIGHTMOST entry, so trust the last hop, not the client-controlled first.
-  const xff = request.headers.get("x-forwarded-for");
-  if (xff !== null && xff.length > 0) {
-    const hops = xff
-      .split(",")
-      .map((p) => p.trim())
-      .filter((p) => p.length > 0);
-    const last = hops[hops.length - 1];
-    if (last !== undefined && last.length > 0) return last;
-  }
-  const xRealIp = request.headers.get("x-real-ip");
-  if (xRealIp !== null && xRealIp.length > 0) return xRealIp;
-  try {
-    return new URL(request.url).host || "unknown";
-  } catch {
-    return "unknown";
-  }
-}
-
 function jsonResponse(
   body: Record<string, unknown>,
   status: number,
@@ -128,7 +80,7 @@ export async function POST(request: Request): Promise<Response> {
   const cors = buildCorsHeaders(origin);
   const ip = getRemoteIp(request);
 
-  if (!consumeToken(ip)) {
+  if (!limiter.take(ip)) {
     return jsonResponse(
       {
         ok: false,

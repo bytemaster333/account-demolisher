@@ -46,7 +46,12 @@ import {
 } from "@/lib/multisig/signing-request";
 import { auditAccount } from "@/lib/stellar/account-audit";
 import { getHorizon } from "@/lib/stellar/horizon-client";
-import { lookupCex, requireMemoEnforcement, type CexInfo } from "@/lib/safety/cex-registry";
+import {
+  lookupCex,
+  requireMemoEnforcement,
+  validateMemoFormat,
+  type CexInfo,
+} from "@/lib/safety/cex-registry";
 import { runScamHeuristics, type ScamFinding } from "@/lib/safety/scam-heuristics";
 import { topologicalOrder, type PlanNode } from "@/lib/plan/tree";
 import type { AccountAudit, AuditSigner } from "@/lib/types/account";
@@ -603,10 +608,13 @@ function DemolishFlow(): React.JSX.Element {
 
   // a shared account whose close fits in ONE bundled transaction can be closed by
   // collecting signatures (the signing-request path). Otherwise it can only be
-  // closed live with every required key present in this browser.
+  // closed live with every required key present in this browser. Allowance
+  // revocations are separate Soroban transactions the bundle can't include, so an
+  // account with active allowances is NOT bundleable (else the reviewed revokes
+  // would be silently dropped from the signed transaction).
   const bundleability = assessBundleability({
     hasSorobanPositions,
-    hasSelectedAllowances: false,
+    hasSelectedAllowances: ctx.allowances.length > 0,
     useMediator,
   });
   const canUseSigningRequest = multisigRequired && bundleability.ok;
@@ -679,6 +687,17 @@ function DemolishFlow(): React.JSX.Element {
     }
 
     const memo = parseMemo(form);
+
+    // validate the memo VALUE shape for ANY destination, so a malformed id/hash
+    // memo can't slip past a non-CEX close and throw inside Memo.id()/hash() only
+    // at execute time (mid-close, after earlier steps may have submitted).
+    if (memo !== undefined) {
+      const memoFormatError = validateMemoFormat(memo.type, memo.value);
+      if (memoFormatError !== null) {
+        setFormError(memoFormatError);
+        return;
+      }
+    }
 
     // hard refusal when the destination is a CEX and the memo is missing, the
     // wrong type, or malformed (strict value validation, not just presence)

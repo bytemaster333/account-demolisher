@@ -4,6 +4,7 @@ import { Resolver } from "node:dns";
 import { Agent, fetch as undiciFetch } from "undici";
 
 import { getServerEnv, requireServerEnv } from "@/server/server-env";
+import { createLimiter, getRemoteIp } from "@/server/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -48,59 +49,12 @@ function getPublicDnsAgent(): Agent {
   return publicDnsAgent;
 }
 
-// 5 requests per 60s per IP
-const RATE_LIMIT_CAPACITY = 5;
-const RATE_LIMIT_WINDOW_MS = 60_000;
-
-interface Bucket {
-  tokens: number;
-  lastRefill: number;
-}
-
-const buckets = new Map<string, Bucket>();
-
-function consumeToken(ip: string, now: number = Date.now()): boolean {
-  const existing = buckets.get(ip);
-  if (existing === undefined) {
-    buckets.set(ip, { tokens: RATE_LIMIT_CAPACITY - 1, lastRefill: now });
-    return true;
-  }
-  const elapsed = now - existing.lastRefill;
-  if (elapsed > 0) {
-    const refill = (elapsed / RATE_LIMIT_WINDOW_MS) * RATE_LIMIT_CAPACITY;
-    existing.tokens = Math.min(RATE_LIMIT_CAPACITY, existing.tokens + refill);
-    existing.lastRefill = now;
-  }
-  if (existing.tokens >= 1) {
-    existing.tokens -= 1;
-    return true;
-  }
-  return false;
-}
+// 5 requests per 60s per IP, via the shared bounded limiter (TRUSTED_PROXY_HOPS
+// aware, evicts idle keys) so a forged-XFF flood can't bypass it or exhaust memory
+const limiter = createLimiter(5, 60_000);
 
 export function __resetRateLimiterForTests(): void {
-  buckets.clear();
-}
-
-function getRemoteIp(request: Request): string {
-  // trust the RIGHTMOST x-forwarded-for hop (appended by our trusted reverse
-  // proxy); the client-controllable left side must not seed the rate-limit key.
-  const xff = request.headers.get("x-forwarded-for");
-  if (xff !== null && xff.length > 0) {
-    const hops = xff
-      .split(",")
-      .map((p) => p.trim())
-      .filter((p) => p.length > 0);
-    const last = hops[hops.length - 1];
-    if (last !== undefined && last.length > 0) return last;
-  }
-  const xRealIp = request.headers.get("x-real-ip");
-  if (xRealIp !== null && xRealIp.length > 0) return xRealIp;
-  try {
-    return new URL(request.url).host || "unknown";
-  } catch {
-    return "unknown";
-  }
+  limiter.reset();
 }
 
 function jsonResponse(body: Record<string, unknown>, status: number): Response {
@@ -273,7 +227,7 @@ export async function POST(request: Request): Promise<Response> {
 
   const ip = getRemoteIp(request);
 
-  if (!consumeToken(ip)) {
+  if (!limiter.take(ip)) {
     return jsonResponse(
       { ok: false, code: "RATE_LIMITED", reason: "Too many requests; try again shortly." },
       429,

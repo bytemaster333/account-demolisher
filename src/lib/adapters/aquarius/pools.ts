@@ -390,8 +390,15 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
           tokens: value.tokens,
           shareBalance,
         });
-      } catch {
-        continue;
+      } catch (e) {
+        // an RPC/decode failure while probing a pool the user has interacted with
+        // is NOT "no position": swallowing it could strand a live LP balance and
+        // let the merge proceed. Surface it so discovery reports an incomplete
+        // scan (a whole-scan throw becomes a user-facing discoveryWarning).
+        throw new Error(
+          `Aquarius: failed to probe pool ${value.poolAddress}; discovery may be incomplete ` +
+            `(${e instanceof Error ? e.message : String(e)})`,
+        );
       }
     }
     return out;

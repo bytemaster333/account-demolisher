@@ -217,6 +217,7 @@ export async function executePlanTreeOnChain(
           freshAudit,
           freshPaths,
           node.metadata.returnToIssuerAssetKeys,
+          node.metadata.sendToDestinationAssetKeys,
         );
         if (stuck.length > 0) {
           throw new Error(
@@ -235,6 +236,9 @@ export async function executePlanTreeOnChain(
               : {}),
             ...(node.metadata.returnToIssuerAssetKeys
               ? { returnToIssuerAssetKeys: node.metadata.returnToIssuerAssetKeys }
+              : {}),
+            ...(node.metadata.sendToDestinationAssetKeys
+              ? { sendToDestinationAssetKeys: node.metadata.sendToDestinationAssetKeys }
               : {}),
             ...(node.metadata.userFallbackAddress
               ? { userFallbackAddress: node.metadata.userFallbackAddress }

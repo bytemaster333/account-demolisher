@@ -143,6 +143,51 @@ const TEXT_MEMO_MAX_BYTES = 28;
 const HASH_MEMO_HEX_LENGTH = 64; // 32 bytes
 const HASH_MEMO_BASE64_LENGTH = 44; // 32 bytes base64-encoded with padding
 
+// Validate a memo VALUE against its TYPE (shape only; the content can't be
+// checked against the user's exchange account from the client). Returns an error
+// string, or null when the value is a well-formed memo of that type. Used both by
+// CEX enforcement AND the general pre-flight, so a malformed memo can never reach
+// Memo.id()/Memo.hash()/Memo.return() and throw mid-close on ANY destination.
+export function validateMemoFormat(type: CexMemoType, value: string): string | null {
+  const v = value.trim();
+  if (v.length === 0) return "Enter a non-empty memo value.";
+  switch (type) {
+    case "id": {
+      if (!/^\d+$/.test(v)) return `A numeric memo (type "id") must be digits only; got "${value}".`;
+      let asBig: bigint;
+      try {
+        asBig = BigInt(v);
+      } catch {
+        return `A numeric memo "${value}" is not a valid uint64.`;
+      }
+      if (asBig < 0n || asBig > 0xffff_ffff_ffff_ffffn) {
+        return `Memo id "${value}" is out of range (must be a uint64).`;
+      }
+      return null;
+    }
+    case "text": {
+      const bytes = new TextEncoder().encode(v);
+      if (bytes.length > TEXT_MEMO_MAX_BYTES) {
+        return `A text memo must be ≤ ${TEXT_MEMO_MAX_BYTES} bytes; got ${bytes.length}.`;
+      }
+      return null;
+    }
+    case "hash":
+    case "return": {
+      // exactly 32 bytes: hex (64 chars) or base64 (44 chars) that DECODES to 32
+      if (new RegExp(`^[0-9a-fA-F]{${HASH_MEMO_HEX_LENGTH}}$`).test(v)) return null;
+      if (new RegExp(`^[A-Za-z0-9+/]{${HASH_MEMO_BASE64_LENGTH - 1}}=$`).test(v)) {
+        try {
+          if (Buffer.from(v, "base64").length === 32) return null;
+        } catch {
+          /* fall through to the error below */
+        }
+      }
+      return `A "${type}" memo must be 32 bytes as hex (${HASH_MEMO_HEX_LENGTH} chars) or base64 (${HASH_MEMO_BASE64_LENGTH} chars).`;
+    }
+  }
+}
+
 // verify that a destination's cex memo requirement is satisfied by the
 // caller-supplied memo, if any. returns ok:true for non-cex destinations
 export function requireMemoEnforcement(
@@ -179,56 +224,11 @@ export function requireMemoEnforcement(
     };
   }
 
-  // shape validation per memo type. we can't validate the memo's content
-  // against the user's cex account from the client
-  switch (memo.type) {
-    case "id": {
-      if (!/^\d+$/.test(value)) {
-        return {
-          ok: false,
-          reason: `${cex.name} expects a numeric memo (memo type "id"); got "${memo.value}".`,
-        };
-      }
-      // memo-id is uint64
-      let asBig: bigint;
-      try {
-        asBig = BigInt(value);
-      } catch {
-        return {
-          ok: false,
-          reason: `${cex.name} expects a numeric memo; "${memo.value}" is not a valid uint64.`,
-        };
-      }
-      if (asBig < 0n || asBig > 0xffff_ffff_ffff_ffffn) {
-        return {
-          ok: false,
-          reason: `${cex.name} expects a uint64 memo; "${memo.value}" is out of range.`,
-        };
-      }
-      return { ok: true };
-    }
-    case "text": {
-      const bytes = new TextEncoder().encode(value);
-      if (bytes.length > TEXT_MEMO_MAX_BYTES) {
-        return {
-          ok: false,
-          reason: `${cex.name} memo (type "text") must be ≤ ${TEXT_MEMO_MAX_BYTES} bytes; got ${bytes.length}.`,
-        };
-      }
-      return { ok: true };
-    }
-    case "hash":
-    case "return": {
-      const looksHex = /^[0-9a-fA-F]+$/.test(value) && value.length === HASH_MEMO_HEX_LENGTH;
-      const looksBase64 =
-        /^[A-Za-z0-9+/]+=*$/.test(value) && value.length === HASH_MEMO_BASE64_LENGTH;
-      if (!looksHex && !looksBase64) {
-        return {
-          ok: false,
-          reason: `${cex.name} memo (type "${memo.type}") must be 32 bytes encoded as hex (${HASH_MEMO_HEX_LENGTH} chars) or base64 (${HASH_MEMO_BASE64_LENGTH} chars).`,
-        };
-      }
-      return { ok: true };
-    }
+  // shape validation per memo type via the shared validator (content can't be
+  // verified against the user's exchange account from the client)
+  const formatError = validateMemoFormat(memo.type, value);
+  if (formatError !== null) {
+    return { ok: false, reason: `${cex.name}: ${formatError} Wrong memo at the CEX means lost funds.` };
   }
+  return { ok: true };
 }

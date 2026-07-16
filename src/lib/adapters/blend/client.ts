@@ -1,5 +1,6 @@
 // blend client wrapper. thin layer over the blend-sdk that handles v1/v2 dispatch
 import {
+  BackstopPoolUser,
   PoolV1,
   PoolV2,
   type Network as BlendSdkNetwork,
@@ -136,6 +137,75 @@ export async function loadUserPositions(
   });
 
   return { positions, errors };
+}
+
+// ── backstop deposits ────────────────────────────────────────────────────────
+// Blend backstop shares live in a SEPARATE contract, not the pool, so they don't
+// show up in pool positions and don't block an account merge. We don't auto-unwind
+// them yet (a backstop withdrawal is a queued, 17-day-locked flow), so we DETECT
+// them and surface a warning rather than silently letting the close strand them.
+
+export interface BackstopDeposit {
+  readonly poolId: string;
+  readonly shares: bigint; // active backstop shares
+  readonly queuedForWithdrawal: bigint; // shares already in the Q4W queue
+}
+
+export interface BackstopDepositLoader {
+  loadUser(
+    network: BlendSdkNetwork,
+    backstopId: string,
+    poolId: string,
+    userId: string,
+  ): Promise<{ shares: bigint; totalQ4W: bigint }>;
+}
+
+export const defaultBackstopDepositLoader: BackstopDepositLoader = {
+  async loadUser(network, backstopId, poolId, userId) {
+    const user = await BackstopPoolUser.load(network, backstopId, poolId, userId);
+    return { shares: user.balance.shares, totalQ4W: user.balance.totalQ4W };
+  },
+};
+
+export interface LoadBackstopDepositsResult {
+  readonly deposits: readonly BackstopDeposit[];
+  readonly errors: readonly string[];
+}
+
+// detect any active or queued backstop deposit the user holds across the pools.
+// A read failure is reported (not swallowed), so we never treat an RPC error as
+// "no backstop position".
+export async function loadBackstopDeposits(
+  network: NetworkConfig,
+  userPublicKey: string,
+  poolIds: readonly string[],
+  backstopId: string,
+  loader: BackstopDepositLoader = defaultBackstopDepositLoader,
+): Promise<LoadBackstopDepositsResult> {
+  const sdkNetwork = toBlendSdkNetwork(network);
+  const deposits: BackstopDeposit[] = [];
+  const errors: string[] = [];
+  const settled = await Promise.allSettled(
+    poolIds.map((poolId) => loader.loadUser(sdkNetwork, backstopId, poolId, userPublicKey)),
+  );
+  settled.forEach((result, i) => {
+    const poolId = poolIds[i] ?? "<unknown>";
+    if (result.status === "fulfilled") {
+      if (result.value.shares > 0n || result.value.totalQ4W > 0n) {
+        deposits.push({
+          poolId,
+          shares: result.value.shares,
+          queuedForWithdrawal: result.value.totalQ4W,
+        });
+      }
+    } else {
+      const reason = result.reason;
+      errors.push(
+        `backstop read failed for pool ${poolId}: ${reason instanceof Error ? reason.message : String(reason)}`,
+      );
+    }
+  });
+  return { deposits, errors };
 }
 
 // heuristic: loadUser-related errors attributed to user stage, otherwise pool stage

@@ -1,10 +1,12 @@
 // direct contract provider: always-available position discovery via in-process
 import {
+  loadBackstopDeposits,
   loadUserPositions,
   type LoadUserPositionsResult,
   type BlendPoolLoader,
   type BlendUserPositions,
 } from "@/lib/adapters/blend/client";
+import { BLEND_BACKSTOP_MAINNET_ID } from "@/lib/adapters/blend/constants";
 import { BLEND_MAINNET_POOL_IDS, BLEND_TESTNET_POOL_IDS } from "@/lib/adapters/blend/pools";
 import {
   AquariusAPIPoolProvider,
@@ -47,6 +49,7 @@ export interface DirectContractProviderDeps {
   readonly blendPoolLoader?: BlendPoolLoader;
   readonly blendPoolIds?: readonly string[];
   readonly blendLoadUserPositions?: typeof loadUserPositions;
+  readonly blendLoadBackstopDeposits?: typeof loadBackstopDeposits;
   readonly aquariusFactory?: AquariusProviderFactory;
   readonly fxdaoGetUserVaults?: typeof getUserVaults;
   readonly serverFactory?: (network: NetworkConfig) => rpc.Server;
@@ -57,7 +60,11 @@ export class DirectContractProvider implements IDeFiPositionProvider {
   private readonly deps: Required<
     Pick<
       DirectContractProviderDeps,
-      "blendPoolIds" | "blendLoadUserPositions" | "aquariusFactory" | "fxdaoGetUserVaults"
+      | "blendPoolIds"
+      | "blendLoadUserPositions"
+      | "blendLoadBackstopDeposits"
+      | "aquariusFactory"
+      | "fxdaoGetUserVaults"
     >
   > & {
     readonly blendPoolLoader: BlendPoolLoader | undefined;
@@ -69,6 +76,7 @@ export class DirectContractProvider implements IDeFiPositionProvider {
       blendPoolLoader: deps.blendPoolLoader,
       blendPoolIds: deps.blendPoolIds ?? BLEND_MAINNET_POOL_IDS,
       blendLoadUserPositions: deps.blendLoadUserPositions ?? loadUserPositions,
+      blendLoadBackstopDeposits: deps.blendLoadBackstopDeposits ?? loadBackstopDeposits,
       aquariusFactory: deps.aquariusFactory ?? defaultAquariusFactory,
       fxdaoGetUserVaults: deps.fxdaoGetUserVaults ?? getUserVaults,
       serverFactory: deps.serverFactory ?? defaultServerFactory,
@@ -161,6 +169,35 @@ export class DirectContractProvider implements IDeFiPositionProvider {
     const perPoolErrors = result.errors.map(
       (e) => `pool ${e.poolId} stage=${e.stage}: ${e.message}`,
     );
+
+    // Backstop shares are a SEPARATE Blend position class we don't auto-unwind
+    // yet (the withdrawal is a 17-day queued flow). They don't block the merge,
+    // so detect them and warn rather than silently strand them. Mainnet only:
+    // that's where the backstop contract is deployed.
+    if (network.id === "mainnet") {
+      try {
+        const backstop = await this.deps.blendLoadBackstopDeposits(
+          network,
+          userAddress,
+          poolIds,
+          BLEND_BACKSTOP_MAINNET_ID,
+        );
+        for (const d of backstop.deposits) {
+          perPoolErrors.push(
+            `You hold a Blend backstop deposit in pool ${d.poolId} (${d.shares} shares` +
+              `${d.queuedForWithdrawal > 0n ? `, ${d.queuedForWithdrawal} already queued` : ""}). ` +
+              `The close does NOT unwind backstop deposits: withdraw it from the Blend backstop ` +
+              `(a queued, 17-day process) before closing, or those funds will be stranded.`,
+          );
+        }
+        perPoolErrors.push(...backstop.errors);
+      } catch (e) {
+        perPoolErrors.push(
+          `Blend backstop check failed; could not confirm you have no backstop deposit ` +
+            `(${e instanceof Error ? e.message : String(e)}).`,
+        );
+      }
+    }
 
     return { positions, perPoolErrors };
   }

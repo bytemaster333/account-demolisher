@@ -2,8 +2,10 @@ import { describe, it, expect } from "vitest";
 import type { Pool } from "@blend-capital/blend-sdk";
 
 import {
+  loadBackstopDeposits,
   loadUserPositions,
   loadUserPositionsForPool,
+  type BackstopDepositLoader,
   type BlendPoolLoader,
 } from "@/lib/adapters/blend/client";
 import { TESTNET } from "@/lib/config/networks";
@@ -107,5 +109,40 @@ describe("loadUserPositions surfaces the unmapped-index failure via errors[]", (
     expect(result.errors).toHaveLength(0);
     expect(result.positions).toHaveLength(1);
     expect(result.positions[0]?.supply.get("ASSET_A")).toBe(42n);
+  });
+});
+
+describe("loadBackstopDeposits (detect stranded backstop shares)", () => {
+  const USER = "GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3";
+  const BACKSTOP = "CBACKSTOP";
+
+  it("reports pools where the user holds active or queued backstop shares", async () => {
+    const loader: BackstopDepositLoader = {
+      async loadUser(_net, _bs, poolId) {
+        if (poolId === "POOL_ACTIVE") return { shares: 5_000n, totalQ4W: 0n };
+        if (poolId === "POOL_QUEUED") return { shares: 0n, totalQ4W: 100n };
+        return { shares: 0n, totalQ4W: 0n }; // POOL_EMPTY
+      },
+    };
+    const res = await loadBackstopDeposits(
+      TESTNET,
+      USER,
+      ["POOL_ACTIVE", "POOL_QUEUED", "POOL_EMPTY"],
+      BACKSTOP,
+      loader,
+    );
+    expect(res.errors).toHaveLength(0);
+    expect(res.deposits.map((d) => d.poolId).sort()).toEqual(["POOL_ACTIVE", "POOL_QUEUED"]);
+  });
+
+  it("surfaces a read failure instead of treating it as 'no backstop position'", async () => {
+    const loader: BackstopDepositLoader = {
+      async loadUser() {
+        throw new Error("rpc down");
+      },
+    };
+    const res = await loadBackstopDeposits(TESTNET, USER, ["POOL_X"], BACKSTOP, loader);
+    expect(res.deposits).toHaveLength(0);
+    expect(res.errors[0]).toContain("backstop read failed");
   });
 });

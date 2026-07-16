@@ -276,6 +276,9 @@ export function generatePlan(
       ...(opts.returnToIssuerAssetKeys
         ? { returnToIssuerAssetKeys: opts.returnToIssuerAssetKeys }
         : {}),
+      ...(opts.sendToDestinationAssetKeys
+        ? { sendToDestinationAssetKeys: opts.sendToDestinationAssetKeys }
+        : {}),
       ...(opts.userFallbackAddress ? { userFallbackAddress: opts.userFallbackAddress } : {}),
       ...(useMediator && opts.mediatorPublicKey
         ? { mediatorPublicKey: opts.mediatorPublicKey }

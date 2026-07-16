@@ -154,6 +154,7 @@ export interface FinalClassicTxMetadata {
   // forwarded into batchClassicDemolition during execute-time re-batching
   readonly claimableBalanceIds?: readonly string[];
   readonly returnToIssuerAssetKeys?: readonly string[];
+  readonly sendToDestinationAssetKeys?: readonly string[];
   readonly userFallbackAddress?: string;
   readonly mediatorPublicKey?: string;
 }

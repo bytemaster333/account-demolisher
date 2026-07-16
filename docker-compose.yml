@@ -10,4 +10,9 @@ services:
       # server-only; leave unset to run without the CEX mediator / swap key
       MEDIATOR_SECRET: ${MEDIATOR_SECRET:-}
       SOROSWAP_API_KEY: ${SOROSWAP_API_KEY:-}
+      # this compose file publishes the app DIRECTLY (no reverse proxy), so the
+      # X-Forwarded-For header is fully client-controlled: ignore it and key the
+      # rate limiter on the real connection. Set this to the real hop count only
+      # when you put a trusted proxy in front that appends the client IP.
+      TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-0}
     restart: unless-stopped
