@@ -261,23 +261,34 @@ async function loadPoolShares(
   );
   if (poolBalances.length === 0) return [];
 
-  const out: PoolShareEntry[] = [];
-  for (const pb of poolBalances) {
-    const pool = await server.liquidityPools().liquidityPoolId(pb.asset.poolId).call();
-    out.push({
-      poolId: pb.asset.poolId,
-      poolType: pool.type,
-      shareBalance: pb.amount,
-      totalShares: pool.total_shares,
-      shareLimit: pb.limit ?? "0",
-      fee: pool.fee_bp,
-      reserves: pool.reserves.map((r) => ({
-        asset: serverAssetStringToIdentifier(r.asset),
-        amount: r.amount,
-      })),
-    });
+  // fetch every pool's details in parallel: a single flaky pool no longer blocks
+  // the others sequentially. If any fail we still throw (pool reserves are needed
+  // to build a safe withdraw), but with ONE aggregated, pool-named error instead
+  // of aborting on whichever happened to be first.
+  const settled = await Promise.allSettled(
+    poolBalances.map(async (pb): Promise<PoolShareEntry> => {
+      const pool = await server.liquidityPools().liquidityPoolId(pb.asset.poolId).call();
+      return {
+        poolId: pb.asset.poolId,
+        poolType: pool.type,
+        shareBalance: pb.amount,
+        totalShares: pool.total_shares,
+        shareLimit: pb.limit ?? "0",
+        fee: pool.fee_bp,
+        reserves: pool.reserves.map((r) => ({
+          asset: serverAssetStringToIdentifier(r.asset),
+          amount: r.amount,
+        })),
+      };
+    }),
+  );
+  const failures = settled
+    .map((r, i) => (r.status === "rejected" ? poolBalances[i]!.asset.poolId : null))
+    .filter((id): id is string => id !== null);
+  if (failures.length > 0) {
+    throw new Error(`Failed to load liquidity pool details for: ${failures.join(", ")}`);
   }
-  return out;
+  return settled.map((r) => (r as PromiseFulfilledResult<PoolShareEntry>).value);
 }
 
 // horizon serializes assets either as an object or as "CODE:ISSUER"/"native"

@@ -151,7 +151,13 @@ function withTimeout<T>(label: string, p: Promise<T>, ms: number): Promise<T> {
 }
 
 const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({ input }) => {
-  const audit = await auditAccount(input.publicKey, input.network);
+  // the audit is REQUIRED, so a timeout rejects the actor (machine -> failed with
+  // a real error) instead of hanging the UI on "Auditing account…" forever.
+  const audit = await withTimeout(
+    "auditAccount",
+    auditAccount(input.publicKey, input.network),
+    DISCOVERY_TIMEOUT_MS,
+  );
   const discoveryWarnings: string[] = [];
 
   // allowances: best-effort sep-41 enumeration. wrapped in a hard timeout

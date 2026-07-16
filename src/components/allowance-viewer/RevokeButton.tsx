@@ -57,7 +57,15 @@ export function RevokeButton({
       setPhase("confirmed");
       void confirmRevoke(network, submitHash)
         .then(() => onRevoked?.(record, submitHash))
-        .catch(() => {});
+        .catch((e: unknown) => {
+          // a terminal on-chain FAILED means the allowance was NOT revoked: flip
+          // back so the user doesn't see a false green check. A poll-window
+          // timeout ("may still land") stays optimistic; a manual refresh checks.
+          if (errorMessage(e, "").includes("failed on-chain")) {
+            setPhase("failed");
+            setError("Revoke reverted on-chain. Try again.");
+          }
+        });
     } catch (e: unknown) {
       const message = errorMessage(e, "Revoke failed.");
       setError(message);

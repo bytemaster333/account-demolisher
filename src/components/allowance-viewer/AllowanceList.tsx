@@ -349,19 +349,28 @@ function AllowanceRow({
   );
 }
 
+// an "unlimited" approval sets the allowance to a type-max sentinel (i128/u128
+// max) far beyond any real token balance; no legitimate allowance reaches 1e30.
+const UNLIMITED_ALLOWANCE_THRESHOLD = 10n ** 30n;
+
+// bigint-safe thousands grouping for the integer part
+function groupThousands(digits: string): string {
+  return digits.replace(/\B(?=(\d{3})+(?!\d))/gu, ",");
+}
+
 function formatAmount(amount: bigint, decimals: number | null): string {
-  if (decimals === null) return amount.toString();
-  if (decimals === 0) return amount.toString();
-  // bigint-safe fixed-point formatting
+  if (amount >= UNLIMITED_ALLOWANCE_THRESHOLD) return "Unlimited";
   const sign = amount < 0n ? "-" : "";
   const abs = amount < 0n ? -amount : amount;
+  if (decimals === null || decimals === 0) return `${sign}${groupThousands(abs.toString())}`;
+  // bigint-safe fixed-point formatting
   const divisor = 10n ** BigInt(decimals);
-  const whole = abs / divisor;
-  const frac = abs % divisor;
-  const fracStr = frac.toString().padStart(decimals, "0").replace(/0+$/u, "");
-  return fracStr.length === 0
-    ? `${sign}${whole.toString()}`
-    : `${sign}${whole.toString()}.${fracStr}`;
+  const whole = groupThousands((abs / divisor).toString());
+  const fracStr = (abs % divisor)
+    .toString()
+    .padStart(decimals, "0")
+    .replace(/0+$/u, "");
+  return fracStr.length === 0 ? `${sign}${whole}` : `${sign}${whole}.${fracStr}`;
 }
 
 function formatExpiry(liveUntilLedger: number, currentLedger: number): string {

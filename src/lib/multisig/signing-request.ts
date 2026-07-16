@@ -162,6 +162,7 @@ export interface CloseInspection {
 // minimal structural view of a decoded operation, to read fields without `any`
 interface RawOp {
   readonly type: string;
+  readonly source?: string;
   readonly destination?: string;
   readonly amount?: string;
   readonly asset?: { isNative(): boolean; getCode(): string };
@@ -270,8 +271,13 @@ export function inspectClose(xdrStr: string, passphrase: string): CloseInspectio
       ? { minTime: Number(tb.minTime ?? 0), maxTime: Number(tb.maxTime ?? 0) }
       : null;
 
+  // the account being closed is the accountMerge op's EFFECTIVE source
+  // (op.source ?? tx.source), NOT blindly tx.source. The relay binds the signer
+  // set to that account, so /sign must display and audit the same one.
+  const closingSource = mergeOp?.source ?? candidate.source;
+
   return {
-    source: typeof candidate.source === "string" ? candidate.source : "",
+    source: typeof closingSource === "string" ? closingSource : "",
     operations,
     mergeDestination: mergeOp?.destination ?? null,
     timeBounds,

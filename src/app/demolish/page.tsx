@@ -38,6 +38,7 @@ import Link from "next/link";
 import { useNetworkStore } from "@/stores/network";
 import { resolveNetwork, type NetworkConfig } from "@/lib/config/networks";
 import { pageFlowMachine } from "@/lib/orchestrator/page-flow-machine";
+import { getPublicEnv } from "@/lib/config/env";
 import { publishPlan } from "@/lib/multisig/plan-client";
 import {
   assessBundleability,
@@ -431,12 +432,6 @@ function DemolishFlow(): React.JSX.Element {
     };
   }, [publicKey, network]);
 
-  // the initiator's own signing weight on the shared account (their key alone)
-  const primaryWeight = useMemo(() => {
-    if (!multisig || !publicKey) return 0;
-    return multisig.signers.find((s) => s.key === publicKey)?.weight ?? 0;
-  }, [multisig, publicKey]);
-  const multisigRequired = publicKey !== null && multisig?.required === true;
 
   // the awaiting_confirmation phase has three stages:
   //  "resolve"    , take an action on a blocker (return-to-issuer) + rebuild
@@ -454,6 +449,28 @@ function DemolishFlow(): React.JSX.Element {
 
   const audit = ctx.audit;
   const tree = ctx.tree;
+
+  // prefer the AUTHORITATIVE discovery audit once it's available: the preflight
+  // above is only a best-effort head start and can silently fail, which would
+  // otherwise mis-classify a shared account as single-signer. ctx.audit is the
+  // audit the plan is actually built from.
+  const effectiveMultisig = useMemo(() => {
+    if (audit) {
+      return {
+        required: audit.requiresMultisig,
+        threshold: audit.thresholds.high,
+        signers: audit.signers,
+      };
+    }
+    return multisig;
+  }, [audit, multisig]);
+
+  // the initiator's own signing weight on the shared account (their key alone)
+  const primaryWeight = useMemo(() => {
+    if (!effectiveMultisig || !publicKey) return 0;
+    return effectiveMultisig.signers.find((s) => s.key === publicKey)?.weight ?? 0;
+  }, [effectiveMultisig, publicKey]);
+  const multisigRequired = publicKey !== null && effectiveMultisig?.required === true;
 
   // scam heuristics over the account's held credit balances (look-alike symbols,
   // homoglyphs, off-allowlist contracts), surfaced as an informational notice.
@@ -704,6 +721,18 @@ function DemolishFlow(): React.JSX.Element {
     const memoCheck = requireMemoEnforcement(parsed.data.destination, memo);
     if (!memoCheck.ok) {
       setFormError(memoCheck.reason);
+      return;
+    }
+
+    // a self-hosted deployment doesn't run the exchange mediator, so it can't
+    // safely route a close to a memo-required exchange: refuse up front rather
+    // than fail late at the mediator step (this is the documented self-hosted
+    // safety guarantee).
+    if (useMediator && getPublicEnv().NEXT_PUBLIC_DEPLOYMENT_MODE === "self-hosted") {
+      setFormError(
+        "This self-hosted deployment doesn't run the exchange mediator, so it can't route a close " +
+          "to a memo-required exchange. Withdraw to a self-custody address instead.",
+      );
       return;
     }
 
@@ -982,7 +1011,7 @@ function DemolishFlow(): React.JSX.Element {
                          the dedicated Signatures step. */
                       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
                         <MultisigContextBar
-                          threshold={multisig?.threshold ?? 0}
+                          threshold={effectiveMultisig?.threshold ?? 0}
                           have={primaryWeight}
                         />
                         <p
