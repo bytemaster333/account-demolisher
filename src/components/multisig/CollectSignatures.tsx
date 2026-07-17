@@ -79,6 +79,10 @@ export function CollectSignatures({
     return unsubscribe;
   }, [planId]);
 
+  // drop any pasted-but-unsubmitted secret key from state when this surface goes
+  // away, so a seed never lingers in memory after the step unmounts
+  useEffect(() => () => setSecret(""), []);
+
   const onCopy = useCallback(() => {
     void navigator.clipboard?.writeText(link);
     setCopied(true);

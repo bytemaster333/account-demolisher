@@ -3,7 +3,7 @@
 // progress updates live with no polling. Emits public data only (the envelope).
 
 import { createLimiter, getRemoteIp } from "@/server/rate-limit";
-import { getPlan, subscribe, type PlanPublic } from "@/server/signing-relay";
+import { getPlan, subscribe, subscriberStatus, type PlanPublic } from "@/server/signing-relay";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,8 +20,17 @@ export async function GET(
   }
 
   const { id } = await params;
-  if (getPlan(id) === null) {
+  const status = subscriberStatus(id);
+  if (status === "not-found") {
     return new Response("signing request not found", { status: 404 });
+  }
+  if (status === "at-cap") {
+    // don't silently close: tell the client it's a transient capacity limit so it
+    // can back off and retry (and fall back to fetch-polling meanwhile)
+    return new Response("too many live listeners; retry shortly", {
+      status: 503,
+      headers: { "retry-after": "5" },
+    });
   }
 
   const encoder = new TextEncoder();

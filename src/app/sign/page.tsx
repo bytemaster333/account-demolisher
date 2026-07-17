@@ -67,6 +67,9 @@ export default function SignPage(): React.JSX.Element {
   const [lastSigner, setLastSigner] = useState<string | null>(null);
   const [secret, setSecret] = useState("");
 
+  // drop any pasted-but-unsubmitted secret key when this page unmounts
+  useEffect(() => () => setSecret(""), []);
+
   const network = load.kind === "ready" ? load.network : null;
 
   // read the id and fetch the transaction; verify its hash matches the id so a

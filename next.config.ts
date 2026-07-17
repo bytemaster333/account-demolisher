@@ -12,7 +12,6 @@ const CONNECT_SRC_ENDPOINTS = [
   "https://soroban-rpc.mainnet.stellar.gateway.fm",
   "https://soroban-testnet.stellar.org",
   "https://rpc-futurenet.stellar.org",
-  "https://api.refractor.space",
   "https://amm-api.aqua.network",
   "https://amm-api-testnet.aqua.network",
   "https://api.soroswap.finance",

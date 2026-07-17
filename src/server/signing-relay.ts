@@ -89,6 +89,17 @@ function isClassicTransaction(tx: Transaction | { innerTransaction?: unknown }):
   return candidate.feeSource === undefined && candidate.innerTransaction === undefined;
 }
 
+// number of decorated signatures on an envelope; -1 if it can't be parsed. Used
+// to only wake SSE subscribers when a signature was actually added.
+function signatureCount(xdr: string, passphrase: string): number {
+  try {
+    const tx = TransactionBuilder.fromXDR(xdr, passphrase) as Transaction;
+    return Array.isArray(tx.signatures) ? tx.signatures.length : -1;
+  } catch {
+    return -1;
+  }
+}
+
 // which of the given signer keys have actually signed this transaction (full
 // signature verification over the tx hash, hint-agnostic).
 function signersOf(tx: Transaction, signerKeys: readonly string[]): string[] {
@@ -165,11 +176,14 @@ export async function createPlan(network: string, xdr: string): Promise<CreateRe
     // same transaction re-published: merge in any new signatures. A malformed
     // re-publish is rejected rather than silently reporting success.
     try {
+      const before = signatureCount(existing.xdr, net.passphrase);
       const merged = mergeSignatures(existing.xdr, [xdr], net.passphrase, {
         expectedSigners: existing.signerKeys,
       });
       existing.xdr = merged;
-      notify(existing);
+      // only wake subscribers when a signature actually landed (a duplicate
+      // re-publish must not amplify into an SSE broadcast to every listener)
+      if (signatureCount(merged, net.passphrase) > before) notify(existing);
     } catch {
       return {
         ok: false,
@@ -245,6 +259,7 @@ export function addSignature(id: string, partialXdr: string): SignResult {
   }
   const passphrase = resolveNetwork(rec.network).passphrase;
   let merged: string;
+  const before = signatureCount(rec.xdr, passphrase);
   try {
     merged = mergeSignatures(rec.xdr, [partialXdr], passphrase, { expectedSigners: rec.signerKeys });
   } catch {
@@ -255,8 +270,18 @@ export function addSignature(id: string, partialXdr: string): SignResult {
     };
   }
   rec.xdr = merged;
-  notify(rec);
+  // only broadcast when a NEW signature landed (a re-submitted duplicate must not
+  // wake every SSE listener)
+  if (signatureCount(merged, passphrase) > before) notify(rec);
   return { ok: true, plan: { network: rec.network, xdr: rec.xdr } };
+}
+
+// subscriber-slot status for a plan, so the SSE route can return a distinct 503
+// (at capacity, retry) vs 404 (gone) instead of silently closing the stream.
+export function subscriberStatus(id: string): "not-found" | "at-cap" | "ok" {
+  const rec = plans.get(id);
+  if (rec === undefined) return "not-found";
+  return rec.subscribers.size >= MAX_SUBSCRIBERS ? "at-cap" : "ok";
 }
 
 // subscribe to a plan's updates; returns an unsubscribe function, or null if the
