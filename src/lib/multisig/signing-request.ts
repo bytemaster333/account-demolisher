@@ -311,11 +311,10 @@ export function signedSigners(
     } catch {
       continue;
     }
-    const hint = Buffer.from(kp.signatureHint());
-    const signed = tx.signatures.some(
-      (ds) =>
-        Buffer.from(ds.hint()).equals(hint) && kp.verify(hash, Buffer.from(ds.signature())),
-    );
+    // verify by signature, hint-agnostic, to match the relay's signer counting
+    // (a wallet with an unusual hint would otherwise be counted here but not
+    // there, or vice-versa). The hint is not authoritative; the signature is.
+    const signed = tx.signatures.some((ds) => kp.verify(hash, Buffer.from(ds.signature())));
     if (signed) out.push(key);
   }
   return out;

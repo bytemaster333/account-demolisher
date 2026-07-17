@@ -84,14 +84,15 @@ const BLEND_TESTNET_INFRASTRUCTURE_SOURCE =
   "github.com/blend-capital/blend-utils@main/testnet.contracts.json";
 const BLEND_TESTNET_VERIFIED_AT = "2026-05-18";
 
-export interface BlendTestnetInfrastructureEntry {
+interface BlendTestnetInfrastructureEntry {
   readonly id: string;
   readonly name: string;
   readonly verified_at: string;
   readonly source: string;
 }
 
-export const BLEND_TESTNET_INFRASTRUCTURE: readonly BlendTestnetInfrastructureEntry[] =
+// used internally to build the testnet allow-list below (not exported)
+const BLEND_TESTNET_INFRASTRUCTURE: readonly BlendTestnetInfrastructureEntry[] =
   Object.freeze([
     Object.freeze({
       id: "CDV6RX4CGPCOKGTBFS52V3LMWQGZN3LCQTXF5RVPOOCG4XVMHXQ4NTF6",
@@ -287,14 +288,4 @@ export function isAllowedContract(contractId: string, network?: NetworkConfig): 
     case "futurenet":
       return false;
   }
-}
-
-// lookup the human-readable label for a contract. returns null if not
-// allow-listed. omitting network searches the mainnet list
-export function getAllowedContract(
-  contractId: string,
-  network?: NetworkConfig,
-): AllowedContract | null {
-  const list = network === undefined ? MAINNET_ALLOWLIST : getAllowlistForNetwork(network);
-  return list.find((c) => c.id === contractId) ?? null;
 }

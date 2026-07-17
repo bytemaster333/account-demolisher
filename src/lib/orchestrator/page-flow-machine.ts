@@ -388,12 +388,12 @@ const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ input }) 
 
   const submitClassic = async (signedXdr: string): Promise<ConfirmationReceipt> => {
     const signed = TransactionBuilder.fromXDR(signedXdr, input.network.passphrase) as Transaction;
+    let res: { readonly hash?: string; readonly ledger?: number };
     try {
-      const res = (await horizon.submitTransaction(signed)) as {
+      res = (await horizon.submitTransaction(signed)) as {
         readonly hash?: string;
         readonly ledger?: number;
       };
-      return { txHash: res.hash ?? "<unknown-classic-hash>", ledger: res.ledger ?? 0 };
     } catch (err) {
       const anyErr = err as { response?: { data?: { extras?: { result_codes?: unknown } } } };
       const codes = anyErr.response?.data?.extras?.result_codes;
@@ -401,6 +401,13 @@ const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ input }) 
         `submitClassic rejected: ${codes ? JSON.stringify(codes) : "<no result_codes>"}`,
       );
     }
+    // Horizon returns a real hash on acceptance; a missing one means something is
+    // wrong. Don't fabricate a sentinel and report success we can't prove. This
+    // sits OUTSIDE the catch so it isn't mislabeled as a submission rejection.
+    if (typeof res.hash !== "string" || res.hash.length === 0) {
+      throw new Error("submitClassic: Horizon accepted the transaction but returned no hash");
+    }
+    return { txHash: res.hash, ledger: res.ledger ?? 0 };
   };
 
   // A multisig close arrives here as ONE fully-signed bundled transaction: every

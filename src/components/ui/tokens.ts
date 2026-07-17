@@ -11,19 +11,9 @@ export const RADIUS = {
   pill: 999,
 } as const;
 
-// 4px-based spacing scale
-export const SPACE = {
-  xs: 4,
-  sm: 8,
-  md: 12,
-  lg: 16,
-  xl: 24,
-  xxl: 32,
-} as const;
-
 export const MONO = '"Geist Mono", ui-monospace, monospace';
 
-// tone → (foreground token, soft-background token) for semantic surfaces
+// tone → foreground token for semantic surfaces
 export type Tone = "accent" | "success" | "warning" | "danger" | "neutral";
 
 export const TONE_FG: Record<Tone, string> = {
@@ -32,14 +22,6 @@ export const TONE_FG: Record<Tone, string> = {
   warning: "var(--warning)",
   danger: "var(--danger)",
   neutral: "var(--fg-2)",
-};
-
-export const TONE_SOFT: Record<Tone, string> = {
-  accent: "var(--accent-soft)",
-  success: "var(--success-soft)",
-  warning: "var(--warning-soft)",
-  danger: "var(--danger-soft)",
-  neutral: "var(--pending-soft)",
 };
 
 // a tone-tinted 1px border, ~30% of the tone mixed over transparent
