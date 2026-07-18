@@ -615,6 +615,25 @@ function DemolishFlow(): React.JSX.Element {
   }, [form.destination, publicKey]);
   const useMediator = cex !== null;
 
+  // gate the Continue CTA on a required exchange memo (and a well-formed memo
+  // value), so the requirement shows inline instead of bouncing the user back
+  // after they press Continue. Reuses the exact checks onStart runs
+  // (validateMemoFormat + requireMemoEnforcement) so the gate and the submit path
+  // can never disagree. Only engages once the destination itself is valid; until
+  // then destinationGate owns the hint.
+  const memoGate = useMemo<{ ready: boolean; hint: string | null }>(() => {
+    const trimmed = form.destination.trim();
+    if (!G_ADDRESS.safeParse(trimmed).success) return { ready: true, hint: null };
+    const memo = parseMemo(form);
+    if (memo !== undefined) {
+      const formatError = validateMemoFormat(memo.type, memo.value);
+      if (formatError !== null) return { ready: false, hint: formatError };
+    }
+    const check = requireMemoEnforcement(trimmed, memo);
+    if (!check.ok) return { ready: false, hint: check.reason };
+    return { ready: true, hint: null };
+  }, [form]);
+
   // whether the account holds Soroban (smart-contract) positions. Those each need
   // their own transaction, so they can't be bundled into a single signable close.
   const hasSorobanPositions =
@@ -1034,7 +1053,8 @@ function DemolishFlow(): React.JSX.Element {
                             publicKey !== null &&
                             hasConnector &&
                             destinationGate.ready &&
-                            canUseSigningRequest
+                            canUseSigningRequest &&
+                            memoGate.ready
                           }
                           startHint={
                             publicKey === null || !hasConnector
@@ -1042,7 +1062,7 @@ function DemolishFlow(): React.JSX.Element {
                               : !canUseSigningRequest
                                 ? (bundleability.reason ??
                                   "This shared account's close can't be gathered into one signing request.")
-                                : destinationGate.hint
+                                : (destinationGate.hint ?? memoGate.hint)
                           }
                           onGeneratePlan={onStart}
                           audit={audit}
@@ -1062,11 +1082,16 @@ function DemolishFlow(): React.JSX.Element {
                           hasMemo={hasMemo}
                           formError={formError}
                           isBusy={false}
-                          canStart={publicKey !== null && hasConnector && destinationGate.ready}
+                          canStart={
+                            publicKey !== null &&
+                            hasConnector &&
+                            destinationGate.ready &&
+                            memoGate.ready
+                          }
                           startHint={
                             publicKey === null || !hasConnector
                               ? "Connect a wallet to continue."
-                              : destinationGate.hint
+                              : (destinationGate.hint ?? memoGate.hint)
                           }
                           onGeneratePlan={onStart}
                           audit={audit}
@@ -3274,7 +3299,7 @@ function ConfigurePanel({
           {claimables.map((cb) => {
             const checked = form.selectedCbIds.includes(cb.id);
             return (
-              <label
+              <div
                 key={cb.id}
                 style={{
                   display: "flex",
@@ -3283,38 +3308,34 @@ function ConfigurePanel({
                   gap: 10,
                   padding: "10px 0",
                   borderTop: "1px solid var(--border)",
-                  cursor: "pointer",
                 }}
               >
-                <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={(e) => {
-                      const c = e.currentTarget.checked;
-                      setForm((f) =>
-                        c
-                          ? { ...f, selectedCbIds: [...f.selectedCbIds, cb.id] }
-                          : {
-                              ...f,
-                              selectedCbIds: f.selectedCbIds.filter((id) => id !== cb.id),
-                            },
-                      );
-                    }}
-                    data-testid={`cb-checkbox-${cb.id}`}
-                    style={{ width: 16, height: 16, accentColor: "var(--accent)" }}
-                  />
-                  <span
-                    style={{
-                      fontWeight: 600,
-                      fontSize: 13,
-                      fontFamily: "'Geist Mono', monospace",
-                      color: "var(--fg)",
-                    }}
-                  >
-                    {cb.amount}
-                  </span>
-                </span>
+                <Checkbox
+                  checked={checked}
+                  onChange={(c) => {
+                    setForm((f) =>
+                      c
+                        ? { ...f, selectedCbIds: [...f.selectedCbIds, cb.id] }
+                        : {
+                            ...f,
+                            selectedCbIds: f.selectedCbIds.filter((id) => id !== cb.id),
+                          },
+                    );
+                  }}
+                  data-testid={`cb-checkbox-${cb.id}`}
+                  label={
+                    <span
+                      style={{
+                        fontWeight: 600,
+                        fontSize: 13,
+                        fontFamily: "'Geist Mono', monospace",
+                        color: "var(--fg)",
+                      }}
+                    >
+                      {cb.amount}
+                    </span>
+                  }
+                />
                 <span
                   style={{
                     fontSize: 11.5,
@@ -3324,7 +3345,7 @@ function ConfigurePanel({
                 >
                   {cb.id.slice(0, 16)}…
                 </span>
-              </label>
+              </div>
             );
           })}
         </div>
@@ -3342,7 +3363,7 @@ function ConfigurePanel({
         <h2
           style={{
             margin: "0 0 4px",
-            fontSize: 19,
+            fontSize: 22,
             fontWeight: 600,
             letterSpacing: "-0.02em",
             color: "var(--fg)",
@@ -3441,7 +3462,7 @@ function ConfigurePanel({
         {cex ? (
           <div
             data-testid="cex-warning"
-            role="alert"
+            role="status"
             style={{
               display: "flex",
               alignItems: "flex-start",
@@ -3477,7 +3498,8 @@ function ConfigurePanel({
           </div>
         ) : null}
 
-        <label
+        <div
+          id="demolish-memo-label"
           style={{
             display: "block",
             fontWeight: 600,
@@ -3492,7 +3514,7 @@ function ConfigurePanel({
           <span style={{ color: "var(--fg-3)", fontWeight: 400 }}>
             {cex?.requiresMemo ? "· required by your exchange" : "· required by most exchanges"}
           </span>
-        </label>
+        </div>
         <p style={{ margin: "0 0 8px", fontSize: 12, color: "var(--fg-3)", lineHeight: 1.5 }}>
           If your exchange gave you a deposit memo or tag, paste it here. Sending to an exchange
           without it usually means the funds are lost. Most exchanges use Text or ID.
@@ -3515,6 +3537,7 @@ function ConfigurePanel({
           </div>
           <input
             type="text"
+            id="demolish-memo-value"
             value={form.memoValue}
             onChange={(e) => {
               const v = e.currentTarget.value;
@@ -3531,7 +3554,7 @@ function ConfigurePanel({
             spellCheck={false}
             autoComplete="off"
             data-testid="memo-value-input"
-            aria-label="Memo value"
+            aria-labelledby="demolish-memo-label"
             style={{
               flex: 1,
               padding: "13px 14px",
@@ -4044,9 +4067,9 @@ function plainResultCode(code: string): string {
     op_underfunded: "there wasn't enough balance to cover it",
     // op_low_reserve: the result would drop below the minimum reserve
     op_low_reserve: "it would drop the account below its minimum reserve",
-    // payment_no_trust: destination has no trustline for the asset
+    // op_no_trust: destination has no trustline for the asset
     op_no_trust: "the destination can't hold that asset (no trustline)",
-    // payment_src_no_trust: source no longer holds that asset
+    // op_src_no_trust: source no longer holds that asset
     op_src_no_trust: "the account no longer holds the asset this step tried to send",
     // op_line_full: destination is at its limit for the asset
     op_line_full: "the destination can't hold any more of that asset",
@@ -4111,7 +4134,15 @@ function CancelledPanel({ onResume }: { readonly onResume: () => void }): React.
         textAlign: "center",
       }}
     >
-      <h2 style={{ margin: "0 0 6px", fontSize: 18, fontWeight: 600, color: "var(--fg)" }}>
+      <h2
+        style={{
+          margin: "0 0 6px",
+          fontSize: 22,
+          fontWeight: 600,
+          letterSpacing: "-0.02em",
+          color: "var(--fg)",
+        }}
+      >
         Nothing was changed
       </h2>
       <p style={{ margin: "0 0 16px", fontSize: 14, color: "var(--fg-2)", lineHeight: 1.5 }}>
