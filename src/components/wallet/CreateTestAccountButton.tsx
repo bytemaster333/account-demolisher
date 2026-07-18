@@ -392,7 +392,7 @@ function ReadyPanel({
             </svg>
           }
         >
-          Continue to demolish
+          Continue
         </Button>
       </div>
     </div>

@@ -357,8 +357,9 @@ export default function SignPage(): React.JSX.Element {
                       />
                     </span>
                     <span style={{ fontSize: 11.5, color: "var(--fg-3)" }}>
-                      weight {signerWeights.get(key) ?? "—"}
+                      weight {signerWeights.get(key) ?? "-"}
                     </span>
+                    {lastSigner === key ? <Badge tone="neutral">You</Badge> : null}
                     {has ? <Badge tone="success">Signed</Badge> : <Badge tone="warning">Pending</Badge>}
                   </div>
                 );

@@ -149,21 +149,11 @@ export function BulkRevokeBar({
           valueLabel={`${doneCount} / ${total}`}
           data-testid="bulk-revoke-progress"
         />
-        <div
-          role="alert"
-          style={{
-            marginTop: 12,
-            padding: "9px 12px",
-            borderRadius: 10,
-            border: "1px solid color-mix(in srgb, var(--warning) 35%, transparent)",
-            background: "color-mix(in srgb, var(--warning) 8%, transparent)",
-            fontSize: 11.5,
-            lineHeight: 1.5,
-            color: "var(--fg-2)",
-          }}
-        >
-          Keep this tab open until the sweep finishes. Each approval is a separate signature and
-          transaction; leaving now would revoke some but not others.
+        <div style={{ marginTop: 12 }}>
+          <Notice tone="warning" role="alert">
+            Keep this tab open until the sweep finishes. Each approval is a separate signature and
+            transaction; leaving now would revoke some but not others.
+          </Notice>
         </div>
         <div
           style={{

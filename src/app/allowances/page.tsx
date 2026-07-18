@@ -166,13 +166,11 @@ export default function AllowancesPage(): React.JSX.Element {
           title="Active token allowances"
           subtitle={
             <>
-              An allowance is a standing permission you gave another app or address to spend your
-              tokens, up to a limit, until it expires or you cancel it. This page lists every active{" "}
+              Every active{" "}
               <InfoTip tip="SEP-41 is Stellar's standard for smart-contract (Soroban) tokens. An allowance is a standing approval that lets another address spend your tokens up to a limit, until it expires or you revoke it.">
                 SEP-41
               </InfoTip>{" "}
-              allowance on an account so you can review it and cancel the ones you no longer want.
-              No demolition required.
+              allowance on an account, so you can review and revoke the ones you no longer want.
             </>
           }
         />
@@ -231,7 +229,7 @@ export default function AllowancesPage(): React.JSX.Element {
           </div>
           <p style={{ margin: "10px 0 0", fontSize: 12, color: "var(--fg-3)", lineHeight: 1.5 }}>
             Looking up an address is read-only and free. You only need a connected wallet later, to
-            cancel an allowance on an account you own.
+            revoke an allowance on an account you own.
           </p>
           {wrongWallet ? (
             <div style={{ marginTop: 12 }}>
@@ -249,7 +247,7 @@ export default function AllowancesPage(): React.JSX.Element {
                     href={explorerAccountUrl(network, viewedAddress!)}
                   />
                   in read-only mode, which is fine for inspecting. Only the wallet that controls
-                  this address can cancel its allowances, so to revoke, connect that wallet.
+                  this address can revoke its allowances, so to revoke, connect that wallet.
                 </span>
               </Notice>
             </div>

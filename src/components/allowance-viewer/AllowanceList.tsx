@@ -89,9 +89,8 @@ export function AllowanceList({
         >
           <div style={{ fontWeight: 600, fontSize: 15 }}>No active allowances found</div>
           <div style={{ fontSize: 13, color: "var(--fg-2)", marginTop: 6 }}>
-            {records.length === 0
-              ? "No approvals were found for this address in about the last 7 days of on-chain history."
-              : "All allowances for this address are expired. Toggle “Show expired” to view them."}
+            All allowances for this address are expired. Toggle {'"Show expired allowances"'} to
+            view them.
           </div>
         </div>
       ) : (
@@ -323,14 +322,9 @@ function AllowanceRow({
       {/* expires */}
       <div data-testid="row-expires">
         {record.expired ? (
-          <span title="This approval has already ended, so the spender can no longer move your tokens. There's nothing to revoke.">
-            <Badge tone="warning">expired</Badge>
-          </span>
+          <Badge tone="neutral">expired</Badge>
         ) : (
-          <span
-            style={{ font: "500 12.5px/1 'Geist Mono', monospace", color: "var(--fg-2)" }}
-            title="Time left until this approval ends on its own."
-          >
+          <span style={{ font: "500 12.5px/1 'Geist Mono', monospace", color: "var(--fg-2)" }}>
             {formatExpiry(record.live_until_ledger, currentLedger)}
           </span>
         )}

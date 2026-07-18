@@ -7,7 +7,7 @@
 
 import type { ReactNode } from "react";
 
-import { CopyableAddress, Notice } from "@/components/ui";
+import { Badge, CopyableAddress, Notice } from "@/components/ui";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { explorerAccountUrl, explorerContractUrl } from "@/lib/explorer";
 import type { ScamFinding, ScamFlag } from "@/lib/safety/scam-heuristics";
@@ -156,20 +156,7 @@ export function ScamTokenNotice({
                 >
                   {assetCode(f.asset)}
                 </span>
-                <span
-                  style={{
-                    font: "600 10px/1 Geist, sans-serif",
-                    letterSpacing: "0.04em",
-                    textTransform: "uppercase",
-                    color: "var(--danger)",
-                    padding: "3px 7px",
-                    borderRadius: 6,
-                    border: "1px solid color-mix(in srgb, var(--danger) 30%, transparent)",
-                    background: "color-mix(in srgb, var(--danger) 8%, transparent)",
-                  }}
-                >
-                  {flagTag(f.flag)}
-                </span>
+                <Badge tone="danger">{flagTag(f.flag)}</Badge>
               </div>
               <span style={{ fontSize: 12.5, lineHeight: 1.45, color: "var(--fg-2)" }}>
                 {reasonFor(f.flag)}

@@ -12,7 +12,7 @@ import { TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { TypedConfirmation } from "@/components/confirmations/TypedConfirmation";
-import { Badge, Button, Card, CopyableAddress, Progress } from "@/components/ui";
+import { Badge, Button, Card, CopyableAddress, Progress, SectionLabel } from "@/components/ui";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import { explorerAccountUrl } from "@/lib/explorer";
@@ -86,6 +86,7 @@ export function CollectSignatures({
   const onCopy = useCallback(() => {
     void navigator.clipboard?.writeText(link);
     setCopied(true);
+    window.setTimeout(() => setCopied(false), 1400);
   }, [link]);
 
   // sign locally with a pasted signer key, then publish the signature to the
@@ -131,7 +132,7 @@ export function CollectSignatures({
   return (
     <Card padding={24} style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <div>
-        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600, letterSpacing: "-0.02em" }}>
+        <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600, letterSpacing: "-0.01em" }}>
           Collect the other signatures
         </h2>
         <p style={{ margin: "8px 0 0", fontSize: 13.5, color: "var(--fg-2)", lineHeight: 1.55 }}>
@@ -142,10 +143,8 @@ export function CollectSignatures({
       </div>
 
       {/* share link */}
-      <div>
-        <div style={{ fontSize: 11.5, color: "var(--fg-3)", letterSpacing: "0.05em", marginBottom: 6 }}>
-          SEND TO THE OTHER SIGNERS
-        </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <SectionLabel>SEND TO THE OTHER SIGNERS</SectionLabel>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <code
             data-testid="collect-link"
@@ -217,9 +216,7 @@ export function CollectSignatures({
 
       {/* sign locally with a pasted key, one signer at a time */}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <div style={{ fontSize: 11.5, color: "var(--fg-3)", letterSpacing: "0.05em" }}>
-          HAVE SIGNER KEYS HERE? SIGN THEM LOCALLY
-        </div>
+        <SectionLabel>SIGN A KEY LOCALLY</SectionLabel>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <input
             type="password"
@@ -245,12 +242,11 @@ export function CollectSignatures({
               border: "1px solid var(--border-2)",
               background: "var(--surface-2)",
               color: "var(--fg)",
-              font: "500 12px/1 'Geist Mono', monospace",
+              font: "500 13px/1 'Geist Mono', monospace",
             }}
           />
           <Button
             variant="secondary"
-            size="sm"
             onClick={() => void onAddKey()}
             loading={signingLocal}
             disabled={signingLocal || secret.trim().length === 0}
@@ -276,6 +272,11 @@ export function CollectSignatures({
           Hold more than one key? Paste and sign each one; every signature moves the bar up. Keys
           are used only in this browser to sign, and are never uploaded or stored.
         </p>
+        {thresholdMet ? (
+          <p style={{ margin: 0, fontSize: 11.5, color: "var(--fg-3)", lineHeight: 1.5 }}>
+            Threshold reached; more signatures are optional.
+          </p>
+        ) : null}
       </div>
 
       {/* once enough signatures are in, the close terminal matches the

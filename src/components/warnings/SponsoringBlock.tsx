@@ -55,7 +55,7 @@ export function SponsoringBlock({
           height: 72,
           margin: "0 auto 24px",
           borderRadius: 20,
-          background: isSoft ? "var(--surface-2)" : "var(--surface-2)",
+          background: "var(--surface-2)",
           border: `1px solid color-mix(in srgb, var(${isSoft ? "--warning" : "--danger"}) 30%, transparent)`,
           display: "grid",
           placeItems: "center",
