@@ -66,6 +66,10 @@ export default function SignPage(): React.JSX.Element {
   const [signedHere, setSignedHere] = useState(false);
   const [lastSigner, setLastSigner] = useState<string | null>(null);
   const [secret, setSecret] = useState("");
+  // the live feed died terminally (relay swept the plan, or server restarted);
+  // bumping liveReloadKey tears down and re-creates the EventSource on refresh.
+  const [liveInterrupted, setLiveInterrupted] = useState(false);
+  const [liveReloadKey, setLiveReloadKey] = useState(0);
 
   // drop any pasted-but-unsubmitted secret key when this page unmounts
   useEffect(() => () => setSecret(""), []);
@@ -112,9 +116,35 @@ export default function SignPage(): React.JSX.Element {
   // live progress: reflect signatures other co-signers add
   useEffect(() => {
     if (planId === null || load.kind !== "ready") return;
-    const unsubscribe = subscribePlan(planId, (plan) => setXdr(plan.xdr));
+    const unsubscribe = subscribePlan(
+      planId,
+      (plan) => {
+        setXdr(plan.xdr);
+        setLiveInterrupted(false);
+      },
+      ({ terminal }) => {
+        // transient drops self-heal (EventSource keeps CONNECTING); only a
+        // terminal CLOSED means live updates have genuinely stopped.
+        if (terminal) setLiveInterrupted(true);
+      },
+    );
     return unsubscribe;
-  }, [planId, load.kind]);
+  }, [planId, load.kind, liveReloadKey]);
+
+  // manual re-sync after the live feed died: pull the latest envelope once and
+  // re-open the stream. If the plan is gone (404) fetchPlan throws and the
+  // interrupted notice stays, which is the honest state.
+  const refreshLive = useCallback(async () => {
+    if (planId === null) return;
+    try {
+      const plan = await fetchPlan(planId);
+      setXdr(plan.xdr);
+      setLiveInterrupted(false);
+      setLiveReloadKey((k) => k + 1);
+    } catch {
+      // keep the interrupted notice; the user can retry or reload the page
+    }
+  }, [planId]);
 
   const inspection: CloseInspection | null = useMemo(
     () => (network && xdr ? inspectClose(xdr, network.passphrase) : null),
@@ -365,6 +395,16 @@ export default function SignPage(): React.JSX.Element {
                 );
               })}
             </div>
+            {liveInterrupted ? (
+              <Notice tone="warning" role="status" title="Live updates interrupted">
+                This list stopped updating on its own. New signatures from others may not be shown.
+                <span style={{ display: "inline-block", marginTop: 10 }}>
+                  <Button variant="secondary" size="sm" onClick={() => void refreshLive()}>
+                    Refresh
+                  </Button>
+                </span>
+              </Notice>
+            ) : null}
           </Card>
         ) : (
           <div style={{ marginTop: 16, display: "inline-flex", alignItems: "center", gap: 9, fontSize: 13, color: "var(--fg-2)" }}>

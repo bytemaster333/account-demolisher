@@ -12,11 +12,11 @@ import { TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { TypedConfirmation } from "@/components/confirmations/TypedConfirmation";
-import { Badge, Button, Card, CopyableAddress, Progress, SectionLabel } from "@/components/ui";
+import { Badge, Button, Card, CopyableAddress, Notice, Progress, SectionLabel } from "@/components/ui";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import { explorerAccountUrl } from "@/lib/explorer";
-import { submitSignature, subscribePlan } from "@/lib/multisig/plan-client";
+import { fetchPlan, submitSignature, subscribePlan } from "@/lib/multisig/plan-client";
 import {
   closeThreshold,
   collectedWeight,
@@ -55,6 +55,10 @@ export function CollectSignatures({
   const [lastAdded, setLastAdded] = useState<string | null>(null);
   const [signingLocal, setSigningLocal] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+  // the live feed died terminally (relay swept the plan, or server restarted);
+  // bumping liveReloadKey tears down and re-opens the EventSource on refresh.
+  const [liveInterrupted, setLiveInterrupted] = useState(false);
+  const [liveReloadKey, setLiveReloadKey] = useState(0);
 
   const required = useMemo(() => requiredSigners(audit), [audit]);
   const threshold = useMemo(() => closeThreshold(audit), [audit]);
@@ -75,8 +79,33 @@ export function CollectSignatures({
   // live updates: every signature a co-signer adds on the relay arrives here at
   // once, so progress advances without polling.
   useEffect(() => {
-    const unsubscribe = subscribePlan(planId, (plan) => setXdr(plan.xdr));
+    const unsubscribe = subscribePlan(
+      planId,
+      (plan) => {
+        setXdr(plan.xdr);
+        setLiveInterrupted(false);
+      },
+      ({ terminal }) => {
+        // transient drops self-heal; only a terminal CLOSED means live updates
+        // have genuinely stopped and the initiator needs to re-sync manually.
+        if (terminal) setLiveInterrupted(true);
+      },
+    );
     return unsubscribe;
+  }, [planId, liveReloadKey]);
+
+  // manual re-sync after the live feed died: pull the latest envelope once and
+  // re-open the stream. If the plan is gone (404) fetchPlan throws and the
+  // interrupted notice stays, which is the honest state.
+  const refreshLive = useCallback(async () => {
+    try {
+      const plan = await fetchPlan(planId);
+      setXdr(plan.xdr);
+      setLiveInterrupted(false);
+      setLiveReloadKey((k) => k + 1);
+    } catch {
+      // keep the interrupted notice; the user can retry or reload the page
+    }
   }, [planId]);
 
   // drop any pasted-but-unsubmitted secret key from state when this surface goes
@@ -212,6 +241,16 @@ export function CollectSignatures({
             );
           })}
         </div>
+        {liveInterrupted ? (
+          <Notice tone="warning" role="status" title="Live updates interrupted">
+            Signatures added by others may not be showing here. Refresh to pull the latest.
+            <span style={{ display: "inline-block", marginTop: 10 }}>
+              <Button variant="secondary" size="sm" onClick={() => void refreshLive()}>
+                Refresh
+              </Button>
+            </span>
+          </Notice>
+        ) : null}
       </div>
 
       {/* sign locally with a pasted key, one signer at a time */}

@@ -28,6 +28,10 @@ import { mergeSignatures } from "@/lib/multisig/partial-xdr";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 
 const SIGNING_WINDOW_MS = 72 * 60 * 60 * 1000;
+// stop serving a plan slightly BEFORE its transaction's own maxTime, so a
+// signature collected right at the edge still has time to reach Horizon before it
+// would be rejected as tx_too_late.
+const EXPIRY_GRACE_MS = 60 * 1000;
 const MAX_PLANS = 500;
 const MAX_XDR_CHARS = 12_000;
 const MAX_SUBSCRIBERS = 50;
@@ -48,7 +52,9 @@ interface PlanRecord {
   readonly network: StellarNetwork;
   xdr: string;
   readonly signerKeys: readonly string[];
-  readonly createdAt: number;
+  // when the plan stops being served, in epoch ms. Derived from the transaction's
+  // own timebounds (see computeExpiry), not merely from publish time.
+  readonly expiresAt: number;
   readonly subscribers: Set<Subscriber>;
 }
 
@@ -77,11 +83,33 @@ function terminate(rec: PlanRecord): void {
 
 function sweepExpired(now: number): void {
   for (const [id, rec] of plans) {
-    if (now - rec.createdAt > SIGNING_WINDOW_MS) {
+    if (now >= rec.expiresAt) {
       terminate(rec);
       plans.delete(id);
     }
   }
+}
+
+// the transaction's own upper timebound in epoch ms, or null when it has none
+// (maxTime 0 means "no upper bound" in Stellar, so it is treated as absent).
+function txMaxTimeMs(tx: Transaction): number | null {
+  const tb = (tx as unknown as { timeBounds?: { maxTime?: string | number } }).timeBounds;
+  if (tb === undefined || tb.maxTime === undefined) return null;
+  const secs = Number(tb.maxTime);
+  if (!Number.isFinite(secs) || secs <= 0) return null;
+  return secs * 1000;
+}
+
+// when a plan should stop being served: the EARLIER of the publish window (72h
+// from publish) and the transaction's own maxTime minus a small grace. The build
+// time precedes publish, so keying purely off publish time would keep collecting
+// signatures for a transaction whose timebounds had already lapsed, yielding a
+// fully-'collected' bundle that Horizon rejects as tx_too_late. This closes that
+// trailing gap.
+function computeExpiry(tx: Transaction, createdAt: number): number {
+  const windowExpiry = createdAt + SIGNING_WINDOW_MS;
+  const max = txMaxTimeMs(tx);
+  return max === null ? windowExpiry : Math.min(windowExpiry, max - EXPIRY_GRACE_MS);
 }
 
 function isClassicTransaction(tx: Transaction | { innerTransaction?: unknown }): tx is Transaction {
@@ -233,7 +261,7 @@ export async function createPlan(network: string, xdr: string): Promise<CreateRe
     network: net.id,
     xdr,
     signerKeys,
-    createdAt: now,
+    expiresAt: computeExpiry(decoded.tx, now),
     subscribers: new Set(),
   });
   return { ok: true, id };
@@ -328,10 +356,15 @@ export function __seedPlanForTests(
   createdAt: number = Date.now(),
 ): string {
   const passphrase = resolveNetwork(network).passphrase;
-  const id = Buffer.from(
-    (TransactionBuilder.fromXDR(xdr, passphrase) as Transaction).hash(),
-  ).toString("hex");
-  plans.set(id, { network, xdr, signerKeys: [...signerKeys], createdAt, subscribers: new Set() });
+  const tx = TransactionBuilder.fromXDR(xdr, passphrase) as Transaction;
+  const id = Buffer.from(tx.hash()).toString("hex");
+  plans.set(id, {
+    network,
+    xdr,
+    signerKeys: [...signerKeys],
+    expiresAt: computeExpiry(tx, createdAt),
+    subscribers: new Set(),
+  });
   return id;
 }
 

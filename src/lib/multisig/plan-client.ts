@@ -60,10 +60,17 @@ export async function submitSignature(id: string, xdr: string): Promise<RelayPla
 
 // subscribe to live envelope updates; calls onUpdate with each new envelope and
 // onError on connection failure. Returns an unsubscribe function.
+//
+// EventSource auto-reconnects on transient drops (readyState stays CONNECTING),
+// so those are recoverable and self-heal. A CLOSED readyState is terminal: the
+// stream will not come back on its own (e.g. the relay swept the plan and the
+// events endpoint now 404s, or the server restarted). onError reports which case
+// it is so a caller can show a 'reconnecting' hint versus a 'refresh to resync'
+// affordance instead of a silently frozen progress view.
 export function subscribePlan(
   id: string,
   onUpdate: (plan: RelayPlan) => void,
-  onError?: () => void,
+  onError?: (info: { readonly terminal: boolean }) => void,
 ): () => void {
   const source = new EventSource(`/api/plan/${encodeURIComponent(id)}/events`);
   source.onmessage = (ev: MessageEvent<string>) => {
@@ -77,7 +84,7 @@ export function subscribePlan(
     }
   };
   source.onerror = () => {
-    if (onError) onError();
+    if (onError) onError({ terminal: source.readyState === EventSource.CLOSED });
   };
   return () => source.close();
 }

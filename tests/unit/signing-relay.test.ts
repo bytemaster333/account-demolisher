@@ -142,4 +142,39 @@ describe("signing-relay expiry", () => {
     const id = __seedPlanForTests("testnet", signPartial(a.publicKey(), dest, a), [a.publicKey()], old);
     expect(getPlan(id)).toBeNull();
   });
+
+  it("sweeps a plan whose transaction timebounds have passed even if just published", () => {
+    // recent publish, but the transaction's own maxTime is already in the past:
+    // expiry must key off the timebounds, not publish time, so we never serve a
+    // tx that Horizon would reject as tx_too_late.
+    const a = Keypair.random();
+    const dest = Keypair.random().publicKey();
+    const pastMax = Math.floor(Date.now() / 1000) - 3600;
+    const tx = new TransactionBuilder(new Account(a.publicKey(), "1"), {
+      fee: BASE_FEE,
+      networkPassphrase: NET,
+      timebounds: { minTime: 0, maxTime: pastMax },
+    })
+      .addOperation(Operation.accountMerge({ destination: dest }))
+      .build();
+    tx.sign(a);
+    const id = __seedPlanForTests("testnet", tx.toXDR(), [a.publicKey()]);
+    expect(getPlan(id)).toBeNull();
+  });
+
+  it("keeps a plan whose transaction timebounds are still in the future", () => {
+    const a = Keypair.random();
+    const dest = Keypair.random().publicKey();
+    const futureMax = Math.floor(Date.now() / 1000) + 3600;
+    const tx = new TransactionBuilder(new Account(a.publicKey(), "1"), {
+      fee: BASE_FEE,
+      networkPassphrase: NET,
+      timebounds: { minTime: 0, maxTime: futureMax },
+    })
+      .addOperation(Operation.accountMerge({ destination: dest }))
+      .build();
+    tx.sign(a);
+    const id = __seedPlanForTests("testnet", tx.toXDR(), [a.publicKey()]);
+    expect(getPlan(id)).not.toBeNull();
+  });
 });

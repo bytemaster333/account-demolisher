@@ -380,6 +380,24 @@ const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) 
   return { tree, unroutableCredits: unroutable };
 });
 
+// Node kinds that CANNOT live inside a single signed classic bundle: each needs
+// its own transaction (Soroban unwinds, allowance revokes) or is multi-step (the
+// mediator forward). assessBundleability rejects all of these up front; this set
+// is the executor's belt-and-suspenders check on the bundle path.
+const NON_BUNDLEABLE_NODE_KINDS: ReadonlySet<string> = new Set([
+  "RevokeAllowance",
+  "MediatorForward",
+  "RepayBlend",
+  "WithdrawBlend",
+  "ClaimBlendEmissions",
+  "BackstopQueue",
+  "WithdrawAquarius",
+  "ClaimAquariusRewards",
+  "WithdrawSoroswapLp",
+  "PayFxDAODebt",
+  "ConvertSorobanToXLM",
+]);
+
 const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ input }) => {
   // execute the SAME tree the preview pass produced
   const rpc = getRpc(input.network);
@@ -417,6 +435,20 @@ const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ input }) 
   // to threshold; rebuilding it would invalidate the collected signatures).
   if (input.signedBundleXdr) {
     input.onProgress({ kind: "submitting", message: "Submitting the signed close…" });
+    // A bundled close is exactly ONE classic transaction. assessBundleability
+    // rejects Soroban positions, allowance revocations, and the mediator flow up
+    // front, so a bundleable tree must contain only classic nodes. Guard that
+    // invariant before stamping receipts: marking a non-classic node confirmed
+    // with the bundle's hash would fabricate success for an operation the signed
+    // transaction never contained (e.g. an un-unwound Soroban position).
+    const stray = [...tree.allNodes.values()].find(
+      (n) => n.status !== "skipped" && NON_BUNDLEABLE_NODE_KINDS.has(n.kind),
+    );
+    if (stray) {
+      const message = `Refusing to submit: the bundled close contains a '${stray.kind}' step, which can't be part of a single signed transaction. Close this account with all signers present instead.`;
+      input.onProgress({ kind: "blocked", message });
+      return { result: { ok: false, errors: [message] }, tree };
+    }
     try {
       const receipt = await submitClassic(input.signedBundleXdr);
       for (const node of tree.allNodes.values()) {
