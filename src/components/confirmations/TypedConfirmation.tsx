@@ -131,7 +131,7 @@ export function TypedConfirmation({
         position: "fixed",
         inset: 0,
         zIndex: 80,
-        background: "rgba(0,0,0,0.55)",
+        background: "var(--overlay)",
         backdropFilter: "blur(4px)",
         display: "grid",
         placeItems: "center",

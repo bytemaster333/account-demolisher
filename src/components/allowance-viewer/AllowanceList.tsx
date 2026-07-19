@@ -282,7 +282,7 @@ function AllowanceRow({
               href={addressExplorerUrl(network, record.spender)}
             />
             <span data-testid="unknown-spender-badge" style={{ fontSize: 11.5 }}>
-              <Badge tone="warning" bordered>
+              <Badge tone="warning">
                 <svg
                   width="12"
                   height="12"

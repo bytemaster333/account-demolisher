@@ -29,7 +29,10 @@ export function Select({
   readonly "data-testid"?: string;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
+  const [hovered, setHovered] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -37,7 +40,10 @@ export function Select({
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
     };
     document.addEventListener("mousedown", onDoc);
     document.addEventListener("keydown", onKey);
@@ -46,6 +52,39 @@ export function Select({
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
+
+  // on open, move focus to the selected option so the menu is keyboard-navigable
+  // immediately (arrow keys then move between options; see onMenuKeyDown).
+  useEffect(() => {
+    if (!open) return;
+    const items = listRef.current?.querySelectorAll<HTMLButtonElement>('[role="option"]');
+    if (items === undefined || items.length === 0) return;
+    const selectedIdx = options.findIndex((o) => o.value === value);
+    items[selectedIdx >= 0 ? selectedIdx : 0]?.focus();
+  }, [open, options, value]);
+
+  // roving focus within the open listbox: Up/Down move between options, Home/End
+  // jump to the ends. Enter/Space activate via the option's native button.
+  const onMenuKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
+    const items = Array.from(
+      listRef.current?.querySelectorAll<HTMLButtonElement>('[role="option"]') ?? [],
+    );
+    if (items.length === 0) return;
+    const idx = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      items[idx < 0 ? 0 : Math.min(idx + 1, items.length - 1)]?.focus();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      items[idx < 0 ? items.length - 1 : Math.max(idx - 1, 0)]?.focus();
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      items[0]?.focus();
+    } else if (e.key === "End") {
+      e.preventDefault();
+      items[items.length - 1]?.focus();
+    }
+  };
 
   const current = options.find((o) => o.value === value) ?? options[0];
   const trigger: CSSProperties = {
@@ -69,6 +108,7 @@ export function Select({
   return (
     <div ref={ref} style={{ position: "relative" }} data-testid={testId}>
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="listbox"
@@ -98,7 +138,9 @@ export function Select({
 
       {open ? (
         <div
+          ref={listRef}
           role="listbox"
+          onKeyDown={onMenuKeyDown}
           style={{
             position: "absolute",
             top: "calc(100% + 6px)",
@@ -129,6 +171,10 @@ export function Select({
                   setOpen(false);
                 }}
                 data-value={o.value}
+                onMouseEnter={() => setHovered(o.value)}
+                onMouseLeave={() => setHovered((h) => (h === o.value ? null : h))}
+                onFocus={() => setHovered(o.value)}
+                onBlur={() => setHovered((h) => (h === o.value ? null : h))}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -138,15 +184,13 @@ export function Select({
                   padding: "8px 10px",
                   borderRadius: RADIUS.sm,
                   border: "none",
-                  background: "transparent",
+                  background: hovered === o.value ? "var(--surface-2)" : "transparent",
                   color: selected ? "var(--accent)" : "var(--fg)",
                   font: "500 13px/1 Geist, sans-serif",
                   cursor: "pointer",
                   textAlign: "left",
                   whiteSpace: "nowrap",
                 }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
-                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
               >
                 <span>{o.label}</span>
                 {selected ? (

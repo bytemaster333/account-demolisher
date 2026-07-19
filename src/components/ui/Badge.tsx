@@ -13,8 +13,6 @@ export function Badge({
   readonly tone?: Tone;
   readonly mono?: boolean;
   readonly dot?: boolean;
-  // kept for API compat; borders are always drawn now
-  readonly bordered?: boolean;
 }): React.JSX.Element {
   return (
     <span

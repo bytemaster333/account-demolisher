@@ -67,7 +67,10 @@ export function Notice({
   return (
     <div
       role={resolvedRole}
-      aria-labelledby={resolvedRole === "note" && title ? titleId : undefined}
+      // label the callout by its visible title whenever one exists, independent
+      // of role: role governs live-region behavior, the accessible name shouldn't.
+      // A status/alert Notice with a title now ties its heading to the body too.
+      aria-labelledby={title ? titleId : undefined}
       data-testid={testId}
       style={{
         borderRadius: RADIUS.lg,
