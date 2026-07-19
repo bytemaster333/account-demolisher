@@ -14,6 +14,7 @@ const auditAccount = vi.fn();
 const resolveCreditPaths = vi.fn();
 const batchClassicDemolition = vi.fn();
 const buildClassicTransaction = vi.fn();
+const submitMediatorForward = vi.fn();
 
 vi.mock("@/lib/stellar/account-audit", async () => {
   const actual = await vi.importActual<typeof import("@/lib/stellar/account-audit")>(
@@ -38,6 +39,10 @@ vi.mock("@/lib/plan/classic-batcher", () => ({
 
 vi.mock("@/lib/stellar/classic-builder", () => ({
   buildClassicTransaction: (...args: unknown[]) => buildClassicTransaction(...args),
+}));
+
+vi.mock("@/lib/mediator/forward", () => ({
+  submitMediatorForward: (...args: unknown[]) => submitMediatorForward(...args),
 }));
 
 // imported AFTER the mocks are registered so the executor picks them up
@@ -332,5 +337,77 @@ describe("executePlanTreeOnChain, merge fee/reprice retry", () => {
     await settled;
     // MAX_MERGE_ATTEMPTS = 3
     expect(deps.submitClassic).toHaveBeenCalledTimes(3);
+  });
+});
+
+// The MediatorForward hop is the ONLY leg that reaches the exchange, and a
+// swallowed forward failure would falsely report the CEX deposit as delivered.
+// These lock in that the branch confirms only on a real forward and throws (never
+// returns a phantom success) on failure, carrying the CEX memo through verbatim.
+function makeMediatorForwardTree() {
+  const node = {
+    id: "forward",
+    kind: "MediatorForward" as const,
+    dependencies: [] as string[],
+    description: "forward to exchange",
+    status: "ready",
+    metadata: {
+      kind: "MediatorForward" as const,
+      mediatorPublicKey: "GMEDIATOR",
+      flowToken: "FLOWTOKEN",
+      ultimateDestination: "GEXCHANGE",
+      memo: { type: "id" as const, value: "12345" },
+    },
+  };
+  return {
+    node,
+    tree: {
+      rootNodes: [node],
+      allNodes: new Map([[node.id, node]]),
+    } as unknown as PlanTree,
+  };
+}
+
+describe("executePlanTreeOnChain, MediatorForward honesty", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("confirms the forward with the returned hash and passes the CEX memo through", async () => {
+    submitMediatorForward.mockResolvedValue({ ok: true, txHash: "FWDHASH" });
+    const { tree } = makeMediatorForwardTree();
+    const deps = makeDeps();
+
+    const output = await executePlanTreeOnChain(
+      { publicKey: "GUSER", tree, previousReceipts: {} },
+      deps,
+    );
+
+    expect(tree.allNodes.get("forward")!.status).toBe("confirmed");
+    expect(output.receipts["forward"]).toEqual({ txHash: "FWDHASH", ledger: 0 });
+    expect(submitMediatorForward).toHaveBeenCalledTimes(1);
+    const input = submitMediatorForward.mock.calls[0]![0] as {
+      memo?: unknown;
+      destination?: string;
+    };
+    // the full memo (type + value) must reach the exchange verbatim on this hop
+    expect(input.memo).toEqual({ type: "id", value: "12345" });
+    expect(input.destination).toBe("GEXCHANGE");
+  });
+
+  it("marks the node failed and rejects (never phantom success) when the forward fails", async () => {
+    submitMediatorForward.mockResolvedValue({ ok: false, error: "no native balance" });
+    const { tree } = makeMediatorForwardTree();
+    const deps = makeDeps();
+
+    await expect(
+      executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps),
+    ).rejects.toThrow(/MediatorForward failed: no native balance/);
+
+    expect(tree.allNodes.get("forward")!.status).toBe("failed");
+    expect(tree.allNodes.get("forward")!.error).toBe("no native balance");
+    // no receipt is recorded for a failed forward: a failed hop leaves no
+    // confirmed trace (belt-and-suspenders on the never-phantom-success guarantee)
+    expect(tree.allNodes.get("forward")!.executed).toBeUndefined();
   });
 });
