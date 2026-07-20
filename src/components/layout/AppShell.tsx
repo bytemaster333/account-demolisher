@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Select } from "@/components/ui";
 import { useTheme } from "./ThemeProvider";
-import type { StellarNetwork } from "@/lib/config/networks";
+import { resolveNetwork, type StellarNetwork } from "@/lib/config/networks";
 import { setActiveConnector } from "@/lib/wallet/active-connector";
+import { WalletKitConnector } from "@/lib/wallet/connector";
 import { useNetworkStore } from "@/stores/network";
 import { useWalletStore } from "@/stores/wallet";
 
@@ -39,11 +40,39 @@ function Navbar() {
   const { isDark, isLight, toggle } = useTheme();
   const publicKey = useWalletStore((s) => s.publicKey);
   const disconnect = useWalletStore((s) => s.disconnect);
+  const setConnected = useWalletStore((s) => s.setConnected);
+  const networkId = useNetworkStore((s) => s.networkId);
+  const network = useMemo(() => resolveNetwork(networkId), [networkId]);
 
   const isDemolish = pathname?.startsWith("/demolish") ?? false;
   const isAllowances = pathname?.startsWith("/allowances") ?? false;
+  const isLanding = pathname === "/";
 
   const walletShort = publicKey ? `${publicKey.slice(0, 6)}…${publicKey.slice(-4)}` : null;
+
+  // Connect the wallet in place from the header (shares the connector app-wide so
+  // any page can sign). On the landing page we keep the original "start here"
+  // link into the close flow (that page is design-frozen); on the demolish page
+  // the Connect step already owns connecting, so the header shows no button
+  // there. Everywhere else (allowances, sign) this is the connect entry point.
+  const [connecting, setConnecting] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
+  const onConnect = useCallback(async () => {
+    setConnectError(null);
+    setConnecting(true);
+    try {
+      const connector = new WalletKitConnector(network);
+      const { publicKey: address } = await connector.connect();
+      setActiveConnector(connector);
+      setConnected(address, "kit");
+    } catch {
+      setConnectError(
+        "Couldn't connect to your wallet. Make sure the wallet extension is installed and unlocked, then try again.",
+      );
+    } finally {
+      setConnecting(false);
+    }
+  }, [network, setConnected]);
 
   return (
     <header
@@ -215,7 +244,8 @@ function Navbar() {
                 <path d="M6 9l6 6 6-6" />
               </svg>
             </button>
-          ) : (
+          ) : isLanding ? (
+            // design-frozen landing keeps its original "start the close flow" CTA
             <Link
               href="/demolish"
               style={{
@@ -237,6 +267,61 @@ function Navbar() {
             >
               Connect wallet
             </Link>
+          ) : isDemolish ? (
+            // the demolish Connect step owns connecting; no duplicate header button
+            null
+          ) : (
+            // tool pages (allowances, sign): connect in place, no detour
+            <div style={{ position: "relative", display: "flex" }}>
+              <button
+                type="button"
+                onClick={() => void onConnect()}
+                disabled={connecting}
+                data-testid="header-connect"
+                aria-label="Connect wallet: this only shares your public address, never your secret key"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  height: 34,
+                  padding: "0 14px",
+                  borderRadius: 8,
+                  border: "1px solid var(--accent-line)",
+                  background: "transparent",
+                  color: "var(--accent)",
+                  cursor: connecting ? "not-allowed" : "pointer",
+                  fontWeight: 600,
+                  fontSize: 13,
+                  whiteSpace: "nowrap",
+                  opacity: connecting ? 0.6 : 1,
+                }}
+              >
+                {connecting ? "Connecting…" : "Connect wallet"}
+              </button>
+              {connectError ? (
+                <span
+                  role="alert"
+                  style={{
+                    position: "absolute",
+                    top: "calc(100% + 8px)",
+                    right: 0,
+                    width: 240,
+                    fontSize: 11.5,
+                    lineHeight: 1.45,
+                    color: "var(--fg-2)",
+                    background: "var(--surface)",
+                    border: "1px solid var(--border-2)",
+                    borderRadius: 9,
+                    padding: "8px 11px",
+                    boxShadow: "var(--shadow)",
+                    zIndex: 50,
+                    whiteSpace: "normal",
+                  }}
+                >
+                  {connectError}
+                </span>
+              ) : null}
+            </div>
           )}
         </div>
       </div>

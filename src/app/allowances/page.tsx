@@ -228,7 +228,7 @@ export default function AllowancesPage(): React.JSX.Element {
             ) : null}
           </div>
           <p style={{ margin: "10px 0 0", fontSize: 12, color: "var(--fg-3)", lineHeight: 1.5 }}>
-            Looking up an address is read-only and free. You only need a connected wallet later, to
+            Looking up an address is read-only and free. Connect a wallet only when you want to
             revoke an allowance on an account you own.
           </p>
           {wrongWallet ? (
