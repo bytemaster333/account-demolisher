@@ -24,6 +24,7 @@ import type { AccountAudit } from "@/lib/types/account";
 import type { ClassicMemo, DemolishProgressEvent, DemolishResult } from "@/lib/types/plan";
 import { EMPTY_POSITIONS, type ProtocolPositions } from "@/lib/adapters/positions/interface";
 import { DirectContractProvider } from "@/lib/adapters/positions/direct";
+import { blendRepayShortfallWarnings } from "@/lib/adapters/blend/repay-check";
 import { enumerateAllowances, type AllowanceRecord } from "@/lib/soroban/allowances";
 import type { Connector } from "@/lib/wallet/connector";
 
@@ -211,6 +212,11 @@ const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({ input 
       `We couldn't check your ${e.protocol} positions. If you've used ${e.protocol}, review it before closing.`,
     );
   }
+
+  // Blend repay needs the borrowed token on hand (no auto-swap). If the account
+  // is short on one, the repay step would stop the close, so surface it now
+  // rather than letting it surprise the user mid-execution.
+  discoveryWarnings.push(...blendRepayShortfallWarnings(audit, positions.blend, input.network));
 
   return { audit, positions, allowances, discoveryWarnings };
 });
