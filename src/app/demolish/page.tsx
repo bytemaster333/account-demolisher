@@ -60,7 +60,7 @@ import type { ClassicMemo } from "@/lib/types/plan";
 import type { Connector } from "@/lib/wallet/connector";
 import { WalletKitConnector } from "@/lib/wallet/connector";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
-import { setActiveConnector } from "@/lib/wallet/active-connector";
+import { getActiveConnector, setActiveConnector } from "@/lib/wallet/active-connector";
 import { useWalletStore } from "@/stores/wallet";
 
 const HIGH_VALUE_THRESHOLD_XLM = 1000;
@@ -390,13 +390,43 @@ export default function DemolishPage(): React.JSX.Element {
 
 function DemolishFlow(): React.JSX.Element {
   const connectorRef = useRef<Connector | null>(null);
-  const [hasConnector, setHasConnector] = useState(false);
   const publicKey = useWalletStore((s) => s.publicKey);
+  const connectorKind = useWalletStore((s) => s.connectorKind);
   const isDemo = useWalletStore((s) => s.isDemo);
   const disconnectWallet = useWalletStore((s) => s.disconnect);
 
   const networkId = useNetworkStore((s) => s.networkId);
   const network = useMemo<NetworkConfig>(() => resolveNetwork(networkId), [networkId]);
+
+  // Do we have a live connector that can actually SIGN here? Derived (not stored)
+  // so it stays in sync with the app-wide wallet session across client-side
+  // navigation: a kit connection can always be reconstructed, and any live
+  // connector shared via setActiveConnector (e.g. from /allowances) counts. A
+  // pasted-seed session whose connector didn't survive to this page stays
+  // unsignable, which correctly gates the CTA. Mirrors the allowances page.
+  const hasConnector =
+    publicKey !== null && (getActiveConnector() !== null || connectorKind === "kit");
+
+  // Populate connectorRef when arriving already-connected (e.g. connected on
+  // /allowances, then navigated here client-side). connectorRef starts empty on
+  // each mount, but the wallet session is shared, so recover the live connector
+  // for signing. Sets a ref only (no state) so the derived hasConnector above is
+  // the single source of truth for the gate.
+  useEffect(() => {
+    if (publicKey === null) {
+      connectorRef.current = null;
+      return;
+    }
+    if (connectorRef.current !== null) return; // connected on this page already
+    const active = getActiveConnector();
+    if (active !== null) {
+      connectorRef.current = active;
+    } else if (connectorKind === "kit") {
+      // the kit reads its own persisted wallet selection, so a fresh instance can
+      // sign even after the live object was lost
+      connectorRef.current = new WalletKitConnector(network);
+    }
+  }, [publicKey, connectorKind, network]);
 
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
@@ -657,11 +687,11 @@ function DemolishFlow(): React.JSX.Element {
 
   const setConnector = useCallback((c: Connector | null) => {
     connectorRef.current = c;
-    setHasConnector(c !== null);
     // a new/cleared connection invalidates any in-progress signing request.
     // Use functional updates that return the SAME reference when already reset.
     // ConnectButton re-notifies every render, so a fresh `null` here would create
-    // a new reference each time and spin an infinite render loop.
+    // a new reference each time and spin an infinite render loop. hasConnector is
+    // derived from the wallet store, so it needs no explicit set here.
     setMultisig((prev) => (prev === null ? prev : null));
     setSigningRequestId((prev) => (prev === null ? prev : null));
     setSigningRequestXdr((prev) => (prev === null ? prev : null));
@@ -678,7 +708,6 @@ function DemolishFlow(): React.JSX.Element {
     if (isSucceeded && !closedRef.current) {
       closedRef.current = true;
       connectorRef.current = null;
-      setHasConnector(false);
       setActiveConnector(null);
       disconnectWallet();
     } else if (!isSucceeded && closedRef.current) {
