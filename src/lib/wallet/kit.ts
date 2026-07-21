@@ -77,3 +77,12 @@ export function getKit(network: NetworkConfig): KitHandle {
 
   return StellarWalletsKit;
 }
+
+// Fully disconnect the kit: forget the selected wallet and reset its internal
+// state, so the wallet extension no longer treats the site as connected and a
+// later connect re-prompts the picker. Safe to call when the kit was never
+// initialized (no-op) and idempotent (the kit's own disconnect resets state).
+export async function disconnectKit(): Promise<void> {
+  if (initializedPassphrase === null) return;
+  await StellarWalletsKit.disconnect();
+}

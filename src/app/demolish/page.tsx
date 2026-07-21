@@ -60,7 +60,7 @@ import type { ClassicMemo } from "@/lib/types/plan";
 import type { Connector } from "@/lib/wallet/connector";
 import { WalletKitConnector } from "@/lib/wallet/connector";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
-import { getActiveConnector, setActiveConnector } from "@/lib/wallet/active-connector";
+import { disconnectSession, getActiveConnector } from "@/lib/wallet/active-connector";
 import { useWalletStore } from "@/stores/wallet";
 
 const HIGH_VALUE_THRESHOLD_XLM = 1000;
@@ -708,8 +708,9 @@ function DemolishFlow(): React.JSX.Element {
     if (isSucceeded && !closedRef.current) {
       closedRef.current = true;
       connectorRef.current = null;
-      setActiveConnector(null);
-      disconnectWallet();
+      // full teardown (connector + kit + store): the account was merged and no
+      // longer exists, so leave nothing authorized to it at the wallet level
+      void disconnectSession(disconnectWallet);
     } else if (!isSucceeded && closedRef.current) {
       closedRef.current = false;
     }
@@ -884,10 +885,10 @@ function DemolishFlow(): React.JSX.Element {
     setFormError(null);
     // the account we operated on is gone (merged) or abandoned, fully drop the
     // connection so "Start over" returns to Connect, not Configure with a dead
-    // account still selected.
+    // account still selected. setConnector(null) also resets multisig/signing
+    // state; disconnectSession tears down the connector + kit + store.
     setConnector(null);
-    setActiveConnector(null);
-    disconnectWallet();
+    void disconnectSession(disconnectWallet);
     send({ type: "RESET" });
   }, [send, setConnector, disconnectWallet]);
   const onRetry = useCallback(() => send({ type: "RETRY" }), [send]);

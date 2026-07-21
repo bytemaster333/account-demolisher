@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Select } from "@/components/ui";
 import { useTheme } from "./ThemeProvider";
-import { resolveNetwork, type StellarNetwork } from "@/lib/config/networks";
-import { setActiveConnector } from "@/lib/wallet/active-connector";
+import { resolveNetwork, type NetworkConfig, type StellarNetwork } from "@/lib/config/networks";
+import { explorerAccountUrl } from "@/lib/explorer";
+import { disconnectSession, setActiveConnector } from "@/lib/wallet/active-connector";
 import { WalletKitConnector } from "@/lib/wallet/connector";
 import { useNetworkStore } from "@/stores/network";
 import { useWalletStore } from "@/stores/wallet";
@@ -47,8 +48,6 @@ function Navbar() {
   const isDemolish = pathname?.startsWith("/demolish") ?? false;
   const isAllowances = pathname?.startsWith("/allowances") ?? false;
   const isLanding = pathname === "/";
-
-  const walletShort = publicKey ? `${publicKey.slice(0, 6)}…${publicKey.slice(-4)}` : null;
 
   // Connect the wallet in place from the header (shares the connector app-wide so
   // any page can sign). On the landing page we keep the original "start here"
@@ -200,50 +199,7 @@ function Navbar() {
           </button>
 
           {publicKey ? (
-            <button
-              onClick={() => void disconnect()}
-              title="Disconnect wallet"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 9,
-                height: 34,
-                padding: "0 12px",
-                borderRadius: 8,
-                border: "1px solid var(--border-2)",
-                background: "var(--surface)",
-                cursor: "pointer",
-                color: "var(--fg)",
-              }}
-            >
-              <span
-                style={{
-                  width: 7,
-                  height: 7,
-                  borderRadius: "50%",
-                  background: "var(--success)",
-                }}
-              />
-              <span
-                style={{
-                  font: '500 12.5px/1 "Geist Mono", monospace',
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {walletShort}
-              </span>
-              <svg
-                width="13"
-                height="13"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="var(--fg-3)"
-                strokeWidth={2.2}
-                strokeLinecap="round"
-              >
-                <path d="M6 9l6 6 6-6" />
-              </svg>
-            </button>
+            <WalletMenu publicKey={publicKey} network={network} onDisconnect={disconnect} />
           ) : isLanding ? (
             // design-frozen landing keeps its original "start the close flow" CTA
             <Link
@@ -356,6 +312,211 @@ function NavLink({
   );
 }
 
+// Connected-wallet control: the address chip opens a menu (the chevron finally
+// means something) with copy, explorer, and an explicit Disconnect. Disconnect
+// routes through disconnectSession so the kit, connector, and store all clear.
+function WalletMenu({
+  publicKey,
+  network,
+  onDisconnect,
+}: {
+  readonly publicKey: string;
+  readonly network: NetworkConfig;
+  readonly onDisconnect: () => void;
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+  const short = `${publicKey.slice(0, 6)}…${publicKey.slice(-4)}`;
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent): void => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const onCopy = useCallback(() => {
+    void navigator.clipboard?.writeText(publicKey);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1400);
+  }, [publicKey]);
+
+  const onDisconnectClick = useCallback(() => {
+    setOpen(false);
+    void disconnectSession(onDisconnect);
+  }, [onDisconnect]);
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`Wallet connected as ${publicKey}. Open wallet menu.`}
+        data-testid="wallet-menu-trigger"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 9,
+          height: 34,
+          padding: "0 12px",
+          borderRadius: 8,
+          border: "1px solid var(--border-2)",
+          background: "var(--surface)",
+          cursor: "pointer",
+          color: "var(--fg)",
+        }}
+      >
+        <span
+          aria-hidden
+          style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--success)" }}
+        />
+        <span style={{ font: '500 12.5px/1 "Geist Mono", monospace', whiteSpace: "nowrap" }}>
+          {short}
+        </span>
+        <svg
+          width="13"
+          height="13"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="var(--fg-3)"
+          strokeWidth={2.2}
+          strokeLinecap="round"
+          aria-hidden
+          style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform .12s" }}
+        >
+          <path d="M6 9l6 6 6-6" />
+        </svg>
+      </button>
+
+      {open ? (
+        <div
+          role="menu"
+          style={{
+            position: "absolute",
+            top: "calc(100% + 6px)",
+            right: 0,
+            minWidth: 230,
+            zIndex: 60,
+            padding: 6,
+            borderRadius: 11,
+            background: "var(--surface)",
+            border: "1px solid var(--border-2)",
+            boxShadow: "var(--shadow)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
+            animation: "fadeUp .12s ease",
+          }}
+        >
+          <div
+            style={{
+              padding: "7px 9px 9px",
+              borderBottom: "1px solid var(--border)",
+              marginBottom: 4,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 10.5,
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+                color: "var(--fg-3)",
+                marginBottom: 5,
+              }}
+            >
+              Connected
+            </div>
+            <div
+              style={{
+                font: '500 12px/1.4 "Geist Mono", monospace',
+                color: "var(--fg-2)",
+                wordBreak: "break-all",
+              }}
+            >
+              {publicKey}
+            </div>
+          </div>
+          <MenuItem onClick={onCopy} testId="wallet-copy-address">
+            {copied ? "Copied" : "Copy address"}
+          </MenuItem>
+          <MenuItem href={explorerAccountUrl(network, publicKey)} onClick={() => setOpen(false)}>
+            View on explorer
+          </MenuItem>
+          <MenuItem onClick={onDisconnectClick} tone="danger" testId="wallet-disconnect">
+            Disconnect
+          </MenuItem>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+const MENU_ITEM_BASE: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  width: "100%",
+  padding: "8px 9px",
+  borderRadius: 7,
+  border: "none",
+  background: "transparent",
+  font: "500 13px/1 Geist, sans-serif",
+  textAlign: "left",
+  textDecoration: "none",
+  cursor: "pointer",
+};
+
+function MenuItem({
+  onClick,
+  href,
+  children,
+  tone,
+  testId,
+}: {
+  readonly onClick: () => void;
+  readonly href?: string;
+  readonly children: React.ReactNode;
+  readonly tone?: "danger";
+  readonly testId?: string;
+}): React.JSX.Element {
+  const [hover, setHover] = useState(false);
+  const style: CSSProperties = {
+    ...MENU_ITEM_BASE,
+    color: tone === "danger" ? "var(--danger)" : "var(--fg)",
+    background: hover ? "var(--surface-2)" : "transparent",
+  };
+  const shared = {
+    role: "menuitem" as const,
+    onMouseEnter: () => setHover(true),
+    onMouseLeave: () => setHover(false),
+    "data-testid": testId,
+    style,
+  };
+  if (href !== undefined) {
+    return (
+      <a {...shared} href={href} target="_blank" rel="noopener noreferrer" onClick={onClick}>
+        {children}
+      </a>
+    );
+  }
+  return (
+    <button {...shared} type="button" onClick={onClick}>
+      {children}
+    </button>
+  );
+}
+
 const NETWORK_STORAGE_KEY = "demolisher.network";
 
 function NetworkSwitcher() {
@@ -381,9 +542,10 @@ function NetworkSwitcher() {
     } catch {
       // storage disabled; selection still applies for this session
     }
-    // a connected account is network-scoped; changing network invalidates it
-    disconnect();
-    setActiveConnector(null);
+    // a connected account is network-scoped; changing network invalidates it.
+    // Full teardown (connector + kit + store), not just the store, so the wallet
+    // extension doesn't stay authorized to the old network's session.
+    void disconnectSession(disconnect);
   };
 
   const label = (net: StellarNetwork): React.JSX.Element => (
