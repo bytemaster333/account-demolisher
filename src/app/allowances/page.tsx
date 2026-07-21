@@ -157,6 +157,11 @@ export default function AllowancesPage(): React.JSX.Element {
   const wrongWallet = viewedAddress !== null && publicKey !== null && publicKey !== viewedAddress;
   const allowInput = records === null && !loading && error === null;
   const allowEmpty = records !== null && !loading && records.length === 0;
+  // disconnected, but the scanned address has at least one still-active allowance
+  // that COULD be revoked with the owning wallet. Prompt to connect proactively,
+  // rather than leaving the user to discover it from a disabled Revoke button.
+  const notConnectedWithRevocable =
+    !hasWallet && records !== null && records.some((r) => !r.expired);
 
   return (
     <AppShell>
@@ -249,6 +254,13 @@ export default function AllowancesPage(): React.JSX.Element {
                   in read-only mode, which is fine for inspecting. Only the wallet that controls
                   this address can revoke its allowances, so to revoke, connect that wallet.
                 </span>
+              </Notice>
+            </div>
+          ) : notConnectedWithRevocable ? (
+            <div style={{ marginTop: 12 }}>
+              <Notice tone="accent" role="status" title="Connect a wallet to revoke">
+                Reviewing is read-only and free. To revoke an allowance here, connect the wallet
+                that owns this address using Connect wallet in the top right.
               </Notice>
             </div>
           ) : null}
