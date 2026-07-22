@@ -223,11 +223,11 @@ function Navbar() {
             >
               Connect wallet
             </Link>
-          ) : isDemolish ? (
-            // the demolish Connect step owns connecting; no duplicate header button
-            null
           ) : (
-            // tool pages (allowances, sign): connect in place, no detour
+            // every non-landing page (demolish, allowances, sign): connect in
+            // place. The top-right wallet slot is ALWAYS present so its state is
+            // predictable: "Connect wallet" when disconnected, the address chip
+            // (with Disconnect) when connected. Never an empty dead-zone.
             <div style={{ position: "relative", display: "flex" }}>
               <button
                 type="button"
