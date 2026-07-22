@@ -1,4 +1,5 @@
-// wrapper around @creit.tech/stellar-wallets-kit v2.2.0
+// wrapper around @creit.tech/stellar-wallets-kit v2.3.0 (static-class API:
+// StellarWalletsKit.init/authModal/getAddress/signTransaction/disconnect/...)
 import { Networks as KitNetworks, StellarWalletsKit } from "@creit.tech/stellar-wallets-kit";
 import { defaultModules } from "@creit.tech/stellar-wallets-kit/modules/utils";
 
