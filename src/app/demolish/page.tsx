@@ -1033,6 +1033,35 @@ function DemolishFlow(): React.JSX.Element {
             </div>
           ) : null}
 
+          {/* A failure BEFORE any plan tree exists (audit / discovery error, e.g.
+              the connected account has no record on the selected network). The
+              status widget above needs tree !== null, so without this branch the
+              Close step rendered completely blank. Surface the real error and give
+              a way out instead of a black screen. */}
+          {isFailed && tree === null ? (
+            <div style={{ maxWidth: 620, margin: "0 auto" }}>
+              <Card padding={24} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                <Notice tone="danger" title="Couldn't prepare this close">
+                  {ctx.error ?? "Something went wrong before the plan could be built."}
+                  {ctx.error?.includes("not found on this network") ? (
+                    <span style={{ display: "block", marginTop: 8, color: "var(--fg-2)" }}>
+                      This account has no record on the {network.id} network. Check the network
+                      selector (top right) and make sure the account is funded there, then try again.
+                    </span>
+                  ) : null}
+                </Notice>
+                <div style={{ display: "flex", gap: 10 }}>
+                  <Button variant="secondary" onClick={onRetry} data-testid="preflight-retry">
+                    Try again
+                  </Button>
+                  <Button variant="ghost" onClick={onReset} data-testid="preflight-reset">
+                    Start over
+                  </Button>
+                </div>
+              </Card>
+            </div>
+          ) : null}
+
           {/* single-column flow content, configure / review / sign-off / cancelled.
               No side rail and no modals: the plan detail lives in the sign-off step. */}
           {!(isDiscovering || isPreviewing) && !isExecuting && !isSucceeded && !isFailed ? (
