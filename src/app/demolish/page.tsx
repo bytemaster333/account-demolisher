@@ -1039,7 +1039,7 @@ function DemolishFlow(): React.JSX.Element {
               Close step rendered completely blank. Surface the real error and give
               a way out instead of a black screen. */}
           {isFailed && tree === null ? (
-            <div style={{ maxWidth: 620, margin: "0 auto" }}>
+            <div style={{ maxWidth: 1080, margin: "0 auto" }}>
               <Card padding={24} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
                 <Notice tone="danger" title="Couldn't prepare this close">
                   {ctx.error ?? "Something went wrong before the plan could be built."}
