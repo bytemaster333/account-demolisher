@@ -9,6 +9,7 @@ import { resolveNetwork, type NetworkConfig, type StellarNetwork } from "@/lib/c
 import { explorerAccountUrl } from "@/lib/explorer";
 import { disconnectSession, setActiveConnector } from "@/lib/wallet/active-connector";
 import { WalletKitConnector } from "@/lib/wallet/connector";
+import { restoreKitSession } from "@/lib/wallet/kit";
 import { useNetworkStore } from "@/stores/network";
 import { useWalletStore } from "@/stores/wallet";
 
@@ -72,6 +73,31 @@ function Navbar() {
       setConnecting(false);
     }
   }, [network, setConnected]);
+
+  // One-shot session restore after a hard refresh. The in-memory store is empty
+  // on reload, but the wallet-kit persists the selected wallet + address in
+  // localStorage, so re-hydrate the store and the signing connector silently (no
+  // modal, no wallet prompt). Only "kit" sessions restore; a pasted-seed session
+  // can't (its secret is gone by design). The stored network is read directly to
+  // match NetworkSwitcher's own hydration and avoid a mount-order race.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      if (useWalletStore.getState().publicKey !== null) return;
+      const stored = window.localStorage.getItem(NETWORK_STORAGE_KEY);
+      const net = resolveNetwork(stored === "mainnet" || stored === "testnet" ? stored : networkId);
+      const address = await restoreKitSession(net);
+      // bail if nothing to restore, or a connect happened while we awaited
+      if (cancelled || address === null || useWalletStore.getState().publicKey !== null) return;
+      setActiveConnector(new WalletKitConnector(net));
+      setConnected(address, "kit");
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // run once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <header

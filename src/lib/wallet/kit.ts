@@ -87,3 +87,19 @@ export async function disconnectKit(): Promise<void> {
   if (initializedPassphrase === null) return;
   await StellarWalletsKit.disconnect();
 }
+
+// Silently restore a prior kit connection after a hard refresh. The kit persists
+// the selected wallet id AND the address in localStorage and re-seeds them on
+// init, so getAddress() returns the remembered address with NO wallet prompt.
+// Returns the address if a session was persisted, or null if there is nothing to
+// restore (getAddress throws "No wallet has been connected"). The wallet
+// extension still holds the granted permission, so the restored session can sign.
+export async function restoreKitSession(network: NetworkConfig): Promise<string | null> {
+  getKit(network);
+  try {
+    const { address } = await StellarWalletsKit.getAddress();
+    return typeof address === "string" && address.length > 0 ? address : null;
+  } catch {
+    return null;
+  }
+}
