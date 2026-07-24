@@ -154,7 +154,7 @@ const HANDLES: ReadonlyArray<Handle> = [
     num: "06",
     tag: "SOROBAN",
     label: "Blend positions",
-    desc: "Supplies and borrows on Blend pools are unwound before merge.",
+    desc: "Supplies are withdrawn and borrows repaid where you still hold the debt asset, before merge.",
   },
   {
     num: "07",
@@ -198,7 +198,7 @@ const STEPS: ReadonlyArray<Step> = [
   {
     num: "01",
     title: "Connect",
-    body: "Connect through Freighter, xBull, Albedo, Rabet, Lobstr, Hana, or WalletConnect. No keys leave your device.",
+    body: "Connect through Freighter, xBull, Albedo, Rabet, Lobstr, or Hana. No keys leave your device.",
     highlight: false,
   },
   {
@@ -210,7 +210,7 @@ const STEPS: ReadonlyArray<Step> = [
   {
     num: "03",
     title: "Review & sign",
-    body: "The full plan is simulated up front. You see real fees and real ops, then approve the whole envelope once.",
+    body: "The full plan is simulated up front. You see real fees and real ops, then approve each transaction in your wallet. Nothing is auto-signed.",
     highlight: true,
   },
   {
@@ -245,7 +245,7 @@ const SECURITY: ReadonlyArray<SecurityRow> = [
   {
     num: "03",
     title: "Nothing is auto-signed",
-    body: "The full plan is built and simulated up front. You approve the entire envelope once, with real fees displayed, never by surprise.",
+    body: "The full plan is built and simulated up front, with real fees displayed. You approve every transaction in your wallet, never by surprise.",
     icon: "M7 11V7a5 5 0 0 1 10 0v4",
   },
   {
@@ -270,7 +270,6 @@ const WALLETS: ReadonlyArray<Wallet> = [
   { initial: "R", name: "Rabet" },
   { initial: "L", name: "Lobstr" },
   { initial: "H", name: "Hana" },
-  { initial: "W", name: "WalletConnect" },
 ];
 
 const FAQS: ReadonlyArray<Faq> = [
@@ -280,7 +279,7 @@ const FAQS: ReadonlyArray<Faq> = [
   },
   {
     q: "Does the app ever see my secret key?",
-    a: "No. The wallet integrations (Freighter, xBull, Albedo, Rabet, Lobstr, Hana, WalletConnect via stellar-wallets-kit) keep the key on your device. The secret-key fallback is a last-resort option, entered locally in your browser, never sent to a server.",
+    a: "No. The wallet integrations (Freighter, xBull, Albedo, Rabet, Lobstr, Hana via stellar-wallets-kit) keep the key on your device. The secret-key fallback is a last-resort option, entered locally in your browser, never sent to a server.",
   },
   {
     q: "What is the mediator account and why does it exist?",
@@ -1325,7 +1324,7 @@ export default function HomePage(): React.JSX.Element {
                 }}
               >
                 The full plan is built and simulated up front. Nothing crosses the line until you
-                sign, once.
+                approve each transaction.
               </p>
             </div>
 
@@ -1531,7 +1530,8 @@ export default function HomePage(): React.JSX.Element {
                     maxWidth: 240,
                   }}
                 >
-                  One approval releases all five transactions, in order. Nothing runs before you do.
+                  Each transaction runs only after you approve it, in dependency order. Nothing runs
+                  before you do.
                 </div>
                 <Link
                   href="/demolish"
@@ -1660,7 +1660,7 @@ export default function HomePage(): React.JSX.Element {
                       marginTop: 2,
                     }}
                   >
-                    You approve the whole plan once, never by surprise.
+                    You approve every transaction in your wallet, never by surprise.
                   </span>
                 </div>
               </div>
@@ -1865,9 +1865,9 @@ export default function HomePage(): React.JSX.Element {
                       maxWidth: 560,
                     }}
                   >
-                    The mediator account is the only server-held secret. It co-signs a strict
-                    two-operation merge-payment envelope for exchange merges, and can never touch
-                    your account directly or see your key.
+                    The mediator account is the only server-held signing secret. It co-signs a
+                    strict two-operation merge-payment envelope for exchange merges, and can never
+                    touch your account directly or see your key.
                   </div>
                 </div>
               </div>
