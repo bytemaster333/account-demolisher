@@ -78,24 +78,18 @@ export default function AllowancesPage(): React.JSX.Element {
     connectorRef.current = connectorKind === "kit" ? new WalletKitConnector(network) : null;
   }, [publicKey, connectorKind, network]);
 
-  const onUseWallet = useCallback(() => {
-    if (publicKey !== null) {
-      setAddress(publicKey);
-    }
-  }, [publicKey]);
-
   // monotonic scan id. every scan captures its id and only commits results if it
   // is still the latest, so a slow scan that a network switch (or a newer scan)
   // superseded can't write stale, cross-network results into state.
   const loadSeq = useRef(0);
 
-  const onLoad = useCallback(async () => {
+  const onLoad = useCallback(async (override?: string) => {
     const seq = ++loadSeq.current;
     setError(null);
     setRecords(null);
     setCurrentLedger(null);
 
-    const parsed = STELLAR_ADDRESS.safeParse(address.trim());
+    const parsed = STELLAR_ADDRESS.safeParse((override ?? address).trim());
     if (!parsed.success) {
       setError(parsed.error.issues.map((i) => i.message).join("; "));
       return;
@@ -122,6 +116,13 @@ export default function AllowancesPage(): React.JSX.Element {
     }
   }, [address, network]);
 
+  const onUseWallet = useCallback(() => {
+    if (publicKey !== null) {
+      setAddress(publicKey);
+      void onLoad(publicKey); // fill AND scan, so the label is honest
+    }
+  }, [publicKey, onLoad]);
+
   // switching networks invalidates any results and any in-flight scan: the
   // viewed address, ledger, and per-row token metadata are all network-scoped.
   // clear them and bump the scan id so a pending scan's late completion is
@@ -138,8 +139,23 @@ export default function AllowancesPage(): React.JSX.Element {
     setLoading(false);
   }, [networkId]);
 
-  const onRevoked = useCallback(() => {
-    // re-enumerate after a revoke instead of mutating the list locally
+  // a single revoke removes only that row from the list, in place. A full
+  // re-enumerate here would reset every other row's state and interrupt the user
+  // mid-way through revoking the rest. The revoked row's optimistic "Revoked"
+  // state already confirmed inclusion before this fires, so dropping it is safe.
+  const onSingleRevoked = useCallback((record: AllowanceRecord) => {
+    setRecords((prev) =>
+      prev === null
+        ? prev
+        : prev.filter(
+            (r) => !(r.contractId === record.contractId && r.spender === record.spender),
+          ),
+    );
+  }, []);
+
+  // the bulk sweep revokes every active allowance at once; re-scan once at the
+  // end to confirm the now-empty (or expired-only) state.
+  const onBulkComplete = useCallback(() => {
     void onLoad();
   }, [onLoad]);
 
@@ -223,10 +239,26 @@ export default function AllowancesPage(): React.JSX.Element {
             />
             {hasWallet ? (
               <Button
-                variant="ghost"
+                variant="secondary"
                 size="sm"
                 onClick={onUseWallet}
                 data-testid="use-wallet-button"
+                iconLeft={
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden
+                  >
+                    <rect x="2" y="6" width="20" height="13" rx="2" />
+                    <path d="M2 10h20M16 14h2" />
+                  </svg>
+                }
               >
                 Scan my own address
               </Button>
@@ -293,7 +325,7 @@ export default function AllowancesPage(): React.JSX.Element {
                   userAddress={viewedAddress ?? ""}
                   network={network}
                   connectorRef={canRevoke ? connectorRef : null}
-                  onComplete={onRevoked}
+                  onComplete={onBulkComplete}
                 />
                 <AllowanceList
                   records={records}
@@ -302,7 +334,7 @@ export default function AllowancesPage(): React.JSX.Element {
                   currentLedger={currentLedger ?? 0}
                   connectorRef={canRevoke ? connectorRef : null}
                   showExpired={showExpired}
-                  onRevoked={onRevoked}
+                  onRevoked={onSingleRevoked}
                 />
               </>
             )
