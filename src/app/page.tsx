@@ -283,7 +283,7 @@ const FAQS: ReadonlyArray<Faq> = [
   },
   {
     q: "What is the mediator account and why does it exist?",
-    a: "When merging to an exchange address that requires a memo, the mediator co-signs a strict two-operation forward envelope (payment, then merge) so funds arrive with the right memo. It never sees your key and cannot touch your account directly.",
+    a: "When merging to an exchange address that requires a memo, the mediator signs a strict two-operation forward envelope (payment, then merge) so funds arrive with the right memo. It is the only signer of that envelope, never sees your key, and cannot touch your account directly.",
   },
   {
     q: "Which Soroban DeFi protocols are supported?",
@@ -383,31 +383,7 @@ export default function HomePage(): React.JSX.Element {
                     </svg>
                   </Link>
                   <a
-                    href="https://www.youtube.com/watch?v=A_c2uk8yvBY"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 9,
-                      padding: "14px 20px",
-                      background: "var(--surface)",
-                      color: "var(--fg)",
-                      border: "1px solid var(--border-2)",
-                      borderRadius: 11,
-                      fontWeight: 600,
-                      fontSize: 15,
-                      cursor: "pointer",
-                      textDecoration: "none",
-                    }}
-                  >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-                      <path d="M8 5v14l11-7z" />
-                    </svg>
-                    Watch the demo
-                  </a>
-                  <a
-                    href="https://docs.demolisher.saliht.xyz"
+                    href="https://docs.demolisher.app"
                     target="_blank"
                     rel="noopener noreferrer"
                     style={{
@@ -1845,9 +1821,9 @@ export default function HomePage(): React.JSX.Element {
                       maxWidth: 560,
                     }}
                   >
-                    The mediator account is the only server-held signing secret. It co-signs a
-                    strict two-operation merge-payment envelope for exchange merges, and can never
-                    touch your account directly or see your key.
+                    The mediator account is the only server-held signing secret. It signs a
+                    strict two-operation forward envelope (a payment, then a merge) for exchange
+                    merges, and can never touch your account directly or see your key.
                   </div>
                 </div>
               </div>
@@ -2445,37 +2421,37 @@ export default function HomePage(): React.JSX.Element {
               <DocCard
                 title="Getting started"
                 body="Open the live app, run the demo flow, connect a real wallet, or paste a secret key."
-                href="https://docs.demolisher.saliht.xyz/docs/getting-started"
+                href="https://docs.demolisher.app/docs/getting-started"
               />
               <DocCard
                 title="How it works"
                 body="The audit, the plan tree, the 9-phase classical batch, the simulator, the executor."
-                href="https://docs.demolisher.saliht.xyz/docs/how-it-works"
+                href="https://docs.demolisher.app/docs/how-it-works"
               />
               <DocCard
                 title="Destinations &amp; mediator"
                 body="Sending recovered XLM to a wallet, and how the mediator path reaches an exchange."
-                href="https://docs.demolisher.saliht.xyz/docs/destinations-and-mediator"
+                href="https://docs.demolisher.app/docs/destinations-and-mediator"
               />
               <DocCard
                 title="Security"
                 body="What the deployment can do, the contract allow-list, the safety gates, the CSP."
-                href="https://docs.demolisher.saliht.xyz/docs/security"
+                href="https://docs.demolisher.app/docs/security"
               />
               <DocCard
                 title="Allowance viewer"
                 body="Audit and revoke SEP-41 token approvals on any address."
-                href="https://docs.demolisher.saliht.xyz/docs/allowance-viewer"
+                href="https://docs.demolisher.app/docs/allowance-viewer"
               />
               <DocCard
                 title="Self host"
                 body="Install, configure environment variables, run under your own domain."
-                href="https://docs.demolisher.saliht.xyz/docs/self-host"
+                href="https://docs.demolisher.app/docs/self-host"
               />
             </div>
 
             <a
-              href="https://docs.demolisher.saliht.xyz"
+              href="https://docs.demolisher.app"
               target="_blank"
               rel="noopener noreferrer"
               style={{

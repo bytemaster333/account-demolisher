@@ -160,7 +160,7 @@ function Navbar() {
             Allowances
           </NavLink>
           <a
-            href="https://docs.demolisher.saliht.xyz"
+            href="https://docs.demolisher.app"
             target="_blank"
             rel="noopener noreferrer"
             style={{
@@ -679,7 +679,7 @@ function Footer() {
               <FooterLink href="/allowances">Allowances</FooterLink>
             </FooterColumn>
             <FooterColumn title="Resources">
-              <FooterLink href="https://docs.demolisher.saliht.xyz" external>
+              <FooterLink href="https://docs.demolisher.app" external>
                 Documentation
               </FooterLink>
               <FooterLink href="https://github.com/bytemaster333/account-demolisher" external>

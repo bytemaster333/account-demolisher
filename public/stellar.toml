@@ -3,7 +3,7 @@
 # The presence of this file at the canonical URL is part of the supply-chain
 # integrity story:
 #
-#   https://demolisher.stellar.org/.well-known/stellar.toml
+#   https://demolisher.app/.well-known/stellar.toml
 #
 # Reference deployment operators serve this file under `.well-known/`. Next.js
 # auto-publishes anything under `public/` at the matching path, but the SEP-1
@@ -23,9 +23,9 @@ VERSION = "0.0.0"
 NETWORK_PASSPHRASE = "Public Global Stellar Network ; September 2015"
 
 # The canonical URL that this TOML attests to. Reference deployment is
-# `demolisher.stellar.org` (placeholder, subject to SDF assignment). Embedders
+# `demolisher.app` (placeholder, subject to SDF assignment). Embedders
 # replace with their own canonical URL.
-WEB_AUTH_ENDPOINT = "https://demolisher.stellar.org"
+WEB_AUTH_ENDPOINT = "https://demolisher.app"
 
 # ---------------------------------------------------------------------------
 # Documentation
@@ -34,8 +34,8 @@ WEB_AUTH_ENDPOINT = "https://demolisher.stellar.org"
 [DOCUMENTATION]
 ORG_NAME = "Account Demolisher (reference deployment)"
 ORG_DBA = "Stellar Development Foundation"
-ORG_URL = "https://demolisher.stellar.org"
-ORG_LOGO = "https://demolisher.stellar.org/icon.svg"
+ORG_URL = "https://demolisher.app"
+ORG_LOGO = "https://demolisher.app/icon.svg"
 ORG_DESCRIPTION = """
 Account Demolisher is an open-source (Apache-2.0) Stellar account-closure
 tool. It drains and merges Stellar accounts cleanly across both classic
@@ -44,7 +44,7 @@ FxDAO). The reference deployment is operated by the Stellar Development
 Foundation. Embedders (wallets, exchanges) may self-host with their own
 per-deployment mediator key.
 """
-ORG_OFFICIAL_EMAIL = "demolisher@stellar.org"
+ORG_OFFICIAL_EMAIL = "demolisher@demolisher.app"
 ORG_SUPPORT_EMAIL = "demolisher-support@stellar.org"
 ORG_GITHUB = "stellar/account-demolisher"
 ORG_KEYBASE = ""
@@ -57,7 +57,7 @@ ORG_LICENSING_AUTHORITY = "n/a — Apache-2.0 open source software"
 
 [[PRINCIPALS]]
 name = "Reference Deployment Operator"
-email = "demolisher@stellar.org"
+email = "demolisher@demolisher.app"
 keybase = ""
 twitter = ""
 github = "stellar"
