@@ -48,13 +48,11 @@ function Navbar() {
 
   const isDemolish = pathname?.startsWith("/demolish") ?? false;
   const isAllowances = pathname?.startsWith("/allowances") ?? false;
-  const isLanding = pathname === "/";
 
   // Connect the wallet in place from the header (shares the connector app-wide so
-  // any page can sign). On the landing page we keep the original "start here"
-  // link into the close flow (that page is design-frozen); on the demolish page
-  // the Connect step already owns connecting, so the header shows no button
-  // there. Everywhere else (allowances, sign) this is the connect entry point.
+  // any page can sign). The top-right slot is the connect entry point on every
+  // page including the landing: click "Connect wallet" and the wallet picker
+  // opens right here, no navigation. Once connected it becomes the address chip.
   const [connecting, setConnecting] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
   const onConnect = useCallback(async () => {
@@ -226,34 +224,11 @@ function Navbar() {
 
           {publicKey ? (
             <WalletMenu publicKey={publicKey} network={network} onDisconnect={disconnect} />
-          ) : isLanding ? (
-            // design-frozen landing keeps its original "start the close flow" CTA
-            <Link
-              href="/demolish"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                height: 34,
-                padding: "0 14px",
-                borderRadius: 8,
-                border: "1px solid var(--accent-line)",
-                background: "transparent",
-                color: "var(--accent)",
-                cursor: "pointer",
-                fontWeight: 600,
-                fontSize: 13,
-                whiteSpace: "nowrap",
-                textDecoration: "none",
-              }}
-            >
-              Connect wallet
-            </Link>
           ) : (
-            // every non-landing page (demolish, allowances, sign): connect in
-            // place. The top-right wallet slot is ALWAYS present so its state is
-            // predictable: "Connect wallet" when disconnected, the address chip
-            // (with Disconnect) when connected. Never an empty dead-zone.
+            // Connect in place from the header on every page (landing, demolish,
+            // allowances, sign). The top-right wallet slot is ALWAYS present so
+            // its state is predictable: "Connect wallet" when disconnected, the
+            // address chip (with Disconnect) when connected. Never a dead-zone.
             <div style={{ position: "relative", display: "flex" }}>
               <button
                 type="button"

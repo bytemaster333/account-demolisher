@@ -148,7 +148,7 @@ const HANDLES: ReadonlyArray<Handle> = [
     num: "05",
     tag: "CLASSIC",
     label: "Claimable balances",
-    desc: "Pending claimable balances created or claimable by you are settled.",
+    desc: "Claimable balances you can claim right now are settled before the merge.",
   },
   {
     num: "06",
@@ -319,26 +319,6 @@ export default function HomePage(): React.JSX.Element {
               }}
             >
               <div>
-                <div
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 9,
-                    marginBottom: 30,
-                  }}
-                >
-                  <span
-                    style={{
-                      width: 7,
-                      height: 7,
-                      borderRadius: "50%",
-                      background: "var(--accent)",
-                    }}
-                  />
-                  <span style={{ fontSize: 13.5, color: "var(--fg-2)" }}>
-                    Classic + Soroban DeFi, client-side signed
-                  </span>
-                </div>
                 <h1
                   style={{
                     margin: 0,
@@ -360,7 +340,7 @@ export default function HomePage(): React.JSX.Element {
                     color: "var(--fg-2)",
                   }}
                 >
-                  Unwind every DeFi position, strip trustlines and signers, then merge what&apos;s
+                  Unwind your DeFi positions, strip trustlines and signers, then merge what&apos;s
                   left to a wallet or exchange, reserve and all.
                 </p>
                 <div
@@ -598,7 +578,7 @@ export default function HomePage(): React.JSX.Element {
                   <span style={{ fontWeight: 600, fontSize: 14, color: "var(--fg)" }}>
                     Demolition plan
                   </span>
-                  <span style={{ fontSize: 12, color: "var(--fg-3)" }}>live preview</span>
+                  <span style={{ fontSize: 12, color: "var(--fg-3)" }}>example</span>
                 </div>
                 <div style={{ padding: "10px 14px" }}>
                   {HERO_ROWS.map((r) => {

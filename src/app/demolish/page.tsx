@@ -462,7 +462,6 @@ function DemolishFlow(): React.JSX.Element {
     };
   }, [publicKey, network]);
 
-
   // the awaiting_confirmation phase has three stages:
   //  "resolve"    , take an action on a blocker (return-to-issuer) + rebuild
   //  "acknowledge", read-and-understand every warning / info card
@@ -1046,7 +1045,8 @@ function DemolishFlow(): React.JSX.Element {
                   {ctx.error?.includes("not found on this network") ? (
                     <span style={{ display: "block", marginTop: 8, color: "var(--fg-2)" }}>
                       This account has no record on the {network.id} network. Check the network
-                      selector (top right) and make sure the account is funded there, then try again.
+                      selector (top right) and make sure the account is funded there, then try
+                      again.
                     </span>
                   ) : null}
                 </Notice>
@@ -1093,7 +1093,12 @@ function DemolishFlow(): React.JSX.Element {
                           have={primaryWeight}
                         />
                         <p
-                          style={{ margin: 0, fontSize: 12.5, lineHeight: 1.5, color: "var(--fg-3)" }}
+                          style={{
+                            margin: 0,
+                            fontSize: 12.5,
+                            lineHeight: 1.5,
+                            color: "var(--fg-3)",
+                          }}
                         >
                           You&apos;ll gather the other signatures after you review the close, no
                           signer keys needed here.
@@ -1366,9 +1371,9 @@ function IdleConnect({
                 Connect a wallet
               </span>
               <span style={{ fontSize: 12.5, color: "var(--fg-3)", lineHeight: 1.5 }}>
-                Works with Freighter, xBull, Albedo, Rabet, Lobstr, Hana and WalletConnect.
-                Connecting only shares your public address, you approve each step in your wallet,
-                and we never see your secret key.
+                Works with Freighter, xBull, Albedo, Rabet, Lobstr, and Hana. Connecting only shares
+                your public address, you approve each step in your wallet, and we never see your
+                secret key.
               </span>
             </div>
             <ConnectButton network={network} onConnector={onKitConnector} />
