@@ -58,17 +58,17 @@ frontend.md
 # design assets
 design/
 
+# qa / test tooling (dev-only)
+scripts/qa/
+
 # IDE / tooling
 .idea/
 .vscode/
-.claude/
 *.swp
 
 # os
 Thumbs.db
 
-# all markdown by default except the tracked deliverable docs
+# all markdown by default except the repo readme
 *.md
 !README.md
-!SECURITY.md
-!ARCHITECTURE.md
