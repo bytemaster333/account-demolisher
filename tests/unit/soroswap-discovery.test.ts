@@ -1,12 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { Keypair, StrKey, type rpc, type xdr } from "@stellar/stellar-sdk";
 import { discoverSoroswapPositions, getSoroswapFactoryId } from "@/lib/adapters/soroswap/discovery";
-import { address, fromScValU32, i128, u32 } from "@/lib/soroban/scval";
+import { address, i128, u32 } from "@/lib/soroban/scval";
 import type { simulateRead } from "@/lib/soroban/simulate";
 import { TESTNET } from "@/lib/config/networks";
 
-// verifies the factory-walk + LP-balance-probe logic against the (docs-verified)
-// Soroswap ABI, using an injected read so no network is touched.
+// Verifies the discovery orchestration: bulk enumeration + bulk balance filter
+// (both injected here; the real getLedgerEntries key layouts are exercised by the
+// live integration test) feed the authoritative simulate confirm of each candidate.
 
 const FACTORY = getSoroswapFactoryId(TESTNET);
 const USER = Keypair.random().publicKey();
@@ -22,19 +23,17 @@ const TOKEN_B = contractId(4);
 
 const fakeServer = {} as unknown as rpc.Server;
 
-// user holds LP shares only in PAIR1
+// simulate seam: all_pairs_length (count) + the per-candidate confirm reads.
+// all_pairs is only hit on the enumeration fallback, which the injected
+// loadPairAddresses below avoids.
 function makeRead(pairCount: number): typeof simulateRead {
   return async (
     _server: rpc.Server,
     cId: string,
     fn: string,
-    args: xdr.ScVal[],
+    _args: xdr.ScVal[],
   ): Promise<{ retval: xdr.ScVal }> => {
     if (cId === FACTORY && fn === "all_pairs_length") return { retval: u32(pairCount) };
-    if (cId === FACTORY && fn === "all_pairs") {
-      const idx = fromScValU32(args[0]!);
-      return { retval: address(idx === 0 ? PAIR0 : PAIR1) };
-    }
     if (fn === "balance") return { retval: i128(cId === PAIR1 ? 5000n : 0n) };
     if (fn === "token_0") return { retval: address(TOKEN_A) };
     if (fn === "token_1") return { retval: address(TOKEN_B) };
@@ -46,6 +45,9 @@ describe("discoverSoroswapPositions", () => {
   it("returns only pairs where the user holds LP shares, with the pair tokens", async () => {
     const positions = await discoverSoroswapPositions(fakeServer, TESTNET, USER, {
       simulateRead: makeRead(2),
+      loadPairAddresses: async () => [PAIR0, PAIR1],
+      // bulk balance filter flags PAIR1 (has an entry); PAIR0 has none
+      loadHeldPairs: async () => [PAIR1],
     });
     expect(positions).toHaveLength(1);
     expect(positions[0]).toEqual({
@@ -54,9 +56,31 @@ describe("discoverSoroswapPositions", () => {
     });
   });
 
+  it("drops a candidate the authoritative simulate confirms as zero", async () => {
+    // filter flags PAIR0 too, but simulate balance() returns 0 there -> excluded
+    const positions = await discoverSoroswapPositions(fakeServer, TESTNET, USER, {
+      simulateRead: makeRead(2),
+      loadPairAddresses: async () => [PAIR0, PAIR1],
+      loadHeldPairs: async () => [PAIR0, PAIR1],
+    });
+    expect(positions).toHaveLength(1);
+    expect(positions[0]!.shareBalance).toBe(5000n);
+  });
+
   it("returns nothing when the factory has no pairs", async () => {
     const positions = await discoverSoroswapPositions(fakeServer, TESTNET, USER, {
       simulateRead: makeRead(0),
+      loadPairAddresses: async () => [],
+      loadHeldPairs: async () => [],
+    });
+    expect(positions).toEqual([]);
+  });
+
+  it("returns nothing when the user holds no LP anywhere", async () => {
+    const positions = await discoverSoroswapPositions(fakeServer, TESTNET, USER, {
+      simulateRead: makeRead(2),
+      loadPairAddresses: async () => [PAIR0, PAIR1],
+      loadHeldPairs: async () => [],
     });
     expect(positions).toEqual([]);
   });
