@@ -28,7 +28,7 @@
     "@soroswap/sdk": "0.4.0",
     "@stellar/stellar-sdk": "14.4.3",
     "@xstate/react": "6.1.0",
-    "next": "16.2.6",
+    "next": "16.2.12",
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "server-only": "0.0.1",
@@ -48,14 +48,33 @@
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "eslint": "9.39.4",
-    "eslint-config-next": "16.2.6",
+    "eslint-config-next": "16.2.12",
     "fast-check": "4.8.0",
     "happy-dom": "20.9.0",
     "lefthook": "2.1.6",
-    "postcss": "8.5.14",
+    "postcss": "8.5.18",
     "prettier": "3.8.3",
     "tailwindcss": "4.3.0",
     "typescript": "6.0.3",
     "vitest": "4.1.6"
+  },
+  "pnpm": {
+    "overrides": {
+      "protobufjs": "^7.6.3",
+      "axios": "^1.18.0",
+      "form-data": "^4.0.6",
+      "ua-parser-js": "^2.0.10",
+      "postcss": "^8.5.18",
+      "@babel/core": "^7.29.6",
+      "sharp": "^0.35.0",
+      "ws@7": "^7.5.11",
+      "ws@8": "^8.21.0"
+    },
+    "auditConfig": {
+      "ignoreGhsas": [
+        "GHSA-w5hq-g745-h8pq",
+        "GHSA-848j-6mx2-7j84"
+      ]
+    }
   }
 }
