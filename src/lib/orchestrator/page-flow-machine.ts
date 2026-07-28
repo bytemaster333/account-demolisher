@@ -240,54 +240,84 @@ export function heldTokenDispositionWarnings(
 const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({ input }) => {
   // the audit is REQUIRED, so a timeout rejects the actor (machine -> failed with
   // a real error) instead of hanging the UI on "Auditing account…" forever.
-  const audit = await withTimeout(
+  const discoveryWarnings: string[] = [];
+
+  // The audit is REQUIRED, so a timeout rejects the actor (machine -> failed with
+  // a real error) instead of hanging the UI on "Auditing account…" forever. It
+  // runs alongside the best-effort scans below; we await it on its own line so its
+  // failure still rejects, while a scan failure only ever becomes a warning.
+  const auditPromise = withTimeout(
     "auditAccount",
     auditAccount(input.publicKey, input.network),
     DISCOVERY_TIMEOUT_MS,
   );
-  const discoveryWarnings: string[] = [];
 
-  // allowances: best-effort sep-41 enumeration. wrapped in a hard timeout
-  // because rpc.getEvents pagination can stall on a flaky testnet endpoint
-  let allowances: readonly AllowanceRecord[] = input.allowances ?? [];
-  if (allowances.length === 0) {
-    try {
-      const rpc = getRpc(input.network);
-      const latest = await withTimeout(
-        "getLatestLedger",
-        rpc.getLatestLedger(),
-        DISCOVERY_TIMEOUT_MS,
-      );
-      allowances = await withTimeout(
-        "enumerateAllowances",
-        enumerateAllowances(rpc, input.publicKey, latest.sequence, ALLOWANCE_SCAN_WINDOW_LEDGERS),
-        DISCOVERY_TIMEOUT_MS,
-      );
-    } catch (e) {
-      console.warn("[demolish] allowance enumeration skipped:", e);
-      discoveryWarnings.push(
-        "We couldn't finish checking this account's token spending permissions, so any active ones might not show up in this plan. You can review them separately on the Allowances page before closing.",
-      );
-    }
-  }
+  // allowances, DeFi positions, and held tokens are three INDEPENDENT scans. They
+  // used to run one after another, so a slow endpoint paid the latency three times
+  // over (and more readily tripped the 30s timeout behind the "couldn't finish"
+  // warnings). Run them concurrently: each owns its failure domain (a stall becomes
+  // a warning, never a rejection), so racing them can't let one sink another. The
+  // RPC client fails over across endpoints, which absorbs the higher peak load.
+
+  // allowances: best-effort sep-41 enumeration, hard-timeout-bounded because
+  // rpc.getEvents pagination can stall on a flaky endpoint.
+  const allowancesPromise: Promise<{
+    allowances: readonly AllowanceRecord[];
+    warning?: string;
+  }> =
+    input.allowances && input.allowances.length > 0
+      ? Promise.resolve({ allowances: input.allowances })
+      : (async () => {
+          try {
+            const rpc = getRpc(input.network);
+            const latest = await withTimeout(
+              "getLatestLedger",
+              rpc.getLatestLedger(),
+              DISCOVERY_TIMEOUT_MS,
+            );
+            const allowances = await withTimeout(
+              "enumerateAllowances",
+              enumerateAllowances(
+                rpc,
+                input.publicKey,
+                latest.sequence,
+                ALLOWANCE_SCAN_WINDOW_LEDGERS,
+              ),
+              DISCOVERY_TIMEOUT_MS,
+            );
+            return { allowances };
+          } catch (e) {
+            console.warn("[demolish] allowance enumeration skipped:", e);
+            return {
+              allowances: [] as readonly AllowanceRecord[],
+              warning:
+                "We couldn't finish checking this account's token spending permissions, so any active ones might not show up in this plan. You can review them separately on the Allowances page before closing.",
+            };
+          }
+        })();
 
   // defi positions: direct-contract probing across blend/aquarius/soroswap/fxdao
-  let positions: ProtocolPositions = input.positions ?? EMPTY_POSITIONS;
-  if (positions === EMPTY_POSITIONS) {
-    try {
-      const provider = new DirectContractProvider();
-      positions = await withTimeout(
-        "getPositions",
-        provider.getPositions(input.publicKey, input.network),
-        DISCOVERY_TIMEOUT_MS,
-      );
-    } catch (e) {
-      console.warn("[demolish] position discovery skipped:", e);
-      discoveryWarnings.push(
-        "We couldn't finish checking for DeFi positions, so anything you have in apps like Blend, Aquarius, Soroswap or FxDAO might be missing from this plan. If you've used those, check them before closing.",
-      );
-    }
-  }
+  const positionsPromise: Promise<{ positions: ProtocolPositions; warning?: string }> =
+    input.positions && input.positions !== EMPTY_POSITIONS
+      ? Promise.resolve({ positions: input.positions })
+      : (async () => {
+          try {
+            const provider = new DirectContractProvider();
+            const positions = await withTimeout(
+              "getPositions",
+              provider.getPositions(input.publicKey, input.network),
+              DISCOVERY_TIMEOUT_MS,
+            );
+            return { positions };
+          } catch (e) {
+            console.warn("[demolish] position discovery skipped:", e);
+            return {
+              positions: EMPTY_POSITIONS,
+              warning:
+                "We couldn't finish checking for DeFi positions, so anything you have in apps like Blend, Aquarius, Soroswap or FxDAO might be missing from this plan. If you've used those, check them before closing.",
+            };
+          }
+        })();
 
   // standalone SEP-41 tokens held directly (custom tokens someone transferred to
   // the account). No native "list my tokens" exists, so this event-scans the rpc
@@ -295,33 +325,55 @@ const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({ input 
   // + timeout-bounded, its own failure domain: a stall here must not block the
   // close. The RPC's ~7-day retention means older receipts are missed, so a miss
   // is surfaced as a soft warning rather than treated as exhaustive.
-  let heldTokens: readonly HeldToken[] = [];
-  let unreadableHeldTokens: readonly string[] = [];
-  let heldTokenScanFailed = false;
-  try {
-    const rpc = getRpc(input.network);
-    const latest = await withTimeout(
-      "getLatestLedger",
-      rpc.getLatestLedger(),
-      DISCOVERY_TIMEOUT_MS,
-    );
-    const scan = await withTimeout(
-      "discoverHeldTokens",
-      discoverHeldTokens(rpc, input.publicKey, latest.sequence, input.network),
-      DISCOVERY_TIMEOUT_MS,
-    );
-    heldTokens = scan.held;
-    unreadableHeldTokens = scan.unreadable;
-  } catch (e) {
-    console.warn("[demolish] held-token discovery skipped:", e);
-    heldTokenScanFailed = true;
-    // Proportionate: this is an OPTIONAL, opt-in scan with a manual-add fallback,
-    // so a timeout/blip must not read like imminent fund loss. It doesn't affect
-    // any balance already shown, and the user can still add a token by contract id.
-    discoveryWarnings.push(
-      "We couldn't finish the optional scan for standalone (custom SEP-41) tokens. This doesn't affect any balance you can already see. If you know you hold a custom token, you can add it by its contract address to include it in the close.",
-    );
-  }
+  const heldPromise: Promise<{
+    held: readonly HeldToken[];
+    unreadable: readonly string[];
+    failed: boolean;
+    warning?: string;
+  }> = (async () => {
+    try {
+      const rpc = getRpc(input.network);
+      const latest = await withTimeout(
+        "getLatestLedger",
+        rpc.getLatestLedger(),
+        DISCOVERY_TIMEOUT_MS,
+      );
+      const scan = await withTimeout(
+        "discoverHeldTokens",
+        discoverHeldTokens(rpc, input.publicKey, latest.sequence, input.network),
+        DISCOVERY_TIMEOUT_MS,
+      );
+      return { held: scan.held, unreadable: scan.unreadable, failed: false };
+    } catch (e) {
+      console.warn("[demolish] held-token discovery skipped:", e);
+      // Proportionate: this is an OPTIONAL, opt-in scan with a manual-add fallback,
+      // so a timeout/blip must not read like imminent fund loss. It doesn't affect
+      // any balance already shown, and the user can still add a token by contract id.
+      return {
+        held: [] as readonly HeldToken[],
+        unreadable: [] as readonly string[],
+        failed: true,
+        warning:
+          "We couldn't finish the optional scan for standalone (custom SEP-41) tokens. This doesn't affect any balance you can already see. If you know you hold a custom token, you can add it by its contract address to include it in the close.",
+      };
+    }
+  })();
+
+  // await the REQUIRED audit first (its rejection rejects the actor), then collect
+  // the best-effort scans that have been running concurrently alongside it.
+  const audit = await auditPromise;
+  const [allowanceResult, positionResult, heldResult] = await Promise.all([
+    allowancesPromise,
+    positionsPromise,
+    heldPromise,
+  ]);
+  const positions = positionResult.positions;
+
+  // assemble warnings in a STABLE order (scan warnings, then per-protocol errors,
+  // then the blend-repay shortfall) so copy doesn't reshuffle between runs.
+  if (allowanceResult.warning) discoveryWarnings.push(allowanceResult.warning);
+  if (positionResult.warning) discoveryWarnings.push(positionResult.warning);
+  if (heldResult.warning) discoveryWarnings.push(heldResult.warning);
 
   // per-protocol discovery failures (e.g. Soroswap has no position index) were
   // previously invisible; surface them in plain language so the user knows the
@@ -339,10 +391,10 @@ const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({ input 
   return {
     audit,
     positions,
-    allowances,
-    heldTokens,
-    unreadableHeldTokens,
-    heldTokenScanFailed,
+    allowances: allowanceResult.allowances,
+    heldTokens: heldResult.held,
+    unreadableHeldTokens: heldResult.unreadable,
+    heldTokenScanFailed: heldResult.failed,
     discoveryWarnings,
   };
 });

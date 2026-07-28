@@ -50,6 +50,15 @@ describe("Content-Security-Policy", () => {
     expect(csp).toContain("https://soroban-testnet.stellar.org");
   });
 
+  it("allow-lists every RPC failover endpoint (discovery runs client-side)", () => {
+    const csp = buildContentSecurityPolicy({ isDev: false });
+    // testnet fallback
+    expect(csp).toContain("https://soroban-rpc.testnet.stellar.gateway.fm");
+    // mainnet fallbacks
+    expect(csp).toContain("https://mainnet.sorobanrpc.com");
+    expect(csp).toContain("https://stellar.api.onfinality.io/public");
+  });
+
   it("relaxes ONLY dev for Next HMR (unsafe-eval + ws)", () => {
     const dev = buildContentSecurityPolicy({ isDev: true });
     expect(dev).toContain("'unsafe-eval'");

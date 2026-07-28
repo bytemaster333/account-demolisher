@@ -210,6 +210,34 @@ describe("executePlanTreeOnChain, horizon retry on FinalClassicTx prep", () => {
     expect(deps.submitClassic).not.toHaveBeenCalled();
   });
 
+  it("blocks the merge when the re-probe cannot confirm a protocol (empty arrays + errors, fail-closed)", async () => {
+    // The real failure mode: getPositions uses allSettled, so a rate-limited /
+    // timed-out protocol probe returns an EMPTY array for that protocol and
+    // records the failure in errors[]. An empty-array-with-error must NOT read
+    // as "no positions" — otherwise an undiscovered position is merged around.
+    auditAccount.mockResolvedValue(MERGEABLE_AUDIT);
+    const { tree } = makeFinalClassicTree();
+    const deps = makeDeps({
+      reprobeSorobanPositions: async () =>
+        ({
+          blend: [],
+          aquarius: [],
+          soroswap: [],
+          fxdao: [],
+          errors: [{ protocol: "blend", message: "429 Too Many Requests" }],
+        }) as never,
+    });
+
+    const promise = executePlanTreeOnChain(
+      { publicKey: "GUSER", tree, previousReceipts: {} },
+      deps,
+    );
+    const settled = expect(promise).rejects.toThrow(/could not confirm/i);
+    await vi.runAllTimersAsync();
+    await settled;
+    expect(deps.submitClassic).not.toHaveBeenCalled();
+  });
+
   it("proceeds with the merge when the Soroban re-probe finds nothing open", async () => {
     auditAccount.mockResolvedValue(MERGEABLE_AUDIT);
     const { tree } = makeFinalClassicTree();

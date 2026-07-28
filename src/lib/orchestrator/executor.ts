@@ -278,6 +278,23 @@ export async function executePlanTreeOnChain(
                   `Close them before merging, or the funds will be stranded on the deleted account.`,
               );
             }
+            // getPositions uses allSettled: a rate-limited / timed-out protocol
+            // probe returns an EMPTY array AND records the failure in errors[].
+            // An empty array with a recorded error means "could not confirm",
+            // NOT "no position" — so treating open===0 as safe would merge around
+            // an unreadable position. Fail closed on any probe error. (The
+            // multi-endpoint RPC failover makes this a rare, genuine outage rather
+            // than routine rate-limiting.)
+            if (remaining.errors.length > 0) {
+              const detail = remaining.errors
+                .map((e) => `${e.protocol}: ${e.message}`)
+                .join("; ");
+              throw new Error(
+                `account_merge blocked: could not confirm your DeFi positions are all closed ` +
+                  `(${detail}). This is a safety stop so an unreadable position isn't merged ` +
+                  `around and stranded. Retry once the network is responsive.`,
+              );
+            }
           }
 
           const stuck = unroutableCredits(

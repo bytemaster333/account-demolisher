@@ -10,6 +10,11 @@ export const CONNECT_SRC_ENDPOINTS = [
   "https://soroban-rpc.mainnet.stellar.gateway.fm",
   "https://soroban-testnet.stellar.org",
   "https://rpc-futurenet.stellar.org",
+  // RPC failover endpoints (see NetworkConfig.rpcFallbacks); discovery runs
+  // client-side, so every host getRpc() may fail over to must be reachable here.
+  "https://soroban-rpc.testnet.stellar.gateway.fm",
+  "https://mainnet.sorobanrpc.com",
+  "https://stellar.api.onfinality.io/public",
   "https://amm-api.aqua.network",
   "https://amm-api-testnet.aqua.network",
   "https://api.soroswap.finance",
