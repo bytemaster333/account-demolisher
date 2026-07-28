@@ -163,4 +163,3 @@ function recoverSigningKey(
 
   return null;
 }
-

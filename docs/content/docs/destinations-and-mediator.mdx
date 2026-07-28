@@ -1,0 +1,55 @@
+---
+title: Destinations and the mediator
+description: Sending the recovered XLM to a wallet, and what happens when the destination is a centralized exchange.
+---
+
+The recovered XLM has to go somewhere. The configure step is where you tell the demolisher where.
+
+## Direct wallet destination
+
+Paste any Stellar G-address. If the address is a regular wallet, the closure ends with a plain `ACCOUNT_MERGE` to that address. The destination receives the merged balance and every remaining lumen, including the base reserve the closing account was holding.
+
+The destination must already exist on chain. Stellar's `ACCOUNT_MERGE` fails if the destination account does not exist, so if you want to merge into a brand-new address, fund it first.
+
+## Exchange destination (the mediator)
+
+Major centralized exchanges do not accept `ACCOUNT_MERGE`. If you close an account directly to an exchange deposit address, the merge succeeds on chain but the exchange never credits the deposit. The lumens are delivered on the ledger, yet you cannot withdraw them.
+
+Account Demolisher recognizes a curated list of known exchange hot wallets. When the destination matches one, it routes the closure through a temporary mediator account so the funds arrive as a payment the exchange will credit.
+
+### How the mediator path works
+
+1. **A flow is minted.** Before building the plan, the app asks the deployment's mediator endpoint (a `GET`) for a fresh flow. The endpoint returns a short-lived `flowToken` (a signed HMAC token with a 15-minute lifetime) and the public key of an ephemeral mediator account created just for this closure. The token is not single-use; the 15-minute lifetime is what bounds replay of a leaked token. The mediator is not a standing, pre-funded account; it exists only for this one flow.
+2. **The mediator is funded and the account merges into it.** The first classical batch prepends a `CREATE_ACCOUNT` that funds the mediator's public key with 2 XLM, and the closing account is merged into the mediator instead of into the exchange. After that, the mediator holds the closing account's full balance.
+3. **A forward envelope is built.** It has exactly two operations, both sourced by the mediator: a native `PAYMENT` that forwards the mediator's balance (less a small fee buffer) to the exchange address, carrying the deposit memo, and an `ACCOUNT_MERGE` that removes the mediator by sending its remainder to the **same** destination.
+4. **The server signs the forward, if and only if the envelope is valid.** The forward envelope, plus the `flowToken`, is posted back to the mediator endpoint. The server re-derives this flow's signing key from the token, validates the envelope shape strictly (below), and only then signs and returns the signed XDR. The mediator is the transaction source, so it is the sole signer of the forward and it pays the forward's own network fee. Your wallet is not involved in this hop: it signed the earlier classical batches that funded the mediator and merged the account into it, not this forward.
+5. **The signed envelope is submitted to Horizon.** The exchange receives a native payment with the correct memo. The mediator account is removed. Nothing is left holding a merge the exchange would ignore.
+
+### Why the two operations share one destination
+
+Both the payment and the merge target the same destination address. The validator enforces this. Without it, a tampered envelope could pay the mediator's balance to one address while merging the reserve to another. Binding both operations to the one destination you chose removes that lever entirely: the worst a compromised server could do is send your funds to the address you already picked.
+
+There is no separate "fallback" address in the shipped flow. The payment and the merge both go to your destination.
+
+### Why the mediator, instead of just draining with payments
+
+You could imagine closing the account by paying everything out and leaving the base reserve behind. That base reserve cannot be released without `ACCOUNT_MERGE`, and a merge straight to an exchange is not credited. Merging into a mediator first, then having the mediator pay the exchange, is what lets the exchange credit the funds while still freeing the base reserve.
+
+### Why this is safe
+
+The mediator's signing key is the only privileged secret the deployment uses, and even that is not stored as a ready-to-use key. See [Security](/docs/security) for the full picture. The short version:
+
+- The signing key for each flow is derived on demand from a server-only master secret. A different ephemeral key is used for every closure.
+- The validator at `src/lib/mediator/validator.ts` is the security boundary. It defines twelve distinct failure codes covering every way the envelope can deviate from the one accepted shape. The mediator must be the transaction source and the source of both operations; the first operation must be a native payment; the second must be an `ACCOUNT_MERGE`; both must target the same destination; the time bounds must be present and no more than one hour out; and fee-bump envelopes are rejected outright.
+- The endpoint is rate limited to five requests per minute per IP.
+
+If the validator passes, the only thing the mediator key can do is what the envelope already spells out: send your funds to the destination you chose.
+
+### Memos and exchanges
+
+Most exchanges require a memo on deposits. Without the right memo, a deposit can be delayed or lost. The demolisher's registry at `src/lib/safety/cex-registry.ts` carries twelve exchange hot-wallet entries, every one marked as requiring a memo, and it refuses to start the closure if the memo type or content is wrong:
+
+- **Text memo:** Kraken, Bitfinex, KuCoin, Upbit, CEX.IO, Crypto.com, Robinhood, Coinbase Deposits, Blockchain.com.
+- **ID memo (numeric):** Binance, Binance Deposits, Bitstamp.
+
+If you are sending to an exchange that is not in this list, you can still complete the closure, but the demolisher cannot verify the memo policy for you. Read the exchange's deposit instructions before you proceed.

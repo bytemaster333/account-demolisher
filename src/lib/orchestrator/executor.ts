@@ -1,7 +1,7 @@
 // shared on-chain executor: walks a hydrated plan tree in topological order and
 // signs + submits each node. Used by the page-flow machine's execution actor.
 
-import { BASE_FEE, type Horizon } from "@stellar/stellar-sdk";
+import { BASE_FEE, type Horizon, type Transaction } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import type { Connector } from "@/lib/wallet/connector";
@@ -15,7 +15,10 @@ import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
 import { batchClassicDemolition, unroutableCredits } from "@/lib/plan/classic-batcher";
 import { resolveCreditPaths } from "@/lib/stellar/path-finder";
 import { submitMediatorForward } from "@/lib/mediator/forward";
+import { resolveContractIdForAsset } from "@/lib/plan/hydration";
+import { assertSafeTransferInvocation } from "@/lib/soroban/transfer-guard";
 import { isSorobanNode, topologicalOrder, type PlanNode, type PlanTree } from "@/lib/plan/tree";
+import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
 
 export interface ConfirmationReceipt {
   readonly txHash: string;
@@ -34,6 +37,15 @@ export interface ExecutorDeps {
   readonly horizon: HorizonLike;
   readonly submitClassic: (signedXdr: string) => Promise<ConfirmationReceipt>;
   readonly submitSoroban: (signedXdr: string) => Promise<ConfirmationReceipt>;
+  // execute-time Soroban re-probe used by the FinalClassicTx merge guard. The
+  // classic re-audit does NOT see Soroban DeFi positions, so without this an
+  // undiscovered / skipped / failed-to-close position is merged around and
+  // stranded. Optional so lighter callers/tests can omit it; production wires it
+  // to the position provider's discovery.
+  readonly reprobeSorobanPositions?: (
+    publicKey: string,
+    network: NetworkConfig,
+  ) => Promise<ProtocolPositions>;
 }
 
 export interface ExecutionOutput {
@@ -89,6 +101,12 @@ const DEFAULT_FEE_BASE = Number.parseInt(BASE_FEE, 10); // 100 stroops/op networ
 // in buildClassicTransaction is the hard limit
 const MAX_PER_OP_FEE = 1_000_000;
 const MAX_MERGE_ATTEMPTS = 3;
+// Two-phase close (SEC-13) submits one batch per phase and re-audits between
+// them, so a close needs ceil(totalOps / MAX_OPS_PER_TX) + 1 phases. The classic
+// subentry ceiling (~1000) bounds this well under 30; exceeding it means the
+// close is not converging (a batch that doesn't reduce on-chain state), so we
+// throw rather than loop forever.
+const MAX_CLOSE_PHASES = 30;
 
 // classify a classic submit rejection to decide whether a rebuild-and-retry can
 // help. Horizon surfaces result codes in the thrown message (see submitClassic).
@@ -185,84 +203,133 @@ export async function executePlanTreeOnChain(
     }
 
     if (node.kind === "FinalClassicTx") {
-      // one attempt: re-audit fresh state, re-check mergeability, rebuild the
-      // batches (with freshly-resolved XLM paths + destMins), and submit them at
-      // the given per-op fee. Returns the final receipt. Re-running this after a
-      // batch confirms is SAFE: a fresh audit reflects the applied ops, so a
-      // retry rebuilds only the REMAINING work, never re-submitting a confirmed
-      // batch. That's what lets the bounded retry below recover from a fee/price
+      // Two-phase close (SEC-13): some batches CREATE classic balances a later
+      // batch must clear. A liquidity_pool_withdraw credits the pool's underlying
+      // assets to the account; converting/removing those trustlines or merging in
+      // the SAME tx reverts, because the pre-withdraw audit never saw the credited
+      // balance. So the batcher isolates withdraws into a leading batch, and here
+      // we submit ONE batch per phase, re-auditing (and re-resolving XLM paths)
+      // AFTER each confirms so the remainder is rebuilt from the new on-chain
+      // state. The loop ends when a single batch remains — the one carrying the
+      // account_merge. Re-entering this after a batch confirms is SAFE: a fresh
+      // audit reflects applied ops, so a rebuild never re-submits confirmed work.
+      // That is also what lets the bounded retry below recover from a fee/price
       // rejection without leaving the account half-closed.
       const attemptMerge = async (feeBase: number): Promise<ConfirmationReceipt> => {
-        // soroban exits shift classical balances, so the cached batches are
-        // rebuilt against fresh state, including freshly-resolved XLM paths so
-        // credit balances convert via path payment instead of routing to issuer.
-        const freshAudit = await withHorizonRetry(() =>
-          auditAccount(input.publicKey, deps.network),
-        );
-        const freshPaths = await withHorizonRetry(() =>
-          resolveCreditPaths(freshAudit, deps.network),
-        );
-
-        // execute-time re-check against fresh state: preview passed, but the world
-        // may have diverged (a DeFi exit failed, a credit lost its XLM path). Refuse
-        // to build/sign a doomed or fund-losing merge rather than committing part of
-        // a multi-batch close and leaving the account wedged.
-        const merge = computeMergeability(freshAudit.flags, freshAudit.sponsorship);
-        if (!merge.mergeable) {
-          throw new Error(
-            `account_merge blocked: ${merge.reason}${merge.detail ? `: ${merge.detail}` : ""}`,
-          );
-        }
-        const stuck = unroutableCredits(
-          freshAudit,
-          freshPaths,
-          node.metadata.returnToIssuerAssetKeys,
-          node.metadata.sendToDestinationAssetKeys,
-        );
-        if (stuck.length > 0) {
-          throw new Error(
-            `account_merge blocked: ${stuck.length} credit balance(s) have no XLM path and no ` +
-              `return-to-issuer consent (${stuck.map((c) => c.code).join(", ")})`,
-          );
-        }
-
-        const freshBatches = batchClassicDemolition(
-          freshAudit,
-          {
-            destination: node.metadata.destination,
-            useMediator: node.metadata.useMediator,
-            ...(node.metadata.claimableBalanceIds
-              ? { claimableBalanceIds: node.metadata.claimableBalanceIds }
-              : {}),
-            ...(node.metadata.returnToIssuerAssetKeys
-              ? { returnToIssuerAssetKeys: node.metadata.returnToIssuerAssetKeys }
-              : {}),
-            ...(node.metadata.sendToDestinationAssetKeys
-              ? { sendToDestinationAssetKeys: node.metadata.sendToDestinationAssetKeys }
-              : {}),
-            ...(node.metadata.userFallbackAddress
-              ? { userFallbackAddress: node.metadata.userFallbackAddress }
-              : {}),
-            ...(node.metadata.mediatorPublicKey
-              ? { mediatorPublicKey: node.metadata.mediatorPublicKey }
-              : {}),
-          },
-          freshPaths,
-        );
-        if (freshBatches.length === 0) {
-          throw new Error(`executing: node "${node.id}" produced no fresh batches`);
-        }
         let receipt: ConfirmationReceipt | null = null;
-        for (let i = 0; i < freshBatches.length; i++) {
+        let converged = false;
+        // The ephemeral mediator is a separate account funded by the first batch.
+        // Probe it once so a re-audit phase (or a retry after a prior attempt
+        // already funded it) does not re-emit the create-account op, which would
+        // revert with op_already_exists. Within this call the per-batch check
+        // below keeps it current; a transient probe failure defaults to "not
+        // funded" (a redundant funding op is caught by the outer retry).
+        let mediatorFunded = false;
+        if (node.metadata.useMediator && node.metadata.mediatorPublicKey) {
+          try {
+            await withHorizonRetry(() =>
+              deps.horizon.loadAccount(node.metadata.mediatorPublicKey as string),
+            );
+            mediatorFunded = true;
+          } catch {
+            mediatorFunded = false;
+          }
+        }
+
+        for (let phase = 0; phase < MAX_CLOSE_PHASES; phase++) {
+          // soroban exits shift classical balances, so batches are rebuilt against
+          // fresh state each phase, including freshly-resolved XLM paths so credit
+          // balances convert via path payment instead of routing to issuer.
+          const freshAudit = await withHorizonRetry(() =>
+            auditAccount(input.publicKey, deps.network),
+          );
+          const freshPaths = await withHorizonRetry(() =>
+            resolveCreditPaths(freshAudit, deps.network),
+          );
+
+          // execute-time re-check against fresh state: preview passed, but the
+          // world may have diverged (a DeFi exit failed, a credit lost its XLM
+          // path). Refuse to build/sign a doomed or fund-losing merge rather than
+          // committing part of a multi-batch close and leaving the account wedged.
+          const merge = computeMergeability(freshAudit.flags, freshAudit.sponsorship);
+          if (!merge.mergeable) {
+            throw new Error(
+              `account_merge blocked: ${merge.reason}${merge.detail ? `: ${merge.detail}` : ""}`,
+            );
+          }
+
+          // Execute-time Soroban re-probe: the classic re-audit above sees only
+          // classic state, so an undiscovered / skipped / failed-to-close Soroban
+          // DeFi position would be merged around and stranded. Re-run discovery
+          // and refuse the merge if any position remains. If discovery cannot
+          // confirm a clean state it throws (fail-closed), which also blocks it.
+          if (deps.reprobeSorobanPositions) {
+            const remaining = await deps.reprobeSorobanPositions(input.publicKey, deps.network);
+            const open =
+              remaining.blend.length +
+              remaining.aquarius.length +
+              remaining.soroswap.length +
+              remaining.fxdao.length;
+            if (open > 0) {
+              throw new Error(
+                `account_merge blocked: ${open} Soroban DeFi position(s) still open ` +
+                  `(blend=${remaining.blend.length}, aquarius=${remaining.aquarius.length}, ` +
+                  `soroswap=${remaining.soroswap.length}, fxdao=${remaining.fxdao.length}). ` +
+                  `Close them before merging, or the funds will be stranded on the deleted account.`,
+              );
+            }
+          }
+
+          const stuck = unroutableCredits(
+            freshAudit,
+            freshPaths,
+            node.metadata.returnToIssuerAssetKeys,
+            node.metadata.sendToDestinationAssetKeys,
+          );
+          if (stuck.length > 0) {
+            throw new Error(
+              `account_merge blocked: ${stuck.length} credit balance(s) have no XLM path and no ` +
+                `return-to-issuer consent (${stuck.map((c) => c.code).join(", ")})`,
+            );
+          }
+
+          const freshBatches = batchClassicDemolition(
+            freshAudit,
+            {
+              destination: node.metadata.destination,
+              useMediator: node.metadata.useMediator,
+              ...(mediatorFunded ? { mediatorAlreadyFunded: true } : {}),
+              ...(node.metadata.claimableBalanceIds
+                ? { claimableBalanceIds: node.metadata.claimableBalanceIds }
+                : {}),
+              ...(node.metadata.returnToIssuerAssetKeys
+                ? { returnToIssuerAssetKeys: node.metadata.returnToIssuerAssetKeys }
+                : {}),
+              ...(node.metadata.sendToDestinationAssetKeys
+                ? { sendToDestinationAssetKeys: node.metadata.sendToDestinationAssetKeys }
+                : {}),
+              ...(node.metadata.userFallbackAddress
+                ? { userFallbackAddress: node.metadata.userFallbackAddress }
+                : {}),
+              ...(node.metadata.mediatorPublicKey
+                ? { mediatorPublicKey: node.metadata.mediatorPublicKey }
+                : {}),
+              // re-apply the deposit memo dropped previously: the batcher attaches
+              // it only to a DIRECT final merge (mediator closes carry it on the
+              // forward), so a memo-required non-registry exchange close keeps it
+              ...(node.metadata.memo ? { memo: node.metadata.memo } : {}),
+            },
+            freshPaths,
+          );
+          if (freshBatches.length === 0) {
+            throw new Error(`executing: node "${node.id}" produced no fresh batches`);
+          }
+
+          const batch = freshBatches[0]!;
           const sourceAccount = await withHorizonRetry(() =>
             deps.horizon.loadAccount(input.publicKey),
           );
-          const built = buildClassicTransaction(
-            freshBatches[i]!,
-            sourceAccount,
-            deps.network,
-            feeBase,
-          );
+          const built = buildClassicTransaction(batch, sourceAccount, deps.network, feeBase);
           const signed = await deps.connector.signTransaction(
             built.transaction,
             deps.network.passphrase,
@@ -273,9 +340,30 @@ export async function executePlanTreeOnChain(
           node.status = "submitted";
           node.executed = { txHash: receipt.txHash, ledger: receipt.ledger };
           notify(node);
+
+          // once the mediator-funding op has landed, later phases must not
+          // re-emit it (the account exists; a second create_account reverts).
+          if (
+            node.metadata.useMediator &&
+            batch.operations.some((op) => op.kind === "create_account_mediator")
+          ) {
+            mediatorFunded = true;
+          }
+
+          // the account_merge always lands in the final batch; when it's the only
+          // one left the close is complete. Otherwise re-audit and continue.
+          if (freshBatches.length === 1) {
+            converged = true;
+            break;
+          }
         }
-        if (receipt === null) {
-          throw new Error(`executing: node "${node.id}" produced no receipt`);
+        if (!converged || receipt === null) {
+          // exhausted the phase budget without submitting the merge batch: the
+          // close is NOT complete, so fail loudly rather than report the last
+          // intermediate receipt as success.
+          throw new Error(
+            `executing: node "${node.id}" did not converge within ${MAX_CLOSE_PHASES} phases`,
+          );
         }
         return receipt;
       };
@@ -335,6 +423,40 @@ export async function executePlanTreeOnChain(
     if (!tx) {
       throw new Error(`executing: node "${node.id}" (${node.kind}) has no transaction attached`);
     }
+
+    // TransferAsIs is the auto-drain of a discovered standalone SEP-41 token, and
+    // it is BEST-EFFORT. The token is airdrop-reachable, i.e. attacker-controlled,
+    // so (a) it is held to an EXACT transfer(user, destination, amount) with no
+    // smuggled auth — the DeFi allow-list doesn't apply since it targets the
+    // user's own token contract — and (b) any failure (unsafe auth tree, a
+    // revert-on-transfer griefing token, an rpc error) is SKIPPED, never fatal:
+    // it runs before the merge only for ordering, and a "skipped" dependency
+    // still lets the merge proceed, so one un-drainable token can't wedge the
+    // close (it is simply left behind on the account being deleted).
+    if (node.kind === "TransferAsIs") {
+      try {
+        assertSafeTransferInvocation(tx as Transaction, {
+          contractId: resolveContractIdForAsset(node.metadata.asset, deps.network),
+          from: input.publicKey,
+          to: node.metadata.destination,
+          amount: node.metadata.amount,
+        });
+        const signedTransfer = await deps.connector.signTransaction(tx, deps.network.passphrase);
+        node.status = "signed";
+        notify(node);
+        const transferReceipt = await deps.submitSoroban(signedTransfer.signedXdr);
+        node.status = "confirmed";
+        node.executed = { txHash: transferReceipt.txHash, ledger: transferReceipt.ledger };
+        receipts[node.id] = transferReceipt;
+        notify(node);
+      } catch (err) {
+        node.status = "skipped";
+        node.error = `Token drain skipped: ${err instanceof Error ? err.message : String(err)}`;
+        notify(node);
+      }
+      continue;
+    }
+
     // Pre-sign allow-list gate (defense-in-depth on top of each adapter's own
     // build-time check): every DeFi-protocol node must invoke only allow-listed
     // contracts. RevokeAllowance is the deliberate exception: it targets the

@@ -28,6 +28,9 @@ function assetCode(asset: AssetIdentifier): string {
       return asset.code;
     case "liquidity_pool_shares":
       return "pool shares";
+    case "contract":
+      // symbol is an untrusted display hint; fall back to a shortened contract id
+      return asset.symbol ?? `${asset.contractId.slice(0, 4)}…${asset.contractId.slice(-4)}`;
   }
 }
 
@@ -39,6 +42,8 @@ function assetKey(asset: AssetIdentifier): string {
       return `${asset.code}:${asset.issuer}`;
     case "liquidity_pool_shares":
       return `pool:${asset.poolId}`;
+    case "contract":
+      return `contract:${asset.contractId}`;
   }
 }
 

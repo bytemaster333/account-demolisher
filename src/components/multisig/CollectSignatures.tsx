@@ -12,7 +12,15 @@ import { TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { TypedConfirmation } from "@/components/confirmations/TypedConfirmation";
-import { Badge, Button, Card, CopyableAddress, Notice, Progress, SectionLabel } from "@/components/ui";
+import {
+  Badge,
+  Button,
+  Card,
+  CopyableAddress,
+  Notice,
+  Progress,
+  SectionLabel,
+} from "@/components/ui";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import { explorerAccountUrl } from "@/lib/explorer";
@@ -165,9 +173,9 @@ export function CollectSignatures({
           Collect the other signatures
         </h2>
         <p style={{ margin: "8px 0 0", fontSize: 13.5, color: "var(--fg-2)", lineHeight: 1.55 }}>
-          Share the link so the other signers can sign from their own devices, or paste a signer
-          key to sign here. Each signature shows up below the moment it lands. When you have enough,
-          you close the account.
+          Share the link so the other signers can sign from their own devices, or paste a signer key
+          to sign here. Each signature shows up below the moment it lands. When you have enough, you
+          close the account.
         </p>
       </div>
 

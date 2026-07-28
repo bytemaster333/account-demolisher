@@ -105,7 +105,10 @@ export default function SignPage(): React.JSX.Element {
         setLoad({ kind: "ready", network: net, xdr: plan.xdr });
       } catch (e: unknown) {
         if (!cancelled)
-          setLoad({ kind: "error", message: errorMessage(e, "Couldn't load this signing request.") });
+          setLoad({
+            kind: "error",
+            message: errorMessage(e, "Couldn't load this signing request."),
+          });
       }
     })();
     return () => {
@@ -233,7 +236,15 @@ export default function SignPage(): React.JSX.Element {
       <AppShell>
         <PageContainer>
           <PageHeader kicker="Co-sign a close" title="Loading the signing request…" />
-          <div style={{ display: "inline-flex", alignItems: "center", gap: 9, fontSize: 13, color: "var(--fg-2)" }}>
+          <div
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 9,
+              fontSize: 13,
+              color: "var(--fg-2)",
+            }}
+          >
             <Spinner size={14} /> Fetching the transaction to review.
           </div>
         </PageContainer>
@@ -281,7 +292,14 @@ export default function SignPage(): React.JSX.Element {
 
         {/* what this transaction does, decoded, never blind base64 */}
         <Card padding={24} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+            }}
+          >
             <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600, letterSpacing: "-0.01em" }}>
               What you&apos;re signing
             </h2>
@@ -289,7 +307,14 @@ export default function SignPage(): React.JSX.Element {
           </div>
 
           <div>
-            <div style={{ fontSize: 11.5, color: "var(--fg-3)", letterSpacing: "0.05em", marginBottom: 6 }}>
+            <div
+              style={{
+                fontSize: 11.5,
+                color: "var(--fg-3)",
+                letterSpacing: "0.05em",
+                marginBottom: 6,
+              }}
+            >
               ACCOUNT BEING CLOSED
             </div>
             <CopyableAddress
@@ -316,16 +341,33 @@ export default function SignPage(): React.JSX.Element {
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span
                     aria-hidden
-                    style={{ font: "600 11px/1 'Geist Mono', monospace", color: "var(--fg-3)", minWidth: 20 }}
+                    style={{
+                      font: "600 11px/1 'Geist Mono', monospace",
+                      color: "var(--fg-3)",
+                      minWidth: 20,
+                    }}
                   >
                     {String(i + 1).padStart(2, "0")}
                   </span>
-                  <span style={{ fontSize: 13.5, fontWeight: 600, color: op.danger ? "var(--danger)" : "var(--fg)" }}>
+                  <span
+                    style={{
+                      fontSize: 13.5,
+                      fontWeight: 600,
+                      color: op.danger ? "var(--danger)" : "var(--fg)",
+                    }}
+                  >
                     {op.type}
                   </span>
                 </div>
                 {op.detail ? (
-                  <span style={{ fontSize: 12.5, color: "var(--fg-2)", lineHeight: 1.5, paddingLeft: 28 }}>
+                  <span
+                    style={{
+                      fontSize: 12.5,
+                      color: "var(--fg-2)",
+                      lineHeight: 1.5,
+                      paddingLeft: 28,
+                    }}
+                  >
                     {op.detail}
                   </span>
                 ) : null}
@@ -354,7 +396,10 @@ export default function SignPage(): React.JSX.Element {
             </Notice>
           </div>
         ) : facts !== null ? (
-          <Card padding={24} style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 14 }}>
+          <Card
+            padding={24}
+            style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 14 }}
+          >
             <Progress
               value={weight}
               max={facts.threshold}
@@ -363,7 +408,9 @@ export default function SignPage(): React.JSX.Element {
               valueLabel={`${weight} of ${facts.threshold}`}
               data-testid="sign-progress"
             />
-            <div style={{ border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden" }}>
+            <div
+              style={{ border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden" }}
+            >
               {facts.signerKeys.map((key, i) => {
                 const has = signed.includes(key);
                 return (
@@ -390,7 +437,11 @@ export default function SignPage(): React.JSX.Element {
                       weight {signerWeights.get(key) ?? "-"}
                     </span>
                     {lastSigner === key ? <Badge tone="neutral">You</Badge> : null}
-                    {has ? <Badge tone="success">Signed</Badge> : <Badge tone="warning">Pending</Badge>}
+                    {has ? (
+                      <Badge tone="success">Signed</Badge>
+                    ) : (
+                      <Badge tone="warning">Pending</Badge>
+                    )}
                   </div>
                 );
               })}
@@ -407,7 +458,16 @@ export default function SignPage(): React.JSX.Element {
             ) : null}
           </Card>
         ) : (
-          <div style={{ marginTop: 16, display: "inline-flex", alignItems: "center", gap: 9, fontSize: 13, color: "var(--fg-2)" }}>
+          <div
+            style={{
+              marginTop: 16,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 9,
+              fontSize: 13,
+              color: "var(--fg-2)",
+            }}
+          >
             <Spinner size={14} /> Loading the signer list…
           </div>
         )}
@@ -423,12 +483,17 @@ export default function SignPage(): React.JSX.Element {
 
         {/* sign, or the confirmation once signed */}
         {!signedHere ? (
-          <Card padding={24} style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 16 }}>
+          <Card
+            padding={24}
+            style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 16 }}
+          >
             <div>
               <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600, letterSpacing: "-0.01em" }}>
                 Add your signature
               </h2>
-              <p style={{ margin: "6px 0 0", fontSize: 12.5, color: "var(--fg-2)", lineHeight: 1.5 }}>
+              <p
+                style={{ margin: "6px 0 0", fontSize: 12.5, color: "var(--fg-2)", lineHeight: 1.5 }}
+              >
                 Sign with your own wallet (recommended), or paste your secret key. Your key is used
                 only in this browser and is never uploaded or shared.
               </p>
@@ -447,7 +512,9 @@ export default function SignPage(): React.JSX.Element {
             {/* subtle "or" divider */}
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
-              <span style={{ fontSize: 11, color: "var(--fg-3)", letterSpacing: "0.06em" }}>OR</span>
+              <span style={{ fontSize: 11, color: "var(--fg-3)", letterSpacing: "0.06em" }}>
+                OR
+              </span>
               <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
             </div>
 

@@ -1,5 +1,7 @@
 // strict 2-op merge-payment co-signing endpoint
 
+import { StrKey } from "@stellar/stellar-sdk";
+
 import { getPublicEnv } from "@/lib/config/env";
 import { resolveNetwork } from "@/lib/config/networks";
 import { validateMediatorForwardEnvelope } from "@/lib/mediator/validator";
@@ -94,6 +96,7 @@ export async function POST(request: Request): Promise<Response> {
 
   let envelopeXdr: string;
   let flowToken: string;
+  let networkId: string | undefined;
   try {
     const raw = (await request.json()) as unknown;
     if (typeof raw !== "object" || raw === null) {
@@ -109,6 +112,15 @@ export async function POST(request: Request): Promise<Response> {
         cors,
       );
     }
+    // Optional: the network the client built the envelope on. Lets one deployment
+    // serve both testnet and mainnet closes. When absent (older clients, or a
+    // single-network deployment) it falls back to the deployment default below.
+    if (rec.network !== undefined) {
+      if (rec.network !== "mainnet" && rec.network !== "testnet" && rec.network !== "futurenet") {
+        return badRequest("`network` must be one of mainnet | testnet | futurenet.", cors);
+      }
+      networkId = rec.network;
+    }
     envelopeXdr = rec.envelopeXdr;
     flowToken = rec.flowToken;
   } catch {
@@ -118,9 +130,9 @@ export async function POST(request: Request): Promise<Response> {
   // resolve THIS flow's ephemeral keypair from the token. A forged/expired token
   // resolves to null and unlocks nothing; a thrown error means the master seed
   // is unset/malformed (scrubbed so no config detail leaks to the client).
-  let flowKeypair: ReturnType<typeof resolveMediatorFlow>;
+  let flow: ReturnType<typeof resolveMediatorFlow>;
   try {
-    flowKeypair = resolveMediatorFlow(flowToken);
+    flow = resolveMediatorFlow(flowToken);
   } catch {
     return jsonResponse(
       { ok: false, code: "MEDIATOR_NOT_CONFIGURED", reason: "Mediator is not configured." },
@@ -128,7 +140,7 @@ export async function POST(request: Request): Promise<Response> {
       cors,
     );
   }
-  if (flowKeypair === null) {
+  if (flow === null) {
     return jsonResponse(
       { ok: false, code: "INVALID_FLOW_TOKEN", reason: "Flow token is invalid or expired." },
       400,
@@ -136,7 +148,11 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  const networkPassphrase = resolveNetwork(getPublicEnv().NEXT_PUBLIC_STELLAR_NETWORK).passphrase;
+  // per-request network (falls back to the deployment default) so a single
+  // deployment can co-sign forwards for whichever network the client is on
+  const networkPassphrase = resolveNetwork(
+    networkId ?? getPublicEnv().NEXT_PUBLIC_STELLAR_NETWORK,
+  ).passphrase;
 
   // the mediator only co-signs the forward envelope: a native payout + an
   // accountMerge, both sourced by and drawn from THIS flow's ephemeral account.
@@ -145,7 +161,8 @@ export async function POST(request: Request): Promise<Response> {
   const result = validateMediatorForwardEnvelope(
     envelopeXdr,
     networkPassphrase,
-    flowKeypair.publicKey(),
+    flow.keypair.publicKey(),
+    flow.destination,
   );
   if (!result.ok) {
     return jsonResponse({ ok: false, code: result.code, reason: result.reason }, 400, cors);
@@ -153,7 +170,7 @@ export async function POST(request: Request): Promise<Response> {
 
   try {
     const tx = result.tx;
-    tx.sign(flowKeypair);
+    tx.sign(flow.keypair);
     const signedXdr = tx.toEnvelope().toXDR("base64");
     return jsonResponse({ ok: true, signedXdr }, 200, cors);
   } catch {
@@ -180,9 +197,22 @@ function methodNotAllowed(): Response {
 // starts a fresh mediator flow: mints a one-time flow token and the ephemeral
 // public key the browser orchestrator funds + merges into. The token must be
 // echoed back at POST time to unlock signing for THIS flow's key only.
-export function GET(): Response {
+export function GET(request: Request): Response {
+  // the destination is committed into the flow token so the co-signer at POST
+  // time is bound to it (a leaked token can't redirect the funds elsewhere)
+  const destination = new URL(request.url).searchParams.get("destination");
+  if (destination === null || !StrKey.isValidEd25519PublicKey(destination)) {
+    return jsonResponse(
+      {
+        ok: false,
+        code: "INVALID_DESTINATION",
+        reason: "A valid `destination` (G...) query parameter is required to start a flow.",
+      },
+      400,
+    );
+  }
   try {
-    const flow = startMediatorFlow();
+    const flow = startMediatorFlow(destination);
     return jsonResponse(
       { flowToken: flow.flowToken, mediatorPublicKey: flow.mediatorPublicKey },
       200,

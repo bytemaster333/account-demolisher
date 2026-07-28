@@ -95,6 +95,10 @@ function toSdkAsset(a: AssetIdentifier): Asset {
       throw new Error(
         "path-finder: cannot path-pay a liquidity-pool-share asset. Withdraw the pool position first.",
       );
+    case "contract":
+      throw new Error(
+        "path-finder: cannot path-pay a raw SEP-41 contract token; it has no classic asset form.",
+      );
   }
 }
 

@@ -25,7 +25,6 @@ import {
 } from "@/lib/adapters/fxdao/prev-key";
 import { getFxDAOVaultsContractId } from "@/lib/adapters/fxdao/contracts";
 import { getAllowlistForNetwork } from "@/lib/config/contracts";
-import { FXDAO_MAINNET_STABLE_ISSUER } from "@/lib/adapters/fxdao/contracts";
 import { buildRevoke } from "@/lib/soroban/allowances";
 import { buildTransfer } from "@/lib/soroban/sep41";
 import { simulate } from "@/lib/soroban/simulate";
@@ -322,7 +321,6 @@ async function hydrateNode(
         userPublicKey,
         deps.network,
         sourceAccount,
-        FXDAO_MAINNET_STABLE_ISSUER,
         prevKey,
         { server: deps.rpc },
       );
@@ -409,7 +407,7 @@ function setTransaction(node: PlanNode, tx: Transaction): void {
   }
 }
 
-function resolveContractIdForAsset(asset: AssetIdentifier, network: NetworkConfig): string {
+export function resolveContractIdForAsset(asset: AssetIdentifier, network: NetworkConfig): string {
   switch (asset.kind) {
     case "native":
       return Asset.native().contractId(network.passphrase);
@@ -419,6 +417,9 @@ function resolveContractIdForAsset(asset: AssetIdentifier, network: NetworkConfi
       throw new TypeError(
         "TransferAsIs: liquidity_pool_shares cannot be transferred as a SEP-41 asset; use removeLiquidity",
       );
+    case "contract":
+      // a standalone SEP-41 token: the contract id IS the address to invoke
+      return asset.contractId;
   }
 }
 

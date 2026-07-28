@@ -9,10 +9,17 @@ FROM node:22-slim AS base
 ENV PNPM_HOME="/pnpm" PATH="/pnpm:$PATH"
 RUN corepack enable
 
+# full dependency set (incl. devDependencies) — used only to build
 FROM base AS deps
 WORKDIR /app
 COPY package.json pnpm-lock.yaml .npmrc ./
 RUN pnpm install --frozen-lockfile
+
+# production-only dependency set — what actually ships in the runtime image
+FROM base AS prod-deps
+WORKDIR /app
+COPY package.json pnpm-lock.yaml .npmrc ./
+RUN pnpm install --prod --frozen-lockfile
 
 FROM base AS build
 WORKDIR /app
@@ -25,7 +32,8 @@ WORKDIR /app
 ENV NODE_ENV=production
 # non-root runtime
 RUN useradd --system --uid 1001 --create-home appuser
-COPY --from=deps /app/node_modules ./node_modules
+# ship prod-only node_modules, not the build stage's devDependencies
+COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/.next ./.next
 COPY --from=build /app/public ./public
 COPY package.json next.config.ts ./

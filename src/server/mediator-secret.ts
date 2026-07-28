@@ -71,12 +71,24 @@ export interface MediatorFlow {
   readonly mediatorPublicKey: string;
 }
 
+export interface ResolvedMediatorFlow {
+  readonly keypair: Keypair;
+  // the destination this flow's forward is BOUND to. The sign route rejects any
+  // forward whose payout/merge target differs from this, so a leaked token can
+  // only ever move the flow's funds to the destination the user committed to.
+  readonly destination: string;
+}
+
 // mint a fresh ephemeral mediator flow: a random nonce, an HMAC-signed token
-// carrying nonce+expiry, and the public key derived from that nonce.
-export function startMediatorFlow(now: number = Date.now()): MediatorFlow {
+// carrying nonce+expiry+destination, and the public key derived from that nonce.
+// The destination is committed here so the co-signer is bound to it (SEC-16).
+export function startMediatorFlow(destination: string, now: number = Date.now()): MediatorFlow {
+  if (!StrKey.isValidEd25519PublicKey(destination)) {
+    throw new Error("startMediatorFlow: destination must be a valid Stellar public key (G...).");
+  }
   const nonceHex = randomBytes(16).toString("hex");
   const expiry = now + FLOW_TTL_MS;
-  const body = `${nonceHex}.${expiry}`;
+  const body = `${nonceHex}.${expiry}.${destination}`;
   const mac = hmac(`${TOKEN_MAC_LABEL}:${body}`).toString("hex");
   return {
     flowToken: `${body}.${mac}`,
@@ -84,19 +96,24 @@ export function startMediatorFlow(now: number = Date.now()): MediatorFlow {
   };
 }
 
-// verify a flow token and return its ephemeral keypair, or null if the token is
-// malformed, forged (bad HMAC) or expired. The HMAC compare is constant-time.
-export function resolveMediatorFlow(flowToken: unknown, now: number = Date.now()): Keypair | null {
+// verify a flow token and return its ephemeral keypair + committed destination,
+// or null if the token is malformed, forged (bad HMAC) or expired. The HMAC
+// compare is constant-time.
+export function resolveMediatorFlow(
+  flowToken: unknown,
+  now: number = Date.now(),
+): ResolvedMediatorFlow | null {
   if (typeof flowToken !== "string") return null;
   const parts = flowToken.split(".");
-  if (parts.length !== 3) return null;
-  const [nonceHex, expiryStr, macHex] = parts;
+  if (parts.length !== 4) return null;
+  const [nonceHex, expiryStr, destination, macHex] = parts;
   if (nonceHex === undefined || !/^[0-9a-f]{32}$/u.test(nonceHex)) return null;
+  if (destination === undefined || !StrKey.isValidEd25519PublicKey(destination)) return null;
 
   const expiry = Number(expiryStr);
   if (!Number.isFinite(expiry) || expiry <= now) return null;
 
-  const expectedMac = hmac(`${TOKEN_MAC_LABEL}:${nonceHex}.${expiryStr}`);
+  const expectedMac = hmac(`${TOKEN_MAC_LABEL}:${nonceHex}.${expiryStr}.${destination}`);
   let providedMac: Buffer;
   try {
     providedMac = Buffer.from(macHex ?? "", "hex");
@@ -106,7 +123,7 @@ export function resolveMediatorFlow(flowToken: unknown, now: number = Date.now()
   if (providedMac.length !== expectedMac.length) return null;
   if (!timingSafeEqual(providedMac, expectedMac)) return null;
 
-  return deriveFlowKeypair(nonceHex);
+  return { keypair: deriveFlowKeypair(nonceHex), destination };
 }
 
 // test-only: reset the cached master

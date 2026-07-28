@@ -27,6 +27,9 @@ import { AuthImmutableBlock } from "@/components/warnings/AuthImmutableBlock";
 import { DiscoveryWarnings } from "@/components/warnings/DiscoveryWarnings";
 import { ResidueConsent, type ResidueConsentCredit } from "@/components/warnings/ResidueConsent";
 import { ScamTokenNotice } from "@/components/warnings/ScamTokenNotice";
+import { PendingForwardBanner } from "@/components/wallet/PendingForwardBanner";
+import { StandaloneTokensCard } from "@/components/wallet/StandaloneTokensCard";
+import type { HeldToken } from "@/lib/soroban/held-tokens";
 import { SponsoringBlock } from "@/components/warnings/SponsoringBlock";
 import { ConnectButton } from "@/components/wallet/ConnectButton";
 import { CreateTestAccountButton } from "@/components/wallet/CreateTestAccountButton";
@@ -430,6 +433,10 @@ function DemolishFlow(): React.JSX.Element {
 
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
+  // standalone SEP-41 tokens the user opted in to sweep (discovered ones they
+  // ticked + any added by contract id). Kept OUTSIDE the zod form because each
+  // carries a bigint balance; default empty so nothing is swept without a choice.
+  const [selectedHeldTokens, setSelectedHeldTokens] = useState<readonly HeldToken[]>([]);
   const [formError, setFormError] = useState<string | null>(null);
 
   // multisig: preflight the connected account for its signature threshold, then
@@ -546,7 +553,13 @@ function DemolishFlow(): React.JSX.Element {
   const hasScam = scamFindings.length > 0;
   const hasDiscovery = ctx.discoveryWarnings.length > 0;
   const hasAutoHandled = audit !== null && (audit.claimableBalances.length > 0 || numCoverable > 0);
-  const hasAckItems = hasScam || hasDiscovery || hasAutoHandled || isHighValue;
+  // the standalone-token section belongs with the warnings (it's about funds that
+  // could be left behind). Show it whenever there's a real reason to look: tokens
+  // found, unreadable candidates, or the optional scan couldn't finish (so the
+  // manual add-a-token is still reachable). A clean, complete scan doesn't nag.
+  const showTokenSection =
+    ctx.heldTokens.length > 0 || ctx.unreadableHeldTokens.length > 0 || ctx.heldTokenScanFailed;
+  const hasAckItems = hasScam || hasDiscovery || hasAutoHandled || isHighValue || showTokenSection;
 
   // initialise the confirm stage per built plan: resolve blockers first, then
   // acknowledge warnings/info, then the clean review, skipping any empty step.
@@ -820,6 +833,7 @@ function DemolishFlow(): React.JSX.Element {
         ...(form.sendToDestination.length > 0
           ? { sendToDestinationAssetKeys: form.sendToDestination }
           : {}),
+        ...(selectedHeldTokens.length > 0 ? { selectedHeldTokens } : {}),
         ...(deterministic ? { deterministicDisposal: true } : {}),
       },
     });
@@ -832,6 +846,7 @@ function DemolishFlow(): React.JSX.Element {
     multisigRequired,
     canUseSigningRequest,
     bundleability.reason,
+    selectedHeldTokens,
   ]);
 
   const onCancel = useCallback(() => {
@@ -881,6 +896,7 @@ function DemolishFlow(): React.JSX.Element {
   const onReset = useCallback(() => {
     setShowConfirmDialog(false);
     setForm(INITIAL_FORM);
+    setSelectedHeldTokens([]);
     setFormError(null);
     // the account we operated on is gone (merged) or abandoned, fully drop the
     // connection so "Start over" returns to Connect, not Configure with a dead
@@ -960,6 +976,9 @@ function DemolishFlow(): React.JSX.Element {
 
   return (
     <main style={{ maxWidth: 1080, margin: "0 auto", padding: "40px 24px 96px" }}>
+      {/* SEC-01 part B: offer to resume an interrupted exchange forward, if any */}
+      <PendingForwardBanner publicKey={publicKey} />
+
       {/* IDLE, connect */}
       {isIdle ? (
         <IdleConnect
@@ -1191,6 +1210,20 @@ function DemolishFlow(): React.JSX.Element {
                         sponsorshipCount: numCoverable,
                       }}
                       highValue={isHighValue ? { totalXlm } : null}
+                      tokensSlot={
+                        showTokenSection ? (
+                          <StandaloneTokensCard
+                            discovered={ctx.heldTokens}
+                            unreadable={ctx.unreadableHeldTokens}
+                            selected={selectedHeldTokens}
+                            onChange={setSelectedHeldTokens}
+                            network={network}
+                            userPublicKey={publicKey}
+                            isCex={useMediator}
+                            onRebuild={onStart}
+                          />
+                        ) : undefined
+                      }
                       onBack={onCancel}
                       onContinue={() => setConfirmStage("review")}
                     />
@@ -1249,9 +1282,9 @@ function DemolishFlow(): React.JSX.Element {
               destination={form.destination}
               explorerUrl={explorerAccountUrl(network, form.destination)}
               onCancel={() => setShowConfirmDialog(false)}
-              onConfirm={() => {
+              onConfirm={(typed) => {
                 setShowConfirmDialog(false);
-                send({ type: "CONFIRM" });
+                send({ type: "CONFIRM", typed });
               }}
             />
           ) : null}
@@ -3935,6 +3968,7 @@ function AcknowledgePanel({
   discoveryWarnings,
   autoHandled,
   highValue,
+  tokensSlot,
   onBack,
   onContinue,
 }: {
@@ -3943,6 +3977,9 @@ function AcknowledgePanel({
   readonly discoveryWarnings: readonly string[];
   readonly autoHandled: { readonly claimableCount: number; readonly sponsorshipCount: number };
   readonly highValue: { readonly totalXlm: string } | null;
+  // optional standalone-token section (opt-in sweep + manual-add); not gated by an
+  // ack checkbox — it's an action, not just a read — so it never blocks Continue.
+  readonly tokensSlot?: React.ReactNode;
   readonly onBack: () => void;
   readonly onContinue: () => void;
 }): React.JSX.Element {
@@ -4074,6 +4111,8 @@ function AcknowledgePanel({
           continue. This can&apos;t be undone.
         </Notice>
       ) : null}
+
+      {tokensSlot}
 
       {!allAcked ? (
         <p

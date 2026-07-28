@@ -157,6 +157,11 @@ export interface FinalClassicTxMetadata {
   readonly sendToDestinationAssetKeys?: readonly string[];
   readonly userFallbackAddress?: string;
   readonly mediatorPublicKey?: string;
+  // deposit memo for a DIRECT (non-mediator) merge to a memo-required destination.
+  // MUST be re-applied during execute-time re-batching or the signed merge drops
+  // it; the batcher only attaches it to a non-mediator final batch (a mediator
+  // close carries its memo on the forward hop instead).
+  readonly memo?: ClassicMemo;
 }
 
 export interface MediatorForwardMetadata {

@@ -21,6 +21,13 @@ vi.mock("@/lib/stellar/horizon-client", () => ({
 vi.mock("@/lib/soroban/allowances", () => ({
   buildRevoke: vi.fn(async () => ({}) as never),
 }));
+// buildRevoke is stubbed to a bare object here, so the auth-tree guard (which
+// inspects a real approve tx) has nothing meaningful to check; it is verified in
+// its own suite (revoke-guard.test.ts). Stub it to a no-op so these enqueue /
+// serialization tests stay focused on submitRevoke's RPC behavior.
+vi.mock("@/lib/soroban/revoke-guard", () => ({
+  assertSafeRevokeInvocation: vi.fn(),
+}));
 vi.mock("@stellar/stellar-sdk", () => ({
   TransactionBuilder: { fromXDR: () => ({}) },
 }));

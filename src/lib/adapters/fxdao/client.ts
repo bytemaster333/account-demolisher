@@ -95,27 +95,61 @@ async function tryGetVault(
     .build();
 
   const sim = await simulateFn(server, tx);
-  if (!sim.ok || sim.retval === null) return null;
-  return decodeVault(sim.retval, denomination);
+  // FxDAO's get_vault panics when the caller holds no vault for this denomination,
+  // so a host error (sim.ok === false) is a GENUINE absence — skip it quietly. (A
+  // transport/RPC failure throws from simulate() and propagates up as a hard
+  // discovery error, so it never lands here as a silent "no vault".)
+  if (!sim.ok) return null;
+  // A successful simulation that returns nothing, or a struct we cannot decode,
+  // means the contract/ABI drifted. Reading that as "no vault" would silently
+  // strand the vault's collateral once the account is merged, so FAIL CLOSED:
+  // throw, which surfaces a discovery error and blocks a clean close.
+  if (sim.retval === null) {
+    throw new Error(
+      `FxDAO get_vault(${denomination}) returned no value; cannot confirm vault state`,
+    );
+  }
+  const result = decodeVault(sim.retval, denomination);
+  if (result.kind === "undecodable") {
+    throw new Error(
+      `FxDAO get_vault(${denomination}) returned an undecodable vault struct; the contract or ABI ` +
+        `may have changed. Refusing to treat this as "no vault" to avoid stranding collateral.`,
+    );
+  }
+  return result.kind === "vault" ? result.vault : null;
 }
 
+// A get_vault result: a real open vault, a positively-decoded absence (zero-debt),
+// or a struct we could not decode (contract/ABI drift — must NOT be read as "no
+// vault", which would silently strand collateral).
+type VaultDecode =
+  | { readonly kind: "vault"; readonly vault: FxDAOVault }
+  | { readonly kind: "empty" }
+  | { readonly kind: "undecodable" };
+
 // decode the vault ScVal returned by get_vault
-function decodeVault(retval: xdr.ScVal, fallbackDenomination: string): FxDAOVault | null {
+function decodeVault(retval: xdr.ScVal, fallbackDenomination: string): VaultDecode {
   const decoded: unknown = scValToNative(retval);
-  if (decoded === null || typeof decoded !== "object") return null;
+  if (decoded === null || typeof decoded !== "object") return { kind: "undecodable" };
   const obj = decoded as Record<string, unknown>;
 
   const totalDebt = obj.total_debt;
   const totalCollateral = obj.total_collateral;
   const denomination = obj.denomination;
 
-  if (typeof totalDebt !== "bigint" || typeof totalCollateral !== "bigint") return null;
-  // contract removes vaults on full repay, so zero-debt shouldn't appear; defensive skip anyway
-  if (totalDebt === 0n) return null;
+  if (typeof totalDebt !== "bigint" || typeof totalCollateral !== "bigint") {
+    return { kind: "undecodable" };
+  }
+  // the contract removes a vault on full repay, so a zero-debt vault is a genuine
+  // "nothing to close" absence, not a decode failure
+  if (totalDebt === 0n) return { kind: "empty" };
 
   return {
-    denomination: typeof denomination === "string" ? denomination : fallbackDenomination,
-    debt: totalDebt,
-    collateral: totalCollateral,
+    kind: "vault",
+    vault: {
+      denomination: typeof denomination === "string" ? denomination : fallbackDenomination,
+      debt: totalDebt,
+      collateral: totalCollateral,
+    },
   };
 }

@@ -6,7 +6,7 @@ import {
   type BlendPoolLoader,
   type BlendUserPositions,
 } from "@/lib/adapters/blend/client";
-import { BLEND_BACKSTOP_MAINNET_ID } from "@/lib/adapters/blend/constants";
+import { resolveBackstopId } from "@/lib/adapters/blend/constants";
 import { BLEND_MAINNET_POOL_IDS, BLEND_TESTNET_POOL_IDS } from "@/lib/adapters/blend/pools";
 import {
   AquariusAPIPoolProvider,
@@ -172,15 +172,17 @@ export class DirectContractProvider implements IDeFiPositionProvider {
 
     // Backstop shares are a SEPARATE Blend position class we don't auto-unwind
     // yet (the withdrawal is a 17-day queued flow). They don't block the merge,
-    // so detect them and warn rather than silently strand them. Mainnet only:
-    // that's where the backstop contract is deployed.
-    if (network.id === "mainnet") {
+    // so detect them and warn rather than silently strand them. Only where a
+    // backstop contract is deployed/snapshotted (mainnet): resolveBackstopId
+    // returns null elsewhere and we skip the check.
+    const backstopId = resolveBackstopId(network);
+    if (backstopId !== null) {
       try {
         const backstop = await this.deps.blendLoadBackstopDeposits(
           network,
           userAddress,
           poolIds,
-          BLEND_BACKSTOP_MAINNET_ID,
+          backstopId,
         );
         for (const d of backstop.deposits) {
           perPoolErrors.push(
@@ -209,24 +211,34 @@ export class DirectContractProvider implements IDeFiPositionProvider {
   ): Promise<readonly AquariusPositionSummary[]> {
     const { primary, fallback } = this.deps.aquariusFactory(server, network);
 
-    // try REST first; on failure fall over to event-scan. if both fail, propagate
-    let pools: AquariusPool[];
-    try {
-      pools = await primary.getUserPools(userAddress);
-    } catch (errPrimary) {
-      try {
-        pools = await fallback.getUserPools(userAddress);
-      } catch (errFallback) {
-        const msgPrimary = errPrimary instanceof Error ? errPrimary.message : String(errPrimary);
-        const msgFallback =
-          errFallback instanceof Error ? errFallback.message : String(errFallback);
-        throw new Error(
-          `Aquarius discovery failed: REST=${msgPrimary}; event-scan fallback=${msgFallback}`,
-        );
+    // Union the REST API result with the on-chain event scan. The Aquarius REST
+    // backend is attacker-influenceable: a compromised/spoofed response can return
+    // a well-formed EMPTY or PARTIAL list to HIDE a held LP position. The old
+    // catch-only fallback (event-scan ran ONLY when the API THREW) never caught
+    // that — a hidden pool was merged around and stranded. So run both and merge
+    // by pool index; a pool that EITHER source finds is reported. Only when BOTH
+    // fail do we propagate a discovery error (which blocks a clean close).
+    const [apiResult, scanResult] = await Promise.allSettled([
+      primary.getUserPools(userAddress),
+      fallback.getUserPools(userAddress),
+    ]);
+
+    if (apiResult.status === "rejected" && scanResult.status === "rejected") {
+      const apiMsg =
+        apiResult.reason instanceof Error ? apiResult.reason.message : String(apiResult.reason);
+      const scanMsg =
+        scanResult.reason instanceof Error ? scanResult.reason.message : String(scanResult.reason);
+      throw new Error(`Aquarius discovery failed: REST=${apiMsg}; event-scan fallback=${scanMsg}`);
+    }
+
+    const byIndex = new Map<string, AquariusPool>();
+    for (const result of [apiResult, scanResult]) {
+      if (result.status === "fulfilled") {
+        for (const pool of result.value) byIndex.set(pool.poolIndex, pool);
       }
     }
 
-    return pools.map(aquariusPoolToSummary);
+    return [...byIndex.values()].map(aquariusPoolToSummary);
   }
 
   // our own on-chain Soroswap LP discovery: walks the factory's pair list and

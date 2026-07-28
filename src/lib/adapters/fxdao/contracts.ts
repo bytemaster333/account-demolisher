@@ -81,13 +81,3 @@ export function getFxDAOVaultsContractId(): string {
   }
   return entry.id;
 }
-
-// resolve the SAC contract id for a synthetic stablecoin. denomination is the on-chain symbol
-export function getFxDAOSyntheticSacId(denomination: string): string {
-  const code = `${denomination}x (SAC)`;
-  const entry = FXDAO_MAINNET_CONTRACTS.find((c) => c.kind === "synthetic_sac" && c.name === code);
-  if (!entry) {
-    throw new Error(`FxDAO synthetic SAC not registered for denomination=${denomination}`);
-  }
-  return entry.id;
-}

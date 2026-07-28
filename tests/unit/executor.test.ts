@@ -45,6 +45,14 @@ vi.mock("@/lib/mediator/forward", () => ({
   submitMediatorForward: (...args: unknown[]) => submitMediatorForward(...args),
 }));
 
+// the transfer-guard is exhaustively tested on its own; here we control it to
+// exercise the executor's best-effort SKIP behavior for a held-token drain.
+const assertSafeTransferInvocation = vi.fn();
+vi.mock("@/lib/soroban/transfer-guard", () => ({
+  assertSafeTransferInvocation: (...args: unknown[]) => assertSafeTransferInvocation(...args),
+  UnsafeTransferError: class UnsafeTransferError extends Error {},
+}));
+
 // imported AFTER the mocks are registered so the executor picks them up
 import { executePlanTreeOnChain } from "@/lib/orchestrator/executor";
 import type { ExecutorDeps } from "@/lib/orchestrator/executor";
@@ -163,6 +171,61 @@ describe("executePlanTreeOnChain, horizon retry on FinalClassicTx prep", () => {
     await settled;
     expect(auditAccount).toHaveBeenCalledTimes(1);
     expect(deps.submitClassic).not.toHaveBeenCalled();
+  });
+
+  it("blocks the merge when the Soroban re-probe still finds an open position (SEC-10)", async () => {
+    auditAccount.mockResolvedValue(MERGEABLE_AUDIT);
+    const { tree } = makeFinalClassicTree();
+    const deps = makeDeps({
+      reprobeSorobanPositions: async () =>
+        ({ blend: [{ poolId: "P" }], aquarius: [], soroswap: [], fxdao: [], errors: [] }) as never,
+    });
+
+    const promise = executePlanTreeOnChain(
+      { publicKey: "GUSER", tree, previousReceipts: {} },
+      deps,
+    );
+    const settled = expect(promise).rejects.toThrow(/Soroban DeFi position\(s\) still open/);
+    await vi.runAllTimersAsync();
+    await settled;
+    expect(deps.submitClassic).not.toHaveBeenCalled();
+  });
+
+  it("blocks the merge when the Soroban re-probe itself fails (fail-closed)", async () => {
+    auditAccount.mockResolvedValue(MERGEABLE_AUDIT);
+    const { tree } = makeFinalClassicTree();
+    const deps = makeDeps({
+      reprobeSorobanPositions: async () => {
+        throw new Error("discovery RPC unavailable");
+      },
+    });
+
+    const promise = executePlanTreeOnChain(
+      { publicKey: "GUSER", tree, previousReceipts: {} },
+      deps,
+    );
+    const settled = expect(promise).rejects.toThrow(/discovery RPC unavailable/);
+    await vi.runAllTimersAsync();
+    await settled;
+    expect(deps.submitClassic).not.toHaveBeenCalled();
+  });
+
+  it("proceeds with the merge when the Soroban re-probe finds nothing open", async () => {
+    auditAccount.mockResolvedValue(MERGEABLE_AUDIT);
+    const { tree } = makeFinalClassicTree();
+    const deps = makeDeps({
+      reprobeSorobanPositions: async () =>
+        ({ blend: [], aquarius: [], soroswap: [], fxdao: [], errors: [] }) as never,
+    });
+
+    const promise = executePlanTreeOnChain(
+      { publicKey: "GUSER", tree, previousReceipts: {} },
+      deps,
+    );
+    await vi.runAllTimersAsync();
+    await promise;
+    expect(tree.allNodes.get("final")!.status).toBe("confirmed");
+    expect(deps.submitClassic).toHaveBeenCalledTimes(1);
   });
 
   it("does NOT retry a deterministic 4xx, fails fast", async () => {
@@ -409,5 +472,94 @@ describe("executePlanTreeOnChain, MediatorForward honesty", () => {
     // no receipt is recorded for a failed forward: a failed hop leaves no
     // confirmed trace (belt-and-suspenders on the never-phantom-success guarantee)
     expect(tree.allNodes.get("forward")!.executed).toBeUndefined();
+  });
+});
+
+// A discovered standalone SEP-41 token is airdrop-reachable (attacker-controlled),
+// so its auto-drain must be BEST-EFFORT: a failing or unsafe drain is SKIPPED, and
+// because a skipped dependency still lets the merge proceed, one un-drainable token
+// can never wedge the close. These lock in that fail-open-for-the-close behavior.
+function makeDrainThenMergeTree() {
+  const drain = {
+    id: "drain",
+    kind: "TransferAsIs" as const,
+    dependencies: [] as string[],
+    status: "pending",
+    metadata: {
+      kind: "TransferAsIs" as const,
+      asset: {
+        kind: "contract" as const,
+        contractId: "CDRAINTOKENAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1",
+      },
+      amount: 500n,
+      destination: "GDEST",
+      // dummy tx: the guard and the connector are mocked, so it is never inspected
+      transaction: {} as never,
+    },
+  };
+  const final = {
+    id: "final",
+    kind: "FinalClassicTx" as const,
+    dependencies: ["drain"],
+    status: "pending",
+    metadata: {
+      kind: "FinalClassicTx" as const,
+      batches: [],
+      destination: "GDEST",
+      useMediator: false,
+    },
+  };
+  return {
+    tree: {
+      rootNodes: [drain],
+      allNodes: new Map<string, typeof drain | typeof final>([
+        [drain.id, drain],
+        [final.id, final],
+      ]),
+    } as unknown as PlanTree,
+  };
+}
+
+describe("executePlanTreeOnChain, held-token drain is best-effort (never wedges the close)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    auditAccount.mockResolvedValue(MERGEABLE_AUDIT);
+    resolveCreditPaths.mockResolvedValue(new Map());
+    batchClassicDemolition.mockReturnValue([{ ops: [] }]);
+    buildClassicTransaction.mockReturnValue({ transaction: {} });
+    // default: the guard passes (no-op)
+    assertSafeTransferInvocation.mockReset();
+  });
+
+  it("skips a drain whose transfer reverts (griefing token) and still completes the merge", async () => {
+    const deps = makeDeps();
+    (deps.submitSoroban as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("transfer reverted"),
+    );
+    const { tree } = makeDrainThenMergeTree();
+
+    await executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
+
+    // the drain is SKIPPED (not failed), so the merge's dependency check passes
+    expect(tree.allNodes.get("drain")!.status).toBe("skipped");
+    expect(tree.allNodes.get("drain")!.error).toMatch(/Token drain skipped/);
+    expect(tree.allNodes.get("final")!.status).toBe("confirmed");
+    expect(deps.submitClassic).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips a drain whose auth tree fails the guard (hostile token) WITHOUT signing it, and still merges", async () => {
+    assertSafeTransferInvocation.mockImplementation(() => {
+      throw new Error("auth[0] carries 1 sub-invocation(s)");
+    });
+    const deps = makeDeps();
+    const { tree } = makeDrainThenMergeTree();
+
+    await executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
+
+    expect(tree.allNodes.get("drain")!.status).toBe("skipped");
+    // the unsafe transfer was never submitted (guard rejected it before signing)
+    expect(deps.submitSoroban).not.toHaveBeenCalled();
+    expect(tree.allNodes.get("final")!.status).toBe("confirmed");
+    expect(deps.submitClassic).toHaveBeenCalledTimes(1);
   });
 });

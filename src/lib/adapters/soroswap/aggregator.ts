@@ -76,6 +76,19 @@ export async function convertToXLM(
 
   // re-apply our slippage policy and refuse to build if the aggregator's threshold sits below it
   const expected = quote.amountOut.toString();
+  // Refuse a swap the aggregator prices at zero output: applySlippageMin(0) = 0, so
+  // the built swap would accept ANY execution result including nothing, handing the
+  // input token away for free. With no independent price oracle here, an exact-zero
+  // quote is the clearest value-destroying signal we can refuse; the caller then
+  // leaves the un-swappable asset in place instead of burning it.
+  if (BigInt(expected) <= 0n) {
+    throw new SlippageGuardTripped({
+      expected,
+      minimumAccepted: "1",
+      actual: expected,
+      slippageBps,
+    });
+  }
   const ourMinimum = applySlippageMin(expected, slippageBps);
   const theirMinimum = quote.otherAmountThreshold.toString();
   if (BigInt(theirMinimum) < BigInt(ourMinimum)) {
@@ -120,6 +133,8 @@ function resolveAssetAddress(asset: AssetIdentifier, network: NetworkConfig): st
       throw new TypeError(
         "convertToXLM: liquidity_pool_shares is not a swappable asset; use removeLiquidity first",
       );
+    case "contract":
+      return asset.contractId;
   }
 }
 

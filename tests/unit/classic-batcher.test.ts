@@ -269,6 +269,87 @@ describe("batchClassicDemolition, liquidity pool withdraw minimums", () => {
   });
 });
 
+describe("batchClassicDemolition, SEC-13 two-phase pool close", () => {
+  // an account holding pool shares AND the underlying trustlines. A withdraw
+  // credits the underlying assets, so removing their trustlines / merging in the
+  // same tx would revert. The batcher must isolate the withdraw into a leading
+  // batch; the executor re-audits and handles the credited balances afterwards.
+  const poolAccount = makeAudit({
+    poolShares: [
+      {
+        poolId: POOL_ID,
+        poolType: "constant_product",
+        shareBalance: "10",
+        totalShares: "1000",
+        shareLimit: "1000",
+        fee: 30,
+        reserves: [
+          { asset: { kind: "native" }, amount: "5" },
+          { asset: { kind: "credit", code: "USDC", issuer: ISSUER }, amount: "5" },
+        ],
+      },
+    ],
+    balances: [
+      // pool-share trustline + the underlying USDC trustline, both empty at audit
+      // time (the underlying balance only appears AFTER the withdraw)
+      {
+        asset: { kind: "liquidity_pool_shares", poolId: POOL_ID },
+        amount: "10",
+        buyingLiabilities: "0",
+        sellingLiabilities: "0",
+      },
+      {
+        asset: { kind: "credit", code: "USDC", issuer: ISSUER },
+        amount: "0",
+        buyingLiabilities: "0",
+        sellingLiabilities: "0",
+      },
+    ],
+  });
+
+  it("isolates the withdraw into a leading batch, free of removals and the merge", () => {
+    const batches = batchClassicDemolition(poolAccount, directOptions);
+    expect(batches.length).toBeGreaterThan(1);
+    const first = batches[0]!.operations.map((o) => o.kind);
+    expect(first).toContain("liquidity_pool_withdraw");
+    // the credited-balance handling must NOT share the withdraw's transaction
+    expect(first).not.toContain("change_trust_remove");
+    expect(first).not.toContain("account_merge");
+  });
+
+  it("keeps the account_merge in the final batch and drops no ops", () => {
+    const batches = batchClassicDemolition(poolAccount, directOptions);
+    const last = batches[batches.length - 1]!.operations;
+    expect(last[last.length - 1]!.kind).toBe("account_merge");
+    // exactly one withdraw and one merge across the whole close, nothing dropped
+    const kinds = allOps(batches).map((o) => o.kind);
+    expect(kinds.filter((k) => k === "liquidity_pool_withdraw")).toHaveLength(1);
+    expect(kinds.filter((k) => k === "account_merge")).toHaveLength(1);
+    // the pool-share trustline is still removed (in the later batch, not batch 0)
+    expect(kinds).toContain("change_trust_remove");
+  });
+
+  it("keeps the mediator-funding op with the withdraw and omits it once funded", () => {
+    const withFunding = batchClassicDemolition(poolAccount, {
+      destination: DEST,
+      useMediator: true,
+      mediatorPublicKey: MED,
+    });
+    // funding op leads the withdraw batch so the mediator exists before the merge
+    expect(withFunding[0]!.operations[0]!.kind).toBe("create_account_mediator");
+
+    // a re-audit phase after the mediator is funded must NOT re-create it
+    const alreadyFunded = batchClassicDemolition(poolAccount, {
+      destination: DEST,
+      useMediator: true,
+      mediatorPublicKey: MED,
+      mediatorAlreadyFunded: true,
+    });
+    const allKinds = allOps(alreadyFunded).map((o) => o.kind);
+    expect(allKinds).not.toContain("create_account_mediator");
+  });
+});
+
 describe("batchClassicDemolition, self-merge guard", () => {
   it("throws when the direct merge destination equals the account being closed", () => {
     expect(() =>

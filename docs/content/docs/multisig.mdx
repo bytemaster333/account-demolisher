@@ -1,0 +1,58 @@
+---
+title: Multisig
+description: Coordinating a closure across several signers with the built-in signing relay.
+---
+
+An account whose signers add up so that no single key can meet the closing threshold cannot close in one signing pass. The demolisher detects this during the audit and coordinates the closure through a built-in signing relay. There is no third-party signature service involved.
+
+## The model
+
+Closing a multisig account means collecting enough signatures on **one** canonical transaction, then submitting it. The demolisher does this with a small relay that lives inside the deployment itself (`src/server/signing-relay.ts`, served under `/api/plan`). The relay holds the transaction, merges signatures into it as they arrive, and streams progress to everyone watching. It never sees a secret key.
+
+The whole flow stays non-custodial. Each signer signs on their own device. The relay only ever holds the (partly signed) envelope, in memory, for a limited signing window: at most 72 hours, and shorter when the transaction's own time bounds expire sooner (the window is capped at the transaction's `maxTime` minus a 60-second grace). After that, an abandoned request is swept away.
+
+## Coordinating the closure
+
+1. **The initiator starts the closure** in the normal `/demolish` flow. When the audit shows the account needs more signatures than the connected key provides, the flow reaches a **Signatures** step instead of signing everything at once.
+2. **The canonical transaction is published** to the relay (`POST /api/plan`). The relay returns an id, which is the transaction's own hash. Publishing is guarded: it must be a classic account-close transaction whose operations all share one source account (the account being closed, which is also the `ACCOUNT_MERGE` source), it must already carry at least one authorized signature, and the relay binds the request to that account's real signer set read from Horizon. Together these prove the publisher controls the account and stop a request from splicing a victim's account into someone else's signing set.
+3. **The initiator shares a link.** The Signatures step shows a shareable URL of the form `/sign?id=<transaction-hash>`. Send it to every co-signer.
+4. **Each co-signer opens the link.** The `/sign` page re-derives the transaction hash from the id and rejects any mismatch, shows the account being closed, and shows a decoded, per-operation summary of the transaction. You never sign blind base64. The co-signer then signs (see the signing paths below), and the signature is posted back to the relay (`POST /api/plan/[id]/sign`), which merges it into the single canonical envelope.
+5. **Progress streams to everyone.** Both the initiator's Signatures step and each co-signer's page open a Server-Sent Events stream (`GET /api/plan/[id]/events`). The relay pushes the updated envelope every time a signature is accepted, with a 25-second keep-alive heartbeat. This is a live stream, not polling; there is no fixed poll interval.
+6. **The threshold is checked on the client.** The account's signer weights and high threshold come from Horizon. The pages add up the collected signing weight and compare it to the threshold. When the collected weight meets it, the initiator can submit the completed closure.
+
+### What the pages show
+
+The initiator's Signatures step shows the shareable link, a "signing weight collected, N of M" progress bar, and the signer list with each signer's weight and a Signed or Pending badge. Submitting the finished closure is behind the same typed-confirmation gate as any other close.
+
+The co-signer's `/sign` page shows the account being closed, the decoded per-operation summary, the network badge, and the same weight-and-signer progress.
+
+## Signing paths for a co-signer
+
+A co-signer has two ways to sign, both entirely local:
+
+- **Connect a wallet** and sign the transaction in it.
+- **Paste a secret key** and sign in the browser. As everywhere else in the app, the seed stays in memory, is used to build a fresh `Keypair` for the one signing call, and is never persisted or sent anywhere.
+
+The initiator can also add a signature from a key they hold directly, using the "sign a key locally" control on the Signatures step. Signatures always travel to the relay as a signed envelope; the app does not import raw partial-XDR files.
+
+## How signatures are merged and checked
+
+Under the hood the relay merges each incoming signature into the canonical envelope (`src/lib/multisig/partial-xdr.ts`). The merge is strict, so a wrong or hostile signature cannot get in:
+
+- The canonical transaction and every incoming partial must be a classic (non-fee-bump) transaction.
+- The incoming partial's hash must byte-for-byte equal the canonical hash. A signature made over any other transaction is rejected, so nothing can be merged across transactions.
+- Each signature must verify with a real ed25519 check against a candidate signer taken from the account's Horizon signer set. A signature that matches no expected signer is dropped.
+- Signatures are deduplicated by the recovered signer key, not by the signature's wire bytes. That defeats an attacker who tries to slip in duplicates by choosing a different four-byte signature hint for the same key.
+
+Because Stellar signatures bind the network passphrase into the transaction hash, a signature collected on one network cannot be replayed to complete the same closure on another.
+
+## The relay's API
+
+| Route                   | Method | Purpose                                                                                                           | Rate limit |
+| ----------------------- | ------ | ----------------------------------------------------------------------------------------------------------------- | ---------- |
+| `/api/plan`             | `POST` | Publish a canonical close transaction; returns its id (the tx hash).                                              | 10 / min   |
+| `/api/plan/[id]`        | `GET`  | Fetch the current envelope for a signing request.                                                                 | 60 / min   |
+| `/api/plan/[id]/sign`   | `POST` | Merge a co-signer's signature into the envelope.                                                                  | 30 / min   |
+| `/api/plan/[id]/events` | `GET`  | Server-Sent Events stream of the envelope as signatures land (max 50 concurrent subscribers per signing request). | 20 / min   |
+
+The relay is bounded: it holds at most 500 open signing requests at once (a further publish gets a capacity error) and rejects an envelope larger than 12,000 base64 characters. It keeps its state in process memory, which is the right fit for a single self-hosted instance; if you run more than one instance behind a load balancer, they will not share signing requests. See [Self host](/docs/self-host).

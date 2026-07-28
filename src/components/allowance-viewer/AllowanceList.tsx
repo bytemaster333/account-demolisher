@@ -11,6 +11,7 @@ import type { NetworkConfig } from "@/lib/config/networks";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { decimals as sep41Decimals, symbol as sep41Symbol } from "@/lib/soroban/sep41";
+import { safeDisplay } from "@/lib/safe-display";
 import { lookupSpender, type SpenderInfo } from "@/lib/soroban/spender-registry";
 import type { Connector } from "@/lib/wallet/connector";
 
@@ -172,7 +173,9 @@ function AllowanceRow({
           sep41Decimals(rpc, record.contractId, userAddress, network),
         ]);
         if (!cancelled) {
-          setTokenSymbol(s);
+          // SEP-41 symbol() is attacker-controlled on-chain text; strip bidi /
+          // control characters so a crafted symbol can't reorder or spoof the row
+          setTokenSymbol(safeDisplay(s));
           setTokenDecimals(d);
         }
       } catch (e: unknown) {
@@ -360,10 +363,7 @@ function formatAmount(amount: bigint, decimals: number | null): string {
   // bigint-safe fixed-point formatting
   const divisor = 10n ** BigInt(decimals);
   const whole = groupThousands((abs / divisor).toString());
-  const fracStr = (abs % divisor)
-    .toString()
-    .padStart(decimals, "0")
-    .replace(/0+$/u, "");
+  const fracStr = (abs % divisor).toString().padStart(decimals, "0").replace(/0+$/u, "");
   return fracStr.length === 0 ? `${sign}${whole}` : `${sign}${whole}.${fracStr}`;
 }
 

@@ -153,7 +153,8 @@ export function validateMemoFormat(type: CexMemoType, value: string): string | n
   if (v.length === 0) return "Enter a non-empty memo value.";
   switch (type) {
     case "id": {
-      if (!/^\d+$/.test(v)) return `A numeric memo (type "id") must be digits only; got "${value}".`;
+      if (!/^\d+$/.test(v))
+        return `A numeric memo (type "id") must be digits only; got "${value}".`;
       let asBig: bigint;
       try {
         asBig = BigInt(v);
@@ -228,7 +229,10 @@ export function requireMemoEnforcement(
   // verified against the user's exchange account from the client)
   const formatError = validateMemoFormat(memo.type, value);
   if (formatError !== null) {
-    return { ok: false, reason: `${cex.name}: ${formatError} Wrong memo at the CEX means lost funds.` };
+    return {
+      ok: false,
+      reason: `${cex.name}: ${formatError} Wrong memo at the CEX means lost funds.`,
+    };
   }
   return { ok: true };
 }

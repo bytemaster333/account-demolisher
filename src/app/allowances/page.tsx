@@ -83,38 +83,41 @@ export default function AllowancesPage(): React.JSX.Element {
   // superseded can't write stale, cross-network results into state.
   const loadSeq = useRef(0);
 
-  const onLoad = useCallback(async (override?: string) => {
-    const seq = ++loadSeq.current;
-    setError(null);
-    setRecords(null);
-    setCurrentLedger(null);
+  const onLoad = useCallback(
+    async (override?: string) => {
+      const seq = ++loadSeq.current;
+      setError(null);
+      setRecords(null);
+      setCurrentLedger(null);
 
-    const parsed = STELLAR_ADDRESS.safeParse((override ?? address).trim());
-    if (!parsed.success) {
-      setError(parsed.error.issues.map((i) => i.message).join("; "));
-      return;
-    }
-    const target = parsed.data;
+      const parsed = STELLAR_ADDRESS.safeParse((override ?? address).trim());
+      if (!parsed.success) {
+        setError(parsed.error.issues.map((i) => i.message).join("; "));
+        return;
+      }
+      const target = parsed.data;
 
-    setLoading(true);
-    try {
-      const rpc = getRpc(network);
-      const latest = await rpc.getLatestLedger();
-      const ledger = latest.sequence;
-      const list = await enumerateAllowances(rpc, target, ledger, undefined, {
-        includeExpired: true,
-      });
-      if (loadSeq.current !== seq) return; // superseded (network switch or newer scan)
-      setRecords(list);
-      setCurrentLedger(ledger);
-      setViewedAddress(target);
-    } catch (e: unknown) {
-      if (loadSeq.current !== seq) return;
-      setError(errorMessage(e, "Failed to load allowances."));
-    } finally {
-      if (loadSeq.current === seq) setLoading(false);
-    }
-  }, [address, network]);
+      setLoading(true);
+      try {
+        const rpc = getRpc(network);
+        const latest = await rpc.getLatestLedger();
+        const ledger = latest.sequence;
+        const list = await enumerateAllowances(rpc, target, ledger, undefined, {
+          includeExpired: true,
+        });
+        if (loadSeq.current !== seq) return; // superseded (network switch or newer scan)
+        setRecords(list);
+        setCurrentLedger(ledger);
+        setViewedAddress(target);
+      } catch (e: unknown) {
+        if (loadSeq.current !== seq) return;
+        setError(errorMessage(e, "Failed to load allowances."));
+      } finally {
+        if (loadSeq.current === seq) setLoading(false);
+      }
+    },
+    [address, network],
+  );
 
   const onUseWallet = useCallback(() => {
     if (publicKey !== null) {
@@ -147,9 +150,7 @@ export default function AllowancesPage(): React.JSX.Element {
     setRecords((prev) =>
       prev === null
         ? prev
-        : prev.filter(
-            (r) => !(r.contractId === record.contractId && r.spender === record.spender),
-          ),
+        : prev.filter((r) => !(r.contractId === record.contractId && r.spender === record.spender)),
     );
   }, []);
 

@@ -16,7 +16,9 @@ export interface TypedConfirmationProps {
   readonly explorerUrl?: string;
   // delay before confirm enables. defaults to 4000ms
   readonly delayMs?: number;
-  readonly onConfirm: () => void;
+  // receives the last-4 chars the user re-typed; the flow machine re-checks it
+  // against the destination before executing (defense-in-depth on the gate)
+  readonly onConfirm: (typed: string) => void;
   readonly onCancel: () => void;
   readonly className?: string;
 }
@@ -259,7 +261,7 @@ export function TypedConfirmation({
           value={typed}
           onChange={(e) => setTyped(e.currentTarget.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && canConfirm) onConfirm();
+            if (e.key === "Enter" && canConfirm) onConfirm(typed);
           }}
           maxLength={4}
           spellCheck={false}
@@ -348,7 +350,7 @@ export function TypedConfirmation({
         ) : (
           <button
             type="button"
-            onClick={onConfirm}
+            onClick={() => onConfirm(typed)}
             disabled={!canConfirm}
             aria-disabled={!canConfirm}
             data-testid="typed-confirmation-confirm"

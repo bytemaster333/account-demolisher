@@ -226,9 +226,18 @@ function buildSetOptions(op: BatchedOperation): xdr.Operation {
 }
 
 function toAsset(id: AssetIdentifier): Asset {
-  if (id.kind === "native") return Asset.native();
-  if (id.kind === "credit") return new Asset(id.code, id.issuer);
-  throw new Error(`Cannot convert pool-share identifier to Asset: ${id.poolId}`);
+  switch (id.kind) {
+    case "native":
+      return Asset.native();
+    case "credit":
+      return new Asset(id.code, id.issuer);
+    case "liquidity_pool_shares":
+      throw new Error(`Cannot convert pool-share identifier to Asset: ${id.poolId}`);
+    case "contract":
+      throw new Error(
+        `Cannot convert a raw SEP-41 contract token to a classic Asset: ${id.contractId}`,
+      );
+  }
 }
 
 // pool-share trustline removal needs the LiquidityPoolAsset, not just the

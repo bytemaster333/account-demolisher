@@ -20,7 +20,8 @@ export type ValidationFailureCode =
   | "FORWARD_OP0_SOURCE_NOT_MEDIATOR"
   | "FORWARD_OP1_NOT_ACCOUNT_MERGE"
   | "FORWARD_OP1_SOURCE_NOT_MEDIATOR"
-  | "FORWARD_DESTINATION_MISMATCH";
+  | "FORWARD_DESTINATION_MISMATCH"
+  | "FORWARD_DESTINATION_NOT_COMMITTED";
 
 // max maxTime horizon. shields against replay of a leaked envelope
 export const MAX_TIME_BOUND_SECONDS = 3600;
@@ -34,6 +35,9 @@ export function validateMediatorForwardEnvelope(
   envelopeXdr: string,
   networkPassphrase: string,
   mediatorPublicKey: string,
+  // the destination committed in the flow token; both forward ops must target it
+  // so a leaked token can't redirect the flow's funds elsewhere (SEC-16)
+  expectedDestination: string,
 ): ValidationResult {
   let parsed: Transaction | FeeBumpTransaction;
   try {
@@ -115,6 +119,15 @@ export function validateMediatorForwardEnvelope(
       ok: false,
       code: "FORWARD_DESTINATION_MISMATCH",
       reason: "Forward payment and accountMerge must target the same destination.",
+    };
+  }
+  // the destination must equal the one committed in the flow token: without this,
+  // a leaked/replayed token could co-sign a forward to an attacker-chosen address
+  if (op0.destination !== expectedDestination) {
+    return {
+      ok: false,
+      code: "FORWARD_DESTINATION_NOT_COMMITTED",
+      reason: "Forward destination does not match the destination committed in the flow token.",
     };
   }
 

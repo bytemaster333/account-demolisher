@@ -1,0 +1,67 @@
+name: Release
+
+# Build a release artifact and attach a SIGNED SLSA build-provenance attestation
+# to it, so a deployment can verify the artifact was built from this repo by this
+# workflow (satisfies the Tranche-3 "provenance-attested releases" criterion).
+#
+# Cut a GitHub Release (or push a v* tag and publish it) to trigger this. The
+# reference deployment then rsyncs the attested artifact rather than an ad-hoc
+# local build.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag/label for the build artifact"
+        required: true
+
+permissions:
+  contents: write # attach the artifact to the release
+  id-token: write # required for keyless signing of the attestation
+  attestations: write # write the provenance attestation
+
+jobs:
+  build-and-attest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install (frozen)
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify before release
+        run: |
+          pnpm typecheck
+          pnpm lint
+          pnpm test
+
+      - name: Production build
+        run: pnpm build
+
+      - name: Resolve artifact name
+        id: meta
+        run: echo "name=account-demolisher-${{ github.event.release.tag_name || inputs.tag }}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Package the built app
+        run: tar -czf "${{ steps.meta.outputs.name }}" .next public package.json next.config.ts pnpm-lock.yaml .npmrc
+
+      - name: Attest build provenance (SLSA)
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: ${{ steps.meta.outputs.name }}
+
+      - name: Attach artifact to the release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.meta.outputs.name }}

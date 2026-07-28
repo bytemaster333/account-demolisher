@@ -16,16 +16,23 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
   if (!limiter.take(getRemoteIp(request))) {
-    return new Response(JSON.stringify({ ok: false, code: "RATE_LIMITED", reason: "Too many requests." }), {
-      status: 429,
-      headers: { "content-type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ ok: false, code: "RATE_LIMITED", reason: "Too many requests." }),
+      {
+        status: 429,
+        headers: { "content-type": "application/json" },
+      },
+    );
   }
   const { id } = await params;
   const plan = getPlan(id);
   if (plan === null) {
     return new Response(
-      JSON.stringify({ ok: false, code: "NOT_FOUND", reason: "This signing request no longer exists." }),
+      JSON.stringify({
+        ok: false,
+        code: "NOT_FOUND",
+        reason: "This signing request no longer exists.",
+      }),
       { status: 404, headers: { "content-type": "application/json" } },
     );
   }

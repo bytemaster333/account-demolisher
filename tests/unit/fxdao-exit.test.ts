@@ -19,7 +19,6 @@ const IDENTITY_ASSEMBLE = { assemble: async (_s: unknown, tx: unknown) => tx } a
 // trusting the builder.
 
 const USER = "GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3";
-const ISSUER = "GAVH5ZWACAY2PHPUG4FL3LHHJIYIHOFPSIUGM2KHK25CJWXHAV6QKDMN";
 
 // TransactionBuilder only reads accountId()/sequenceNumber() off the source, so
 // a plain Account stands in for the Horizon.AccountResponse the signature wants.
@@ -52,20 +51,14 @@ function isNoneOptionalVaultKey(v: xdr.ScVal): boolean {
 
 describe("buildVaultExit guards", () => {
   it("rejects a non-positive vault.debt", async () => {
-    await expect(
-      buildVaultExit(vault(0n), USER, TESTNET, sourceAccount(), ISSUER, null),
-    ).rejects.toThrow(RangeError);
-  });
-
-  it("rejects an empty syntheticAssetIssuer", async () => {
-    await expect(
-      buildVaultExit(vault(1_000_0000000n), USER, TESTNET, sourceAccount(), "", null),
-    ).rejects.toThrow(TypeError);
+    await expect(buildVaultExit(vault(0n), USER, TESTNET, sourceAccount(), null)).rejects.toThrow(
+      RangeError,
+    );
   });
 
   it("refuses to build without an rpc server (would submit an unprepared Soroban tx)", async () => {
     await expect(
-      buildVaultExit(vault(1_000_0000000n), USER, TESTNET, sourceAccount(), ISSUER, null),
+      buildVaultExit(vault(1_000_0000000n), USER, TESTNET, sourceAccount(), null),
     ).rejects.toThrow(/rpc server is required to prepare/);
   });
 });
@@ -79,7 +72,6 @@ describe("buildVaultExit encoding", () => {
       USER,
       TESTNET,
       sourceAccount(),
-      ISSUER,
       null,
       IDENTITY_ASSEMBLE,
     );
@@ -100,7 +92,6 @@ describe("buildVaultExit encoding", () => {
       USER,
       TESTNET,
       sourceAccount(),
-      ISSUER,
       null,
       IDENTITY_ASSEMBLE,
     );

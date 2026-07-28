@@ -49,18 +49,12 @@ export async function buildVaultExit(
   userPublicKey: string,
   network: NetworkConfig,
   sourceAccount: Horizon.AccountResponse,
-  syntheticAssetIssuer: string,
   prevKey: VaultKey | null,
   deps: FxDAOExitDeps = {},
 ): Promise<FxDAOVaultExit> {
   if (vault.debt <= 0n) {
     throw new RangeError(
       `FxDAO buildVaultExit: vault.debt must be > 0; got ${vault.debt.toString()}`,
-    );
-  }
-  if (typeof syntheticAssetIssuer !== "string" || syntheticAssetIssuer.length === 0) {
-    throw new TypeError(
-      "FxDAO buildVaultExit: syntheticAssetIssuer is required (classical-asset issuer G... strkey)",
     );
   }
 
@@ -89,7 +83,9 @@ export async function buildVaultExit(
   }
   const prepared = await assemble(deps.server as rpc.Server, built);
   if ("innerTransaction" in prepared) {
-    throw new Error("FxDAO buildVaultExit: prepareTransaction returned a FeeBumpTransaction unexpectedly");
+    throw new Error(
+      "FxDAO buildVaultExit: prepareTransaction returned a FeeBumpTransaction unexpectedly",
+    );
   }
 
   assertTransactionAllowed(prepared, network);

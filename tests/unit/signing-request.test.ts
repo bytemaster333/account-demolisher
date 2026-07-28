@@ -2,10 +2,12 @@ import {
   Account,
   Asset,
   BASE_FEE,
+  Claimant,
   Keypair,
   Networks,
   Operation,
   TransactionBuilder,
+  xdr,
 } from "@stellar/stellar-sdk";
 import { describe, expect, it } from "vitest";
 
@@ -74,6 +76,101 @@ describe("inspectClose", () => {
 
   it("returns null for undecodable input", () => {
     expect(inspectClose("garbage", NET)).toBeNull();
+  });
+});
+
+describe("inspectClose — SEC-04: value-moving ops must be flagged for the co-signer", () => {
+  const source = Keypair.random().publicKey();
+  const attacker = Keypair.random().publicKey();
+  const dest = Keypair.random().publicKey();
+
+  function bundle(...ops: xdr.Operation[]): string {
+    const b = new TransactionBuilder(new Account(source, "1"), {
+      fee: BASE_FEE,
+      networkPassphrase: NET,
+      timebounds: { minTime: 0, maxTime: 0 },
+    });
+    for (const op of ops) b.addOperation(op);
+    return b.build().toXDR();
+  }
+
+  it("flags a pathPaymentStrictSend to an attacker as danger, with its destination", () => {
+    const op0 = inspectClose(
+      bundle(
+        Operation.pathPaymentStrictSend({
+          sendAsset: Asset.native(),
+          sendAmount: "100",
+          destination: attacker,
+          destAsset: Asset.native(),
+          destMin: "1",
+        }),
+        Operation.accountMerge({ destination: dest }),
+      ),
+      NET,
+    )!.operations[0]!;
+    expect(op0.danger).toBe(true);
+    expect(op0.destination).toBe(attacker);
+  });
+
+  it("flags a createAccount to an attacker as danger, with its destination", () => {
+    const op0 = inspectClose(
+      bundle(
+        Operation.createAccount({ destination: attacker, startingBalance: "500" }),
+        Operation.accountMerge({ destination: dest }),
+      ),
+      NET,
+    )!.operations[0]!;
+    expect(op0.danger).toBe(true);
+    expect(op0.destination).toBe(attacker);
+  });
+
+  it("flags createClaimableBalance as danger", () => {
+    const op0 = inspectClose(
+      bundle(
+        Operation.createClaimableBalance({
+          asset: Asset.native(),
+          amount: "100",
+          claimants: [new Claimant(attacker, Claimant.predicateUnconditional())],
+        }),
+        Operation.accountMerge({ destination: dest }),
+      ),
+      NET,
+    )!.operations[0]!;
+    expect(op0.danger).toBe(true);
+  });
+
+  it("does NOT flag an offer cancellation (amount 0) as danger", () => {
+    const op0 = inspectClose(
+      bundle(
+        Operation.manageSellOffer({
+          selling: Asset.native(),
+          buying: new Asset("USD", attacker),
+          amount: "0",
+          price: "1",
+          offerId: "123",
+        }),
+        Operation.accountMerge({ destination: dest }),
+      ),
+      NET,
+    )!.operations[0]!;
+    expect(op0.danger).toBeFalsy();
+    expect(op0.type).toBe("Cancel a DEX offer");
+  });
+
+  it("flags a non-zero DEX offer as danger", () => {
+    const op0 = inspectClose(
+      bundle(
+        Operation.manageSellOffer({
+          selling: Asset.native(),
+          buying: new Asset("USD", attacker),
+          amount: "1000",
+          price: "1",
+        }),
+        Operation.accountMerge({ destination: dest }),
+      ),
+      NET,
+    )!.operations[0]!;
+    expect(op0.danger).toBe(true);
   });
 });
 

@@ -1,0 +1,56 @@
+---
+title: Account Demolisher
+description: An open-source tool for cleanly closing Stellar accounts, including the Soroban DeFi positions the account holds.
+---
+
+Account Demolisher closes a Stellar account from start to finish. It reads the account, builds a dependency-ordered plan for unwinding the subentries and Soroban DeFi positions it holds, simulates each Soroban step against the live network, and walks you through signing and submitting the closure. The recovered XLM goes to a destination wallet. When the destination is a centralized exchange, it is routed through a temporary mediator account so the last bit of base reserve is not left stranded.
+
+The project ships as a single web app. Every transaction is signed on your own device. No server ever holds your secret key.
+
+## What it closes
+
+Classic Stellar subentries, handled inside one batched classical transaction (or a small number of batches if the account is large):
+
+- Open DEX offers
+- Trustlines, both regular credit trustlines and pool-share trustlines
+- Data entries
+- Non-master signers and elevated thresholds
+- Sponsorships the account holds
+- Claimable balances the account can claim
+
+Soroban DeFi positions, each unwound in its own transaction before the classical close:
+
+- Blend lending positions: repay borrows, withdraw collateral, withdraw supply, claim BLND emissions
+- Aquarius liquidity positions: withdraw shares, claim rewards
+- Soroswap liquidity positions: withdraw the LP position
+- FxDAO vaults: pay the debt, which closes the vault and reclaims its collateral in a single call
+- SEP-41 token allowances: revoke them by setting the approval to zero
+
+The credit balances these steps leave behind (for example an FxDAO stablecoin, or an asset released from a position) are converted to XLM inside the classical transaction. When no conversion path exists, the balance is never moved silently: with your per-asset consent it is either sent to the destination (offered only when the destination already trusts the asset) or returned to its issuer, and otherwise it is left in place, which keeps its trustline and blocks the merge until you resolve it.
+
+## What it flags but does not close
+
+Being honest about the edges matters more than a long feature list:
+
+- **Blend backstop deposits.** Withdrawing a backstop deposit is a separate process with a 17-day queue. On mainnet the audit detects a backstop deposit and warns you to withdraw it yourself before closing, so the funds are not stranded. The close does not do this for you and does not wait on the queue.
+- **Blend borrows you can no longer cover.** Repaying a Blend borrow needs the borrowed asset on hand. The demolisher repays the full liability but does not swap to acquire it, so if the account no longer holds enough of the borrowed token, the preview flags the shortfall and the repay (and therefore the merge) cannot complete until you top up or clear the position yourself.
+- **Arbitrary SEP-41 token balances** that are not part of one of the DeFi positions above. The plan does not sweep standalone Soroban token balances. It revokes allowances and unwinds known positions; a loose contract-token balance is not drained.
+- **Accounts that cannot be merged at all.** If `AUTH_IMMUTABLE` is set, or the account is sponsoring entries for others, the closure stops at the audit with the exact reason. See [How it works](/docs/how-it-works).
+
+## Where to go next
+
+- [Getting started](/docs/getting-started). How to open the live app, run the demo account, connect a real wallet, and pick a network.
+- [How it works](/docs/how-it-works). The audit, the plan graph, the simulator, and the executor.
+- [The demo account](/docs/demo-account). What the one-click testnet account sets up, step by step.
+- [Destinations and the mediator](/docs/destinations-and-mediator). Sending the recovered XLM to a wallet or to a centralized exchange.
+- [Allowance viewer](/docs/allowance-viewer). Auditing and revoking SEP-41 token approvals on any account.
+- [Multisig](/docs/multisig). Coordinating a closure across several signers.
+- [Security](/docs/security). What the app signs, what it never signs, and the threat model.
+- [Self host](/docs/self-host). Running the app on your own infrastructure.
+- [FAQ](/docs/faq). Short answers to the questions we hear most.
+
+## Links
+
+- Live app: <a href="https://demolisher.app">demolisher.app</a>
+- Source: <a href="https://github.com/bytemaster333/account-demolisher">github.com/bytemaster333/account-demolisher</a>
+- License: Apache 2.0

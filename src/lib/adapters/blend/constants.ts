@@ -1,4 +1,5 @@
 // blend constants pinned outside the SDK
+import type { NetworkConfig } from "@/lib/config/networks";
 import { BLEND_MAINNET_INFRASTRUCTURE } from "./pools";
 
 // v2 backstop withdrawal queue duration in seconds (17 days)
@@ -17,6 +18,14 @@ function resolveBackstopMainnetId(): string {
 }
 
 export const BLEND_BACKSTOP_MAINNET_ID: string = resolveBackstopMainnetId();
+
+// Backstop contract id for a network, or null when none is deployed/snapshotted.
+// Backstop detection AND withdrawal are mainnet-only here (testnet/futurenet
+// backstop ids are not pinned), so non-mainnet networks return null and callers
+// skip backstop handling instead of pointing at the mainnet contract.
+export function resolveBackstopId(network: NetworkConfig): string | null {
+  return network.id === "mainnet" ? BLEND_BACKSTOP_MAINNET_ID : null;
+}
 
 // i128 max, used as the "drain all" sentinel for repay/withdraw
 export const I128_MAX: bigint = (1n << 127n) - 1n;

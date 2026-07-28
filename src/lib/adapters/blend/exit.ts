@@ -21,9 +21,9 @@ import type { AssetIdentifier } from "@/lib/types/account";
 import type { BlendUserPositions } from "./client";
 import {
   BACKSTOP_QUEUE_DURATION_SECONDS,
-  BLEND_BACKSTOP_MAINNET_ID,
   I128_MAX,
   MAX_TIMEOUT_SECONDS,
+  resolveBackstopId,
 } from "./constants";
 
 // one unsigned soroban tx in the exit sequence, or a delegated acquire-asset marker
@@ -68,6 +68,9 @@ export interface BuildExitSequenceDeps {
   readonly holdsAtLeast?: (asset: string, amount: bigint) => boolean;
   readonly resolveAssetIdentifier?: (asset: string) => AssetIdentifier;
   readonly backstopShares?: bigint;
+  // override the resolved backstop contract id (tests); defaults to the
+  // network's backstop via resolveBackstopId
+  readonly backstopId?: string;
   readonly claimReserveIds?: readonly number[];
   readonly assemble?: typeof assembleSubmittable;
   readonly server?: rpc.Server;
@@ -183,6 +186,12 @@ export async function buildExitSequence(
 
   // backstop queue withdrawal, honest about the 17-day lock
   if (deps.backstopShares !== undefined && deps.backstopShares > 0n) {
+    const backstopId = deps.backstopId ?? resolveBackstopId(network);
+    if (backstopId === null) {
+      throw new Error(
+        `buildExitSequence: backstop withdrawal requested but no backstop contract is configured for network "${network.id}"`,
+      );
+    }
     const tx = await buildBackstopQueueWithdrawalTx(
       server,
       sourceAccount,
@@ -190,6 +199,7 @@ export async function buildExitSequence(
       position.poolId,
       userPublicKey,
       deps.backstopShares,
+      backstopId,
       assemble,
     );
     const queueEndsAt = new Date(now().getTime() + BACKSTOP_QUEUE_DURATION_SECONDS * 1000);
@@ -306,6 +316,7 @@ async function buildBackstopQueueWithdrawalTx(
   poolId: string,
   userPublicKey: string,
   shares: bigint,
+  backstopId: string,
   assemble: typeof assembleSubmittable,
 ): Promise<Transaction> {
   if (shares <= 0n) {
@@ -314,7 +325,7 @@ async function buildBackstopQueueWithdrawalTx(
     );
   }
 
-  const contract = new Contract(BLEND_BACKSTOP_MAINNET_ID);
+  const contract = new Contract(backstopId);
 
   const tx = new TransactionBuilder(sourceAccount, {
     fee: BASE_FEE,

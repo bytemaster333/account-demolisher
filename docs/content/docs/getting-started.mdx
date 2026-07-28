@@ -1,0 +1,56 @@
+---
+title: Getting started
+description: How to open the live app, run a demo account, connect a real wallet, and pick a network.
+---
+
+The fastest way to see what Account Demolisher does is to open the live app and run the demo flow. It creates a throwaway testnet account, fills it with the kinds of state the demolisher can clean up, and walks you through closing it.
+
+## Open the live app
+
+Go to <a href="https://demolisher.app">demolisher.app</a> and click **Demolish an account**. The connect step gives you three ways to sign.
+
+### Option 1: Create a demo account
+
+Recommended for a first run and for anyone evaluating the project. Click **Create demo account & continue**. A throwaway ed25519 keypair is generated in your browser, funded from friendbot, and walked through a 13-step setup that produces an account holding:
+
+- Three trustlines (USDC, plus two demo-local issuers used for AQUA and YXLM)
+- Two data entries
+- One open sell offer
+- A co-signer at weight 1
+- Credit balances minted by the demo issuers (1000 AQUA, 500 YXLM)
+- A self-claimable 5-XLM claimable balance
+- 50 XLM supplied as collateral to the Blend testnet pool
+- Soroswap swap and add-liquidity steps (attempted, but skipped where the demo can run; see the note below)
+- A SEP-41 allowance on the native-XLM SAC
+
+The demo only runs on networks that have a friendbot (testnet and futurenet), and the Soroswap steps are skipped on both: testnet has no on-chain pools so the aggregator returns no path, and futurenet is unsupported. In practice the only real DeFi position the demo creates is the Blend supply. The skip is surfaced as a per-step note, not a silent failure. Everything after funding is best-effort: a setup step that fails is marked failed or skipped and the rest continues.
+
+Once setup finishes, **Continue** takes you into the closure flow. In the configure step a **Use demo address** button next to the destination field pastes a stable testnet sink address, so you can run the closure without sourcing a second wallet. Full detail is in [The demo account](/docs/demo-account).
+
+### Option 2: Connect a real wallet
+
+Click **Connect wallet** to open Stellar Wallets Kit. The app uses the kit's default module set, so the picker offers Albedo, Freighter, Fordefi, Rabet, xBull, Lobstr, Hana, Klever, OneKey, Bitget, and CactusLink (this list comes from the kit's defaults for the version this build ships, so it can change as the kit is updated). WalletConnect is not included in this build. Your wallet holds the secret key; the app only sees your public key and asks the wallet to sign each transaction. You approve every signing prompt in the wallet itself.
+
+### Option 3: Secret-key fallback
+
+If you do not have a wallet installed, the **Advanced** section reveals a secret-key input. The seed stays in your browser's memory and is used to build a fresh `Keypair` for each signing call. It is never written to disk, never sent to any server, and never copied to the clipboard. This path is provided for people who genuinely have no wallet. The warning above the form is real: a wallet is safer, because it keeps the key out of the page entirely.
+
+## The closure flow
+
+After connecting, a closure moves through a stepper. Four steps always appear; three more are inserted only when they apply, so a bare single-signer close shows four steps plus a confirmation dialog.
+
+1. **Connect.** Pick a signing path (above).
+2. **Configure.** Enter the destination address and an optional memo (required for some exchanges), choose which claimable balances and which SEP-41 allowances to include, and decide how to dispose of any credit balance that has no conversion path.
+3. **Fix issues** (only when needed). Shown when the audit finds something you have to resolve before the account can close.
+4. **Warnings** (only when needed). Shown when there is something to acknowledge, such as a native balance over 1000 XLM, a flagged scam-lookalike token, or a plan that discovery could not fully complete. You tick the acknowledgement to continue.
+5. **Review.** The app reads the account, generates the plan, and simulates every Soroban step against the live network. You see the audit summary and the full node-by-node plan tree before signing anything. From here you open the typed confirmation dialog: type the last four characters of the destination address and wait out a 4-second timer before the confirm button enables.
+6. **Signatures** (multisig accounts only). Collect the remaining signatures. See [Multisig](/docs/multisig).
+7. **Close.** Each node is signed in your wallet, submitted to the network, and marked confirmed once it lands. Recoverable failures are retried with the right fix (a higher fee when the fee was too low, a fresh path and price when an offer moved). Deterministic failures stop with the specific error rather than retrying blindly. The retry model is described in detail in [How it works](/docs/how-it-works).
+
+Because Soroban and classic operations cannot share one signed transaction, you sign once per transaction, not once for the whole plan. A bare account with no DeFi and no more than 100 classical operations is a single signature. An account with DeFi positions signs once per unwind step plus once per classical batch.
+
+## Picking a network
+
+The top navigation bar has a network switcher. You can move between **testnet** and **mainnet** at runtime; the choice persists in your browser (`localStorage["demolisher.network"]`). Switching networks disconnects the current wallet session, because a connected account is scoped to one network.
+
+The default network for a fresh visit comes from the deployment's `NEXT_PUBLIC_STELLAR_NETWORK` build setting, which is `testnet` unless the operator changed it. Futurenet is supported in the app's configuration but is not offered in the switcher. If you run your own deployment and want to change the default, see [Self host](/docs/self-host).

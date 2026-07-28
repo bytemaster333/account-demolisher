@@ -1,4 +1,11 @@
-import { Account, BASE_FEE, Keypair, Networks, Operation, TransactionBuilder } from "@stellar/stellar-sdk";
+import {
+  Account,
+  BASE_FEE,
+  Keypair,
+  Networks,
+  Operation,
+  TransactionBuilder,
+} from "@stellar/stellar-sdk";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -37,10 +44,11 @@ describe("signing-relay addSignature", () => {
     const dest = Keypair.random().publicKey();
 
     // seed with the initiator's (a) signature already present
-    const id = __seedPlanForTests(NET === Networks.TESTNET ? "testnet" : "testnet", signPartial(source, dest, a), [
-      a.publicKey(),
-      b.publicKey(),
-    ]);
+    const id = __seedPlanForTests(
+      NET === Networks.TESTNET ? "testnet" : "testnet",
+      signPartial(source, dest, a),
+      [a.publicKey(), b.publicKey()],
+    );
 
     const res = addSignature(id, signPartial(source, dest, b));
     expect(res.ok).toBe(true);
@@ -139,7 +147,12 @@ describe("signing-relay expiry", () => {
     const a = Keypair.random();
     const dest = Keypair.random().publicKey();
     const old = Date.now() - 73 * 60 * 60 * 1000;
-    const id = __seedPlanForTests("testnet", signPartial(a.publicKey(), dest, a), [a.publicKey()], old);
+    const id = __seedPlanForTests(
+      "testnet",
+      signPartial(a.publicKey(), dest, a),
+      [a.publicKey()],
+      old,
+    );
     expect(getPlan(id)).toBeNull();
   });
 

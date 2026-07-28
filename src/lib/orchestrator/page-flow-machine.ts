@@ -15,6 +15,12 @@ import {
 } from "@/lib/plan/classic-batcher";
 import { hydratePlanTransactions } from "@/lib/plan/hydration";
 import { startMediatorFlow } from "@/lib/mediator/client";
+import { applyRefreshedMediatorFlow, MEDIATOR_FORWARD_NODE_ID } from "@/lib/mediator/refresh";
+import {
+  savePendingForward,
+  clearPendingForward,
+  type PendingMediatorForward,
+} from "@/lib/mediator/pending-flow";
 import { executePlanTreeOnChain, type ConfirmationReceipt } from "@/lib/orchestrator/executor";
 import { auditAccount } from "@/lib/stellar/account-audit";
 import { resolveCreditPaths } from "@/lib/stellar/path-finder";
@@ -26,6 +32,7 @@ import { EMPTY_POSITIONS, type ProtocolPositions } from "@/lib/adapters/position
 import { DirectContractProvider } from "@/lib/adapters/positions/direct";
 import { blendRepayShortfallWarnings } from "@/lib/adapters/blend/repay-check";
 import { enumerateAllowances, type AllowanceRecord } from "@/lib/soroban/allowances";
+import { discoverHeldTokens, type HeldToken } from "@/lib/soroban/held-tokens";
 import type { Connector } from "@/lib/wallet/connector";
 
 export interface PageFlowInput {
@@ -39,6 +46,9 @@ export interface PageFlowInput {
   readonly selectedClaimableBalanceIds?: readonly string[];
   readonly returnToIssuerAssetKeys?: readonly string[];
   readonly sendToDestinationAssetKeys?: readonly string[];
+  // standalone SEP-41 tokens the user opted in to sweep to the destination
+  // (discovered tokens they ticked, plus any they added manually). Default: none.
+  readonly selectedHeldTokens?: readonly HeldToken[];
   readonly positions?: ProtocolPositions;
   readonly allowances?: readonly AllowanceRecord[];
   // when true, do NOT resolve market-conversion paths: every non-XLM balance is
@@ -53,6 +63,15 @@ export interface PageFlowContext {
   readonly audit: AccountAudit | null;
   readonly positions: ProtocolPositions;
   readonly allowances: readonly AllowanceRecord[];
+  // standalone SEP-41 tokens the account holds directly (discovered via event
+  // scan). Surfaced for OPT-IN: the user chooses which to sweep to the
+  // destination (default none) — nothing is auto-moved. `unreadableHeldTokens`
+  // are contracts that credited the account but whose balance couldn't be read.
+  readonly heldTokens: readonly HeldToken[];
+  readonly unreadableHeldTokens: readonly string[];
+  // true when the optional standalone-token scan couldn't complete (timeout/blip);
+  // lets the UI still offer the manual add-a-token affordance in that case.
+  readonly heldTokenScanFailed: boolean;
   readonly discoveryWarnings: readonly string[];
   readonly unroutableCredits: readonly UnroutableCredit[];
   readonly tree: PlanTree | null;
@@ -65,7 +84,9 @@ export interface PageFlowContext {
 
 export type PageFlowEvent =
   | { type: "START"; input: PageFlowInput }
-  | { type: "CONFIRM" }
+  // typed = the last-4 characters of the reviewed destination the user re-typed;
+  // the machine guard re-checks it so a bare/forged CONFIRM can't execute
+  | { type: "CONFIRM"; typed: string }
   | { type: "SUBMIT_BUNDLE"; signedXdr: string }
   | { type: "CANCEL" }
   | { type: "RETRY" }
@@ -84,6 +105,9 @@ interface DiscoverOutput {
   readonly audit: AccountAudit;
   readonly positions: ProtocolPositions;
   readonly allowances: readonly AllowanceRecord[];
+  readonly heldTokens: readonly HeldToken[];
+  readonly unreadableHeldTokens: readonly string[];
+  readonly heldTokenScanFailed: boolean;
   // non-fatal discovery failures (allowance scan / position probe) surfaced so
   // the UI can warn that the plan may be incomplete instead of hiding them.
   readonly discoveryWarnings: readonly string[];
@@ -93,6 +117,9 @@ interface PreviewInput {
   readonly audit: AccountAudit;
   readonly positions: ProtocolPositions;
   readonly allowances: readonly AllowanceRecord[];
+  // only the tokens the user opted in to drain (default none); NOT every
+  // discovered token — nothing is swept without an explicit choice.
+  readonly selectedHeldTokens: readonly HeldToken[];
   readonly network: NetworkConfig;
   readonly destination: string;
   readonly useMediator: boolean;
@@ -109,6 +136,9 @@ interface PreviewOutput {
   // positive credit balances with no XLM path and no return-to-issuer consent;
   // while any exist the account can't fully merge (surfaced in the UI).
   readonly unroutableCredits: readonly UnroutableCredit[];
+  // held-token disposition notes that depend on the destination kind (e.g. a CEX
+  // close can't receive raw SEP-41 tokens); merged into the discovery warnings.
+  readonly heldTokenWarnings: readonly string[];
 }
 
 interface ExecuteInput {
@@ -149,6 +179,62 @@ function withTimeout<T>(label: string, p: Promise<T>, ms: number): Promise<T> {
       setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms),
     ),
   ]);
+}
+
+// Map a discovery error to user-facing warning copy. A user-ACTIONABLE warning
+// (a stranding / backstop / manual-close notice an adapter deliberately produced)
+// is surfaced VERBATIM so its specific, actionable detail reaches the user; a
+// technical load failure (which reads like a developer log line) keeps a generic
+// frame. Fixes SEC-11, where the specific Blend backstop stranding warning was
+// discarded and replaced with a generic "we couldn't check" message.
+export function discoveryWarningFor(e: {
+  readonly protocol: string;
+  readonly message: string;
+}): string {
+  const actionable =
+    /backstop|stranded|will be stranded|withdraw it|manual close|close it manually|before closing/i.test(
+      e.message,
+    );
+  return actionable
+    ? e.message
+    : `We couldn't check your ${e.protocol} positions. If you've used ${e.protocol}, review it before closing.`;
+}
+
+// Held-token disposition notes surfaced BEFORE the user confirms, so a token that
+// can't be swept is never a silent skip at execution. Two cases:
+//   • path 3 — a CEX/mediator close: the selected tokens can't be forwarded to an
+//     exchange, so the generator didn't sweep them; say so, don't drop quietly;
+//   • path 2 — a selected drain that failed/was-skipped in the preview simulation:
+//     warn it'll be left behind on the deleted account if the user proceeds.
+export function heldTokenDispositionWarnings(
+  tree: PlanTree,
+  opts: { readonly useMediator: boolean; readonly selectedCount: number },
+): string[] {
+  const out: string[] = [];
+  if (opts.useMediator && opts.selectedCount > 0) {
+    const n = opts.selectedCount;
+    out.push(
+      `The ${n} standalone token${n === 1 ? "" : "s"} you selected can't be forwarded to an ` +
+        `exchange, so ${n === 1 ? "it won't" : "they won't"} be swept. Move ${
+          n === 1 ? "it" : "them"
+        } to a personal wallet before closing, or ${n === 1 ? "it" : "they"} will be left behind.`,
+    );
+  }
+  for (const node of tree.allNodes.values()) {
+    if (node.kind !== "TransferAsIs") continue;
+    if (node.status !== "failed" && node.status !== "skipped") continue;
+    const asset = node.metadata.asset;
+    const label =
+      asset.kind === "contract"
+        ? `${asset.contractId.slice(0, 4)}…${asset.contractId.slice(-4)}`
+        : "a standalone token";
+    out.push(
+      `We couldn't move token ${label} (${node.error ?? "the transfer simulation failed"}). ` +
+        `If you close now it will be left behind on the deleted account — remove it from the ` +
+        `sweep, or move it out of the account manually first.`,
+    );
+  }
+  return out;
 }
 
 const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({ input }) => {
@@ -203,14 +289,46 @@ const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({ input 
     }
   }
 
+  // standalone SEP-41 tokens held directly (custom tokens someone transferred to
+  // the account). No native "list my tokens" exists, so this event-scans the rpc
+  // for transfers crediting the account and probes balance() on each. Best-effort
+  // + timeout-bounded, its own failure domain: a stall here must not block the
+  // close. The RPC's ~7-day retention means older receipts are missed, so a miss
+  // is surfaced as a soft warning rather than treated as exhaustive.
+  let heldTokens: readonly HeldToken[] = [];
+  let unreadableHeldTokens: readonly string[] = [];
+  let heldTokenScanFailed = false;
+  try {
+    const rpc = getRpc(input.network);
+    const latest = await withTimeout(
+      "getLatestLedger",
+      rpc.getLatestLedger(),
+      DISCOVERY_TIMEOUT_MS,
+    );
+    const scan = await withTimeout(
+      "discoverHeldTokens",
+      discoverHeldTokens(rpc, input.publicKey, latest.sequence, input.network),
+      DISCOVERY_TIMEOUT_MS,
+    );
+    heldTokens = scan.held;
+    unreadableHeldTokens = scan.unreadable;
+  } catch (e) {
+    console.warn("[demolish] held-token discovery skipped:", e);
+    heldTokenScanFailed = true;
+    // Proportionate: this is an OPTIONAL, opt-in scan with a manual-add fallback,
+    // so a timeout/blip must not read like imminent fund loss. It doesn't affect
+    // any balance already shown, and the user can still add a token by contract id.
+    discoveryWarnings.push(
+      "We couldn't finish the optional scan for standalone (custom SEP-41) tokens. This doesn't affect any balance you can already see. If you know you hold a custom token, you can add it by its contract address to include it in the close.",
+    );
+  }
+
   // per-protocol discovery failures (e.g. Soroswap has no position index) were
   // previously invisible; surface them in plain language so the user knows the
   // plan may be partial. The raw technical message is dropped from user copy;
   // it only ever read like a developer log line.
   for (const e of positions.errors) {
-    discoveryWarnings.push(
-      `We couldn't check your ${e.protocol} positions. If you've used ${e.protocol}, review it before closing.`,
-    );
+    discoveryWarnings.push(discoveryWarningFor(e));
   }
 
   // Blend repay needs the borrowed token on hand (no auto-swap). If the account
@@ -218,7 +336,15 @@ const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({ input 
   // rather than letting it surprise the user mid-execution.
   discoveryWarnings.push(...blendRepayShortfallWarnings(audit, positions.blend, input.network));
 
-  return { audit, positions, allowances, discoveryWarnings };
+  return {
+    audit,
+    positions,
+    allowances,
+    heldTokens,
+    unreadableHeldTokens,
+    heldTokenScanFailed,
+    discoveryWarnings,
+  };
 });
 
 // best-effort: the pathKey()s of credit assets the destination account already
@@ -276,7 +402,7 @@ const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) 
   // mean a co-signed drain can only ever reach this user's own funds.
   let mediator: { readonly flowToken: string; readonly mediatorPublicKey: string } | null = null;
   if (input.useMediator) {
-    const flow = await startMediatorFlow();
+    const flow = await startMediatorFlow(input.destination);
     if (!flow.ok) {
       throw new Error(`Could not start the exchange-forward flow (${flow.code}): ${flow.reason}`);
     }
@@ -313,6 +439,10 @@ const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) 
     useMediator: input.useMediator,
     selectedAllowances,
     paths,
+    // sweep ONLY the standalone SEP-41 tokens the user opted in to (default none;
+    // the generator ignores these for a mediator/CEX close, since an exchange
+    // can't receive a raw token — the UI surfaces that separately)
+    ...(input.selectedHeldTokens.length > 0 ? { heldTokens: input.selectedHeldTokens } : {}),
     ...(mediator
       ? { mediatorPublicKey: mediator.mediatorPublicKey, flowToken: mediator.flowToken }
       : {}),
@@ -383,7 +513,12 @@ const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) 
     }
   }
 
-  return { tree, unroutableCredits: unroutable };
+  const heldTokenWarnings = heldTokenDispositionWarnings(tree, {
+    useMediator: input.useMediator,
+    selectedCount: input.selectedHeldTokens.length,
+  });
+
+  return { tree, unroutableCredits: unroutable, heldTokenWarnings };
 });
 
 // Node kinds that CANNOT live inside a single signed classic bundle: each needs
@@ -477,6 +612,45 @@ const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ input }) 
     }
   }
 
+  // SEC-01: re-mint the mediator flow at execute time so its 15-minute TTL starts
+  // NOW — the merge into the ephemeral account and the forward out of it both run
+  // in this pass, well within the window. Minting at preview instead let a slow
+  // review (or a slow multi-position execution) expire the token AFTER the balance
+  // had already been merged into the ephemeral account, stranding it permanently.
+  const mediatorForwardNode = tree.allNodes.get(MEDIATOR_FORWARD_NODE_ID);
+  if (mediatorForwardNode && mediatorForwardNode.status !== "skipped") {
+    // re-mint bound to the SAME destination the forward will target (committed
+    // into the token so the sign route enforces it — SEC-16)
+    const forwardDestination = (
+      mediatorForwardNode.metadata as { readonly ultimateDestination: string }
+    ).ultimateDestination;
+    const flow = await startMediatorFlow(forwardDestination);
+    if (!flow.ok) {
+      const message = `Could not start the exchange-forward flow (${flow.code}): ${flow.reason}`;
+      input.onProgress({ kind: "blocked", message });
+      return { result: { ok: false, errors: [message] }, tree };
+    }
+    applyRefreshedMediatorFlow(tree, {
+      mediatorPublicKey: flow.mediatorPublicKey,
+      flowToken: flow.flowToken,
+    });
+    // SEC-01 part B: persist the in-flight forward BEFORE the merge lands, so a
+    // crash in the window between merge-into-mediator and the forward is
+    // recoverable on reload. Cleared once the close completes below.
+    const forwardMemo = (
+      mediatorForwardNode.metadata as { readonly memo?: PendingMediatorForward["memo"] }
+    ).memo;
+    savePendingForward({
+      publicKey: input.publicKey,
+      mediatorPublicKey: flow.mediatorPublicKey,
+      flowToken: flow.flowToken,
+      ultimateDestination: forwardDestination,
+      ...(forwardMemo ? { memo: forwardMemo } : {}),
+      networkId: input.network.id,
+      savedAt: Date.now(),
+    });
+  }
+
   // re-hydrate the tree against fresh sequence numbers / ledger state
   const ledger = await rpc.getLatestLedger();
   await hydratePlanTransactions(tree, input.publicKey, {
@@ -531,6 +705,9 @@ const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ input }) 
         horizon,
         submitClassic,
         submitSoroban,
+        // re-run Soroban discovery at merge time and refuse if any position remains
+        // (undiscovered / skipped / failed-to-close), so nothing is merged around
+        reprobeSorobanPositions: (pk, net) => new DirectContractProvider().getPositions(pk, net),
       },
     );
     // final receipt = FinalClassicTx merge, else last confirmed
@@ -538,6 +715,14 @@ const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ input }) 
     const mergedTxHash = finalNode?.executed?.txHash;
     const forwardNode = output.tree.allNodes.get("mediator-forward");
     const forwardTxHash = forwardNode?.executed?.txHash;
+
+    // SEC-01 part B: the forward confirmed (or there was none) — the transiting
+    // funds have been swept out, so drop the persisted crash-recovery record. If
+    // the forward failed, executePlanTreeOnChain throws (handled below) and the
+    // record is KEPT so the user can resume it on reload.
+    if (forwardNode === undefined || forwardNode.status === "confirmed") {
+      clearPendingForward();
+    }
 
     // the executor cascade-skips the merge when a dependency (a DeFi exit) fails,
     // so a non-confirmed final node means the account did NOT close, so surface it
@@ -576,6 +761,9 @@ const initialContext: PageFlowContext = {
   audit: null,
   positions: EMPTY_POSITIONS,
   allowances: [],
+  heldTokens: [],
+  unreadableHeldTokens: [],
+  heldTokenScanFailed: false,
   discoveryWarnings: [],
   unroutableCredits: [],
   tree: null,
@@ -594,6 +782,19 @@ export const pageFlowMachine = setup({
     discover: discoverActor,
     preview: previewActor,
     execute: executeActor,
+  },
+  guards: {
+    // Machine-level enforcement of the typed-destination confirmation gate. The
+    // typed value, the timed delay, and the high-value acknowledgement are driven
+    // in React, but the irreversible execute transition ALSO refuses here unless
+    // the CONFIRM event carries the last-4 chars of the reviewed destination — so
+    // a CONFIRM dispatched outside the confirmation UI (a bug, or state poking)
+    // cannot trigger the merge.
+    confirmMatchesDestination: ({ context, event }) => {
+      if (event.type !== "CONFIRM") return false;
+      const dest = context.input?.destination;
+      return typeof dest === "string" && dest.length >= 4 && event.typed === dest.slice(-4);
+    },
   },
 }).createMachine({
   id: "page-flow",
@@ -636,6 +837,9 @@ export const pageFlowMachine = setup({
             audit: ({ event }) => event.output.audit,
             positions: ({ event }) => event.output.positions,
             allowances: ({ event }) => event.output.allowances,
+            heldTokens: ({ event }) => event.output.heldTokens,
+            unreadableHeldTokens: ({ event }) => event.output.unreadableHeldTokens,
+            heldTokenScanFailed: ({ event }) => event.output.heldTokenScanFailed,
             discoveryWarnings: ({ event }) => event.output.discoveryWarnings,
           }),
         },
@@ -656,6 +860,8 @@ export const pageFlowMachine = setup({
             audit,
             positions: context.positions,
             allowances: context.allowances,
+            // only what the user explicitly opted in to drain (default none)
+            selectedHeldTokens: i.selectedHeldTokens ?? [],
             network: i.network,
             destination: i.destination,
             useMediator: i.useMediator,
@@ -678,6 +884,12 @@ export const pageFlowMachine = setup({
           actions: assign({
             tree: ({ event }) => event.output.tree,
             unroutableCredits: ({ event }) => event.output.unroutableCredits,
+            // held-token disposition depends on the destination kind, decided at
+            // preview; fold those notes into the discovery warnings the UI shows.
+            discoveryWarnings: ({ context, event }) => [
+              ...context.discoveryWarnings,
+              ...(event.output.heldTokenWarnings ?? []),
+            ],
           }),
         },
         onError: {
@@ -704,7 +916,7 @@ export const pageFlowMachine = setup({
             signedBundleXdr: null,
           }),
         },
-        CONFIRM: "executing",
+        CONFIRM: { target: "executing", guard: "confirmMatchesDestination" },
         // a multisig close: submit the collected, fully-signed bundle as-is
         SUBMIT_BUNDLE: {
           target: "executing",

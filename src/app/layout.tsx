@@ -12,7 +12,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Account Demolisher",
-  description: "stellar account closure tool with soroban defi support",
+  description: "Stellar account closure tool with Soroban DeFi support.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

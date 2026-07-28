@@ -150,10 +150,26 @@ export function batchClassicDemolition(
   // to issuer); otherwise change_trust would fail on a non-zero balance.
   for (const balance of audit.balances) {
     if (balance.asset.kind !== "liquidity_pool_shares") continue;
+    // Removing a pool-share trustline needs the full LiquidityPoolAsset
+    // (assetA/assetB/fee), not just the pool id. Hydrate it from the audit's pool
+    // details so the builder can reconstruct it — the pool record (and thus its
+    // asset pair) survives in the audit even at a zero share balance, because
+    // loadPoolShares is driven by the trustline, not the balance. reserves come
+    // back from Horizon in canonical order (assetA before assetB).
+    const poolId = balance.asset.poolId;
+    const pool = audit.poolShares.find((p) => p.poolId === poolId);
+    const reserveA = pool?.reserves[0];
+    const reserveB = pool?.reserves[1];
     ops.push({
       kind: "change_trust_remove",
-      summary: `Remove pool-share trustline ${balance.asset.poolId.slice(0, 8)}...`,
-      metadata: { asset: balance.asset, poolShare: true },
+      summary: `Remove pool-share trustline ${poolId.slice(0, 8)}...`,
+      metadata: {
+        asset: balance.asset,
+        poolShare: true,
+        ...(reserveA && reserveB
+          ? { poolAsset: { assetA: reserveA.asset, assetB: reserveB.asset, fee: pool!.fee } }
+          : {}),
+      },
     });
   }
   for (const balance of audit.balances) {
@@ -231,9 +247,11 @@ export function batchClassicDemolition(
     },
   });
 
-  // mediator funding op leads the first batch so it counts toward the op budget
+  // mediator funding op leads the first batch so it counts toward the op budget.
+  // Skipped once a prior phase already funded the mediator (SEC-13 two-phase
+  // close): re-creating an existing account reverts with op_already_exists.
   const leading: BatchedOperation[] = [];
-  if (options.useMediator && options.mediatorPublicKey) {
+  if (options.useMediator && options.mediatorPublicKey && !options.mediatorAlreadyFunded) {
     leading.push({
       kind: "create_account_mediator",
       summary: `Fund mediator ${options.mediatorPublicKey.slice(0, 6)}... with ${MEDIATOR_FUNDING_XLM} XLM`,
@@ -255,11 +273,37 @@ function splitIntoBatches(
     // unreachable in practice; the merge op is always appended
     return [];
   }
+  // SEC-13 two-phase close: a liquidity_pool_withdraw credits the pool's
+  // underlying assets to the account. Converting/removing those trustlines — or
+  // merging — in the SAME transaction reverts, because the credited balance is
+  // now non-zero and the pre-withdraw audit never saw it. Isolate the withdraws
+  // (plus the mediator-funding op that must lead the first batch) into their own
+  // leading batch. The executor re-audits after it confirms and rebuilds the
+  // remainder from the new on-chain state, so the freshly credited balances are
+  // routed to XLM and their trustlines removed in a subsequent batch.
+  const lastWithdraw = ops.findLastIndex((o) => o.kind === "liquidity_pool_withdraw");
+  if (lastWithdraw >= 0 && lastWithdraw < ops.length - 1) {
+    return [
+      buildBatch(ops.slice(0, lastWithdraw + 1), options, /*isFinal*/ false),
+      ...packByLimit(ops.slice(lastWithdraw + 1), options),
+    ];
+  }
+  return packByLimit(ops, options);
+}
+
+// pack ops front-to-back into <=MAX_OPS_PER_TX batches; the merge naturally lands
+// in the last chunk, which is flagged final (memo + mediator inclusion).
+function packByLimit(
+  ops: readonly BatchedOperation[],
+  options: BatchOptions,
+): readonly ClassicBatch[] {
+  if (ops.length === 0) {
+    return [];
+  }
   if (ops.length <= MAX_OPS_PER_TX) {
     return [buildBatch(ops, options, /*isFinal*/ true)];
   }
   const batches: ClassicBatch[] = [];
-  // pack from the front; the merge naturally lands in the last chunk
   let cursor = 0;
   while (cursor < ops.length) {
     const slice = ops.slice(cursor, cursor + MAX_OPS_PER_TX);

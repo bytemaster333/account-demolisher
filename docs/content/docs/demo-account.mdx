@@ -1,0 +1,59 @@
+---
+title: The demo account
+description: A one-click testnet account that exercises most of the demolisher's classical and Soroban surfaces.
+---
+
+The demo account is the recommended first run. It is a throwaway testnet account, built in your browser, that picks up most of the state shapes the demolisher knows how to clean up: classical trustlines, data entries, an offer, a co-signer, a self-sponsored claimable balance, credit balances, a Blend supply position, and a SEP-41 allowance.
+
+The demo never runs on mainnet. The button is gated on the network having a friendbot endpoint, so the deployment only enables it on testnet and futurenet.
+
+## What it does, step by step
+
+There are 13 steps. Only the first two are required; everything after is best-effort, so a single failure is contained rather than breaking the run.
+
+| #   | Step                         | What lands on chain                                                                                                                    |
+| --- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Generate a fresh keypair     | A fresh ed25519 keypair, in browser memory only. The secret never leaves the tab.                                                      |
+| 2   | Fund with friendbot          | 10,000 testnet XLM. This is the one step that is fatal if it fails.                                                                    |
+| 3   | Open trustlines              | USDC (Circle testnet issuer), AQUA, and YXLM. The AQUA and YXLM issuers are demo-local keypairs, so the next steps can mint into them. |
+| 4   | Write data entries           | Two `manageData` entries.                                                                                                              |
+| 5   | Place a sell offer           | Sell 100 XLM for 50 USDC, far from any market price.                                                                                   |
+| 6   | Add a co-signer              | A random ed25519 signer added at weight 1.                                                                                             |
+| 7   | Issue credit balances        | The demo issuers mint 1000 AQUA and 500 YXLM into the demo account.                                                                    |
+| 8   | Create a claimable balance   | A 5-XLM claimable balance with the demo account as its unconditional claimant. The demo account becomes the sponsor of the entry.      |
+| 9   | Supply collateral to Blend   | 50 XLM into the Blend testnet pool as supply collateral.                                                                               |
+| 10  | Swap XLM to USDC on Soroswap | Aggregator-routed. Skipped on testnet: no on-chain liquidity.                                                                          |
+| 11  | Add liquidity to Soroswap    | Skipped if step 10 was skipped, since it needs the USDC the swap would have produced.                                                  |
+| 12  | Approve a SEP-41 allowance   | 100 stroops on the native-XLM SAC, granted to a throwaway random spender.                                                              |
+| 13  | Ready to demolish            | The connector is loaded; the UI shows the demo account's public key, an explorer link, and a Continue button.                          |
+
+## Which of these are real DeFi positions
+
+Worth being precise, because the naming can mislead:
+
+- The only real DeFi position the demo actually creates is the **Blend supply** (step 9). The Soroswap swap and LP steps (10 and 11) are part of the sequence but are skipped in every configuration the demo can run in: the demo needs a friendbot, so it runs only on testnet and futurenet (mainnet has none), Soroswap has no pools on testnet, and it is unsupported on futurenet. So the Soroswap steps never actually create a position.
+- **AQUA and YXLM here are plain classic tokens** from demo-local issuers (a trustline plus a minted credit balance). They are not Aquarius AMM positions. The demo does not set up Aquarius or FxDAO positions. The closure flow handles those protocols when a real account holds them; the demo simply does not create them.
+
+## After the demo finishes
+
+Click **Continue**. The connector for the demo account is registered, the wallet store flips an `isDemo` flag, and you land on the configure step.
+
+In the configure step the destination input has a small **Use demo address** button next to its label. It is only visible when `isDemo` is true. One click pastes a stable testnet sink address into the field, so you can run the closure without sourcing a separate testnet wallet.
+
+From there the flow is identical to a real-wallet closure: build and simulate the plan, type the last four characters of the destination, run the executor.
+
+## What a testnet demo run looks like
+
+Because the Soroswap steps skip on testnet, a testnet demo produces a plan with:
+
+- A `RevokeAllowance` node for the SEP-41 approval from step 12.
+- A `WithdrawBlend` node for the 50 XLM of Blend collateral from step 9.
+- A `FinalClassicTx` that claims the claimable balance, returns the AQUA and YXLM credit balances to their demo issuers (they have no market path, so you consent to return them), removes the three trustlines, deletes the two data entries, cancels the offer, clears the co-signer, and merges the account.
+
+After the executor finishes, the success card shows the merge transaction hash, linked to stellar.expert.
+
+If you change the destination to a centralized exchange address, the mediator path is exercised: the demolisher matches the address against the registry at `src/lib/safety/cex-registry.ts` and enforces the exchange's memo requirement.
+
+## The demo is not a mock
+
+The demo account is a real account on Stellar testnet. The funding, the trustlines, the offer, the data entries, the signer, the claimable balance, the Blend supply, and the SEP-41 allowance are all real on-chain operations. Copy the public key into an explorer mid-run and you will watch them appear. When the closure runs, the same is true: every transaction is on chain, with a hash you can verify.

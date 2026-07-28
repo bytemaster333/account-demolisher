@@ -1,0 +1,96 @@
+---
+title: How it works
+description: The audit, the plan graph, the simulator, and the executor.
+---
+
+Account closure on Stellar is a sequence of ordinary transactions, not a custodial service. The demolisher's job is to assemble the right transactions in the right order, simulate them before you sign, and recover cleanly when the network state shifts underneath. Nothing is mocked. Every step happens on chain.
+
+## Read the account
+
+The audit step calls Horizon for the full account state: balances, signers, thresholds, flags, offers, data entries, sponsorship counts, claimable balances, and pool-share trustlines. Soroban RPC is queried for any active SEP-41 allowances, and the DeFi positions are discovered client-side against the live network. There is no server-side positions proxy, and no positions API key is required. Blend, Soroswap, and FxDAO are read directly on chain; Aquarius is the one exception, discovered through the Aquarius AMM REST API as the primary source with an on-chain event scan as a fallback. The result is one read-only snapshot the rest of the flow works from.
+
+DeFi discovery runs four probes in parallel, one per protocol, against the live contracts:
+
+- **Blend**: supply, collateral, and borrow positions across the known pools, plus BLND emissions. Repaying a borrow needs the borrowed asset on hand; the demolisher repays the full liability but does not swap to acquire it, so if the account is short, the preview flags it and the close cannot finish until you top up or clear the position yourself.
+- **Aquarius**: AMM shares and pending rewards, read from the Aquarius AMM REST API with an on-chain event scan as a fallback.
+- **Soroswap**: LP positions, found by walking the factory's pair list and checking your LP-token balances.
+- **FxDAO**: open vaults and their debt.
+
+On mainnet the audit also checks for a **Blend backstop deposit**. Backstop withdrawals go through a separate 17-day queue, so the close does not unwind them. If it finds one, it surfaces a warning telling you to withdraw it from the Blend backstop yourself before closing, so the funds are not stranded.
+
+The audit computes a feasibility verdict. Two cases are hard stops:
+
+- `AUTH_IMMUTABLE` is set. The account can never be merged. The protocol forbids it, and the flag is permanent.
+- The account is sponsoring entries for others (`num_sponsoring > 0`). The owner of those sponsored entries has to revoke the sponsorships first.
+
+Both are shown with explicit reasons, not silent failures. There is one nuance worth knowing: if the only sponsored entries are self-sponsored claimable balances the account itself can claim, the closure proceeds, because those balances are claimed during the close and the sponsorship count drops to zero before the merge.
+
+The hard stops are not the only thing the preview surfaces. When discovery cannot see everything, the preview says so instead of proceeding as if the account were fully understood: an allowance scan that only reaches back through the RPC retention window, a DeFi probe that failed for one protocol ("we couldn't check your Blend positions right now"), or the Blend borrow shortfall noted above. A partial plan is shown as partial.
+
+## Build the plan
+
+The audit, the discovered positions, and the discovered allowances feed a pure plan generator. It produces a directed acyclic graph (DAG) of nodes. The plan tree defines thirteen node kinds; the generator emits ten of them, grouped by what they do:
+
+- **Allowance**: `RevokeAllowance` (set a SEP-41 approval to zero).
+- **Blend**: `RepayBlend`, `WithdrawBlend`, `ClaimBlendEmissions`.
+- **Aquarius**: `WithdrawAquarius`, `ClaimAquariusRewards`.
+- **Soroswap**: `WithdrawSoroswapLp`.
+- **FxDAO**: `PayFxDAODebt` (a full `pay_debt` that closes the vault and reclaims its collateral; there is no separate redeem step, because `pay_debt` already returns the collateral).
+- **Classic**: `FinalClassicTx` (the batched classical close).
+- **Mediator**: `MediatorForward` (used only when the destination is a centralized exchange).
+
+The remaining three kinds (`ConvertSorobanToXLM`, `TransferAsIs`, and `BackstopQueue`) are defined in the tree type and wired through the executor, but the current generator does not emit them. They are reserved surface, not active steps, and are called out here so the type list and the real behavior do not drift apart.
+
+Each node carries its dependencies as explicit edges. A Blend withdraw waits for that pool's repay. An emissions or rewards claim waits for the matching withdraw. `FinalClassicTx` waits for every Soroban node, so the merge never runs while a position is still open. `MediatorForward`, when present, waits for `FinalClassicTx`.
+
+The graph is validated when it is built: duplicate ids, missing dependencies, and cycles are rejected (the cycle check is a three-color depth-first search). Execution then walks the graph in topological order using Kahn's algorithm, so the order is stable and deterministic: nodes with no unmet dependency run first, and each completed node releases its children.
+
+## The classical batch
+
+`FinalClassicTx` is one classical Stellar transaction (or a few, if the account is large). The order of operations inside it is fixed, in nine phases:
+
+1. Withdraw classical liquidity-pool positions, with slippage-bounded minimums.
+2. Cancel open offers.
+3. Claim the claimable balances you opted into, skipping any that are not yet claimable.
+4. Convert non-XLM credit balances to XLM with `PATH_PAYMENT_STRICT_SEND`. If no path exists, then with your per-asset consent the residue is either sent to the destination (offered only when the destination already trusts the asset) or returned to its issuer; otherwise it is left in place, which blocks the merge until you resolve it.
+5. Remove trustlines: pool-share trustlines first, then the underlying credit trustlines, and only once each balance has been handled.
+6. Delete data entries.
+7. Release self-sponsored entries. This phase emits no operations; those sponsorships release automatically once the entries they sponsor are gone.
+8. Clear non-master signers and reset thresholds.
+9. `ACCOUNT_MERGE`.
+
+A fixed slippage haircut is applied to the conversion and withdrawal minimums so a small price move does not fail the batch. If the batch exceeds the protocol limit of 100 operations, it is split at 100, and the merge always lands in the last transaction. When the destination is a centralized exchange, a `CREATE_ACCOUNT` operation funding the mediator with 2 XLM is prepended to the first batch and the merge targets the mediator instead of your destination. See [Destinations and the mediator](/docs/destinations-and-mediator).
+
+## Simulate before signing
+
+Before you confirm anything, every Soroban node is simulated:
+
+- Each Soroban node is run through the Soroban RPC `simulateTransaction` endpoint. The returned resource fee, authorization entries, and ledger footprint (`transactionData`) are baked into the envelope. If the simulation reports that an entry is archived and would need a restore preamble, that condition is detected but is not currently acted on: an exit against archived state fails cleanly and is surfaced in the preview, rather than being restored and retried automatically.
+- The classical transaction is not RPC-simulated. It is built locally and its operation count (the first batch's, for a large multi-batch close) and a fee floor are exposed, because the real envelope is rebuilt from fresh state at submit time.
+
+The plan tree in the preview step shows the outcome of each simulation. If a node cannot be simulated (a missing balance, a stale footprint), it is marked failed or skipped in the preview, and the closure is held until you resolve it or accept the gap.
+
+## Execute
+
+Execution walks the topological order. For each node it:
+
+1. Re-reads the account when needed. The classical transaction is rebuilt fresh from the latest state every time it runs, because the Soroban exits ahead of it move balances around.
+2. Hands the unsigned envelope to the connector. For Stellar Wallets Kit this opens your wallet's confirmation UI. For the secret-key fallback the keypair signs locally in browser memory. The `MediatorForward` node is the one exception: it is signed by the server with the mediator's own key (the mediator is the transaction's only signer) and needs no wallet signature from you.
+3. Checks the transaction against the contract allow-list immediately before signing each DeFi (Soroban) node. A transaction that invokes a contract not on the allow-list is refused with an `AllowlistViolation` and the closure halts. `RevokeAllowance` is exempt (it only ever builds a safe zero-approval on your own token), and the classical and mediator transactions are not Soroban contract calls, so they do not pass through this gate.
+4. Submits the signed envelope. Classical goes to Horizon. Soroban goes to the RPC, then is polled until the receipt arrives. The receipt is recorded and the row ticks to confirmed.
+
+You sign once per transaction, not once for the whole plan, because Soroban and classic operations cannot be bundled into a single signed envelope.
+
+## Recovering from failures
+
+There is no single "retry classifier" module. Recovery is handled where each kind of failure actually occurs.
+
+- **Classical submission rejections** are classified into three outcomes. An insufficient-fee rejection retries with a higher fee (tripling the per-operation bid up to a ceiling). A repricing rejection (a destination minimum missed, too few offers, a source maximum exceeded, or a transaction that landed too late) retries after re-resolving paths and recomputing the minimums against fresh state. Any deterministic rejection (a bad sequence number, a missing trustline, and the like) is fatal and is surfaced with its exact error. The retry loop is bounded at three attempts.
+- **Sequence numbers** are refreshed implicitly: each classical attempt reloads the source account and re-audits and re-batches against the latest state, so a stale sequence does not persist across a retry.
+- **Transient Horizon read errors** (5xx or a network blip on an idempotent read) are retried a few times with backoff. A 404 or other 4xx is fatal and raised immediately.
+- **Guarded conditions** throw and do not retry: the account failing its mergeability re-check at execute time, a credit balance with no conversion path and no disposal choice from you, and an allow-list violation.
+- **Dependencies that did not confirm** cause their dependents to be skipped rather than merged around. A failed DeFi exit blocks the merge instead of closing the account with an open position.
+
+## Why this design
+
+The closure is a sequence of standard, auditable Stellar transactions. The plan is shown to you before you sign. The simulation grounds it in the real network state. The failure handling closes the loop on transient errors without ever papering over a deterministic one. No part of the flow asks you to trust a server that holds your key.

@@ -151,10 +151,7 @@ function signersOf(tx: Transaction, signerKeys: readonly string[]): string[] {
 // tx.source — and every operation must share that same effective source, so an
 // attacker can't fetch the signer set of an account they control while merging a
 // victim account. Muxed / non-ed25519 sources are rejected.
-function decodeClose(
-  xdr: string,
-  passphrase: string,
-): { tx: Transaction; source: string } | null {
+function decodeClose(xdr: string, passphrase: string): { tx: Transaction; source: string } | null {
   let tx: Transaction;
   try {
     tx = TransactionBuilder.fromXDR(xdr, passphrase) as Transaction;
@@ -216,7 +213,8 @@ export async function createPlan(network: string, xdr: string): Promise<CreateRe
       return {
         ok: false,
         code: "REJECTED",
-        reason: "That signature isn't valid for this transaction or isn't from an authorized signer.",
+        reason:
+          "That signature isn't valid for this transaction or isn't from an authorized signer.",
       };
     }
     return { ok: true, id };
@@ -282,14 +280,20 @@ export function addSignature(id: string, partialXdr: string): SignResult {
   if (rec === undefined) {
     return { ok: false, code: "NOT_FOUND", reason: "This signing request no longer exists." };
   }
-  if (typeof partialXdr !== "string" || partialXdr.length === 0 || partialXdr.length > MAX_XDR_CHARS) {
+  if (
+    typeof partialXdr !== "string" ||
+    partialXdr.length === 0 ||
+    partialXdr.length > MAX_XDR_CHARS
+  ) {
     return { ok: false, code: "BAD_XDR", reason: "Missing or oversized signature payload." };
   }
   const passphrase = resolveNetwork(rec.network).passphrase;
   let merged: string;
   const before = signatureCount(rec.xdr, passphrase);
   try {
-    merged = mergeSignatures(rec.xdr, [partialXdr], passphrase, { expectedSigners: rec.signerKeys });
+    merged = mergeSignatures(rec.xdr, [partialXdr], passphrase, {
+      expectedSigners: rec.signerKeys,
+    });
   } catch {
     return {
       ok: false,

@@ -45,8 +45,9 @@ playwright-report/
 playwright/.cache/
 blob-report/
 
-# docs / research / planning
-docs/
+# research / planning (the docs/ site IS tracked — it's the published user
+# documentation; its build artifacts are ignored by docs/.gitignore. ARCHITECTURE.md
+# and SECURITY.md stay internal via the *.md rule below.)
 researches/
 plan.md
 completion.md

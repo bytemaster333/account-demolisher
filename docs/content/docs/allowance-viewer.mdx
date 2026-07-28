@@ -1,0 +1,49 @@
+---
+title: Allowance viewer
+description: Audit and revoke SEP-41 token allowances on any Stellar account.
+---
+
+SEP-41 is Stellar's standard for fungible tokens on Soroban. As in the ERC-20 `approve` model, a holder can grant a spender (often a router or a contract) permission to move a set amount of a token on their behalf. Forgotten approvals are a real attack surface: a malicious or compromised spender can drain up to whatever the allowance authorizes.
+
+The allowance viewer is a standalone tool in the same app, at `/allowances`. You do not have to close anything to use it.
+
+## What it shows
+
+Paste a Stellar address (your own or someone else's) and click **Scan**, or use **Scan my own address** to fill in the wallet you have connected. The viewer accepts both a **G-address** (a normal account) and a **C-address** (a contract), so you can audit a contract's outgoing approvals too. It reads the network for recent `approve` events from any SEP-41 token the address has interacted with, keeps the latest state for each token and spender, and lists it.
+
+Each row shows:
+
+- The token symbol, read lazily from the token contract.
+- The spender address, with a human label if it is a known contract (a Soroswap router, a Blend pool, an Aquarius router, and so on), or a yellow **Unrecognized spender** flag if it is not.
+- The current approved amount, formatted with the token's own decimals.
+- The expiry ledger, if the approval is bounded.
+
+A **Show expired allowances** toggle controls whether already-expired approvals appear in the list.
+
+## The scan window is about seven days
+
+Soroban RPC providers retain events for a limited window, roughly seven days on most providers. The viewer scans the last `120,960` ledgers, which is about seven days at five seconds per ledger (`DEFAULT_SCAN_WINDOW_LEDGERS` in `src/lib/soroban/allowances.ts`).
+
+If the RPC reports that the requested start ledger is older than what it retains, the scan clamps to the earliest ledger available, adds a small margin, and retries. Within the retained window the scan is complete. For history older than the retention window you would need to ingest events into your own store; no public RPC keeps them indefinitely.
+
+Under the hood the scan calls the RPC `getEvents` endpoint, filters for SEP-41 `approve` events emitted by the address, pages through the results, and deduplicates them per token and spender, keeping the record from the highest ledger so you see the current state rather than a stale one.
+
+## Revoking an approval
+
+Click **Revoke** on any row. The app builds a SEP-41 `approve(from, spender, 0, current_ledger)` call, with `from` set to the audited address, which sets the allowance to zero. It simulates the call, hands it to your connected wallet, submits the signed transaction, and refreshes the row.
+
+You have to be connected with the wallet that owns the address being audited. SEP-41 requires the approval's owner to be the transaction source, so the connected key must match the address whose allowances are changing. The app checks this before it builds the transaction and refuses if the keys do not match. If you scanned an address you are not connected as, the viewer stays read-only and prompts you to connect the owning wallet before any revoke.
+
+## Revoking in bulk
+
+Above the list, a bulk bar offers two sweeps: revoke every active approval, or revoke only the approvals whose spender is unrecognized. Either sweep revokes one approval at a time, waiting for each `approve(0)` to confirm on chain before starting the next (so a stale sequence number cannot break the batch), and asks your wallet to sign once per approval. You can stop the sweep partway through; whatever has already been revoked stays revoked.
+
+## Why this matters
+
+Stellar allowances are persistent. They survive the spender contract being upgraded. They survive the token issuer being rotated. They do not expire on their own unless a `live_until_ledger` was set. An approval you granted to a router three months ago is still active today unless you revoked it.
+
+If that router is later compromised, every account with an active approval to it is exposed up to the approved amount. Auditing and pruning approvals is the same hygiene revoke.cash promotes for Ethereum. The viewer is the Stellar equivalent.
+
+## How spender labels are decided
+
+The known-spender labels come from the contract allow-list for the network you are scanning (`getAllowlistForNetwork`, defined in `src/lib/config/contracts.ts` and used by `lookupSpender` in `src/lib/soroban/spender-registry.ts`). The label map is built per network and cached, so mainnet scans label mainnet spenders and testnet scans label testnet spenders. A spender that is not on that network's allow-list is shown with the yellow **Unrecognized spender** flag, and its contract id is shown verbatim so you can look it up on an explorer before deciding whether to revoke.

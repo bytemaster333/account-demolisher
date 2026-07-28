@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Select } from "@/components/ui";
+import { MainnetConfirm } from "./MainnetConfirm";
 import { useTheme } from "./ThemeProvider";
 import { resolveNetwork, type NetworkConfig, type StellarNetwork } from "@/lib/config/networks";
 import { explorerAccountUrl } from "@/lib/explorer";
@@ -535,18 +536,35 @@ function NetworkSwitcher() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // a mainnet selection is held here until the user confirms it in the dialog
+  const [pendingMainnet, setPendingMainnet] = useState(false);
+
+  const applySwitch = useCallback(
+    (id: StellarNetwork): void => {
+      setNetwork(id);
+      try {
+        window.localStorage.setItem(NETWORK_STORAGE_KEY, id);
+      } catch {
+        // storage disabled; selection still applies for this session
+      }
+      // a connected account is network-scoped; changing network invalidates it.
+      // Full teardown (connector + kit + store), not just the store, so the wallet
+      // extension doesn't stay authorized to the old network's session.
+      void disconnectSession(disconnect);
+    },
+    [setNetwork, disconnect],
+  );
+
   const onChange = (id: StellarNetwork): void => {
     if (id === networkId) return;
-    setNetwork(id);
-    try {
-      window.localStorage.setItem(NETWORK_STORAGE_KEY, id);
-    } catch {
-      // storage disabled; selection still applies for this session
+    // Switching onto the live network is gated by a deliberate confirmation
+    // (mainnet actions move real funds and are irreversible); switching back to
+    // testnet — the safer network — applies immediately.
+    if (id === "mainnet") {
+      setPendingMainnet(true);
+      return;
     }
-    // a connected account is network-scoped; changing network invalidates it.
-    // Full teardown (connector + kit + store), not just the store, so the wallet
-    // extension doesn't stay authorized to the old network's session.
-    void disconnectSession(disconnect);
+    applySwitch(id);
   };
 
   const label = (net: StellarNetwork): React.JSX.Element => (
@@ -568,16 +586,27 @@ function NetworkSwitcher() {
   );
 
   return (
-    <Select
-      size="sm"
-      ariaLabel="Select network"
-      value={networkId === "mainnet" ? "mainnet" : "testnet"}
-      onChange={(v) => onChange(v as StellarNetwork)}
-      options={[
-        { value: "testnet", label: label("testnet") },
-        { value: "mainnet", label: label("mainnet") },
-      ]}
-    />
+    <>
+      <Select
+        size="sm"
+        ariaLabel="Select network"
+        value={networkId === "mainnet" ? "mainnet" : "testnet"}
+        onChange={(v) => onChange(v as StellarNetwork)}
+        options={[
+          { value: "testnet", label: label("testnet") },
+          { value: "mainnet", label: label("mainnet") },
+        ]}
+      />
+      {pendingMainnet ? (
+        <MainnetConfirm
+          onConfirm={() => {
+            applySwitch("mainnet");
+            setPendingMainnet(false);
+          }}
+          onCancel={() => setPendingMainnet(false)}
+        />
+      ) : null}
+    </>
   );
 }
 

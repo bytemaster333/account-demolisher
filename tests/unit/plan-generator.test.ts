@@ -86,6 +86,32 @@ function indexOf(order: readonly { id: string }[], nodeId: string): number {
   return i;
 }
 
+describe("generatePlan, memo handling (SEC-03: direct-path memo must survive)", () => {
+  const MEMO = { type: "id", value: "9876543210" } as const;
+
+  it("carries the memo into FinalClassicTx metadata for a direct (non-mediator) close", () => {
+    const tree = generatePlan(makeAudit(), emptyPositions(), [], DEST, { memo: MEMO });
+    const final = tree.allNodes.get("final-classic-tx");
+    expect(final?.kind).toBe("FinalClassicTx");
+    // metadata.memo is what execute-time re-batching re-applies; without it the
+    // signed direct merge silently drops the deposit memo (the SEC-03 defect)
+    expect((final!.metadata as { memo?: unknown }).memo).toEqual(MEMO);
+    expect(tree.allNodes.get("mediator-forward")).toBeUndefined();
+  });
+
+  it("also routes the memo through the forward hop for a mediator (CEX) close", () => {
+    const tree = generatePlan(makeAudit(), emptyPositions(), [], DEST, {
+      memo: MEMO,
+      useMediator: true,
+      mediatorPublicKey: MED,
+      flowToken: "nonce.exp.mac",
+    });
+    const forward = tree.allNodes.get("mediator-forward");
+    expect(forward?.kind).toBe("MediatorForward");
+    expect((forward!.metadata as { memo?: unknown }).memo).toEqual(MEMO);
+  });
+});
+
 describe("generatePlan, protocol ordering invariants", () => {
   it("wires and orders Blend repay before that pool's withdraw", () => {
     const tree = generatePlan(makeAudit(), richPositions(), [], DEST);
@@ -185,5 +211,54 @@ describe("generatePlan, mediator forward", () => {
         mediatorPublicKey: MED,
       }),
     ).toThrow(/requires opts\.flowToken/);
+  });
+});
+
+describe("generatePlan, held SEP-41 token auto-drain (SEP-41 auto-include)", () => {
+  const TOKEN_A = "CTOKENAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1";
+  const TOKEN_B = "CTOKENBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB2";
+
+  it("emits a TransferAsIs drain per held token, sent to the destination, before the merge", () => {
+    const tree = generatePlan(makeAudit(), emptyPositions(), [], DEST, {
+      heldTokens: [
+        { contractId: TOKEN_A, balance: 500n },
+        { contractId: TOKEN_B, balance: 1n },
+      ],
+    });
+
+    const drainA = tree.allNodes.get(id("drain-token", TOKEN_A));
+    const drainB = tree.allNodes.get(id("drain-token", TOKEN_B));
+    expect(drainA?.kind).toBe("TransferAsIs");
+    expect(drainB?.kind).toBe("TransferAsIs");
+    if (drainA?.metadata.kind === "TransferAsIs") {
+      expect(drainA.metadata.asset).toEqual({ kind: "contract", contractId: TOKEN_A });
+      expect(drainA.metadata.amount).toBe(500n);
+      expect(drainA.metadata.destination).toBe(DEST);
+    }
+
+    // ordering: each drain is a dependency of the merge, so it runs BEFORE it
+    expect(dependsOn(tree, "final-classic-tx", id("drain-token", TOKEN_A))).toBe(true);
+    expect(dependsOn(tree, "final-classic-tx", id("drain-token", TOKEN_B))).toBe(true);
+    const order = topologicalOrder(tree);
+    expect(indexOf(order, id("drain-token", TOKEN_A))).toBeLessThan(
+      indexOf(order, "final-classic-tx"),
+    );
+  });
+
+  it("skips a zero-balance held token (nothing to drain)", () => {
+    const tree = generatePlan(makeAudit(), emptyPositions(), [], DEST, {
+      heldTokens: [{ contractId: TOKEN_A, balance: 0n }],
+    });
+    expect(tree.allNodes.get(id("drain-token", TOKEN_A))).toBeUndefined();
+  });
+
+  it("does NOT auto-drain on a mediator/CEX close (an exchange can't receive a raw token)", () => {
+    const tree = generatePlan(makeAudit(), emptyPositions(), [], DEST, {
+      useMediator: true,
+      mediatorPublicKey: MED,
+      flowToken: "nonce.exp.mac",
+      heldTokens: [{ contractId: TOKEN_A, balance: 500n }],
+    });
+    expect(tree.allNodes.get(id("drain-token", TOKEN_A))).toBeUndefined();
   });
 });

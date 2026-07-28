@@ -1,0 +1,80 @@
+---
+title: Security
+description: What the demolisher signs, what it never signs, and the threat model.
+---
+
+Closing an account is one of the most destructive things you can do on Stellar. The design keeps the trust the demolisher asks of you as small as possible.
+
+## What the deployment can do
+
+The deployment is a Next.js application. Its server side has three jobs, spread across a handful of API routes:
+
+- **`/api/mediator/sign`** mints an ephemeral mediator account for a single closure and signs a strictly-validated two-operation forward envelope with that mediator's own ephemeral key (the mediator is the envelope's only signer). It holds no user key. See [Destinations and the mediator](/docs/destinations-and-mediator).
+- **The signing relay** (`/api/plan`, `/api/plan/[id]`, `/api/plan/[id]/sign`, `/api/plan/[id]/events`) collects signatures for a multisig closure and merges them into one canonical envelope. It stores the envelope in memory for a signing window and holds no secret material. See [Multisig](/docs/multisig).
+- **`/api/soroswap`** is a server-side proxy to the Soroswap aggregator, used when converting non-XLM balances to XLM. It conceals the upstream API key, allows only a fixed set of aggregator operations, and is rate limited to five requests per minute per IP.
+
+DeFi positions are discovered client-side, in the browser, against the live network. There is no server-side positions proxy. Blend, Soroswap, and FxDAO are read directly from their contracts; Aquarius discovery is the one exception, using the Aquarius AMM REST API (allow-listed in the CSP) as its primary source with an on-chain event scan as a fallback.
+
+The deployment does **not**:
+
+- Hold your secret key. The key never reaches the server.
+- Build transactions on your behalf without you reviewing them first.
+- Submit transactions on your behalf. Your wallet signs and your browser submits.
+- Run analytics, telemetry, or any third-party tracking.
+
+## The mediator key
+
+The only privileged secret the deployment uses is `MEDIATOR_SECRET`, and it is not stored as a ready-to-use signing key. It is a Stellar seed used **only as a master HMAC key**. For each closure the server derives a fresh, ephemeral signing keypair from it (`HMAC-SHA256(master, "mediator-flow-key:" + nonce)` in `src/server/mediator-secret.ts`) and signs with that. The master seed itself never signs anything. A per-flow token, with a 15-minute lifetime, is what unlocks a flow's derived key.
+
+The constraints on what a derived key can do:
+
+- The validator at `src/lib/mediator/validator.ts` enforces a single accepted envelope shape and rejects everything else with one of twelve distinct failure codes. The mediator must be the transaction source and the source of both operations; the first operation must be a native payment; the second must be an `ACCOUNT_MERGE`; both must target the same destination; the time bounds must be present and no more than one hour in the future.
+- Fee-bump envelopes are refused outright.
+- The endpoint is rate limited to five requests per minute per IP.
+
+If the validator passes, the worst a derived key can do is exactly what the envelope already authorizes: send your funds to the destination you chose.
+
+## Wallet signing
+
+Every transaction is signed on your own device. The demolisher uses Stellar Wallets Kit's default module set, so it can talk to Albedo, Freighter, Fordefi, Rabet, xBull, Lobstr, Hana, Klever, OneKey, Bitget, and CactusLink. The kit passes the unsigned envelope to your wallet, the wallet shows its own confirmation prompt, you approve, and the wallet returns the signed envelope. The demolisher never sees the secret key.
+
+For people without a wallet installed, the **Advanced** secret-key fallback exists. The seed stays in browser memory only. It is never written to disk, never sent to any server, and never copied to the clipboard, and a fresh `Keypair` is built for each signing call so the keypair bytes live for one method call. The warning above the form is honest: this path is less safe than a wallet, and it is offered only because some people genuinely have no wallet.
+
+## Contract allow-list
+
+Every Soroban transaction the demolisher is about to sign is checked against a network-specific allow-list of contract ids, immediately before signing (`src/lib/stellar/allowlist.ts`, enforced in the executor). The allow-list is built in `src/lib/config/contracts.ts` and holds 25 mainnet entries and 19 testnet entries, covering Soroswap, Blend, Aquarius, and FxDAO. Contract-creation and WASM-upload host functions are always rejected.
+
+A position discovered on chain cannot extend the allow-list. Only edits to the source file change it.
+
+If a transaction would invoke a contract that is not on the list, the signing call refuses and the closure halts with an `AllowlistViolation`. This is a deliberate hard stop. If closing a position needs an unknown contract, the safe move is to escalate, not to sign blindly. The one node exempt from the check is `RevokeAllowance`, because it only ever builds a safe zero-approval on your own token contract, chosen from your own allowance scan rather than from the DeFi allow-list.
+
+## Safety gates in the UI
+
+Before any signing happens you pass through:
+
+- **Typed confirmation.** You must type the last four characters of the destination address, and a 4-second timer must elapse, before the confirm button enables. This catches wrong pastes and clipboard hijacks.
+- **High-value warning.** A separate acknowledgment appears when the native balance about to move is over 1000 XLM.
+- **Scam-token heuristics.** Three checks run over the account's token balances. A symbol that exactly matches a tier-1 asset (XLM, USDC, EURC, AQUA, BLND) but comes from a non-canonical issuer is flagged critical (this fires only where a canonical issuer is known, so it abstains on testnet for AQUA and BLND). A symbol within edit distance two of a tier-1 symbol is flagged as a lookalike, graded by distance (distance one is a warning, distance two is informational). A symbol containing characters outside `[A-Za-z0-9]` (homoglyphs, accented or non-Latin code points) is flagged critical. A fourth heuristic exists for off-allow-list contracts, but classic balances are not fed a contract id in this flow, so that protection is really the signing-time allow-list gate above, not a balance heuristic here.
+- **Memo enforcement.** For known centralized exchanges, the configure step refuses to start without the correct memo type and content.
+
+## What the threat model covers
+
+| Threat                                                    | Mitigation                                                                                                                                                                                       |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Clipboard or paste hijack of the destination              | Typed last-four gate plus a 4-second timer                                                                                                                                                       |
+| High-value blind send                                     | High-value warning above 1000 XLM                                                                                                                                                                |
+| Phishing clone of the deployment                          | Canonical URL declared in `public/stellar.toml` (SEP-1) so embedders can verify the origin                                                                                                       |
+| Supply-chain attack on an SDK or wallet                   | `pnpm-lock.yaml` committed; no analytics or telemetry SDKs in the dependency graph                                                                                                               |
+| A discovered position pointing at a malicious contract    | Hard-coded allow-list, verified again at signing time                                                                                                                                            |
+| Mediator key misuse                                       | Master seed used only to derive a fresh per-flow key; validator accepts one envelope shape; both operations share your chosen destination; one-hour time bound; rate limited; fee-bumps rejected |
+| Front-running or MEV on a swap                            | Slippage minimums applied to conversions and withdrawals; the Soroswap aggregator enforces its own slippage guard                                                                                |
+| Cross-network or cross-transaction replay of a signature  | Stellar signatures bind the network passphrase into the transaction hash; the multisig merge admits only signatures that verify against the canonical hash and an expected signer                |
+| A stranger opening a signing request against your account | Publishing to the relay requires an already-authorized signature and binds to the account's real signer set                                                                                      |
+
+## Content Security Policy
+
+The production deployment serves a strict CSP (`next.config.ts`). `connect-src` allows `'self'` plus exactly eleven upstream endpoints: Horizon (mainnet, testnet, futurenet), Soroban RPC (mainnet, testnet, futurenet), the Aquarius API (mainnet and testnet), the Soroswap API, and Friendbot (testnet and futurenet). `script-src` allows `'self'`, `'unsafe-inline'` (required by the Next.js React Server Components inline payload), and `'wasm-unsafe-eval'` (required by the Stellar SDK's ed25519 WASM module). `object-src` is `'none'`, frames are denied (`frame-ancestors 'none'`), and `form-action` is restricted to `'self'`. Any request to an endpoint not on the list is blocked by the browser at the CSP layer.
+
+## A note on `public/stellar.toml`
+
+The bundled `public/stellar.toml` is a SEP-1 origin declaration for a reference deployment. Its signing key and signer entries are placeholders. If you run your own deployment and want embedders to be able to verify your origin, replace those values and re-sign the file for your domain. It is a declaration about the site, not the source of the mediator's signing key, which is derived from `MEDIATOR_SECRET` as described above.

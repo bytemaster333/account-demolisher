@@ -68,7 +68,14 @@ describe("blendRepayShortfallWarnings", () => {
 
   it("emits a single warning even when several liabilities are short", () => {
     const audit = auditWith([]); // holds nothing
-    const positions = [pool(new Map([[USDC_SAC, 100_0000000n], [XLM_SAC, 10_0000000n]]))];
+    const positions = [
+      pool(
+        new Map([
+          [USDC_SAC, 100_0000000n],
+          [XLM_SAC, 10_0000000n],
+        ]),
+      ),
+    ];
     expect(blendRepayShortfallWarnings(audit, positions, NETWORK)).toHaveLength(1);
   });
 

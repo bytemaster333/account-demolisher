@@ -1,0 +1,67 @@
+---
+title: FAQ
+description: Short answers to the questions we hear most.
+---
+
+## Is my secret key sent anywhere?
+
+No. If you connect a wallet, the wallet keeps your key and signs each transaction locally. If you use the secret-key fallback, the seed stays in browser memory only and is used to build a fresh `Keypair` for each signing call. It is never written to disk, sent to any server, or copied to the clipboard.
+
+## What does it cost to use?
+
+The app is free. You pay Stellar network fees for the transactions the demolisher submits. A typical closure is a handful of transactions. Each operation costs at least Stellar's base fee of 100 stroops, though the classical merge bids a higher per-operation fee when the network is congested (and raises it further if a submission is rejected for too low a fee), and each Soroban node also pays a resource fee computed from simulation. The demolisher does not take a cut.
+
+## Why is my account "not mergeable"?
+
+Two cases stop a closure cold:
+
+- `AUTH_IMMUTABLE` is set on the account. The Stellar protocol forbids merging an account with this flag, and the flag is permanent. There is no workaround.
+- The account is sponsoring entries for others (`num_sponsoring > 0`). The owner of those sponsored entries has to revoke them first. The demolisher cannot do it on the owner's behalf.
+
+In both cases the audit shows the exact reason. There is one nuance: if every sponsored entry is a self-sponsored claimable balance the account itself can claim, the closure proceeds. Those balances are claimed during the close, so the sponsoring count drops to zero before the merge.
+
+## Can I close an account that holds DeFi positions?
+
+Yes. That is the main thing the demolisher adds over a classic-only closer. It unwinds Blend lending positions, Aquarius liquidity, Soroswap LP positions, and FxDAO vaults, then runs the classical close. The preview shows the protocol-specific exit steps before the merge. One caveat: repaying a Blend borrow needs the borrowed asset on hand (the demolisher does not swap to acquire it), so if you no longer hold enough of it, the preview flags the shortfall and you have to top up or clear that position before the close can finish. See [How it works](/docs/how-it-works) for the full sequence.
+
+## What about a Blend backstop deposit?
+
+A backstop deposit is a separate class of Blend position, and its withdrawal goes through a queue that takes 17 days. The demolisher does **not** unwind it for you, and it does not wait on the queue. On mainnet the audit detects a backstop deposit and warns you: withdraw it from the Blend backstop yourself (the 17-day queued process) before closing, or those funds will be stranded. A backstop deposit does not block the merge, so the rest of the closure can still run; it is on you to handle the backstop separately.
+
+## Why is the Soroswap step skipped on testnet?
+
+Soroswap testnet has no on-chain pools, so the aggregator returns "no path" for every quote. The demo skips the Soroswap swap and add-liquidity steps and shows the reason per step. Mainnet, where Soroswap has real liquidity, is unaffected.
+
+## Why can't I send to an exchange with a direct `ACCOUNT_MERGE`?
+
+Most centralized exchanges do not credit incoming `ACCOUNT_MERGE` operations. The merge lands on chain but the exchange never credits the deposit. To deliver the funds as a payment the exchange will credit, and still recover the base reserve, the demolisher routes the closure through a temporary mediator account. See [Destinations and the mediator](/docs/destinations-and-mediator).
+
+## What happens if a step fails mid-closure?
+
+There is no single retry classifier; each kind of failure is handled where it happens.
+
+- A classical submission rejection is sorted into three outcomes. An insufficient fee retries with a higher fee. A repricing error (a missed minimum, too few offers, a source cap exceeded, or a transaction that landed too late) retries after re-resolving paths and prices. A deterministic error (a bad sequence number, a missing trustline) is fatal and stops with the exact error.
+- The classical transaction is rebuilt from fresh account state on every attempt, so a stale sequence number self-corrects rather than persisting across a retry.
+- Transient Horizon read errors retry a few times with backoff; a 404 or other 4xx is fatal.
+- A node whose dependency did not confirm is skipped, not merged around. A failed DeFi exit blocks the merge instead of closing the account with an open position.
+
+Retries are bounded (three attempts for the merge), so a genuinely stuck step surfaces rather than looping.
+
+## Can I close someone else's account?
+
+No. The demolisher signs with the wallet you connect. Without the master signer, or a multisig set that meets the closing threshold, the transactions do not sign. For a multisig account you control, see [Multisig](/docs/multisig).
+
+## Does it run on mainnet?
+
+Yes. The same code path runs on mainnet and testnet. The top navigation bar has a runtime switcher between testnet and mainnet, and your choice persists in the browser. A fresh visit starts on the network the operator set as the default (`NEXT_PUBLIC_STELLAR_NETWORK`, which is `testnet` unless the operator changed it), so reviewers can run the demo on testnet without risk.
+
+## Where is the source?
+
+<a href="https://github.com/bytemaster333/account-demolisher">
+  github.com/bytemaster333/account-demolisher
+</a>
+. Apache 2.0 licensed.
+
+## How is this related to stellar.expert/demolisher?
+
+stellar.expert/demolisher is the original Stellar account-closure tool, by StellarExpert. It covers the classic Stellar surface and uses raw secret-key entry as its signing path. Account Demolisher preserves and modernizes that flow, attribution included, and extends it to the Soroban DeFi surface, a multisig coordination flow, the allowance viewer, and modern wallet integration through Stellar Wallets Kit. The two share the same goal; this one covers more of today's account surface.

@@ -356,6 +356,8 @@ export default function HomePage(): React.JSX.Element {
                     style={{
                       display: "inline-flex",
                       alignItems: "center",
+                      justifyContent: "center",
+                      gridColumn: "1 / -1",
                       gap: 9,
                       padding: "14px 22px",
                       background: "var(--accent)",
@@ -1821,9 +1823,9 @@ export default function HomePage(): React.JSX.Element {
                       maxWidth: 560,
                     }}
                   >
-                    The mediator account is the only server-held signing secret. It signs a
-                    strict two-operation forward envelope (a payment, then a merge) for exchange
-                    merges, and can never touch your account directly or see your key.
+                    The mediator account is the only server-held signing secret. It signs a strict
+                    two-operation forward envelope (a payment, then a merge) for exchange merges,
+                    and can never touch your account directly or see your key.
                   </div>
                 </div>
               </div>

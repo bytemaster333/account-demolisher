@@ -52,6 +52,12 @@ export interface BatchOptions {
   readonly destination: string;
   readonly useMediator: boolean;
   readonly mediatorPublicKey?: string;
+  // Two-phase close (SEC-13): once the ephemeral mediator has been funded by an
+  // earlier batch, a later re-audited batch must NOT re-emit the create-account
+  // funding op (the mediator already exists; a second create_account reverts with
+  // op_already_exists). The executor sets this on re-audit phases after the
+  // funding op has landed.
+  readonly mediatorAlreadyFunded?: boolean;
   // user-opted-in cb ids. batcher emits a claim op for each id present in the audit
   readonly claimableBalanceIds?: readonly string[];
   // pathKey()s of credit assets the user has explicitly consented to send back
@@ -87,6 +93,8 @@ export function pathKey(asset: AssetIdentifier): string {
       return `${asset.code}:${asset.issuer}`;
     case "liquidity_pool_shares":
       return `pool:${asset.poolId}`;
+    case "contract":
+      return `contract:${asset.contractId}`;
   }
 }
 

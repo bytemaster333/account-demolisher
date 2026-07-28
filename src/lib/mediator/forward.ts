@@ -82,7 +82,7 @@ export async function submitMediatorForward(
   const unsignedTx = builder.build();
   const unsignedXdr = unsignedTx.toEnvelope().toXDR("base64");
 
-  const result = await requestMediatorSignature(unsignedXdr, input.flowToken);
+  const result = await requestMediatorSignature(unsignedXdr, input.flowToken, input.network.id);
   if (!result.ok) {
     return {
       ok: false,

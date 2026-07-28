@@ -26,7 +26,8 @@ export async function POST(request: Request): Promise<Response> {
   let xdr: string;
   try {
     const raw = (await request.json()) as unknown;
-    if (typeof raw !== "object" || raw === null) return json({ ok: false, reason: "Bad body." }, 400);
+    if (typeof raw !== "object" || raw === null)
+      return json({ ok: false, reason: "Bad body." }, 400);
     const rec = raw as Record<string, unknown>;
     if (typeof rec.network !== "string" || typeof rec.xdr !== "string") {
       return json({ ok: false, reason: "`network` and `xdr` are required." }, 400);

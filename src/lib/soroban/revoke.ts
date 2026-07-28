@@ -13,6 +13,7 @@ import { TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { buildRevoke, type AllowanceRecord } from "@/lib/soroban/allowances";
+import { assertSafeRevokeInvocation } from "@/lib/soroban/revoke-guard";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import type { Connector } from "@/lib/wallet/connector";
@@ -113,6 +114,16 @@ async function submitRevokeImpl(
     network,
     sourceAccount,
   );
+
+  // The contract id came from an attacker-influenceable event scan and the revoke
+  // path is exempt from the DeFi allow-list, so the simulation-supplied auth tree
+  // is untrusted. Refuse to sign unless the built tx is exactly approve(0) and its
+  // auth authorizes nothing else (blocks auth-entry smuggling by a hostile token).
+  assertSafeRevokeInvocation(tx, {
+    contractId: record.contractId,
+    from: userAddress,
+    spender: record.spender,
+  });
 
   const signed = await connector.signTransaction(tx, network.passphrase);
   const reconstructed = TransactionBuilder.fromXDR(

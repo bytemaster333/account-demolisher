@@ -1,0 +1,15 @@
+{
+  "title": "Documentation",
+  "pages": [
+    "index",
+    "getting-started",
+    "how-it-works",
+    "demo-account",
+    "destinations-and-mediator",
+    "allowance-viewer",
+    "multisig",
+    "security",
+    "self-host",
+    "faq"
+  ]
+}

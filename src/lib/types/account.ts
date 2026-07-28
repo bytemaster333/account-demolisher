@@ -11,6 +11,15 @@ export type AssetIdentifier =
   | {
       readonly kind: "liquidity_pool_shares";
       readonly poolId: string;
+    }
+  // a standalone SEP-41 token identified ONLY by its contract id (a custom token
+  // transferred to the account, not a classic asset with a code:issuer form).
+  // `symbol` is a best-effort display label read from the contract; it is never
+  // trusted for identity (a hostile token can lie) — identity is the contract id.
+  | {
+      readonly kind: "contract";
+      readonly contractId: string;
+      readonly symbol?: string;
     };
 
 export interface AuditBalance {

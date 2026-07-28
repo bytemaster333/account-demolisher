@@ -1,0 +1,107 @@
+---
+title: Self host
+description: Run the app on your own infrastructure.
+---
+
+The app is a standard Next.js 16 application. You can clone the source, install, set a few environment variables, and run it.
+
+## Requirements
+
+- Node.js 22 (the repo pins `22` in `.nvmrc`; `engines` requires `>=22`)
+- pnpm 10 (the repo pins `pnpm@10.30.0`; `engines` requires `>=10`)
+
+## Clone and install
+
+```bash
+git clone https://github.com/bytemaster333/account-demolisher.git
+cd account-demolisher
+pnpm install
+```
+
+## Configure environment
+
+```bash
+cp .env.example .env.local
+```
+
+The variables the app reads:
+
+| Variable                      | Scope       | What it controls                                                                                                                                                                                                                                                                                                    |
+| ----------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NEXT_PUBLIC_STELLAR_NETWORK` | public      | The default network: `mainnet`, `testnet`, or `futurenet`. Defaults to `testnet`. This is only the starting network; users can switch between testnet and mainnet at runtime in the UI.                                                                                                                             |
+| `NEXT_PUBLIC_DEPLOYMENT_MODE` | public      | `reference` or `self-hosted`. Defaults to `reference`. In `reference` mode the server-side mediator handles exchange closures. In `self-hosted` mode the mediator is not run, so a close routed to a known exchange is refused early with a message. Use `self-hosted` only when you do not need the exchange path. |
+| `MEDIATOR_SECRET`             | server-only | A Stellar seed (`S...`). Used only as a master key to derive a fresh ephemeral mediator keypair for each closure; it never signs directly and holds no funds. Required only in `reference` mode. Generate per deployment and never share it.                                                                        |
+| `MEDIATOR_ALLOWED_ORIGIN`     | server-only | Comma-separated list of origins allowed to call `/api/mediator/sign` from another origin. Unset means same-origin only, which is the safe default. This applies in production; in development, `localhost:3000` and `localhost:3001` are always allowed regardless.                                                 |
+| `TRUSTED_PROXY_HOPS`          | server-only | How many reverse-proxy hops sit in front of the app, used to read the real client IP from `X-Forwarded-For` for rate limiting. Set it to the number of proxies you control, or `0` when the app is directly exposed. Defaults to `1`.                                                                               |
+| `SOROSWAP_API_URL`            | server-only | The Soroswap aggregator base URL. Defaults to `https://api.soroswap.finance`.                                                                                                                                                                                                                                       |
+| `SOROSWAP_API_KEY`            | server-only | Bearer key for the Soroswap aggregator, kept on the server. Optional; needed only if you want the aggregator conversion path to work in your deployment.                                                                                                                                                            |
+
+Horizon and Soroban RPC endpoints are **not** environment variables. They are pinned per network in `src/lib/config/networks.ts`. Editing that file is how you point the app at different Horizon or RPC providers. Worth knowing before mainnet use: the mainnet Soroban RPC default is a third-party gateway (`soroban-rpc.mainnet.stellar.gateway.fm`), not an SDF-run endpoint. Review or replace it with an RPC you trust.
+
+Server-only variables treat an empty string as "not set", so you can leave any of them blank in `.env.local` rather than deleting the line. Most are validated at startup (`src/server/server-env.ts`); `MEDIATOR_ALLOWED_ORIGIN` and `TRUSTED_PROXY_HOPS` are read directly from the environment, so a typo in those is ignored rather than reported.
+
+When the Soroswap conversion path is enabled, the outbound call to the Soroswap API is made by the server (not the browser), and the server resolves that host through public DNS resolvers (1.1.1.1 and 8.8.8.8) to avoid category-based DNS blocking. If your deployment egress is locked down, allow that.
+
+### A warning about static export
+
+There is a build-time `OUTPUT=export` switch that makes Next.js emit a fully static site. Do not use it for a normal deployment. Static export drops every server route (the mediator, the multisig relay, and the Soroswap proxy) and emits no security headers or CSP, so the host has to supply them. It is only appropriate if you deliberately want a client-only build with none of the server features.
+
+## Run
+
+```bash
+pnpm dev
+```
+
+The dev server is at <a href="http://localhost:3000">localhost:3000</a>.
+
+For a production build:
+
+```bash
+pnpm build
+pnpm start
+```
+
+The production server binds to port 3000 by default. Override it with `PORT=` if needed.
+
+## Docker
+
+The repo ships a `Dockerfile` and a `docker-compose.yml`. `docker compose up --build` serves the app on port 3000. Public `NEXT_PUBLIC_*` config is baked at build time (defaulting to testnet), while the server-only secrets (`MEDIATOR_SECRET`, `SOROSWAP_API_KEY`) and `TRUSTED_PROXY_HOPS` are read at runtime from the environment. The bundled compose file publishes the app directly with no reverse proxy, so it sets `TRUSTED_PROXY_HOPS=0` (the `X-Forwarded-For` header is not trusted).
+
+## Reverse-proxy under your own domain
+
+Any TLS-terminating reverse proxy works. A minimal Caddy config is a single site block:
+
+```
+yourdomain.example {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:3000
+}
+```
+
+If your proxy sets `X-Forwarded-For`, set `TRUSTED_PROXY_HOPS` to match your proxy chain so rate limiting keys on the real client IP rather than the proxy's.
+
+## The mediator key (reference mode only)
+
+If you want the exchange path to work, you need `MEDIATOR_SECRET` set. Note what it is and is not:
+
+1. Generate a fresh Stellar keypair. The Stellar Laboratory's account creator works. Keep the seed private.
+2. Set `MEDIATOR_SECRET` to that seed in your `.env.local`.
+3. Restart the server. The seed is loaded once, on first use, and memoized.
+
+You do **not** need to fund anything. There is no standing mediator account. For each closure the server derives a fresh, throwaway mediator keypair from the seed, and that ephemeral account is created and funded (2 XLM) on the fly by the closing account itself during the close. The seed is only ever used to derive per-flow signing keys; it never signs a transaction directly and never holds a balance. Use a dedicated key per deployment.
+
+## Content Security Policy
+
+The production CSP is defined in `next.config.ts`. If you add a new upstream the app needs to talk to, add its URL to `CONNECT_SRC_ENDPOINTS` in that file. The browser blocks any request to an endpoint not on the list.
+
+## Scaling note
+
+The multisig signing relay keeps its state in process memory (`src/server/signing-relay.ts`). That is correct for a single self-hosted instance. If you run more than one instance behind a load balancer, they will not share signing requests, and a co-signer routed to a different instance will not see the request. Run a single instance, or add sticky sessions keyed on the request id, if you use the multisig flow.
+
+## The docs site
+
+This documentation site lives in `docs/` as a separate Next.js app (port 3020 in dev, per `docs/package.json`). `docs/` is gitignored in the main repo, so it does not ship with a fresh clone.
+
+## What is excluded from the published source
+
+Per the root `.gitignore`, the docs site (`docs/`), research (`researches/`), design assets (`design/`), local planning notes (`plan.md`, `completion.md`), and most markdown files (everything except the tracked deliverables such as `README.md`, `SECURITY.md`, and `ARCHITECTURE.md`) are not committed, along with the usual build and test artifacts. The source you clone is the shippable surface.

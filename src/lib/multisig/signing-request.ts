@@ -165,6 +165,8 @@ interface RawOp {
   readonly source?: string;
   readonly destination?: string;
   readonly amount?: string;
+  readonly startingBalance?: string;
+  readonly sendAmount?: string;
   readonly asset?: { isNative(): boolean; getCode(): string };
   readonly line?: { isNative(): boolean; getCode(): string };
   readonly signer?: { readonly ed25519PublicKey?: string; readonly weight?: number };
@@ -241,8 +243,37 @@ function summarizeOp(op: RawOp): OperationSummary {
         type: "Change a trustline",
         ...(op.line ? { detail: `For ${assetLabel(op.line)}.` } : {}),
       };
-    default:
-      return { type: humanizeOpType(op.type) };
+    case "manageSellOffer":
+    case "manageBuyOffer":
+    case "createPassiveSellOffer": {
+      // amount 0 = cancelling an existing offer, a normal part of a close; a
+      // non-zero amount places/updates an offer, which moves value on the DEX
+      if (op.amount === undefined || Number.parseFloat(op.amount) === 0) {
+        return { type: "Cancel a DEX offer", detail: "Removes an open offer from the order book." };
+      }
+      return {
+        type: "Place a DEX offer",
+        detail: `Places or updates a DEX offer of ${op.amount}. This moves value on the order book.`,
+        danger: true,
+      };
+    }
+    default: {
+      // Any other operation — createAccount, pathPaymentStrictSend/Receive,
+      // createClaimableBalance, clawback, or an unrecognized future type — can move
+      // value out of the account being closed. A co-signer must never blind-sign
+      // one, so flag it danger and surface any destination + amount rather than
+      // rendering a plain, safe-looking line (the SEC-04 defect).
+      const amount = op.amount ?? op.startingBalance ?? op.sendAmount;
+      const detail = amount
+        ? `This operation moves ${amount}${op.asset ? ` ${assetLabel(op.asset)}` : ""} or changes account state. Review it carefully before signing.`
+        : "This operation can move value or change account state. Review it carefully before signing.";
+      return {
+        type: humanizeOpType(op.type),
+        detail,
+        danger: true,
+        ...(op.destination ? { destination: op.destination } : {}),
+      };
+    }
   }
 }
 
@@ -320,10 +351,7 @@ export function signedSigners(
   return out;
 }
 
-export function collectedWeight(
-  signedKeys: readonly string[],
-  audit: AccountAudit,
-): number {
+export function collectedWeight(signedKeys: readonly string[], audit: AccountAudit): number {
   const byKey = new Map(audit.signers.map((s) => [s.key, s.weight]));
   return signedKeys.reduce((sum, k) => sum + (byKey.get(k) ?? 0), 0);
 }

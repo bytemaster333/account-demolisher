@@ -5,11 +5,11 @@
 #
 #   https://demolisher.app/.well-known/stellar.toml
 #
-# Reference deployment operators serve this file under `.well-known/`. Next.js
+# The reference deployment serves this file under `.well-known/`. Next.js
 # auto-publishes anything under `public/` at the matching path, but the SEP-1
 # canonical location is `/.well-known/stellar.toml` — operators should add a
-# rewrite rule (Vercel `vercel.json` or `next.config.ts` `rewrites()`) so that
-# both paths resolve here.
+# rewrite (a `next.config.ts` `rewrites()` entry, or an equivalent rule at the
+# reverse proxy) so that both paths resolve here.
 #
 # Embedders that self-host (CEXes, wallets) MUST replace every placeholder
 # below with their own operator details and SIGNING_KEY, then re-sign the
@@ -22,9 +22,8 @@
 VERSION = "0.0.0"
 NETWORK_PASSPHRASE = "Public Global Stellar Network ; September 2015"
 
-# The canonical URL that this TOML attests to. Reference deployment is
-# `demolisher.app` (placeholder, subject to SDF assignment). Embedders
-# replace with their own canonical URL.
+# The canonical URL that this TOML attests to. The reference deployment is
+# `demolisher.app`. Embedders replace with their own canonical URL.
 WEB_AUTH_ENDPOINT = "https://demolisher.app"
 
 # ---------------------------------------------------------------------------
@@ -32,21 +31,20 @@ WEB_AUTH_ENDPOINT = "https://demolisher.app"
 # ---------------------------------------------------------------------------
 
 [DOCUMENTATION]
-ORG_NAME = "Account Demolisher (reference deployment)"
-ORG_DBA = "Stellar Development Foundation"
+ORG_NAME = "Account Demolisher"
 ORG_URL = "https://demolisher.app"
 ORG_LOGO = "https://demolisher.app/icon.svg"
 ORG_DESCRIPTION = """
 Account Demolisher is an open-source (Apache-2.0) Stellar account-closure
 tool. It drains and merges Stellar accounts cleanly across both classic
 Stellar operations and Soroban DeFi protocols (Blend, Aquarius, Soroswap,
-FxDAO). The reference deployment is operated by the Stellar Development
-Foundation. Embedders (wallets, exchanges) may self-host with their own
-per-deployment mediator key.
+FxDAO). The reference deployment is operated by the Account Demolisher
+project maintainers. Embedders (wallets, exchanges) may self-host with their
+own per-deployment mediator key.
 """
 ORG_OFFICIAL_EMAIL = "demolisher@demolisher.app"
-ORG_SUPPORT_EMAIL = "demolisher-support@stellar.org"
-ORG_GITHUB = "stellar/account-demolisher"
+ORG_SUPPORT_EMAIL = "demolisher-support@demolisher.app"
+ORG_GITHUB = "bytemaster333/account-demolisher"
 ORG_KEYBASE = ""
 ORG_TWITTER = ""
 ORG_LICENSING_AUTHORITY = "n/a — Apache-2.0 open source software"
@@ -60,35 +58,21 @@ name = "Reference Deployment Operator"
 email = "demolisher@demolisher.app"
 keybase = ""
 twitter = ""
-github = "stellar"
+github = "bytemaster333"
 id_photo_hash = ""
 verification_photo_hash = ""
 
 # ---------------------------------------------------------------------------
-# Signing keys
+# Signing keys — intentionally omitted
 # ---------------------------------------------------------------------------
 #
-# `SIGNING_KEY` is the Stellar account whose secret signs SEP-10 challenges
-# AND co-signs the strictly-shape-validated 2-op
-# `accountMerge → mediator` + `payment → user-destination` mediator
-# transactions. The reference deployment generates this key at provisioning
-# time and stores the secret in the Vercel encrypted environment as
-# `MEDIATOR_SECRET`. Embedders MUST generate their own key.
-#
-# The placeholder `GAAAA...` below is intentionally not a valid mediator. Real
-# deployments overwrite this file with their actual signing public key before
-# publication.
-
-SIGNING_KEY = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-
-# `SIGNERS` lists every account that may sign mediator transactions. For the
-# reference deployment this is a single signer (the mediator). Embedders that
-# want multisig on the mediator-side add their additional signers here.
-
-[[SIGNERS]]
-name = "Mediator (per-deployment)"
-public_key = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-weight = 1
+# Account Demolisher has NO stable signing account to declare here. The exchange
+# mediator co-signs its 2-op forward with a PER-FLOW EPHEMERAL key: every close
+# derives a fresh throwaway keypair (from a server-held HMAC master), so there is
+# no single, long-lived account a SEP-1 SIGNING_KEY / SIGNERS block could name.
+# All user-side signing happens client-side (wallet or pasted key) and is never
+# transmitted to the server. Declaring a fixed SIGNING_KEY would be misleading,
+# so it is omitted by design rather than filled with a placeholder.
 
 # ---------------------------------------------------------------------------
 # Currencies — none. The demolisher does not issue assets.

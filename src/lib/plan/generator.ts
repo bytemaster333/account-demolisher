@@ -3,6 +3,7 @@
 import type { AccountAudit } from "@/lib/types/account";
 import type { BatchOptions, ClassicBatch, ClassicMemo, PathResultRef } from "@/lib/types/plan";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
+import type { HeldToken } from "@/lib/soroban/held-tokens";
 import type {
   AquariusPositionSummary,
   BlendPositionSummary,
@@ -32,6 +33,13 @@ export interface GeneratePlanOptions {
   readonly memo?: ClassicMemo;
   // fallback address if the CEX rejects the deposit
   readonly userFallbackAddress?: string;
+  // standalone SEP-41 tokens the account holds directly, swept to the destination
+  // before the merge (SEP-41 auto-include). Emitted only on a DIRECT close: an
+  // exchange (mediator) destination can't be credited with a raw contract token.
+  // The drains are best-effort ORDERING-only (they run before the merge but never
+  // block it): a hostile airdropped token that reverts on transfer must not be
+  // able to wedge the close, so a failed drain is skipped, not fatal (executor).
+  readonly heldTokens?: readonly HeldToken[];
 }
 
 export function generatePlan(
@@ -232,6 +240,35 @@ export function generatePlan(
 
   // classical credit balances are converted to xlm by path_payment_strict_send
 
+  // standalone SEP-41 tokens: sweep each to the destination before the merge so a
+  // custom token held in contract storage isn't stranded on the deleted account.
+  // DIRECT closes only — a mediator/CEX destination can't receive a raw token
+  // (the preview surfaces a "move these first" warning for that case instead).
+  // These become dependencies of the merge purely for ORDERING (drain runs first);
+  // the executor treats a failed drain as skip-not-fatal, so a hostile airdropped
+  // token that reverts on transfer can't wedge the close.
+  const heldTokenDrainIds: string[] = [];
+  if (!useMediator) {
+    for (const token of opts.heldTokens ?? []) {
+      if (token.balance <= 0n) continue;
+      const id = makeId("drain-token", token.contractId);
+      nodes.push({
+        id,
+        kind: "TransferAsIs",
+        dependencies: [],
+        status: "pending",
+        description: `Send held token ${shortAddr(token.contractId)} to ${shortAddr(destination)}`,
+        metadata: {
+          kind: "TransferAsIs",
+          asset: { kind: "contract", contractId: token.contractId },
+          amount: token.balance,
+          destination,
+        },
+      });
+      heldTokenDrainIds.push(id);
+    }
+  }
+
   // backstop queue: only emitted when an extended position type is passed in
 
   // final classic transaction
@@ -283,6 +320,10 @@ export function generatePlan(
       ...(useMediator && opts.mediatorPublicKey
         ? { mediatorPublicKey: opts.mediatorPublicKey }
         : {}),
+      // carry the memo so execute-time re-batching can re-apply it. The batcher
+      // only puts it on a DIRECT final batch (a mediator close routes the memo
+      // through the forward), so attaching it here unconditionally is safe.
+      ...(opts.memo ? { memo: opts.memo } : {}),
     },
   });
 
@@ -309,6 +350,7 @@ export function generatePlan(
   // keep maps alive for future edge additions and topology inspection
   void revokeIds;
   void soroswapWithdrawIds;
+  void heldTokenDrainIds;
 
   return buildPlanTree(nodes);
 }

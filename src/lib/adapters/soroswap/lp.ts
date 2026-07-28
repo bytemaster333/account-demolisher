@@ -151,6 +151,8 @@ function resolveAssetAddress(asset: AssetIdentifier, network: NetworkConfig): st
       throw new TypeError(
         "removeLiquidity: liquidity_pool_shares is not a token; pass the two underlying assets",
       );
+    case "contract":
+      return asset.contractId;
   }
 }
 
