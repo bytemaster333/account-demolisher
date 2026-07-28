@@ -18,21 +18,22 @@ export const CONNECT_SRC_ENDPOINTS = [
 ] as const;
 
 export interface CspOptions {
-  readonly nonce: string;
   readonly isDev: boolean;
 }
 
-// Build the CSP for one request. The per-request `nonce` gates inline scripts, so
-// 'unsafe-inline' is NOT present in script-src (the SEC-18 fix). Dev additionally
-// needs 'unsafe-eval' + ws: for Next's HMR.
-export function buildContentSecurityPolicy({ nonce, isDev }: CspOptions): string {
+// Build the CSP. script-src uses 'unsafe-inline' rather than a per-request nonce:
+// Next.js emits inline hydration scripts and, in this deployment, does NOT stamp
+// them with the middleware nonce, so a nonce-only script-src blocks every inline
+// script and hydration never runs (all interactivity dies). 'unsafe-inline' is a
+// weaker posture than a nonce, but the app loads NO third-party script hosts
+// (script-src stays 'self' + inline only), and the rest of the policy is intact:
+// no external script origins, object-src 'none', frame-ancestors 'none',
+// restricted connect-src, etc. Dev additionally needs 'unsafe-eval' + ws: for HMR.
+export function buildContentSecurityPolicy({ isDev }: CspOptions): string {
   return [
     "default-src 'self'",
     `connect-src 'self' ${isDev ? "ws: wss: " : ""}${CONNECT_SRC_ENDPOINTS.join(" ")}`,
-    `script-src 'self' 'nonce-${nonce}' 'wasm-unsafe-eval'${isDev ? " 'unsafe-eval'" : ""}`,
-    // styles only: Next injects inline <style> tags; inline STYLE is far lower risk
-    // than inline SCRIPT (which the nonce now gates), and nonce-ing every style is
-    // impractical, so 'unsafe-inline' is scoped to style-src alone.
+    `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'${isDev ? " 'unsafe-eval'" : ""}`,
     "style-src 'self' 'unsafe-inline'",
     `img-src 'self' data:${isDev ? " blob:" : ""}`,
     `font-src 'self'${isDev ? " data:" : ""}`,

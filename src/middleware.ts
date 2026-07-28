@@ -2,22 +2,14 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import { buildContentSecurityPolicy } from "@/lib/config/csp";
 
-// Per-request nonce CSP (SEC-18). A fresh nonce is minted per request and placed
-// in the CSP; Next reads it from the request's Content-Security-Policy header and
-// stamps its own framework/inline scripts with the same nonce, so script-src can
-// drop 'unsafe-inline'. This forces dynamic rendering for matched routes (the
-// nonce can't be static), an accepted trade-off for a destructive tool.
-export function middleware(request: NextRequest): NextResponse {
+// Applies the Content-Security-Policy to each document response. Scripts use
+// 'unsafe-inline' rather than a per-request nonce: Next.js's inline hydration
+// scripts are not nonce-stamped in this deployment, so a nonce-only script-src
+// blocks hydration entirely. The policy is otherwise static.
+export function middleware(_request: NextRequest): NextResponse {
   const isDev = process.env.NODE_ENV !== "production";
-  const nonce = crypto.randomUUID().replace(/-/g, "");
-  const csp = buildContentSecurityPolicy({ nonce, isDev });
-
-  // Next reads the nonce from the CSP on the REQUEST headers to nonce its scripts.
-  const requestHeaders = new Headers(request.headers);
-  requestHeaders.set("x-nonce", nonce);
-  requestHeaders.set("content-security-policy", csp);
-
-  const response = NextResponse.next({ request: { headers: requestHeaders } });
+  const csp = buildContentSecurityPolicy({ isDev });
+  const response = NextResponse.next();
   response.headers.set("content-security-policy", csp);
   return response;
 }

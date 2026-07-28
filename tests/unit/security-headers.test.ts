@@ -25,17 +25,20 @@ describe("security headers (next.config)", () => {
   });
 });
 
-describe("Content-Security-Policy (per-request nonce)", () => {
-  it("SEC-18: script-src is nonce-gated with NO 'unsafe-inline'/'unsafe-eval' in prod", () => {
-    const csp = buildContentSecurityPolicy({ nonce: "TESTNONCE", isDev: false });
+describe("Content-Security-Policy", () => {
+  it("prod script-src is 'self' + inline (needed for Next hydration) with NO 'unsafe-eval'", () => {
+    const csp = buildContentSecurityPolicy({ isDev: false });
     const scriptSrc = csp.split(";").find((d) => d.trim().startsWith("script-src")) ?? "";
-    expect(scriptSrc).toContain("'nonce-TESTNONCE'");
-    expect(scriptSrc).not.toContain("'unsafe-inline'");
+    expect(scriptSrc).toContain("'self'");
+    expect(scriptSrc).toContain("'unsafe-inline'");
+    expect(scriptSrc).toContain("'wasm-unsafe-eval'");
+    // no arbitrary eval in prod, and no third-party script origins
     expect(scriptSrc).not.toContain("'unsafe-eval'");
+    expect(scriptSrc).not.toContain("http");
   });
 
   it("allow-lists both networks and locks down frame/object/base", () => {
-    const csp = buildContentSecurityPolicy({ nonce: "N", isDev: false });
+    const csp = buildContentSecurityPolicy({ isDev: false });
     expect(csp).toContain("default-src 'self'");
     expect(csp).toContain("frame-ancestors 'none'");
     expect(csp).toContain("object-src 'none'");
@@ -48,7 +51,7 @@ describe("Content-Security-Policy (per-request nonce)", () => {
   });
 
   it("relaxes ONLY dev for Next HMR (unsafe-eval + ws)", () => {
-    const dev = buildContentSecurityPolicy({ nonce: "N", isDev: true });
+    const dev = buildContentSecurityPolicy({ isDev: true });
     expect(dev).toContain("'unsafe-eval'");
     expect(dev).toContain("ws:");
   });
