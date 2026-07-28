@@ -28,8 +28,13 @@ export type MediatorForwardResult =
   | { readonly ok: true; readonly txHash: string }
   | { readonly ok: false; readonly error: string };
 
-// 0.5 XLM buffer for fee margin; accountMerge reclaims the base reserve
-const FORWARD_BUFFER_XLM = "0.5000000";
+// The payment (op0) may not drop the mediator below its minimum reserve, or it
+// fails with op_underfunded before the merge (op1) ever runs. A freshly-merged
+// mediator is a bare account, so its minimum balance is 2 base reserves = 1 XLM.
+// Hold back that reserve plus a fee margin on the payment; the accountMerge that
+// follows reclaims the held-back reserve and sends it to the destination, so no
+// funds are lost, the destination still receives the full balance minus fees.
+const FORWARD_BUFFER_XLM = "1.5000000";
 
 const FIVE_MINUTES = 300;
 
