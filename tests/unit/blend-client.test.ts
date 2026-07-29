@@ -146,3 +146,65 @@ describe("loadBackstopDeposits (detect stranded backstop shares)", () => {
     expect(res.errors[0]).toContain("backstop read failed");
   });
 });
+
+// The Blend SDK builds its own RPC Server from the single {rpc} we hand it, so it
+// bypasses the failover Proxy getRpc() gives our direct reads. On mainnet the
+// primary endpoint rate-limits (429) under the concurrent per-pool load burst,
+// which surfaced as a "DeFi positions" discovery warning. These assert the SDK
+// reads now retry against the next configured endpoint, exactly like our reads.
+describe("Blend SDK reads fail over across endpoints", () => {
+  const FAILOVER_USER = "GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3";
+  const FALLBACK = TESTNET.rpcFallbacks![0]!;
+
+  it("retries a pool load on the fallback endpoint when the primary rate-limits (429)", async () => {
+    const seenRpc: string[] = [];
+    const pool = makeFakePool({
+      reserveIndexByAssetId: [["ASSET_A", 0]],
+      supply: new Map([[0, 7n]]),
+    });
+    const loader: BlendPoolLoader = {
+      async load(network) {
+        seenRpc.push(network.rpc);
+        if (network.rpc === TESTNET.rpc) throw new Error("Request failed with status code 429");
+        return pool;
+      },
+    };
+
+    const positions = await loadUserPositionsForPool(TESTNET, FAILOVER_USER, "POOL_TEST", loader);
+
+    expect(positions.supply.get("ASSET_A")).toBe(7n);
+    expect(seenRpc).toEqual([TESTNET.rpc, FALLBACK]);
+  });
+
+  it("does NOT fail over on a deterministic (non-transport) error", async () => {
+    const seenRpc: string[] = [];
+    const loader: BlendPoolLoader = {
+      async load(network) {
+        seenRpc.push(network.rpc);
+        throw new Error("Pool.load failed for POOL_TEST: contract not found");
+      },
+    };
+
+    await expect(
+      loadUserPositionsForPool(TESTNET, FAILOVER_USER, "POOL_TEST", loader),
+    ).rejects.toThrow(/contract not found/);
+    expect(seenRpc).toEqual([TESTNET.rpc]); // deterministic error: same on every host
+  });
+
+  it("absorbs a per-pool backstop 429 via the fallback, so no warning is surfaced", async () => {
+    const seenRpc: string[] = [];
+    const loader: BackstopDepositLoader = {
+      async loadUser(network) {
+        seenRpc.push(network.rpc);
+        if (network.rpc === TESTNET.rpc) throw new Error("Request failed with status code 429");
+        return { shares: 3_000n, totalQ4W: 0n };
+      },
+    };
+
+    const res = await loadBackstopDeposits(TESTNET, FAILOVER_USER, ["POOL_X"], "CBACKSTOP", loader);
+
+    expect(res.errors).toHaveLength(0);
+    expect(res.deposits[0]?.shares).toBe(3_000n);
+    expect(seenRpc).toEqual([TESTNET.rpc, FALLBACK]);
+  });
+});

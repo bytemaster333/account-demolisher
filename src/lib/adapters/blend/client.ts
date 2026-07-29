@@ -10,6 +10,7 @@ import {
 } from "@blend-capital/blend-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
+import { isFailoverError } from "@/lib/soroban/rpc-client";
 
 // one pool's user-positions snapshot, keyed by asset id (the SAC/SEP-41 token contract)
 export interface BlendUserPositions {
@@ -64,6 +65,32 @@ export function toBlendSdkNetwork(network: NetworkConfig): BlendSdkNetwork {
   };
 }
 
+// The blend-sdk builds its OWN rpc Server from the single {rpc} we hand it, so it
+// bypasses the failover Proxy getRpc() gives our direct reads. On mainnet the
+// primary endpoint rate-limits (429) under the concurrent per-pool load burst
+// (V1 pools load twice: a V2 attempt, then V1), which surfaced as a spurious
+// "DeFi positions" discovery warning. Give the SDK the same protection: run a
+// unit of Blend work against the primary and, on a failover-worthy fault
+// (429/5xx/network), retry the SAME work against the next configured endpoint.
+// Deterministic errors (contract-not-found, unmapped reserve index) are identical
+// on every host, so they propagate immediately instead of wasting endpoints.
+async function withBlendFailover<T>(
+  network: NetworkConfig,
+  op: (sdkNetwork: BlendSdkNetwork) => Promise<T>,
+): Promise<T> {
+  const urls = [network.rpc, ...(network.rpcFallbacks ?? [])];
+  let lastErr: unknown;
+  for (let i = 0; i < urls.length; i += 1) {
+    try {
+      return await op({ rpc: urls[i]!, passphrase: network.passphrase });
+    } catch (err) {
+      lastErr = err;
+      if (i === urls.length - 1 || !isFailoverError(err)) throw err;
+    }
+  }
+  throw lastErr;
+}
+
 // remap SDK positions from reserve-index keys to asset-id keys
 function reindexByAssetId(indexedPositions: Map<number, bigint>, pool: Pool): Map<string, bigint> {
   const out = new Map<string, bigint>();
@@ -93,19 +120,22 @@ export async function loadUserPositionsForPool(
   poolId: string,
   loader: BlendPoolLoader = defaultBlendPoolLoader,
 ): Promise<BlendUserPositions> {
-  const sdkNetwork = toBlendSdkNetwork(network);
-  const pool = await loader.load(sdkNetwork, poolId);
-  const user: PoolUser = await pool.loadUser(userPublicKey);
+  // pool.load and pool.loadUser run against the SAME chosen endpoint, so wrap them
+  // together: a 429 on either retries the whole unit on the next endpoint.
+  return withBlendFailover(network, async (sdkNetwork) => {
+    const pool = await loader.load(sdkNetwork, poolId);
+    const user: PoolUser = await pool.loadUser(userPublicKey);
 
-  return {
-    poolId: pool.id,
-    poolName: pool.metadata.name,
-    poolVersion: pool.version,
-    liabilities: reindexByAssetId(user.positions.liabilities, pool),
-    collateral: reindexByAssetId(user.positions.collateral, pool),
-    supply: reindexByAssetId(user.positions.supply, pool),
-    emissions: user.emissions,
-  };
+    return {
+      poolId: pool.id,
+      poolName: pool.metadata.name,
+      poolVersion: pool.version,
+      liabilities: reindexByAssetId(user.positions.liabilities, pool),
+      collateral: reindexByAssetId(user.positions.collateral, pool),
+      supply: reindexByAssetId(user.positions.supply, pool),
+      emissions: user.emissions,
+    };
+  });
 }
 
 // load positions across a set of pools in parallel. per-pool errors go to errors[]
@@ -182,11 +212,14 @@ export async function loadBackstopDeposits(
   backstopId: string,
   loader: BackstopDepositLoader = defaultBackstopDepositLoader,
 ): Promise<LoadBackstopDepositsResult> {
-  const sdkNetwork = toBlendSdkNetwork(network);
   const deposits: BackstopDeposit[] = [];
   const errors: string[] = [];
   const settled = await Promise.allSettled(
-    poolIds.map((poolId) => loader.loadUser(sdkNetwork, backstopId, poolId, userPublicKey)),
+    poolIds.map((poolId) =>
+      withBlendFailover(network, (sdkNetwork) =>
+        loader.loadUser(sdkNetwork, backstopId, poolId, userPublicKey),
+      ),
+    ),
   );
   settled.forEach((result, i) => {
     const poolId = poolIds[i] ?? "<unknown>";
