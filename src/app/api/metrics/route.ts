@@ -10,7 +10,6 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { createLimiter, getRemoteIp } from "@/server/rate-limit";
 import { getMetricsStore } from "@/server/metrics-store";
 import { verifyCloseTx } from "@/server/close-verify";
-import { getServerEnv } from "@/server/server-env";
 import { metricEventSchema } from "@/lib/metrics/events";
 import { resolveNetwork } from "@/lib/config/networks";
 
@@ -85,8 +84,12 @@ function tokenMatches(provided: string, expected: string): boolean {
 }
 
 export async function GET(request: Request): Promise<Response> {
-  const expected = getServerEnv().METRICS_ADMIN_TOKEN;
-  if (!expected) {
+  // read the token directly from the environment rather than through
+  // getServerEnv(): that validates the WHOLE server-env schema (incl.
+  // MEDIATOR_SECRET), so an unrelated misconfigured var must not take the
+  // metrics reader down with it. Recording never touches this path at all.
+  const expected = process.env.METRICS_ADMIN_TOKEN;
+  if (!expected || expected.length < 16) {
     return json({ ok: false, reason: "Metrics reads are not configured." }, 503);
   }
   const auth = request.headers.get("authorization") ?? "";
