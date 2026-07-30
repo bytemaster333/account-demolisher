@@ -40,6 +40,7 @@ import { explorerAccountUrl, explorerTxUrl } from "@/lib/explorer";
 import Link from "next/link";
 import { useNetworkStore } from "@/stores/network";
 import { resolveNetwork, type NetworkConfig } from "@/lib/config/networks";
+import { trackClose, trackFunnel, trackVisit } from "@/lib/metrics/beacon";
 import { pageFlowMachine } from "@/lib/orchestrator/page-flow-machine";
 import { getPublicEnv } from "@/lib/config/env";
 import { publishPlan } from "@/lib/multisig/plan-client";
@@ -522,6 +523,37 @@ function DemolishFlow(): React.JSX.Element {
   const isExecuting = state === "executing";
   const isSucceeded = state === "succeeded";
   const isFailed = state === "failed";
+
+  // ── usage metrics (aggregate, no PII) ──────────────────────────────────────
+  // one page-view on mount, then one beacon per funnel milestone and one for the
+  // verified close (its on-chain merge hash) as the machine advances. Each fires
+  // at most once per mount; all are fire-and-forget and never affect the flow.
+  const metricsSentRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const once = (key: string, fn: () => void): void => {
+      if (metricsSentRef.current.has(key)) return;
+      metricsSentRef.current.add(key);
+      fn();
+    };
+    const net = network.id;
+    once("visit", () => trackVisit("demolish", net));
+    if (publicKey) once("wallet_connected", () => trackFunnel(net, "wallet_connected"));
+    if (isPreviewing) once("discovery_completed", () => trackFunnel(net, "discovery_completed"));
+    if (isAwaitingConfirmation) once("plan_built", () => trackFunnel(net, "plan_built"));
+    if (isExecuting) once("close_started", () => trackFunnel(net, "close_started"));
+    if (isSucceeded && ctx.result?.ok && ctx.result.mergedTxHash) {
+      const hash = ctx.result.mergedTxHash;
+      once("close_completed", () => trackClose(net, hash));
+    }
+  }, [
+    publicKey,
+    isPreviewing,
+    isAwaitingConfirmation,
+    isExecuting,
+    isSucceeded,
+    ctx.result,
+    network.id,
+  ]);
   const isCancelled = state === "cancelled";
 
   // derived UI sub-states from the design ↔ real machine mapping

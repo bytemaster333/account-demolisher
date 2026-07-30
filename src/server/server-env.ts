@@ -22,6 +22,9 @@ const ServerEnvSchema = z.object({
     z.string().url().default("https://api.soroswap.finance"),
   ),
   SOROSWAP_API_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
+  // bearer token guarding GET /api/metrics (the admin snapshot). Recording is
+  // always open; reading the aggregate ledger requires this. Unset ⇒ reads 503.
+  METRICS_ADMIN_TOKEN: z.preprocess(emptyToUndefined, z.string().min(16).optional()),
 });
 
 export type ServerEnv = z.infer<typeof ServerEnvSchema>;
@@ -34,6 +37,7 @@ export function getServerEnv(): ServerEnv {
     MEDIATOR_SECRET: process.env.MEDIATOR_SECRET,
     SOROSWAP_API_URL: process.env.SOROSWAP_API_URL,
     SOROSWAP_API_KEY: process.env.SOROSWAP_API_KEY,
+    METRICS_ADMIN_TOKEN: process.env.METRICS_ADMIN_TOKEN,
   });
   if (!parsed.success) {
     throw new Error(`Invalid server environment configuration: ${parsed.error.message}`);

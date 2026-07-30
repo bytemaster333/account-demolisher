@@ -3,9 +3,10 @@
 // landing page: ported from design/extracted/account demolisher.dc.html (lines 112-491)
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { AppShell } from "@/components/layout/AppShell";
+import { trackVisit } from "@/lib/metrics/beacon";
 
 type HeroRow = {
   readonly label: string;
@@ -250,9 +251,9 @@ const SECURITY: ReadonlyArray<SecurityRow> = [
   },
   {
     num: "04",
-    title: "No tracking, no telemetry",
-    body: "The app does not phone home, does not log addresses, does not embed analytics. Apache-2.0, audit the source.",
-    icon: "M1 1l22 22M9.9 9.9a3 3 0 0 0 4.2 4.2",
+    title: "Open source, auditable",
+    body: "Apache-2.0 licensed, source on GitHub. Read the code, run it yourself, and verify every contract call.",
+    icon: "M16 18l6-6-6-6M8 6l-6 6 6 6",
   },
 ];
 
@@ -295,12 +296,16 @@ const FAQS: ReadonlyArray<Faq> = [
   },
   {
     q: "Is it really open source?",
-    a: "Yes. Apache-2.0 licensed, source on GitHub. No telemetry, no analytics, no remote configuration. Read the code and run it yourself.",
+    a: "Yes. Apache-2.0 licensed, source on GitHub. Read the code and run it yourself.",
   },
 ];
 
 export default function HomePage(): React.JSX.Element {
   const [openFaq, setOpenFaq] = useState<number | null>(0);
+
+  useEffect(() => {
+    trackVisit("landing");
+  }, []);
 
   return (
     <AppShell>
@@ -528,7 +533,7 @@ export default function HomePage(): React.JSX.Element {
                       <path d="M9.9 4.2A9 9 0 0 1 21 12a9.3 9.3 0 0 1-1.3 2.6M6.6 6.6A9 9 0 0 0 3 12c1.7 3.5 5 6 9 6a8.8 8.8 0 0 0 3.4-.7M1 1l22 22M9.9 9.9a3 3 0 0 0 4.2 4.2" />
                     </svg>
                     <span style={{ fontWeight: 600, fontSize: 13, color: "var(--fg)" }}>
-                      No custody · no telemetry
+                      Non-custodial · keys stay local
                     </span>
                   </div>
                 </div>
