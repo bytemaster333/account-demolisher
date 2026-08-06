@@ -8,7 +8,7 @@ import { Badge, Card, CopyableAddress, Dot, InfoTip } from "@/components/ui";
 import { errorMessage } from "@/lib/errors";
 import { explorerAccountUrl, explorerContractUrl } from "@/lib/explorer";
 import type { NetworkConfig } from "@/lib/config/networks";
-import type { AllowanceRecord } from "@/lib/soroban/allowances";
+import { allowanceAmountMismatch, type AllowanceRecord } from "@/lib/soroban/allowances";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { decimals as sep41Decimals, symbol as sep41Symbol } from "@/lib/soroban/sep41";
 import { safeDisplay } from "@/lib/safe-display";
@@ -309,16 +309,31 @@ function AllowanceRow({
       </div>
 
       {/* amount (spend limit) */}
-      <div
-        data-testid="row-amount"
-        style={{ display: "flex", alignItems: "baseline", gap: 5, minWidth: 0 }}
-        title={tokenDecimals !== null ? `${tokenDecimals} decimals` : undefined}
-      >
-        <span style={{ font: "600 13px/1 'Geist Mono', monospace" }}>
-          {formatAmount(record.amount, tokenDecimals)}
-        </span>
-        {tokenSymbol !== null ? (
-          <span style={{ fontSize: 11, color: "var(--fg-3)", fontWeight: 500 }}>{tokenSymbol}</span>
+      <div data-testid="row-amount" style={{ minWidth: 0 }}>
+        <div
+          style={{ display: "flex", alignItems: "baseline", gap: 5 }}
+          title={tokenDecimals !== null ? `${tokenDecimals} decimals` : undefined}
+        >
+          <span style={{ font: "600 13px/1 'Geist Mono', monospace" }}>
+            {formatAmount(record.amount, tokenDecimals)}
+          </span>
+          {tokenSymbol !== null ? (
+            <span style={{ fontSize: 11, color: "var(--fg-3)", fontWeight: 500 }}>
+              {tokenSymbol}
+            </span>
+          ) : null}
+        </div>
+        {/* on-chain accuracy check: the amount above is event-derived and a
+            hostile token can emit a fabricated approve event; when the real
+            on-chain allowance disagrees, say so rather than showing a lie. */}
+        {allowanceAmountMismatch(record) ? (
+          <div data-testid="row-amount-mismatch" style={{ marginTop: 4, fontSize: 10.5 }}>
+            <InfoTip tip="The spend limit shown was read from on-chain approval EVENTS, but the token contract's current allowance() reports a different value. The event may be fabricated or stale. Trust the on-chain value; revoking is the safe choice if you don't recognize this spender.">
+              <span style={{ color: "var(--warning)", fontWeight: 600 }}>
+                ⚠ on-chain: {formatAmount(record.onChainAmount as bigint, tokenDecimals)}
+              </span>
+            </InfoTip>
+          </div>
         ) : null}
       </div>
 

@@ -3,7 +3,7 @@
 import { Address, rpc, xdr, type Horizon, type Transaction } from "@stellar/stellar-sdk";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { fromScValAddress, fromScValI128, fromScValSymbol, fromScValU32 } from "./scval";
-import { buildApprove } from "./sep41";
+import { allowance as readAllowance, buildApprove } from "./sep41";
 
 // one active sep-41 allowance attributable to the user
 export interface AllowanceRecord {
@@ -14,6 +14,55 @@ export interface AllowanceRecord {
   readonly lastSeenLedger: number;
   // true when live_until_ledger < currentLedger at enumeration time
   readonly expired: boolean;
+  // the amount read DIRECTLY from the token contract (allowance(from, spender)),
+  // when it has been confirmed. `amount` above is event-derived and a hostile
+  // contract can emit a fabricated approve event, so this on-chain read is the
+  // accuracy check: undefined = not confirmed, null = the confirm read failed, a
+  // bigint = the real current allowance. See confirmAllowancesOnChain.
+  readonly onChainAmount?: bigint | null;
+}
+
+// A record whose on-chain amount is DEFINED (confirmed or failed), i.e. the
+// result of confirmAllowancesOnChain.
+export interface ConfirmedAllowanceRecord extends AllowanceRecord {
+  readonly onChainAmount: bigint | null;
+}
+
+// true when a confirmed record's event-derived amount disagrees with the on-chain
+// amount — the event was fabricated or is stale, so the displayed limit is a lie.
+export function allowanceAmountMismatch(r: AllowanceRecord): boolean {
+  return typeof r.onChainAmount === "bigint" && r.onChainAmount !== r.amount;
+}
+
+// Confirm each event-derived allowance against on-chain state by calling the
+// token's allowance(from, spender). Best-effort and read-only: a failed read
+// leaves onChainAmount = null (shown as "unconfirmed") rather than dropping the
+// row. simSourcePublicKey is any valid G-address used only as the simulation
+// source (the read doesn't move funds and the source needn't exist on-chain).
+export async function confirmAllowancesOnChain(
+  server: rpc.Server,
+  ownerAddress: string,
+  records: readonly AllowanceRecord[],
+  network: NetworkConfig,
+  simSourcePublicKey: string,
+): Promise<ConfirmedAllowanceRecord[]> {
+  return Promise.all(
+    records.map(async (r): Promise<ConfirmedAllowanceRecord> => {
+      try {
+        const res = await readAllowance(
+          server,
+          r.contractId,
+          ownerAddress,
+          r.spender,
+          simSourcePublicKey,
+          network,
+        );
+        return { ...r, onChainAmount: res.amount };
+      } catch {
+        return { ...r, onChainAmount: null };
+      }
+    }),
+  );
 }
 
 // Soroban RPC only retains events for ~7 days, so a wider window is not just

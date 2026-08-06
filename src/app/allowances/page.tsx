@@ -25,7 +25,11 @@ import {
 import { errorMessage } from "@/lib/errors";
 import { resolveNetwork, type NetworkConfig } from "@/lib/config/networks";
 import { explorerAccountUrl } from "@/lib/explorer";
-import { enumerateAllowances, type AllowanceRecord } from "@/lib/soroban/allowances";
+import {
+  confirmAllowancesOnChain,
+  enumerateAllowances,
+  type AllowanceRecord,
+} from "@/lib/soroban/allowances";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import type { Connector } from "@/lib/wallet/connector";
 import { WalletKitConnector } from "@/lib/wallet/connector";
@@ -105,8 +109,24 @@ export default function AllowancesPage(): React.JSX.Element {
         const list = await enumerateAllowances(rpc, target, ledger, undefined, {
           includeExpired: true,
         });
+        // Accuracy check: allowance amounts are event-derived, and a hostile token
+        // can emit a fabricated approve event. Confirm each against on-chain state
+        // via allowance(from, spender) when a valid G-address simulation source is
+        // available (the connected wallet, or a G-address target). Best-effort: a
+        // failed confirm shows "unconfirmed", never dropping the row. Skipped for a
+        // C-address target with no wallet (no valid simulation source).
+        const simSource =
+          publicKey !== null && StrKey.isValidEd25519PublicKey(publicKey)
+            ? publicKey
+            : StrKey.isValidEd25519PublicKey(target)
+              ? target
+              : null;
+        const confirmed =
+          simSource !== null
+            ? await confirmAllowancesOnChain(rpc, target, list, network, simSource)
+            : list;
         if (loadSeq.current !== seq) return; // superseded (network switch or newer scan)
-        setRecords(list);
+        setRecords(confirmed);
         setCurrentLedger(ledger);
         setViewedAddress(target);
       } catch (e: unknown) {
@@ -116,7 +136,7 @@ export default function AllowancesPage(): React.JSX.Element {
         if (loadSeq.current === seq) setLoading(false);
       }
     },
-    [address, network],
+    [address, network, publicKey],
   );
 
   const onUseWallet = useCallback(() => {
