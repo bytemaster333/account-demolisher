@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import {
   applySlippageMin,
   BPS_DENOMINATOR,
@@ -6,6 +6,7 @@ import {
   DEFAULT_SLIPPAGE_BPS,
   MAX_SLIPPAGE_BPS,
   MIN_SLIPPAGE_BPS,
+  resolveConfiguredSlippageBps,
   SlippageGuardTripped,
 } from "@/lib/safety/slippage";
 
@@ -135,5 +136,33 @@ describe("SlippageGuardTripped", () => {
     expect(err.message).toContain("990");
     expect(err.message).toContain("1000");
     expect(err.message).toContain("100 bps");
+  });
+});
+
+describe("resolveConfiguredSlippageBps — single configurable policy", () => {
+  const KEY = "NEXT_PUBLIC_SLIPPAGE_BPS";
+  const orig = process.env[KEY];
+  afterEach(() => {
+    if (orig === undefined) delete process.env[KEY];
+    else process.env[KEY] = orig;
+  });
+
+  it("defaults to DEFAULT_SLIPPAGE_BPS when unset or blank", () => {
+    delete process.env[KEY];
+    expect(resolveConfiguredSlippageBps()).toBe(DEFAULT_SLIPPAGE_BPS);
+    process.env[KEY] = "   ";
+    expect(resolveConfiguredSlippageBps()).toBe(DEFAULT_SLIPPAGE_BPS);
+  });
+
+  it("honors a valid in-range integer override", () => {
+    process.env[KEY] = "250";
+    expect(resolveConfiguredSlippageBps()).toBe(250);
+  });
+
+  it("falls back to the default on out-of-range / non-integer / garbage (never throws)", () => {
+    for (const bad of ["9999", "5", "1.5", "abc", "-100"]) {
+      process.env[KEY] = bad;
+      expect(resolveConfiguredSlippageBps()).toBe(DEFAULT_SLIPPAGE_BPS);
+    }
   });
 });

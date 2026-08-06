@@ -8,12 +8,9 @@ import {
   type PathResultRef,
   pathKey,
 } from "@/lib/types/plan";
+import { applySlippageMin, resolveConfiguredSlippageBps } from "@/lib/safety/slippage";
 
 export const MAX_OPS_PER_TX = 100;
-
-// conservative 1% slippage
-const SLIPPAGE_NUMERATOR = 99n;
-const SLIPPAGE_DENOMINATOR = 100n;
 
 // xlm seeded into the ephemeral mediator: base reserve + fee buffer
 const MEDIATOR_FUNDING_XLM = "2";
@@ -360,10 +357,12 @@ function hasPositive(amountStr: string): boolean {
   return false;
 }
 
-// 1% slippage haircut, truncated to 7 decimals
+// slippage haircut (configured tolerance, default 1%), truncated to 7 decimals.
+// Routed through the single slippage policy (safety/slippage.applySlippageMin) so
+// the classic path uses the SAME tolerance as the DeFi-exit floors.
 export function applySlippage(amountStr: string): string {
   const stroops = decimalToStroops(amountStr);
-  const adjusted = (stroops * SLIPPAGE_NUMERATOR) / SLIPPAGE_DENOMINATOR;
+  const adjusted = BigInt(applySlippageMin(stroops.toString(), resolveConfiguredSlippageBps()));
   return stroopsToDecimal(adjusted);
 }
 
@@ -378,11 +377,12 @@ export function proportionalWithdrawMin(
 ): (reserveAmount: string) => string {
   const share = decimalToStroops(shareBalance);
   const total = decimalToStroops(totalShares);
+  const bps = resolveConfiguredSlippageBps();
   return (reserveAmount: string): string => {
     if (total <= 0n || share <= 0n) return "0";
     const reserve = decimalToStroops(reserveAmount);
     const expected = (reserve * share) / total;
-    const adjusted = (expected * SLIPPAGE_NUMERATOR) / SLIPPAGE_DENOMINATOR;
+    const adjusted = BigInt(applySlippageMin(expected.toString(), bps));
     return stroopsToDecimal(adjusted);
   };
 }

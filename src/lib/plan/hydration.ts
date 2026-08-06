@@ -27,7 +27,7 @@ import { getFxDAOVaultsContractIdForNetwork } from "@/lib/adapters/fxdao/contrac
 import { buildRevoke } from "@/lib/soroban/allowances";
 import { buildTransfer } from "@/lib/soroban/sep41";
 import { simulate } from "@/lib/soroban/simulate";
-import { applySlippageMin, DEFAULT_SLIPPAGE_BPS } from "@/lib/safety/slippage";
+import { applySlippageMin, resolveConfiguredSlippageBps } from "@/lib/safety/slippage";
 import type { AssetIdentifier } from "@/lib/types/account";
 
 import type { PlanNode, PlanTree } from "./tree";
@@ -134,7 +134,7 @@ async function hydrateNode(
   getSourceAccount: () => Promise<Horizon.AccountResponse>,
 ): Promise<void> {
   const a = deps.adapters ?? {};
-  const slippageBps = DEFAULT_SLIPPAGE_BPS;
+  const slippageBps = resolveConfiguredSlippageBps();
 
   switch (node.kind) {
     case "RevokeAllowance": {

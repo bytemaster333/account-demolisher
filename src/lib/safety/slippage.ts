@@ -30,6 +30,24 @@ export class SlippageGuardTripped extends Error {
   }
 }
 
+// The configured slippage tolerance for the whole close: NEXT_PUBLIC_SLIPPAGE_BPS
+// when set to a valid in-range integer, else DEFAULT_SLIPPAGE_BPS. This is the
+// SINGLE source of truth for slippage across the plan (DeFi-exit floors AND the
+// classic path-payment / LP-withdraw floors), so there is one policy rather than
+// two hardcoded constants. An out-of-range/malformed override falls back to the
+// default rather than throwing, so a bad env value can never break plan-building.
+export function resolveConfiguredSlippageBps(): number {
+  const raw = process.env.NEXT_PUBLIC_SLIPPAGE_BPS;
+  if (typeof raw !== "string" || raw.trim().length === 0) return DEFAULT_SLIPPAGE_BPS;
+  const n = Number(raw.trim());
+  if (!Number.isInteger(n)) return DEFAULT_SLIPPAGE_BPS;
+  try {
+    return clampSlippage(n);
+  } catch {
+    return DEFAULT_SLIPPAGE_BPS;
+  }
+}
+
 // validate a slippage-bps value
 export function clampSlippage(bps: number): number {
   if (!Number.isFinite(bps)) {
