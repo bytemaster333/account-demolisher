@@ -1,7 +1,11 @@
 // network-aware contract-id allow-list
 
-import { BLEND_MAINNET_INFRASTRUCTURE, BLEND_MAINNET_POOLS } from "@/lib/adapters/blend/pools";
-import { BLEND_TESTNET_POOLS } from "@/lib/adapters/blend/pools";
+import {
+  BLEND_MAINNET_INFRASTRUCTURE,
+  BLEND_MAINNET_POOLS,
+  BLEND_TESTNET_INFRASTRUCTURE,
+  BLEND_TESTNET_POOLS,
+} from "@/lib/adapters/blend/pools";
 import { FXDAO_MAINNET_CONTRACTS } from "@/lib/adapters/fxdao/contracts";
 import type { NetworkConfig } from "@/lib/config/networks";
 
@@ -78,71 +82,8 @@ export const MAINNET_ALLOWLIST: readonly AllowedContract[] = [
 
 // testnet allow-list, mirrors the four protocols on stellar testnet
 
-// blend testnet infrastructure, the eight non-pool testnet contracts
-// sourced from blend-utils@main/testnet.contracts.json (re-fetched 2026-05-18)
-const BLEND_TESTNET_INFRASTRUCTURE_SOURCE =
-  "github.com/blend-capital/blend-utils@main/testnet.contracts.json";
-const BLEND_TESTNET_VERIFIED_AT = "2026-05-18";
-
-interface BlendTestnetInfrastructureEntry {
-  readonly id: string;
-  readonly name: string;
-  readonly verified_at: string;
-  readonly source: string;
-}
-
-// used internally to build the testnet allow-list below (not exported)
-const BLEND_TESTNET_INFRASTRUCTURE: readonly BlendTestnetInfrastructureEntry[] = Object.freeze([
-  Object.freeze({
-    id: "CDV6RX4CGPCOKGTBFS52V3LMWQGZN3LCQTXF5RVPOOCG4XVMHXQ4NTF6",
-    name: "poolFactoryV2",
-    verified_at: BLEND_TESTNET_VERIFIED_AT,
-    source: BLEND_TESTNET_INFRASTRUCTURE_SOURCE,
-  }),
-  Object.freeze({
-    id: "CBDVWXT433PRVTUNM56C3JREF3HIZHRBA64NB2C3B2UNCKIS65ZYCLZA",
-    name: "backstopV2",
-    verified_at: BLEND_TESTNET_VERIFIED_AT,
-    source: BLEND_TESTNET_INFRASTRUCTURE_SOURCE,
-  }),
-  Object.freeze({
-    id: "CC3WJVJINN4E3LPMNTWKK7LQZLYDQMZHZA7EZGXATPHHBPKNZRIO3KZ6",
-    name: "emitter",
-    verified_at: BLEND_TESTNET_VERIFIED_AT,
-    source: BLEND_TESTNET_INFRASTRUCTURE_SOURCE,
-  }),
-  Object.freeze({
-    id: "CB22KRA3YZVCNCQI64JQ5WE7UY2VAV7WFLK6A2JN3HEX56T2EDAFO7QF",
-    name: "BLND",
-    verified_at: BLEND_TESTNET_VERIFIED_AT,
-    source: BLEND_TESTNET_INFRASTRUCTURE_SOURCE,
-  }),
-  Object.freeze({
-    id: "CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU",
-    name: "USDC",
-    verified_at: BLEND_TESTNET_VERIFIED_AT,
-    source: BLEND_TESTNET_INFRASTRUCTURE_SOURCE,
-  }),
-  Object.freeze({
-    id: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
-    name: "XLM (SAC)",
-    verified_at: BLEND_TESTNET_VERIFIED_AT,
-    source: BLEND_TESTNET_INFRASTRUCTURE_SOURCE,
-  }),
-  Object.freeze({
-    id: "CDX2TKELFKHP2MWISDCXWWZ73CL7F57GHYRJAWJWNOTLNJNNM7XLT4JY",
-    name: "cometFactory",
-    verified_at: BLEND_TESTNET_VERIFIED_AT,
-    source: BLEND_TESTNET_INFRASTRUCTURE_SOURCE,
-  }),
-  Object.freeze({
-    id: "CA5UTUUPHYL5K22UBRUVC37EARZUGYOSGK3IKIXG2JLCC5ZZLI4BDWDM",
-    name: "comet (BLND/USDC LP)",
-    verified_at: BLEND_TESTNET_VERIFIED_AT,
-    source: BLEND_TESTNET_INFRASTRUCTURE_SOURCE,
-  }),
-]);
-
+// blend testnet infrastructure (factory, backstopV2, emitter, tokens…) is
+// snapshotted in blend/pools.ts and shared with backstop resolution.
 const TESTNET_BLEND_ENTRIES: readonly AllowedContract[] = [
   ...BLEND_TESTNET_POOLS.map(
     (pool): AllowedContract => ({

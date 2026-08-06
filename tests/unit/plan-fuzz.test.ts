@@ -16,6 +16,7 @@ const ACC = "GB6NVEN5HSUBKMYCE5ZOWSK5K23TBWRUQLZY3KNMXUZ3AQ2ESC4MY4AQ";
 
 const emptyPositions = (): ProtocolPositions => ({
   blend: [],
+  backstop: [],
   aquarius: [],
   soroswap: [],
   fxdao: [],

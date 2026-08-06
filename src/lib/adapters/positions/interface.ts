@@ -34,9 +34,21 @@ export interface FxDAOPositionSummary {
   readonly collateral: bigint;
 }
 
+// one Blend backstop deposit. The backstop is a SEPARATE contract from the lending
+// pool, and its withdrawal is a queued, 17-day-locked flow: a close can START the
+// withdrawal (queue_withdrawal) and show the unlock date, but cannot complete it
+// in one session, so an active/queued backstop blocks the final account merge
+// (the account must survive to receive the withdrawal after the lock).
+export interface BlendBackstopSummary {
+  readonly poolId: string;
+  readonly shares: bigint; // active shares not yet queued
+  readonly queuedForWithdrawal: bigint; // shares already in the 17-day Q4W queue
+}
+
 // aggregated DeFi positions for one user. each protocol independent; partial failures
 export interface ProtocolPositions {
   readonly blend: readonly BlendPositionSummary[];
+  readonly backstop: readonly BlendBackstopSummary[];
   readonly aquarius: readonly AquariusPositionSummary[];
   readonly soroswap: readonly SoroswapPositionSummary[];
   readonly fxdao: readonly FxDAOPositionSummary[];
@@ -59,6 +71,7 @@ export interface IDeFiPositionProvider {
 // empty constant for the "nothing to report" case
 export const EMPTY_POSITIONS: ProtocolPositions = Object.freeze({
   blend: Object.freeze([]) as readonly BlendPositionSummary[],
+  backstop: Object.freeze([]) as readonly BlendBackstopSummary[],
   aquarius: Object.freeze([]) as readonly AquariusPositionSummary[],
   soroswap: Object.freeze([]) as readonly SoroswapPositionSummary[],
   fxdao: Object.freeze([]) as readonly FxDAOPositionSummary[],

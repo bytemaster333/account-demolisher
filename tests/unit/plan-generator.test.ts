@@ -43,6 +43,7 @@ function makeAudit(over: Partial<AccountAudit> = {}): AccountAudit {
 function emptyPositions(over: Partial<ProtocolPositions> = {}): ProtocolPositions {
   return {
     blend: [],
+    backstop: [],
     aquarius: [],
     soroswap: [],
     fxdao: [],
@@ -260,5 +261,37 @@ describe("generatePlan, held SEP-41 token auto-drain (SEP-41 auto-include)", () 
       heldTokens: [{ contractId: TOKEN_A, balance: 500n }],
     });
     expect(tree.allNodes.get(id("drain-token", TOKEN_A))).toBeUndefined();
+  });
+});
+
+describe("generatePlan, blend backstop (queued 17-day withdrawal)", () => {
+  const NOW = 1_700_000_000_000; // fixed so the estimated unlock date is deterministic
+  const SEVENTEEN_DAYS_MS = 17 * 24 * 60 * 60 * 1000;
+
+  it("emits a BackstopQueue node carrying the estimated unlock date, gating the merge", () => {
+    const positions = emptyPositions({
+      backstop: [{ poolId: POOL_ID, shares: 1000n, queuedForWithdrawal: 0n }],
+    });
+    const tree = generatePlan(makeAudit(), positions, [], DEST, { now: NOW });
+    const nodeId = id("backstop-queue", POOL_ID);
+    const node = tree.allNodes.get(nodeId);
+    expect(node?.kind).toBe("BackstopQueue");
+    if (node?.kind !== "BackstopQueue") throw new Error("expected BackstopQueue node");
+    expect(node.metadata.poolId).toBe(POOL_ID);
+    expect(node.metadata.shares).toBe(1000n);
+    // the shown unlock date is now + 17 days
+    expect(node.metadata.queueEndsAt.getTime()).toBe(NOW + SEVENTEEN_DAYS_MS);
+    // the merge depends on the queue (it must run before the close attempt)
+    expect(dependsOn(tree, "final-classic-tx", nodeId)).toBe(true);
+  });
+
+  it("does not emit a BackstopQueue node when there are no active shares to queue", () => {
+    // already fully queued: nothing new to submit (but the executor's reprobe
+    // still blocks the merge until the Q4W is withdrawn)
+    const positions = emptyPositions({
+      backstop: [{ poolId: POOL_ID, shares: 0n, queuedForWithdrawal: 500n }],
+    });
+    const tree = generatePlan(makeAudit(), positions, [], DEST, { now: NOW });
+    expect(tree.allNodes.has(id("backstop-queue", POOL_ID))).toBe(false);
   });
 });

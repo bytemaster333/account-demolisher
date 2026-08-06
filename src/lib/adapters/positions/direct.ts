@@ -21,6 +21,7 @@ import type { rpc } from "@stellar/stellar-sdk";
 import type { NetworkConfig } from "@/lib/config/networks";
 import {
   type AquariusPositionSummary,
+  type BlendBackstopSummary,
   type BlendPositionSummary,
   type FxDAOPositionSummary,
   type IDeFiPositionProvider,
@@ -105,6 +106,7 @@ export class DirectContractProvider implements IDeFiPositionProvider {
 
     const blendResult = unwrap("blend", blendSettled, errors, {
       positions: [] as readonly BlendPositionSummary[],
+      backstop: [] as readonly BlendBackstopSummary[],
       perPoolErrors: [] as readonly string[],
     });
     const aquarius = unwrap(
@@ -128,6 +130,7 @@ export class DirectContractProvider implements IDeFiPositionProvider {
 
     return {
       blend: blendResult.positions,
+      backstop: blendResult.backstop,
       aquarius,
       soroswap,
       fxdao,
@@ -140,6 +143,7 @@ export class DirectContractProvider implements IDeFiPositionProvider {
     userAddress: string,
   ): Promise<{
     positions: readonly BlendPositionSummary[];
+    backstop: readonly BlendBackstopSummary[];
     perPoolErrors: readonly string[];
   }> {
     // pick pool ids per network unless the caller injected an explicit override
@@ -170,11 +174,15 @@ export class DirectContractProvider implements IDeFiPositionProvider {
       (e) => `pool ${e.poolId} stage=${e.stage}: ${e.message}`,
     );
 
-    // Backstop shares are a SEPARATE Blend position class we don't auto-unwind
-    // yet (the withdrawal is a 17-day queued flow). They don't block the merge,
-    // so detect them and warn rather than silently strand them. Only where a
-    // backstop contract is deployed/snapshotted (mainnet): resolveBackstopId
-    // returns null elsewhere and we skip the check.
+    // Backstop shares are a SEPARATE Blend position class (a distinct contract).
+    // The close now QUEUES the 17-day withdrawal (a BackstopQueue plan node) and
+    // shows the unlock date, but cannot complete it in one session, so a detected
+    // backstop is surfaced as a structured position that also blocks the final
+    // merge (the account must survive to receive the withdrawal). Where no
+    // backstop contract is snapshotted (futurenet) resolveBackstopId returns null
+    // and the check is skipped. A read error is reported (never swallowed) so an
+    // unreadable backstop is never treated as "none".
+    const backstopSummaries: BlendBackstopSummary[] = [];
     const backstopId = resolveBackstopId(network);
     if (backstopId !== null) {
       try {
@@ -185,12 +193,11 @@ export class DirectContractProvider implements IDeFiPositionProvider {
           backstopId,
         );
         for (const d of backstop.deposits) {
-          perPoolErrors.push(
-            `You hold a Blend backstop deposit in pool ${d.poolId} (${d.shares} shares` +
-              `${d.queuedForWithdrawal > 0n ? `, ${d.queuedForWithdrawal} already queued` : ""}). ` +
-              `The close does NOT unwind backstop deposits: withdraw it from the Blend backstop ` +
-              `(a queued, 17-day process) before closing, or those funds will be stranded.`,
-          );
+          backstopSummaries.push({
+            poolId: d.poolId,
+            shares: d.shares,
+            queuedForWithdrawal: d.queuedForWithdrawal,
+          });
         }
         perPoolErrors.push(...backstop.errors);
       } catch (e) {
@@ -201,7 +208,7 @@ export class DirectContractProvider implements IDeFiPositionProvider {
       }
     }
 
-    return { positions, perPoolErrors };
+    return { positions, backstop: backstopSummaries, perPoolErrors };
   }
 
   private async discoverAquarius(

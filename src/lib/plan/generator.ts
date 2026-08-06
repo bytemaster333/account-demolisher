@@ -12,6 +12,7 @@ import type {
   SoroswapPositionSummary,
 } from "@/lib/adapters/positions/interface";
 import { batchClassicDemolition } from "@/lib/plan/classic-batcher";
+import { BACKSTOP_QUEUE_DURATION_SECONDS } from "@/lib/adapters/blend/constants";
 
 import { buildPlanTree, type PlanNode, type PlanTree } from "./tree";
 
@@ -40,6 +41,10 @@ export interface GeneratePlanOptions {
   // block it): a hostile airdropped token that reverts on transfer must not be
   // able to wedge the close, so a failed drain is skipped, not fatal (executor).
   readonly heldTokens?: readonly HeldToken[];
+  // wall-clock ms used only to ESTIMATE the Blend backstop unlock date shown on a
+  // BackstopQueue node (the real 17-day timer starts on-chain at submit). Defaults
+  // to Date.now(); tests pass a fixed value for determinism.
+  readonly now?: number;
 }
 
 export function generatePlan(
@@ -269,7 +274,33 @@ export function generatePlan(
     }
   }
 
-  // backstop queue: only emitted when an extended position type is passed in
+  // blend backstop: a deposit in the SEPARATE backstop contract. The close can
+  // only START its withdrawal — a queued, 17-day-locked flow — so we emit a
+  // BackstopQueue node (queue_withdrawal) that carries the estimated unlock date,
+  // and the executor's merge guard refuses the close while the backstop is still
+  // active/queued (the account must survive to receive the withdrawal). Only
+  // emitted when there are active shares to queue; a deposit already fully queued
+  // has nothing new to submit but still blocks the merge via the reprobe.
+  const backstopNow = opts.now ?? Date.now();
+  const backstopQueueEndsAt = new Date(backstopNow + BACKSTOP_QUEUE_DURATION_SECONDS * 1000);
+  for (const bs of positions.backstop) {
+    if (bs.shares <= 0n) continue;
+    nodes.push({
+      id: makeId("backstop-queue", bs.poolId),
+      kind: "BackstopQueue",
+      dependencies: [],
+      status: "pending",
+      description:
+        `Queue Blend backstop withdrawal for pool ${shortAddr(bs.poolId)} ` +
+        `(${bs.shares.toString()} shares; unlocks ~${backstopQueueEndsAt.toISOString().slice(0, 10)})`,
+      metadata: {
+        kind: "BackstopQueue",
+        poolId: bs.poolId,
+        shares: bs.shares,
+        queueEndsAt: backstopQueueEndsAt,
+      },
+    });
+  }
 
   // final classic transaction
   const finalId = "final-classic-tx";

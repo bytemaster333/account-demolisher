@@ -308,15 +308,20 @@ export async function executePlanTreeOnChain(
             const remaining = await deps.reprobeSorobanPositions(input.publicKey, deps.network);
             const open =
               remaining.blend.length +
+              remaining.backstop.length +
               remaining.aquarius.length +
               remaining.soroswap.length +
               remaining.fxdao.length;
             if (open > 0) {
+              // A backstop deposit blocks the close even once queued: the 17-day
+              // Q4W lock means the account must survive to receive the withdrawal,
+              // so the merge is refused until the backstop is fully withdrawn.
               throw new Error(
                 `account_merge blocked: ${open} Soroban DeFi position(s) still open ` +
-                  `(blend=${remaining.blend.length}, aquarius=${remaining.aquarius.length}, ` +
-                  `soroswap=${remaining.soroswap.length}, fxdao=${remaining.fxdao.length}). ` +
-                  `Close them before merging, or the funds will be stranded on the deleted account.`,
+                  `(blend=${remaining.blend.length}, backstop=${remaining.backstop.length}, ` +
+                  `aquarius=${remaining.aquarius.length}, soroswap=${remaining.soroswap.length}, ` +
+                  `fxdao=${remaining.fxdao.length}). Close them before merging, or the funds ` +
+                  `will be stranded on the deleted account.`,
               );
             }
             // getPositions uses allSettled: a rate-limited / timed-out protocol

@@ -178,7 +178,14 @@ describe("executePlanTreeOnChain, horizon retry on FinalClassicTx prep", () => {
     const { tree } = makeFinalClassicTree();
     const deps = makeDeps({
       reprobeSorobanPositions: async () =>
-        ({ blend: [{ poolId: "P" }], aquarius: [], soroswap: [], fxdao: [], errors: [] }) as never,
+        ({
+          blend: [{ poolId: "P" }],
+          backstop: [],
+          aquarius: [],
+          soroswap: [],
+          fxdao: [],
+          errors: [],
+        }) as never,
     });
 
     const promise = executePlanTreeOnChain(
@@ -221,6 +228,7 @@ describe("executePlanTreeOnChain, horizon retry on FinalClassicTx prep", () => {
       reprobeSorobanPositions: async () =>
         ({
           blend: [],
+          backstop: [],
           aquarius: [],
           soroswap: [],
           fxdao: [],
@@ -243,7 +251,7 @@ describe("executePlanTreeOnChain, horizon retry on FinalClassicTx prep", () => {
     const { tree } = makeFinalClassicTree();
     const deps = makeDeps({
       reprobeSorobanPositions: async () =>
-        ({ blend: [], aquarius: [], soroswap: [], fxdao: [], errors: [] }) as never,
+        ({ blend: [], backstop: [], aquarius: [], soroswap: [], fxdao: [], errors: [] }) as never,
     });
 
     const promise = executePlanTreeOnChain(
@@ -664,13 +672,16 @@ describe("executePlanTreeOnChain, Soroban nodes are rebuilt fresh before signing
       .mockResolvedValueOnce({ txHash: "OK", ledger: 9 });
     const { tree, revoke } = makeRevokeTree();
 
-    await executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
+    const output = await executePlanTreeOnChain(
+      { publicKey: "GUSER", tree, previousReceipts: {} },
+      deps,
+    );
 
     // rebuilt again on the retry (fresh sequence), then submitted successfully
     expect(rebuildSorobanNode).toHaveBeenCalledTimes(2);
     expect(deps.submitSoroban).toHaveBeenCalledTimes(2);
     expect(revoke.status).toBe("confirmed");
-    expect(revoke.executed).toEqual({ txHash: "OK", ledger: 9 });
+    expect(output.receipts["revoke"]).toEqual({ txHash: "OK", ledger: 9 });
   });
 
   it("recovers from a changed/expired footprint by re-simulating and retrying (A3)", async () => {

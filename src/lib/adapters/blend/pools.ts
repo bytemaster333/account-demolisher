@@ -149,6 +149,65 @@ export const BLEND_MAINNET_INFRASTRUCTURE: readonly BlendInfrastructureEntry[] =
   }),
 ]);
 
+// blend testnet infrastructure contracts, sourced from
+// blend-utils@main/testnet.contracts.json (re-fetched 2026-05-18). Shared by the
+// contract allow-list (config/contracts.ts) and backstop resolution
+// (blend/constants.ts) so the testnet backstop id lives in exactly one place.
+const BLEND_TESTNET_INFRA_SOURCE =
+  "github.com/blend-capital/blend-utils@main/testnet.contracts.json";
+const BLEND_TESTNET_INFRA_VERIFIED_AT = "2026-05-18";
+
+export const BLEND_TESTNET_INFRASTRUCTURE: readonly BlendInfrastructureEntry[] = Object.freeze([
+  Object.freeze({
+    id: "CDV6RX4CGPCOKGTBFS52V3LMWQGZN3LCQTXF5RVPOOCG4XVMHXQ4NTF6",
+    name: "poolFactoryV2",
+    verified_at: BLEND_TESTNET_INFRA_VERIFIED_AT,
+    source: BLEND_TESTNET_INFRA_SOURCE,
+  }),
+  Object.freeze({
+    id: "CBDVWXT433PRVTUNM56C3JREF3HIZHRBA64NB2C3B2UNCKIS65ZYCLZA",
+    name: "backstopV2",
+    verified_at: BLEND_TESTNET_INFRA_VERIFIED_AT,
+    source: BLEND_TESTNET_INFRA_SOURCE,
+  }),
+  Object.freeze({
+    id: "CC3WJVJINN4E3LPMNTWKK7LQZLYDQMZHZA7EZGXATPHHBPKNZRIO3KZ6",
+    name: "emitter",
+    verified_at: BLEND_TESTNET_INFRA_VERIFIED_AT,
+    source: BLEND_TESTNET_INFRA_SOURCE,
+  }),
+  Object.freeze({
+    id: "CB22KRA3YZVCNCQI64JQ5WE7UY2VAV7WFLK6A2JN3HEX56T2EDAFO7QF",
+    name: "BLND",
+    verified_at: BLEND_TESTNET_INFRA_VERIFIED_AT,
+    source: BLEND_TESTNET_INFRA_SOURCE,
+  }),
+  Object.freeze({
+    id: "CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU",
+    name: "USDC",
+    verified_at: BLEND_TESTNET_INFRA_VERIFIED_AT,
+    source: BLEND_TESTNET_INFRA_SOURCE,
+  }),
+  Object.freeze({
+    id: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+    name: "XLM (SAC)",
+    verified_at: BLEND_TESTNET_INFRA_VERIFIED_AT,
+    source: BLEND_TESTNET_INFRA_SOURCE,
+  }),
+  Object.freeze({
+    id: "CDX2TKELFKHP2MWISDCXWWZ73CL7F57GHYRJAWJWNOTLNJNNM7XLT4JY",
+    name: "cometFactory",
+    verified_at: BLEND_TESTNET_INFRA_VERIFIED_AT,
+    source: BLEND_TESTNET_INFRA_SOURCE,
+  }),
+  Object.freeze({
+    id: "CA5UTUUPHYL5K22UBRUVC37EARZUGYOSGK3IKIXG2JLCC5ZZLI4BDWDM",
+    name: "comet (BLND/USDC LP)",
+    verified_at: BLEND_TESTNET_INFRA_VERIFIED_AT,
+    source: BLEND_TESTNET_INFRA_SOURCE,
+  }),
+]);
+
 // every blend mainnet pool id as a frozen string array
 export const BLEND_MAINNET_POOL_IDS: readonly string[] = Object.freeze(
   BLEND_MAINNET_POOLS.map((p) => p.pool_id),
