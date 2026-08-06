@@ -15,7 +15,7 @@ import { getRpc } from "@/lib/soroban/rpc-client";
 import { address as scvAddress } from "@/lib/soroban/scval";
 import { simulate } from "@/lib/soroban/simulate";
 
-import { FXDAO_KNOWN_DENOMINATIONS, getFxDAOVaultsContractId } from "./contracts";
+import { FXDAO_KNOWN_DENOMINATIONS, getFxDAOVaultsContractIdForNetwork } from "./contracts";
 
 // one open fxdao vault
 export interface FxDAOVault {
@@ -50,7 +50,13 @@ export async function getUserVaults(
   const server = deps.server ?? getRpc(network);
   const simulateFn = deps.simulate ?? simulate;
   const denominations = deps.denominations ?? FXDAO_KNOWN_DENOMINATIONS;
-  const vaultsContractId = getFxDAOVaultsContractId();
+  // resolve the VaultsContract for THIS network. Previously this hardcoded the
+  // mainnet id, so on testnet get_vault simulated against a contract that doesn't
+  // exist there and every probe read as "no vault" — FxDAO was undiscoverable on
+  // testnet. A network without a published FxDAO deployment (futurenet) has no
+  // vaults to find, so return [].
+  const vaultsContractId = getFxDAOVaultsContractIdForNetwork(network);
+  if (vaultsContractId === null) return [];
 
   const vaults: FxDAOVault[] = [];
   for (const denomination of denominations) {

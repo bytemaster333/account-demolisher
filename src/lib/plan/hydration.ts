@@ -23,8 +23,7 @@ import {
   findPrevVaultKey as defaultFindPrevVaultKey,
   type VaultKey,
 } from "@/lib/adapters/fxdao/prev-key";
-import { getFxDAOVaultsContractId } from "@/lib/adapters/fxdao/contracts";
-import { getAllowlistForNetwork } from "@/lib/config/contracts";
+import { getFxDAOVaultsContractIdForNetwork } from "@/lib/adapters/fxdao/contracts";
 import { buildRevoke } from "@/lib/soroban/allowances";
 import { buildTransfer } from "@/lib/soroban/sep41";
 import { simulate } from "@/lib/soroban/simulate";
@@ -588,14 +587,9 @@ async function resolveFxDaoPrevKey(
 }
 
 function resolveFxDaoVaultsId(network: NetworkConfig): string {
-  if (network.id === "mainnet") return getFxDAOVaultsContractId();
-  if (network.id === "testnet") {
-    const list = getAllowlistForNetwork(network);
-    const entry = list.find((c) => c.protocol === "fxdao" && c.name === "FxDAO::VaultsContract");
-    if (!entry) {
-      throw new Error("FxDAO VaultsContract is not on the testnet allow-list");
-    }
-    return entry.id;
+  const id = getFxDAOVaultsContractIdForNetwork(network);
+  if (id === null) {
+    throw new Error(`FxDAO has no published ${network.id} deployment`);
   }
-  throw new Error(`FxDAO has no published ${network.id} deployment`);
+  return id;
 }

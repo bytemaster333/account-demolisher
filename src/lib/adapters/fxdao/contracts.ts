@@ -1,4 +1,6 @@
 // frozen snapshot of fxdao's mainnet soroban deployments
+import type { NetworkConfig } from "@/lib/config/networks";
+
 // one entry in the fxdao mainnet contract registry
 export interface FxDAOContractEntry {
   readonly id: string;
@@ -64,6 +66,56 @@ export const FXDAO_MAINNET_CONTRACTS: readonly FxDAOContractEntry[] = Object.fre
   } satisfies FxDAOContractEntry),
 ]);
 
+// testnet contract IDs snapshotted from fxdao.io/docs/addresses/ (Testnet). Shared
+// with the contract allow-list (config/contracts.ts) so the ids live in one place.
+const FXDAO_TESTNET_SOURCE = "fxdao.io/docs/addresses/ (Testnet)";
+const FXDAO_TESTNET_VERIFIED_AT = "2026-05-18";
+
+export const FXDAO_TESTNET_CONTRACTS: readonly FxDAOContractEntry[] = Object.freeze([
+  Object.freeze({
+    id: "CBUZ5NJKA5PRS4TBPHWMN4JGGRVIOQOKI4JUYLA2IXS3BEJKQKEWFW7D",
+    name: "VaultsContract",
+    kind: "vaults",
+    verified_at: FXDAO_TESTNET_VERIFIED_AT,
+    source: FXDAO_TESTNET_SOURCE,
+  } satisfies FxDAOContractEntry),
+  Object.freeze({
+    id: "CB4WLX4IP2MWAT2ITRRO7I5YM743NILBBOWMUIVWYSLWWASZVRGB5YD3",
+    name: "FXG (SAC)",
+    kind: "governance_sac",
+    verified_at: FXDAO_TESTNET_VERIFIED_AT,
+    source: FXDAO_TESTNET_SOURCE,
+  } satisfies FxDAOContractEntry),
+  Object.freeze({
+    id: "CA2QJKOZF6WE3C45FCYDWB45337BKENLUU4EREWWXRIMHKWJSH6EEWVO",
+    name: "USDx (SAC)",
+    kind: "synthetic_sac",
+    verified_at: FXDAO_TESTNET_VERIFIED_AT,
+    source: FXDAO_TESTNET_SOURCE,
+  } satisfies FxDAOContractEntry),
+  Object.freeze({
+    id: "CBA2S6NROG4PN36FSFZTWGD4JVQDCUYBMCW2H4J64JCGH7ZSQYTAIZ54",
+    name: "EURx (SAC)",
+    kind: "synthetic_sac",
+    verified_at: FXDAO_TESTNET_VERIFIED_AT,
+    source: FXDAO_TESTNET_SOURCE,
+  } satisfies FxDAOContractEntry),
+  Object.freeze({
+    id: "CDYP7LY3OIKHFVDID3CO6MQJ45T37N2G63NYXN33OQJPLW3X2PYRFHVT",
+    name: "GBPx (SAC)",
+    kind: "synthetic_sac",
+    verified_at: FXDAO_TESTNET_VERIFIED_AT,
+    source: FXDAO_TESTNET_SOURCE,
+  } satisfies FxDAOContractEntry),
+  Object.freeze({
+    id: "CCHXQJ5YDCIRGCBUTLC5BF2V2DKHULVPTQJGD4BAHW46JQWVRQNGA2LU",
+    name: "Oracle",
+    kind: "oracle",
+    verified_at: FXDAO_TESTNET_VERIFIED_AT,
+    source: FXDAO_TESTNET_SOURCE,
+  } satisfies FxDAOContractEntry),
+]);
+
 // mainnet stable-asset issuer (classical stellar account). classical trustlines for USDx/EURx/GBPx target this
 export const FXDAO_MAINNET_STABLE_ISSUER =
   "GAVH5ZWACAY2PHPUG4FL3LHHJIYIHOFPSIUGM2KHK25CJWXHAV6QKDMN" as const;
@@ -80,4 +132,19 @@ export function getFxDAOVaultsContractId(): string {
     );
   }
   return entry.id;
+}
+
+// resolve the VaultsContract id for a network, or null where FxDAO has no
+// published deployment (futurenet). Used by discovery AND the exit hydration so
+// both target the SAME contract per network.
+export function getFxDAOVaultsContractIdForNetwork(network: NetworkConfig): string | null {
+  const registry =
+    network.id === "mainnet"
+      ? FXDAO_MAINNET_CONTRACTS
+      : network.id === "testnet"
+        ? FXDAO_TESTNET_CONTRACTS
+        : null;
+  if (registry === null) return null;
+  const entry = registry.find((c) => c.kind === "vaults");
+  return entry ? entry.id : null;
 }

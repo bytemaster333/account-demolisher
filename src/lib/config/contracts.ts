@@ -6,7 +6,7 @@ import {
   BLEND_TESTNET_INFRASTRUCTURE,
   BLEND_TESTNET_POOLS,
 } from "@/lib/adapters/blend/pools";
-import { FXDAO_MAINNET_CONTRACTS } from "@/lib/adapters/fxdao/contracts";
+import { FXDAO_MAINNET_CONTRACTS, FXDAO_TESTNET_CONTRACTS } from "@/lib/adapters/fxdao/contracts";
 import type { NetworkConfig } from "@/lib/config/networks";
 
 export interface AllowedContract {
@@ -125,52 +125,17 @@ const TESTNET_SOROSWAP_ENTRIES: readonly AllowedContract[] = [
   },
 ];
 
-// fxdao testnet contracts
-const FXDAO_TESTNET_SOURCE = "fxdao.io/docs/addresses/ (Testnet)";
-const TESTNET_FXDAO_ENTRIES: readonly AllowedContract[] = [
-  {
-    id: "CBUZ5NJKA5PRS4TBPHWMN4JGGRVIOQOKI4JUYLA2IXS3BEJKQKEWFW7D",
-    name: "FxDAO::VaultsContract",
+// fxdao testnet contracts (vault + synthetic-stablecoin SACs + oracle) are
+// snapshotted in fxdao/contracts.ts and shared with discovery so ids live once.
+const TESTNET_FXDAO_ENTRIES: readonly AllowedContract[] = FXDAO_TESTNET_CONTRACTS.map(
+  (entry): AllowedContract => ({
+    id: entry.id,
+    name: `FxDAO::${entry.name}`,
     protocol: "fxdao",
-    verified_at: "2026-05-18",
-    source: FXDAO_TESTNET_SOURCE,
-  },
-  {
-    id: "CB4WLX4IP2MWAT2ITRRO7I5YM743NILBBOWMUIVWYSLWWASZVRGB5YD3",
-    name: "FxDAO::FXG (SAC)",
-    protocol: "fxdao",
-    verified_at: "2026-05-18",
-    source: FXDAO_TESTNET_SOURCE,
-  },
-  {
-    id: "CA2QJKOZF6WE3C45FCYDWB45337BKENLUU4EREWWXRIMHKWJSH6EEWVO",
-    name: "FxDAO::USDx (SAC)",
-    protocol: "fxdao",
-    verified_at: "2026-05-18",
-    source: FXDAO_TESTNET_SOURCE,
-  },
-  {
-    id: "CBA2S6NROG4PN36FSFZTWGD4JVQDCUYBMCW2H4J64JCGH7ZSQYTAIZ54",
-    name: "FxDAO::EURx (SAC)",
-    protocol: "fxdao",
-    verified_at: "2026-05-18",
-    source: FXDAO_TESTNET_SOURCE,
-  },
-  {
-    id: "CDYP7LY3OIKHFVDID3CO6MQJ45T37N2G63NYXN33OQJPLW3X2PYRFHVT",
-    name: "FxDAO::GBPx (SAC)",
-    protocol: "fxdao",
-    verified_at: "2026-05-18",
-    source: FXDAO_TESTNET_SOURCE,
-  },
-  {
-    id: "CCHXQJ5YDCIRGCBUTLC5BF2V2DKHULVPTQJGD4BAHW46JQWVRQNGA2LU",
-    name: "FxDAO::Oracle",
-    protocol: "fxdao",
-    verified_at: "2026-05-18",
-    source: FXDAO_TESTNET_SOURCE,
-  },
-];
+    verified_at: entry.verified_at,
+    source: entry.source,
+  }),
+);
 
 // aquarius testnet entries
 const TESTNET_AQUARIUS_ENTRIES: readonly AllowedContract[] = [
