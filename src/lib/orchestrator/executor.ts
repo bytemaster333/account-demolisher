@@ -46,6 +46,13 @@ export interface ExecutorDeps {
     publicKey: string,
     network: NetworkConfig,
   ) => Promise<ProtocolPositions>;
+  // Rebuild a Soroban node's transaction from fresh on-chain state (fresh
+  // sequence number, footprint, and timebound) immediately before signing.
+  // Optional: when absent, the pre-built (preview-time) transaction is signed
+  // as-is — the behaviour lighter callers/tests rely on. Production wires this to
+  // single-node re-hydration so a slow review can't submit a stale tx, and so a
+  // stale-sequence / stale-footprint rejection can be recovered by rebuilding.
+  readonly rebuildSorobanNode?: (node: PlanNode, publicKey: string) => Promise<void>;
 }
 
 export interface ExecutionOutput {
@@ -113,10 +120,15 @@ const MAX_CLOSE_PHASES = 30;
 // "fee": bid too low for current congestion -> retry with a higher fee.
 // "reprice": a path-payment/offer floor missed because the market moved between
 //   quote and submit -> retry, which re-resolves paths and recomputes destMin.
-// null: deterministic (bad seq, no trust, etc.) -> never retry.
-function classicRejectionKind(err: unknown): "fee" | "reprice" | null {
+// "resequence": the source account's sequence advanced between build and submit
+//   (tx_bad_seq) -> retry; attemptMerge reloads the account fresh each attempt,
+//   so the rebuild picks up the current sequence. Bounded by MAX_MERGE_ATTEMPTS,
+//   so a persistent bad-seq (not a recoverable race) still fails loudly.
+// null: deterministic (no trust, malformed, etc.) -> never retry.
+function classicRejectionKind(err: unknown): "fee" | "reprice" | "resequence" | null {
   const msg = err instanceof Error ? err.message : String(err);
   if (msg.includes("tx_insufficient_fee")) return "fee";
+  if (msg.includes("tx_bad_seq")) return "resequence";
   if (
     msg.includes("op_under_dest_min") ||
     msg.includes("op_too_few_offers") ||
@@ -124,6 +136,35 @@ function classicRejectionKind(err: unknown): "fee" | "reprice" | null {
     msg.includes("tx_too_late")
   ) {
     return "reprice";
+  }
+  return null;
+}
+
+const MAX_SOROBAN_ATTEMPTS = 3;
+
+// A Soroban submit failure recoverable by rebuilding the node against fresh
+// on-chain state and retrying. "resequence": the account's sequence moved since
+// we built (tx_bad_seq). "footprint": the ledger entries the tx declared changed
+// or were archived between simulation and submit. A rebuild re-reads the sequence
+// and re-simulates (which re-derives the footprint and resource fee), so a
+// bounded retry clears both. A genuine contract revert is NOT classified here:
+// the rebuild's re-simulation fails fast and surfaces the real error instead of
+// looping on an unrecoverable step.
+function sorobanRecoverableKind(err: unknown): "resequence" | "footprint" | null {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  if (msg.includes("tx_bad_seq") || msg.includes("txbadseq") || msg.includes("bad_seq")) {
+    return "resequence";
+  }
+  if (
+    msg.includes("footprint") ||
+    msg.includes("restorepreamble") ||
+    msg.includes("restore_preamble") ||
+    msg.includes("entryarchived") ||
+    msg.includes("entry_archived") ||
+    msg.includes("archived") ||
+    msg.includes("entry_expired")
+  ) {
+    return "footprint";
   }
   return null;
 }
@@ -398,7 +439,9 @@ export async function executePlanTreeOnChain(
           const kind = classicRejectionKind(err);
           if (kind === null || attempt === MAX_MERGE_ATTEMPTS) throw err;
           if (kind === "fee") feeBase = Math.min(feeBase * 3, MAX_PER_OP_FEE);
-          // "reprice": next attemptMerge re-resolves paths and recomputes destMin
+          // "reprice": next attemptMerge re-resolves paths and recomputes destMin.
+          // "resequence": next attemptMerge reloads the account, picking up the
+          // advanced sequence number, so the rebuilt merge tx is in-sequence.
         }
       }
       if (lastReceipt === null) {
@@ -436,9 +479,10 @@ export async function executePlanTreeOnChain(
       continue;
     }
 
-    const tx = pickTransaction(node);
-    if (!tx) {
-      throw new Error(`executing: node "${node.id}" (${node.kind}) has no transaction attached`);
+    // Everything past the FinalClassicTx / MediatorForward branches is a
+    // single-transaction Soroban node (isSorobanNode === true for all of them).
+    if (!isSorobanNode(node)) {
+      throw new Error(`executing: node "${node.id}" (${node.kind}) is not a Soroban node`);
     }
 
     // TransferAsIs is the auto-drain of a discovered standalone SEP-41 token, and
@@ -452,16 +496,17 @@ export async function executePlanTreeOnChain(
     // close (it is simply left behind on the account being deleted).
     if (node.kind === "TransferAsIs") {
       try {
-        assertSafeTransferInvocation(tx as Transaction, {
-          contractId: resolveContractIdForAsset(node.metadata.asset, deps.network),
-          from: input.publicKey,
-          to: node.metadata.destination,
-          amount: node.metadata.amount,
+        const transferReceipt = await signAndSubmitSorobanNode(node, input.publicKey, deps, {
+          allowlist: false,
+          guard: (tx) =>
+            assertSafeTransferInvocation(tx, {
+              contractId: resolveContractIdForAsset(node.metadata.asset, deps.network),
+              from: input.publicKey,
+              to: node.metadata.destination,
+              amount: node.metadata.amount,
+            }),
+          onSigned: () => notify(node),
         });
-        const signedTransfer = await deps.connector.signTransaction(tx, deps.network.passphrase);
-        node.status = "signed";
-        notify(node);
-        const transferReceipt = await deps.submitSoroban(signedTransfer.signedXdr);
         node.status = "confirmed";
         node.executed = { txHash: transferReceipt.txHash, ledger: transferReceipt.ledger };
         receipts[node.id] = transferReceipt;
@@ -479,15 +524,10 @@ export async function executePlanTreeOnChain(
     // contracts. RevokeAllowance is the deliberate exception: it targets the
     // user's own token contracts (chosen from an RPC allowance scan, not the DeFi
     // allow-list) and only ever builds a safe approve(0) sourced from the user.
-    if (node.kind !== "RevokeAllowance") {
-      assertTransactionAllowed(tx, deps.network);
-    }
-    const signed = await deps.connector.signTransaction(tx, deps.network.passphrase);
-    node.status = "signed";
-    notify(node);
-
-    const submit = isSorobanNode(node) ? deps.submitSoroban : deps.submitClassic;
-    const receipt = await submit(signed.signedXdr);
+    const receipt = await signAndSubmitSorobanNode(node, input.publicKey, deps, {
+      allowlist: node.kind !== "RevokeAllowance",
+      onSigned: () => notify(node),
+    });
 
     node.status = "confirmed";
     node.executed = { txHash: receipt.txHash, ledger: receipt.ledger };
@@ -496,4 +536,54 @@ export async function executePlanTreeOnChain(
   }
 
   return { receipts, tree: input.tree };
+}
+
+// Sign + submit ONE Soroban node with pre-signature freshness and recovery.
+// Before signing, rebuild the node against fresh on-chain state (fresh sequence
+// number, re-simulated footprint/resource fee, fresh timebound) so a plan that
+// sat in review isn't submitted stale. On a stale-sequence / stale-footprint
+// rejection, rebuild and retry (bounded by MAX_SOROBAN_ATTEMPTS). When deps has
+// no rebuildSorobanNode callback (lighter callers/tests), the pre-built tx is
+// signed as-is and a failure is NOT retried — resubmitting the identical stale
+// transaction would only reproduce the rejection.
+async function signAndSubmitSorobanNode(
+  node: PlanNode,
+  publicKey: string,
+  deps: ExecutorDeps,
+  opts: {
+    readonly allowlist: boolean;
+    readonly guard?: (tx: Transaction) => void;
+    readonly onSigned: () => void;
+  },
+): Promise<ConfirmationReceipt> {
+  const canRebuild = typeof deps.rebuildSorobanNode === "function";
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= MAX_SOROBAN_ATTEMPTS; attempt++) {
+    if (deps.rebuildSorobanNode) {
+      // fresh sequence + re-simulated footprint; throws (surfacing the real
+      // error) rather than signing a stale/doomed tx
+      await deps.rebuildSorobanNode(node, publicKey);
+    }
+    const tx = pickTransaction(node);
+    if (!tx) {
+      throw new Error(`executing: node "${node.id}" (${node.kind}) has no transaction attached`);
+    }
+    // guard (e.g. the held-token transfer auth check) runs BEFORE signing and is
+    // not a recoverable rejection: a hostile auth tree won't become safe on retry.
+    opts.guard?.(tx);
+    if (opts.allowlist) assertTransactionAllowed(tx, deps.network);
+    const signed = await deps.connector.signTransaction(tx, deps.network.passphrase);
+    node.status = "signed";
+    opts.onSigned();
+    try {
+      return await deps.submitSoroban(signed.signedXdr);
+    } catch (err) {
+      lastErr = err;
+      const kind = sorobanRecoverableKind(err);
+      if (kind === null || !canRebuild || attempt === MAX_SOROBAN_ATTEMPTS) throw err;
+      // loop: the next iteration rebuilds against fresh state — a fresh sequence
+      // for "resequence", a re-simulated footprint for "footprint".
+    }
+  }
+  throw lastErr;
 }

@@ -106,6 +106,28 @@ export async function hydratePlanTransactions(
   return { tree, failures };
 }
 
+// Force-rebuild ONE Soroban node's transaction from fresh on-chain state: a fresh
+// sequence number, a fresh simulation footprint/resource fee, and a fresh
+// timebound. Called at EXECUTE time immediately before signing, so a plan that
+// sat in the review step for minutes is not submitted carrying the preview-time
+// sequence/footprint/5-minute timebound (which would fail as tx_bad_seq, a stale
+// footprint, or an expired tx). No-op for classic/forward nodes — the executor
+// rebuilds the FinalClassicTx from fresh state itself and the MediatorForward is
+// re-minted per run. Throws if the rebuild's simulation fails (a genuinely broken
+// step surfaces its real error rather than submitting a stale tx).
+export async function rebuildSorobanNodeTransaction(
+  node: PlanNode,
+  userPublicKey: string,
+  deps: HydrationDeps,
+): Promise<void> {
+  if (node.kind === "FinalClassicTx" || node.kind === "MediatorForward") return;
+  clearTransaction(node);
+  // one fresh account read per rebuild: the builder increments its own sequence
+  // copy off the current on-chain value, so the resulting tx carries seq+1.
+  const sourceAccount = await deps.fetchSourceAccount(userPublicKey);
+  await hydrateNode(node, userPublicKey, deps, async () => sourceAccount);
+}
+
 async function hydrateNode(
   node: PlanNode,
   userPublicKey: string,
@@ -380,6 +402,34 @@ function nodeHasTransaction(node: PlanNode): boolean {
     case "FinalClassicTx":
     case "MediatorForward":
       return true; // never hydrated; treat as already done
+  }
+}
+
+// clears a soroban node's attached transaction so a rebuild re-derives it from
+// fresh state. mirror of setTransaction; no-op for classic/forward kinds.
+function clearTransaction(node: PlanNode): void {
+  switch (node.kind) {
+    case "RevokeAllowance":
+    case "RepayBlend":
+    case "PayFxDAODebt":
+    case "WithdrawBlend":
+    case "WithdrawAquarius":
+    case "WithdrawSoroswapLp":
+    case "ClaimBlendEmissions":
+    case "ClaimAquariusRewards":
+    case "ConvertSorobanToXLM":
+    case "TransferAsIs":
+    case "BackstopQueue": {
+      const md = node.metadata as { transaction?: Transaction };
+      // delete (not = undefined): exactOptionalPropertyTypes forbids assigning
+      // undefined to an optional property, and nodeHasTransaction tests for the
+      // key being absent.
+      delete md.transaction;
+      return;
+    }
+    case "FinalClassicTx":
+    case "MediatorForward":
+      return;
   }
 }
 

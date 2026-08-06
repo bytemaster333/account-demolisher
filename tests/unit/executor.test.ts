@@ -374,22 +374,40 @@ describe("executePlanTreeOnChain, merge fee/reprice retry", () => {
     expect(fees[1]).toBe(fees[0]);
   });
 
-  it("does NOT retry a deterministic rejection (tx_bad_seq), fails fast", async () => {
+  it("recovers from a stale sequence (tx_bad_seq): re-audits, rebuilds in-sequence, succeeds", async () => {
+    const deps = makeDeps();
+    // the account's sequence advanced between build and submit; the retry reloads
+    // the account (fresh sequence) and rebuilds the merge so it is in-sequence.
+    (deps.submitClassic as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new Error('submitClassic rejected: {"transaction":"tx_bad_seq"}'))
+      .mockResolvedValueOnce({ txHash: "HASH2", ledger: 45 });
+
+    const { tree } = makeFinalClassicTree();
+    const promise = executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
+    await vi.runAllTimersAsync();
+    const output = await promise;
+
+    // re-audited on the retry (fresh sequence); fee held steady (not congestion)
+    expect(auditAccount).toHaveBeenCalledTimes(2);
+    const fees = (buildClassicTransaction as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[3]);
+    expect(fees[1]).toBe(fees[0]);
+    expect(output.receipts["final"]).toEqual({ txHash: "HASH2", ledger: 45 });
+  });
+
+  it("gives up after MAX attempts on a persistent tx_bad_seq (bounded, fails loudly)", async () => {
     const deps = makeDeps();
     (deps.submitClassic as ReturnType<typeof vi.fn>).mockRejectedValue(
       new Error('submitClassic rejected: {"transaction":"tx_bad_seq"}'),
     );
 
     const { tree } = makeFinalClassicTree();
-    const promise = executePlanTreeOnChain(
-      { publicKey: "GUSER", tree, previousReceipts: {} },
-      deps,
-    );
+    const promise = executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
     const settled = expect(promise).rejects.toThrow(/tx_bad_seq/);
     await vi.runAllTimersAsync();
     await settled;
-    expect(deps.submitClassic).toHaveBeenCalledTimes(1);
-    expect(auditAccount).toHaveBeenCalledTimes(1);
+    // a genuine (non-race) bad-seq isn't cleared by rebuilding, so the bounded
+    // retry exhausts MAX_MERGE_ATTEMPTS and then fails rather than looping.
+    expect(deps.submitClassic).toHaveBeenCalledTimes(3);
   });
 
   it("bids a surge-aware fee from feeStats on the first attempt", async () => {
@@ -589,5 +607,126 @@ describe("executePlanTreeOnChain, held-token drain is best-effort (never wedges 
     expect(deps.submitSoroban).not.toHaveBeenCalled();
     expect(tree.allNodes.get("final")!.status).toBe("confirmed");
     expect(deps.submitClassic).toHaveBeenCalledTimes(1);
+  });
+});
+
+// A single RevokeAllowance node: a Soroban step that is allow-list-exempt (it
+// targets the user's own token contract), so it exercises the generic Soroban
+// submit path without needing the DeFi allow-list mocked.
+function makeRevokeTree() {
+  const revoke = {
+    id: "revoke",
+    kind: "RevokeAllowance" as const,
+    dependencies: [] as string[],
+    status: "pending",
+    metadata: {
+      kind: "RevokeAllowance" as const,
+      contractId: "CTOKENAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1",
+      spender: "CSPENDERAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1",
+      // dummy pre-built tx (the preview build); the connector is mocked so it is
+      // never inspected. rebuildSorobanNode is mocked, so it stays in place.
+      transaction: {} as never,
+    },
+  };
+  return {
+    revoke,
+    tree: {
+      rootNodes: [revoke],
+      allNodes: new Map([[revoke.id, revoke]]),
+    } as unknown as PlanTree,
+  };
+}
+
+describe("executePlanTreeOnChain, Soroban nodes are rebuilt fresh before signing + recover", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("rebuilds the node against fresh state immediately before signing (A1)", async () => {
+    const rebuildSorobanNode = vi.fn(async () => {});
+    const deps = makeDeps({ rebuildSorobanNode });
+    const { tree, revoke } = makeRevokeTree();
+
+    await executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
+
+    // the fresh rebuild ran once, for THIS node, before the single submit
+    expect(rebuildSorobanNode).toHaveBeenCalledTimes(1);
+    expect(rebuildSorobanNode).toHaveBeenCalledWith(revoke, "GUSER");
+    expect(deps.submitSoroban).toHaveBeenCalledTimes(1);
+    expect(revoke.status).toBe("confirmed");
+  });
+
+  it("recovers from a stale sequence (tx_bad_seq) by rebuilding and retrying (A2)", async () => {
+    const rebuildSorobanNode = vi.fn(async () => {});
+    const deps = makeDeps({ rebuildSorobanNode });
+    (deps.submitSoroban as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new Error("submitSoroban: sendTransaction returned tx_bad_seq"))
+      .mockResolvedValueOnce({ txHash: "OK", ledger: 9 });
+    const { tree, revoke } = makeRevokeTree();
+
+    await executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
+
+    // rebuilt again on the retry (fresh sequence), then submitted successfully
+    expect(rebuildSorobanNode).toHaveBeenCalledTimes(2);
+    expect(deps.submitSoroban).toHaveBeenCalledTimes(2);
+    expect(revoke.status).toBe("confirmed");
+    expect(revoke.executed).toEqual({ txHash: "OK", ledger: 9 });
+  });
+
+  it("recovers from a changed/expired footprint by re-simulating and retrying (A3)", async () => {
+    const rebuildSorobanNode = vi.fn(async () => {});
+    const deps = makeDeps({ rebuildSorobanNode });
+    (deps.submitSoroban as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new Error("transaction simulation failed: restorePreamble required"))
+      .mockResolvedValueOnce({ txHash: "OK2", ledger: 10 });
+    const { tree, revoke } = makeRevokeTree();
+
+    await executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
+
+    expect(rebuildSorobanNode).toHaveBeenCalledTimes(2);
+    expect(revoke.status).toBe("confirmed");
+  });
+
+  it("gives up after MAX attempts on a persistent recoverable failure (bounded)", async () => {
+    const rebuildSorobanNode = vi.fn(async () => {});
+    const deps = makeDeps({ rebuildSorobanNode });
+    (deps.submitSoroban as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("submitSoroban: sendTransaction returned tx_bad_seq"),
+    );
+    const { tree } = makeRevokeTree();
+
+    await expect(
+      executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps),
+    ).rejects.toThrow(/tx_bad_seq/);
+    expect(deps.submitSoroban).toHaveBeenCalledTimes(3);
+  });
+
+  it("does NOT retry a non-recoverable failure (contract revert), even with a rebuild callback", async () => {
+    const rebuildSorobanNode = vi.fn(async () => {});
+    const deps = makeDeps({ rebuildSorobanNode });
+    (deps.submitSoroban as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("submitSoroban: transaction HASH failed on-chain"),
+    );
+    const { tree } = makeRevokeTree();
+
+    await expect(
+      executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps),
+    ).rejects.toThrow(/failed on-chain/);
+    // a genuine revert is not a seq/footprint race, so it is submitted exactly once
+    expect(deps.submitSoroban).toHaveBeenCalledTimes(1);
+  });
+
+  it("without a rebuild callback, a Soroban failure is not retried (lighter-caller behavior)", async () => {
+    const deps = makeDeps(); // no rebuildSorobanNode
+    (deps.submitSoroban as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("submitSoroban: sendTransaction returned tx_bad_seq"),
+    );
+    const { tree } = makeRevokeTree();
+
+    await expect(
+      executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps),
+    ).rejects.toThrow(/tx_bad_seq/);
+    // resubmitting the identical stale tx can't help, so it fails after one try
+    expect(deps.submitSoroban).toHaveBeenCalledTimes(1);
   });
 });

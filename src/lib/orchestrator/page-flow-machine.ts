@@ -7,13 +7,18 @@ import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import { generatePlan } from "@/lib/plan/generator";
 import { simulateNode, SimulationFailedError } from "@/lib/plan/simulator";
-import { topologicalOrder, type PlanNodeStatus, type PlanTree } from "@/lib/plan/tree";
+import {
+  topologicalOrder,
+  type PlanNode,
+  type PlanNodeStatus,
+  type PlanTree,
+} from "@/lib/plan/tree";
 import {
   batchClassicDemolition,
   unroutableCredits,
   type UnroutableCredit,
 } from "@/lib/plan/classic-batcher";
-import { hydratePlanTransactions } from "@/lib/plan/hydration";
+import { hydratePlanTransactions, rebuildSorobanNodeTransaction } from "@/lib/plan/hydration";
 import { startMediatorFlow } from "@/lib/mediator/client";
 import { applyRefreshedMediatorFlow, MEDIATOR_FORWARD_NODE_ID } from "@/lib/mediator/refresh";
 import {
@@ -703,15 +708,24 @@ const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ input }) 
     });
   }
 
-  // re-hydrate the tree against fresh sequence numbers / ledger state
-  const ledger = await rpc.getLatestLedger();
-  await hydratePlanTransactions(tree, input.publicKey, {
-    rpc,
-    horizon,
-    network: input.network,
-    currentLedger: ledger.sequence,
-    fetchSourceAccount: (pk) => horizon.loadAccount(pk),
-  });
+  // Each Soroban node is rebuilt from fresh on-chain state immediately before it
+  // is signed (see the executor's signAndSubmitSorobanNode), NOT reused from the
+  // preview build. That gives every Soroban step a current sequence number, a
+  // freshly-simulated footprint/resource fee, and a fresh timebound at the moment
+  // it is submitted — so a plan that sat in review for minutes can't submit a
+  // stale tx — and lets the executor recover from a tx_bad_seq or stale-footprint
+  // rejection by rebuilding and retrying. This callback is that single-node
+  // rebuild, wired to the network the close is running on.
+  const rebuildSorobanNode = async (node: PlanNode, pk: string): Promise<void> => {
+    const fresh = await rpc.getLatestLedger();
+    await rebuildSorobanNodeTransaction(node, pk, {
+      rpc,
+      horizon,
+      network: input.network,
+      currentLedger: fresh.sequence,
+      fetchSourceAccount: (p) => horizon.loadAccount(p),
+    });
+  };
   const submitSoroban = async (signedXdr: string): Promise<ConfirmationReceipt> => {
     const signed = TransactionBuilder.fromXDR(signedXdr, input.network.passphrase) as Transaction;
     const send = await rpc.sendTransaction(signed);
@@ -757,6 +771,8 @@ const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ input }) 
         horizon,
         submitClassic,
         submitSoroban,
+        // rebuild each Soroban node from fresh state right before signing
+        rebuildSorobanNode,
         // re-run Soroban discovery at merge time and refuse if any position remains
         // (undiscovered / skipped / failed-to-close), so nothing is merged around
         reprobeSorobanPositions: (pk, net) => new DirectContractProvider().getPositions(pk, net),
