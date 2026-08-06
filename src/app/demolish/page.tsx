@@ -2979,7 +2979,11 @@ function PlanRow({
   const isRunning = node.status === "signed" || node.status === "submitted";
   const isSkipped = node.status === "skipped";
   const isFailed = node.status === "failed";
-  const isPending = !isDone && !isRunning && !isSkipped && !isFailed;
+  // a step whose dry-run (preview simulation) passed — distinct from a step not
+  // yet checked. In the plan/review this is the central output of the dry run, so
+  // it must read differently from a plain "pending" step.
+  const isSimulated = node.status === "simulated";
+  const isPending = !isDone && !isRunning && !isSkipped && !isFailed && !isSimulated;
 
   // plan mode surfaces the network fee up-front so cost is visible before
   // signing; live mode drops it (once submitted the fee is spent and the tx
@@ -3025,23 +3029,57 @@ function PlanRow({
                     ? "Failed: "
                     : isSkipped
                       ? "Skipped: "
-                      : "Pending: "}
+                      : isSimulated
+                        ? "Simulated: "
+                        : "Pending: "}
             </span>
           ) : null}
           {mode === "plan" ? (
             <span
+              // a simulated step gets an accent ring + a small check badge so the
+              // dry-run result reads at a glance; an un-simulated step stays neutral
+              title={isSimulated ? "Dry run passed for this step" : undefined}
               style={{
                 position: "absolute",
                 inset: 0,
                 borderRadius: "50%",
-                border: "1.5px solid var(--border-2)",
+                border: isSimulated ? "1.5px solid var(--accent-line)" : "1.5px solid var(--border-2)",
                 display: "grid",
                 placeItems: "center",
                 font: "600 11px/1 'Geist Mono', monospace",
-                color: "var(--fg-3)",
+                color: isSimulated ? "var(--accent)" : "var(--fg-3)",
               }}
             >
               {index ?? ""}
+              {isSimulated ? (
+                <span
+                  aria-hidden
+                  style={{
+                    position: "absolute",
+                    right: -2,
+                    bottom: -2,
+                    width: 11,
+                    height: 11,
+                    borderRadius: "50%",
+                    background: "var(--surface)",
+                    display: "grid",
+                    placeItems: "center",
+                  }}
+                >
+                  <svg
+                    width="8"
+                    height="8"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="var(--success)"
+                    strokeWidth={4}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M20 6L9 17l-5-5" />
+                  </svg>
+                </span>
+              ) : null}
             </span>
           ) : (
             <>
@@ -3091,6 +3129,35 @@ function PlanRow({
                     border: "1.5px solid var(--border-2)",
                   }}
                 />
+              ) : null}
+              {isSimulated ? (
+                // dry-run passed, not yet executing: a faint accent ring with a
+                // small check, distinct from the empty "pending" circle
+                <span
+                  title="Dry run passed for this step"
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    borderRadius: "50%",
+                    border: "1.5px solid var(--accent-line)",
+                    display: "grid",
+                    placeItems: "center",
+                  }}
+                >
+                  <svg
+                    width="11"
+                    height="11"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="var(--accent)"
+                    strokeWidth={2.6}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden
+                  >
+                    <path d="M20 6L9 17l-5-5" />
+                  </svg>
+                </span>
               ) : null}
               {isSkipped ? (
                 <span
