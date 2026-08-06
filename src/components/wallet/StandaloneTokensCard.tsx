@@ -28,6 +28,8 @@ export function StandaloneTokensCard({
   userPublicKey,
   isCex,
   onRebuild,
+  convertToXLM = false,
+  onConvertToXLMChange,
 }: {
   readonly discovered: readonly HeldToken[];
   readonly unreadable: readonly string[];
@@ -39,6 +41,10 @@ export function StandaloneTokensCard({
   // disabled and the user is told to move them out manually instead.
   readonly isCex: boolean;
   readonly onRebuild: () => void;
+  // opt-in: convert the selected tokens to XLM (Soroswap-router swap) instead of
+  // transferring them as-is. Absent → the toggle is not shown.
+  readonly convertToXLM?: boolean;
+  readonly onConvertToXLMChange?: (value: boolean) => void;
 }): React.JSX.Element {
   const [manualId, setManualId] = useState("");
   const [manualError, setManualError] = useState<string | null>(null);
@@ -176,6 +182,23 @@ export function StandaloneTokensCard({
 
       {discovered.map((t) => row(t, false))}
       {manual.map((t) => row(t, true))}
+
+      {!isCex && onConvertToXLMChange && selected.length > 0 ? (
+        <div style={{ marginTop: 12 }}>
+          <Checkbox
+            checked={convertToXLM}
+            onChange={onConvertToXLMChange}
+            data-testid="held-token-convert-toggle"
+            label={
+              <span style={{ fontSize: 12.5, color: "var(--fg-2)" }}>
+                Convert the selected token{selected.length === 1 ? "" : "s"} to XLM (Soroswap swap)
+                instead of sending {selected.length === 1 ? "it" : "them"} as-is. Best-effort: a
+                token with no Soroswap market is left as-is. Leave off to keep the exact token.
+              </span>
+            }
+          />
+        </div>
+      ) : null}
 
       {unreadable.length > 0 ? (
         <p style={{ margin: "10px 0 0", fontSize: 12, lineHeight: 1.5, color: "var(--fg-3)" }}>

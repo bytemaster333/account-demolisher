@@ -54,6 +54,10 @@ export interface PageFlowInput {
   // standalone SEP-41 tokens the user opted in to sweep to the destination
   // (discovered tokens they ticked, plus any they added manually). Default: none.
   readonly selectedHeldTokens?: readonly HeldToken[];
+  // when true, opted-in held tokens are CONVERTED to XLM (Soroswap-router swap)
+  // rather than transferred as-is. Default false (transfer-as-is preserves the
+  // exact token and can't be defeated by an illiquid one).
+  readonly convertHeldTokensToXLM?: boolean;
   readonly positions?: ProtocolPositions;
   readonly allowances?: readonly AllowanceRecord[];
   // when true, do NOT resolve market-conversion paths: every non-XLM balance is
@@ -125,6 +129,7 @@ interface PreviewInput {
   // only the tokens the user opted in to drain (default none); NOT every
   // discovered token — nothing is swept without an explicit choice.
   readonly selectedHeldTokens: readonly HeldToken[];
+  readonly convertHeldTokensToXLM?: boolean;
   readonly network: NetworkConfig;
   readonly destination: string;
   readonly useMediator: boolean;
@@ -500,6 +505,7 @@ const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) 
     // the generator ignores these for a mediator/CEX close, since an exchange
     // can't receive a raw token — the UI surfaces that separately)
     ...(input.selectedHeldTokens.length > 0 ? { heldTokens: input.selectedHeldTokens } : {}),
+    ...(input.convertHeldTokensToXLM ? { convertHeldTokensToXLM: true } : {}),
     ...(mediator
       ? { mediatorPublicKey: mediator.mediatorPublicKey, flowToken: mediator.flowToken }
       : {}),
@@ -930,6 +936,7 @@ export const pageFlowMachine = setup({
             allowances: context.allowances,
             // only what the user explicitly opted in to drain (default none)
             selectedHeldTokens: i.selectedHeldTokens ?? [],
+            ...(i.convertHeldTokensToXLM ? { convertHeldTokensToXLM: true } : {}),
             network: i.network,
             destination: i.destination,
             useMediator: i.useMediator,

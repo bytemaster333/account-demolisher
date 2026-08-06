@@ -453,6 +453,10 @@ function DemolishFlow(): React.JSX.Element {
   // ticked + any added by contract id). Kept OUTSIDE the zod form because each
   // carries a bigint balance; default empty so nothing is swept without a choice.
   const [selectedHeldTokens, setSelectedHeldTokens] = useState<readonly HeldToken[]>([]);
+  // opt-in: convert the opted-in held tokens to XLM (Soroswap-router swap) instead
+  // of transferring them as-is. Default off — transfer-as-is preserves the exact
+  // token and can't be defeated by an illiquid/unroutable one.
+  const [convertHeldTokensToXLM, setConvertHeldTokensToXLM] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
   // multisig: preflight the connected account for its signature threshold, then
@@ -881,6 +885,9 @@ function DemolishFlow(): React.JSX.Element {
           ? { sendToDestinationAssetKeys: form.sendToDestination }
           : {}),
         ...(selectedHeldTokens.length > 0 ? { selectedHeldTokens } : {}),
+        ...(convertHeldTokensToXLM && selectedHeldTokens.length > 0
+          ? { convertHeldTokensToXLM: true }
+          : {}),
         ...(deterministic ? { deterministicDisposal: true } : {}),
       },
     });
@@ -894,6 +901,7 @@ function DemolishFlow(): React.JSX.Element {
     canUseSigningRequest,
     bundleability.reason,
     selectedHeldTokens,
+    convertHeldTokensToXLM,
   ]);
 
   const onCancel = useCallback(() => {
@@ -1268,6 +1276,8 @@ function DemolishFlow(): React.JSX.Element {
                             userPublicKey={publicKey}
                             isCex={useMediator}
                             onRebuild={onStart}
+                            convertToXLM={convertHeldTokensToXLM}
+                            onConvertToXLMChange={setConvertHeldTokensToXLM}
                           />
                         ) : undefined
                       }

@@ -41,6 +41,12 @@ export interface GeneratePlanOptions {
   // block it): a hostile airdropped token that reverts on transfer must not be
   // able to wedge the close, so a failed drain is skipped, not fatal (executor).
   readonly heldTokens?: readonly HeldToken[];
+  // when true, held SEP-41 tokens are CONVERTED to XLM (a Soroswap-router swap) so
+  // the account ends as a single XLM balance, instead of transferred as-is to the
+  // destination. Default false: transfer-as-is preserves the exact token and can't
+  // be defeated by an illiquid/unroutable token (which has no swap route), so it's
+  // the safe default; conversion is opt-in for tokens the user knows are tradable.
+  readonly convertHeldTokensToXLM?: boolean;
   // wall-clock ms used only to ESTIMATE the Blend backstop unlock date shown on a
   // BackstopQueue node (the real 17-day timer starts on-chain at submit). Defaults
   // to Date.now(); tests pass a fixed value for determinism.
@@ -253,8 +259,29 @@ export function generatePlan(
   // token that reverts on transfer can't wedge the close.
   const heldTokenDrainIds: string[] = [];
   if (!useMediator) {
+    const convert = opts.convertHeldTokensToXLM === true;
     for (const token of opts.heldTokens ?? []) {
       if (token.balance <= 0n) continue;
+      if (convert) {
+        // convert the token to XLM via a Soroswap-router swap so the account ends
+        // as a single XLM balance. Best-effort: a token with no route fails to
+        // hydrate/simulate and is skipped (left behind), never wedging the close.
+        const id = makeId("convert-token", token.contractId);
+        nodes.push({
+          id,
+          kind: "ConvertSorobanToXLM",
+          dependencies: [],
+          status: "pending",
+          description: `Convert held token ${shortAddr(token.contractId)} to XLM`,
+          metadata: {
+            kind: "ConvertSorobanToXLM",
+            asset: { kind: "contract", contractId: token.contractId },
+            amount: token.balance,
+          },
+        });
+        heldTokenDrainIds.push(id);
+        continue;
+      }
       const id = makeId("drain-token", token.contractId);
       nodes.push({
         id,

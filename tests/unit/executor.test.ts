@@ -618,6 +618,71 @@ describe("executePlanTreeOnChain, held-token drain is best-effort (never wedges 
   });
 });
 
+// The opt-in held-token conversion (ConvertSorobanToXLM, a Soroswap-router swap)
+// is likewise best-effort: an unroutable/failing swap must SKIP, never wedge the
+// close, so the merge still completes.
+function makeConvertThenMergeTree() {
+  const convert = {
+    id: "convert",
+    kind: "ConvertSorobanToXLM" as const,
+    dependencies: [] as string[],
+    status: "pending",
+    metadata: {
+      kind: "ConvertSorobanToXLM" as const,
+      asset: {
+        kind: "contract" as const,
+        contractId: "CHELDTOKENAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1",
+      },
+      amount: 500n,
+      transaction: {} as never,
+    },
+  };
+  const final = {
+    id: "final",
+    kind: "FinalClassicTx" as const,
+    dependencies: ["convert"],
+    status: "pending",
+    metadata: { kind: "FinalClassicTx" as const, batches: [], destination: "GDEST", useMediator: false },
+  };
+  return {
+    tree: {
+      rootNodes: [convert],
+      allNodes: new Map<string, typeof convert | typeof final>([
+        [convert.id, convert],
+        [final.id, final],
+      ]),
+    } as unknown as PlanTree,
+  };
+}
+
+describe("executePlanTreeOnChain, held-token conversion is best-effort", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    auditAccount.mockResolvedValue(MERGEABLE_AUDIT);
+    resolveCreditPaths.mockResolvedValue(new Map());
+    batchClassicDemolition.mockReturnValue([{ ops: [] }]);
+    buildClassicTransaction.mockReturnValue({ transaction: {} });
+  });
+
+  it("skips an unroutable token conversion (rebuild/simulate fails) and still merges", async () => {
+    // an unroutable token has no Soroswap route, so the rebuild's simulate throws
+    const rebuildSorobanNode = vi.fn(async () => {
+      throw new Error("could not simulate swap to derive slippage floor: no path");
+    });
+    const deps = makeDeps({ rebuildSorobanNode });
+    const { tree } = makeConvertThenMergeTree();
+
+    await executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
+
+    expect(tree.allNodes.get("convert")!.status).toBe("skipped");
+    expect(tree.allNodes.get("convert")!.error).toMatch(/Token conversion skipped/);
+    // the swap never submitted, yet the close completed
+    expect(deps.submitSoroban).not.toHaveBeenCalled();
+    expect(tree.allNodes.get("final")!.status).toBe("confirmed");
+    expect(deps.submitClassic).toHaveBeenCalledTimes(1);
+  });
+});
+
 // A single RevokeAllowance node: a Soroban step that is allow-list-exempt (it
 // targets the user's own token contract), so it exercises the generic Soroban
 // submit path without needing the DeFi allow-list mocked.

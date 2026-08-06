@@ -17,7 +17,7 @@ import {
 } from "@/lib/adapters/aquarius/client";
 import { poolIndexHexToBytes } from "@/lib/adapters/aquarius/pools";
 import { removeLiquidityByContractIds } from "@/lib/adapters/soroswap/lp";
-import { convertToXLM } from "@/lib/adapters/soroswap/aggregator";
+import { buildSwapToXLM } from "@/lib/adapters/soroswap/swap";
 import { buildVaultExit } from "@/lib/adapters/fxdao/exit";
 import {
   findPrevVaultKey as defaultFindPrevVaultKey,
@@ -56,7 +56,7 @@ export interface HydrationAdapterOverrides {
   readonly removeLiquidityByContractIds?: typeof removeLiquidityByContractIds;
   readonly buildVaultExit?: typeof buildVaultExit;
   readonly findPrevVaultKey?: typeof defaultFindPrevVaultKey;
-  readonly convertToXLM?: typeof convertToXLM;
+  readonly buildSwapToXLM?: typeof buildSwapToXLM;
   readonly buildTransfer?: typeof buildTransfer;
 }
 
@@ -350,14 +350,47 @@ async function hydrateNode(
     }
 
     case "ConvertSorobanToXLM": {
-      const fn = a.convertToXLM ?? convertToXLM;
-      const result = await fn({
-        assetIn: node.metadata.asset,
-        amountIn: node.metadata.amount.toString(),
-        userAddress: userPublicKey,
-        network: deps.network,
-      });
-      setTransaction(node, result.transaction);
+      const sourceAccount = await getSourceAccount();
+      const fn = a.buildSwapToXLM ?? buildSwapToXLM;
+      const deadline = Math.floor(Date.now() / 1000) + 300; // 5 min
+      const amountIn = node.metadata.amount.toString();
+      // First build+simulate with a zero floor to read the router's expected XLM
+      // output (swap_exact_tokens_for_tokens returns the amount vector along the
+      // path; the last element is the XLM out), then rebuild with a slippage-
+      // bounded minimum. Refuse a swap the router prices at zero output rather
+      // than sign the token away for free — the caller then leaves it in place.
+      const probe = await fn(
+        {
+          assetIn: node.metadata.asset,
+          amountIn,
+          amountOutMin: "0",
+          userAddress: userPublicKey,
+          deadline,
+          network: deps.network,
+        },
+        { server: deps.rpc, sourceAccount },
+      );
+      const expected = await readExpectedAmounts(deps.rpc, probe, 2); // [amountIn, amountOut]
+      const expectedOut = expected[1]!;
+      if (expectedOut <= 0n) {
+        throw new Error(
+          `ConvertSorobanToXLM: router quoted zero XLM out for ${amountIn}; ` +
+            `refusing to swap the token away for free`,
+        );
+      }
+      const amountOutMin = applySlippageMin(expectedOut.toString(), slippageBps);
+      const tx = await fn(
+        {
+          assetIn: node.metadata.asset,
+          amountIn,
+          amountOutMin,
+          userAddress: userPublicKey,
+          deadline,
+          network: deps.network,
+        },
+        { server: deps.rpc, sourceAccount },
+      );
+      setTransaction(node, tx);
       return;
     }
 

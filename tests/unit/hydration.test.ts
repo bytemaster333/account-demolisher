@@ -172,3 +172,61 @@ describe("hydratePlanTransactions, WithdrawAquarius slippage floor", () => {
     for (const m of calls[1]!.minAmounts) expect(m).toBeGreaterThan(0n);
   });
 });
+
+describe("hydratePlanTransactions, ConvertSorobanToXLM (Soroswap-router swap) floor", () => {
+  const TOKEN = { kind: "contract" as const, contractId: "CHELDTOKEN" };
+
+  function convertNode(): PlanNode {
+    return {
+      id: "cv1",
+      kind: "ConvertSorobanToXLM",
+      dependencies: [],
+      description: "convert held token to xlm",
+      status: "pending",
+      metadata: {
+        kind: "ConvertSorobanToXLM",
+        asset: TOKEN,
+        amount: 1_000_000n,
+      },
+    };
+  }
+
+  it("passes a positive slippage-derived amountOutMin, never 0", async () => {
+    // swap_exact_tokens_for_tokens returns [amountIn, amountOut]; index 1 is XLM out
+    const expectedOut = 4_000_000n;
+    const calls: { amountOutMin: string }[] = [];
+    const buildSwapToXLM = vi.fn(async (args: { amountOutMin: string }) => {
+      calls.push({ amountOutMin: args.amountOutMin });
+      return { fake: "tx" };
+    }) as unknown as NonNullable<HydrationAdapterOverrides["buildSwapToXLM"]>;
+
+    const deps = baseDeps({
+      rpc: rpcReturning([1_000_000n, expectedOut]),
+      adapters: { buildSwapToXLM },
+    });
+
+    const { failures } = await hydratePlanTransactions(buildPlanTree([convertNode()]), "GUSER", deps);
+
+    expect(failures).toEqual([]);
+    expect(calls.length).toBe(2);
+    expect(calls[0]).toEqual({ amountOutMin: "0" }); // zero-floor probe
+    const want = applySlippageMin(expectedOut.toString(), DEFAULT_SLIPPAGE_BPS);
+    expect(calls[1]).toEqual({ amountOutMin: want });
+    expect(BigInt(calls[1]!.amountOutMin)).toBeGreaterThan(0n);
+  });
+
+  it("refuses to build (value-destroying) when the router quotes zero XLM out", async () => {
+    const buildSwapToXLM = vi.fn(async () => ({ fake: "tx" })) as unknown as NonNullable<
+      HydrationAdapterOverrides["buildSwapToXLM"]
+    >;
+    const deps = baseDeps({
+      rpc: rpcReturning([1_000_000n, 0n]), // expected XLM out = 0
+      adapters: { buildSwapToXLM },
+    });
+
+    const { failures } = await hydratePlanTransactions(buildPlanTree([convertNode()]), "GUSER", deps);
+
+    expect(failures.length).toBe(1);
+    expect(failures[0]!.reason).toMatch(/zero XLM out/);
+  });
+});

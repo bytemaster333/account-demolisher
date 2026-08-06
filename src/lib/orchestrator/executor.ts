@@ -524,6 +524,29 @@ export async function executePlanTreeOnChain(
       continue;
     }
 
+    // ConvertSorobanToXLM is the opt-in held-token conversion (a Soroswap-router
+    // swap of a held token to XLM). Like TransferAsIs it is BEST-EFFORT and
+    // ordering-only: a token with no route or a failing swap is SKIPPED, never
+    // fatal, so it can't wedge the close. Unlike TransferAsIs it invokes the
+    // allow-listed router, so the sign-time allow-list gate applies.
+    if (node.kind === "ConvertSorobanToXLM") {
+      try {
+        const swapReceipt = await signAndSubmitSorobanNode(node, input.publicKey, deps, {
+          allowlist: true,
+          onSigned: () => notify(node),
+        });
+        node.status = "confirmed";
+        node.executed = { txHash: swapReceipt.txHash, ledger: swapReceipt.ledger };
+        receipts[node.id] = swapReceipt;
+        notify(node);
+      } catch (err) {
+        node.status = "skipped";
+        node.error = `Token conversion skipped: ${err instanceof Error ? err.message : String(err)}`;
+        notify(node);
+      }
+      continue;
+    }
+
     // Pre-sign allow-list gate (defense-in-depth on top of each adapter's own
     // build-time check): every DeFi-protocol node must invoke only allow-listed
     // contracts. RevokeAllowance is the deliberate exception: it targets the

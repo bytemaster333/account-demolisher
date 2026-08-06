@@ -322,3 +322,43 @@ describe("generatePlan, blend emissions target the user's real reserve ids", () 
     expect(tree.allNodes.has(id("blend-claim", POOL_ID))).toBe(false);
   });
 });
+
+describe("generatePlan, held-token disposition (transfer-as-is vs convert-to-XLM)", () => {
+  const HELD = "CHELDTOKENAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1";
+
+  it("transfers held tokens AS-IS by default (preserves illiquid tokens)", () => {
+    const tree = generatePlan(makeAudit(), emptyPositions(), [], DEST, {
+      heldTokens: [{ contractId: HELD, balance: 500n }],
+    });
+    expect(tree.allNodes.has(id("drain-token", HELD))).toBe(true);
+    expect(tree.allNodes.has(id("convert-token", HELD))).toBe(false);
+  });
+
+  it("emits a ConvertSorobanToXLM node (gating the merge) when conversion is opted in", () => {
+    const tree = generatePlan(makeAudit(), emptyPositions(), [], DEST, {
+      heldTokens: [{ contractId: HELD, balance: 500n }],
+      convertHeldTokensToXLM: true,
+    });
+    const nodeId = id("convert-token", HELD);
+    const node = tree.allNodes.get(nodeId);
+    expect(node?.kind).toBe("ConvertSorobanToXLM");
+    if (node?.kind !== "ConvertSorobanToXLM") throw new Error("expected ConvertSorobanToXLM");
+    expect(node.metadata.amount).toBe(500n);
+    expect(node.metadata.asset).toEqual({ kind: "contract", contractId: HELD });
+    // runs before the merge; no transfer-as-is node for the same token
+    expect(dependsOn(tree, "final-classic-tx", nodeId)).toBe(true);
+    expect(tree.allNodes.has(id("drain-token", HELD))).toBe(false);
+  });
+
+  it("never converts on a mediator (CEX) close — an exchange can't receive a raw token", () => {
+    const tree = generatePlan(makeAudit(), emptyPositions(), [], DEST, {
+      useMediator: true,
+      mediatorPublicKey: MED,
+      flowToken: "nonce.exp.mac",
+      heldTokens: [{ contractId: HELD, balance: 500n }],
+      convertHeldTokensToXLM: true,
+    });
+    expect(tree.allNodes.has(id("convert-token", HELD))).toBe(false);
+    expect(tree.allNodes.has(id("drain-token", HELD))).toBe(false);
+  });
+});
