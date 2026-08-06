@@ -30,6 +30,7 @@ function pool(liabilities: ReadonlyMap<string, bigint>): BlendPositionSummary {
     liabilities,
     collateral: new Map(),
     supply: new Map(),
+    emissionReserveTokenIds: [],
   };
 }
 

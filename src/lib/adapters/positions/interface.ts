@@ -9,6 +9,11 @@ export interface BlendPositionSummary {
   readonly liabilities: ReadonlyMap<string, bigint>;
   readonly collateral: ReadonlyMap<string, bigint>;
   readonly supply: ReadonlyMap<string, bigint>;
+  // reserve_token_ids with accrued emissions for this user in this pool (the u32
+  // keys Blend's claim(from, reserve_token_ids, to) expects). Empty when there is
+  // nothing to claim. Carried so the claim targets the user's ACTUAL emission
+  // reserves rather than a hardcoded [0].
+  readonly emissionReserveTokenIds: readonly number[];
 }
 
 // one aquarius AMM pool LP position

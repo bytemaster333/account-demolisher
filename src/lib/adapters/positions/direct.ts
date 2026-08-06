@@ -281,6 +281,9 @@ function blendUserPositionsToSummary(p: BlendUserPositions): BlendPositionSummar
     liabilities: new Map(p.liabilities),
     collateral: new Map(p.collateral),
     supply: new Map(p.supply),
+    // the emissions map is keyed by reserve_token_id; those keys ARE the ids
+    // claim() expects. Sorted for deterministic plan output.
+    emissionReserveTokenIds: Array.from(p.emissions.keys()).sort((a, b) => a - b),
   };
 }
 

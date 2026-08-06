@@ -201,28 +201,27 @@ export function generatePlan(
   // collateral. redeem() is an unrelated protocol op that burns stablecoin
   // against the lowest vault in the list, not a way to close your own vault.)
 
-  // blend emissions, one per pool, after its withdraws
+  // blend emissions, one per pool, after its withdraws. Emitted only when the
+  // user actually has accrued emissions to claim, and targeting the SPECIFIC
+  // reserve_token_ids that carry them (previously hardcoded to [0], which missed
+  // emissions on every other reserve token).
   for (const pool of positions.blend) {
+    const reserveTokenIds = pool.emissionReserveTokenIds;
+    if (reserveTokenIds.length === 0) continue;
     const withdraws = blendWithdrawIdsByPool.get(pool.poolId) ?? [];
-    // skip pools with no activity; the simulator drops zero-emission claims
-    if (
-      (pool.liabilities.size === 0 || allValuesZero(pool.liabilities)) &&
-      (pool.collateral.size === 0 || allValuesZero(pool.collateral)) &&
-      (pool.supply.size === 0 || allValuesZero(pool.supply))
-    ) {
-      continue;
-    }
     const id = makeId("blend-claim", pool.poolId);
     nodes.push({
       id,
       kind: "ClaimBlendEmissions",
       dependencies: withdraws,
       status: "pending",
-      description: `Claim Blend emissions for pool ${shortAddr(pool.poolId)}`,
+      description:
+        `Claim Blend emissions for pool ${shortAddr(pool.poolId)} ` +
+        `(reserves ${reserveTokenIds.join(", ")})`,
       metadata: {
         kind: "ClaimBlendEmissions",
         poolId: pool.poolId,
-        reserveTokenIds: [],
+        reserveTokenIds,
       },
     });
   }
@@ -409,11 +408,6 @@ function withdrawBlendNode(
       bucket,
     },
   };
-}
-
-function allValuesZero(m: ReadonlyMap<string, bigint>): boolean {
-  for (const v of m.values()) if (v !== 0n) return false;
-  return true;
 }
 
 // stable id format: lower-cased parts joined with ":"

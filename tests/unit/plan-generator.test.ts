@@ -62,6 +62,7 @@ function richPositions(): ProtocolPositions {
         liabilities: new Map([[ASSET_A, 100n]]),
         collateral: new Map([[ASSET_A, 200n]]),
         supply: new Map(),
+        emissionReserveTokenIds: [2, 3],
       },
     ],
     fxdao: [{ denomination: DENOM, debt: 50n, collateral: 300n }],
@@ -293,5 +294,31 @@ describe("generatePlan, blend backstop (queued 17-day withdrawal)", () => {
     });
     const tree = generatePlan(makeAudit(), positions, [], DEST, { now: NOW });
     expect(tree.allNodes.has(id("backstop-queue", POOL_ID))).toBe(false);
+  });
+});
+
+describe("generatePlan, blend emissions target the user's real reserve ids", () => {
+  it("threads the discovered reserve_token_ids into the claim (not a hardcoded [0])", () => {
+    const tree = generatePlan(makeAudit(), richPositions(), [], DEST);
+    const claim = tree.allNodes.get(id("blend-claim", POOL_ID));
+    expect(claim?.kind).toBe("ClaimBlendEmissions");
+    if (claim?.kind !== "ClaimBlendEmissions") throw new Error("expected ClaimBlendEmissions");
+    expect(claim.metadata.reserveTokenIds).toEqual([2, 3]);
+  });
+
+  it("emits NO claim node when the pool has no accrued emissions", () => {
+    const positions = emptyPositions({
+      blend: [
+        {
+          poolId: POOL_ID,
+          liabilities: new Map([[ASSET_A, 100n]]),
+          collateral: new Map(),
+          supply: new Map(),
+          emissionReserveTokenIds: [],
+        },
+      ],
+    });
+    const tree = generatePlan(makeAudit(), positions, [], DEST);
+    expect(tree.allNodes.has(id("blend-claim", POOL_ID))).toBe(false);
   });
 });
