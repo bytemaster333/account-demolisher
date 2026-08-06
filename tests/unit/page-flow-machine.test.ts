@@ -3,8 +3,11 @@ import { createActor, fromPromise, waitFor } from "xstate";
 
 import {
   pageFlowMachine,
+  classifyFailure,
   discoveryWarningFor,
   heldTokenDispositionWarnings,
+  isRetryableFailure,
+  type FailureKind,
   type PageFlowInput,
 } from "@/lib/orchestrator/page-flow-machine";
 import type { PlanNode, PlanTree } from "@/lib/plan/tree";
@@ -230,6 +233,55 @@ describe("pageFlowMachine RETRY resume", () => {
     expect(actor.getSnapshot().matches("discovering")).toBe(true);
     expect(actor.getSnapshot().matches("executing")).toBe(false);
 
+    actor.stop();
+  });
+});
+
+describe("failure taxonomy (typed recovery)", () => {
+  it("classifies each failure kind from its message", () => {
+    expect(classifyFailure("submitClassic rejected: {tx_bad_seq}")).toBe("bad_seq");
+    expect(classifyFailure("simulation failed: restorePreamble required")).toBe(
+      "changed_footprint",
+    );
+    expect(classifyFailure("account_merge blocked: 1 Soroban DeFi position(s) still open")).toBe(
+      "position_open",
+    );
+    expect(classifyFailure("account_merge blocked: account is auth immutable")).toBe(
+      "not_mergeable",
+    );
+    expect(classifyFailure("Failed to sign envelope")).toBe("signing");
+    expect(classifyFailure("Bad Gateway (502)")).toBe("network");
+    expect(classifyFailure("something entirely unexpected")).toBe("unknown");
+  });
+
+  it("makes diverged-state failures rediscover and transient ones re-execute", () => {
+    expect(isRetryableFailure("position_open")).toBe(false);
+    expect(isRetryableFailure("not_mergeable")).toBe(false);
+    for (const k of ["bad_seq", "changed_footprint", "network", "signing", "unknown"] as const) {
+      expect(isRetryableFailure(k as FailureKind)).toBe(true);
+    }
+  });
+});
+
+describe("pageFlowMachine typed recovery", () => {
+  it("rediscovers (not re-executes) a diverged-state failure (position still open)", async () => {
+    const { actor, executeSpy } = actorInFailed({
+      withTree: true,
+      onExecute: async () => {
+        throw new Error("account_merge blocked: 1 Soroban DeFi position(s) still open");
+      },
+    });
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    actor.send({ type: "CONFIRM", typed: "DEST" });
+    await waitFor(actor, (s) => s.matches("failed"));
+    // the failure was typed
+    expect(actor.getSnapshot().context.failureKind).toBe("position_open");
+    expect(executeSpy).toHaveBeenCalledTimes(1);
+
+    actor.send({ type: "RETRY" });
+    // diverged state -> rebuild from discovery rather than replay the stale tree
+    expect(actor.getSnapshot().matches("discovering")).toBe(true);
+    expect(actor.getSnapshot().matches("executing")).toBe(false);
     actor.stop();
   });
 });

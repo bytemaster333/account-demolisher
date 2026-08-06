@@ -88,6 +88,9 @@ export interface PageFlowContext {
   readonly progress: readonly DemolishProgressEvent[];
   readonly result: DemolishResult | null;
   readonly error: string | null;
+  // typed classification of `error`, driving recovery (see classifyFailure). null
+  // when there is no failure.
+  readonly failureKind: FailureKind | null;
   // set when a multisig close's collected bundle is submitted (SUBMIT_BUNDLE)
   readonly signedBundleXdr: string | null;
 }
@@ -855,6 +858,7 @@ const initialContext: PageFlowContext = {
   progress: [],
   result: null,
   error: null,
+  failureKind: null,
   signedBundleXdr: null,
 };
 
@@ -899,6 +903,7 @@ export const pageFlowMachine = setup({
             progress: [],
             result: null,
             error: null,
+            failureKind: null,
           }),
         },
       },
@@ -930,7 +935,10 @@ export const pageFlowMachine = setup({
         },
         onError: {
           target: "failed",
-          actions: assign({ error: ({ event }) => describeError(event.error) }),
+          actions: assign({
+            error: ({ event }) => describeError(event.error),
+            failureKind: ({ event }) => classifyFailure(event.error),
+          }),
         },
       },
     },
@@ -980,7 +988,10 @@ export const pageFlowMachine = setup({
         },
         onError: {
           target: "failed",
-          actions: assign({ error: ({ event }) => describeError(event.error) }),
+          actions: assign({
+            error: ({ event }) => describeError(event.error),
+            failureKind: ({ event }) => classifyFailure(event.error),
+          }),
         },
       },
     },
@@ -1049,6 +1060,8 @@ export const pageFlowMachine = setup({
               result: ({ event }) => event.output.result,
               // executor mutated nodes in place; re-assign tree to a new
               tree: ({ event }) => ({ ...event.output.tree }),
+              error: null,
+              failureKind: null,
             }),
           },
           {
@@ -1056,6 +1069,7 @@ export const pageFlowMachine = setup({
             actions: assign({
               result: ({ event }) => event.output.result,
               error: ({ event }) => event.output.result.errors.join("; "),
+              failureKind: ({ event }) => classifyFailure(event.output.result.errors.join("; ")),
               tree: ({ event }) => ({ ...event.output.tree }),
             }),
           },
@@ -1064,6 +1078,7 @@ export const pageFlowMachine = setup({
           target: "failed",
           actions: assign({
             error: ({ event }) => describeError(event.error),
+            failureKind: ({ event }) => classifyFailure(event.error),
             tree: ({ context }) => markFinalNode(context.tree, "failed"),
           }),
         },
@@ -1090,12 +1105,20 @@ export const pageFlowMachine = setup({
     },
     failed: {
       on: {
-        // re-execute the already-mutated failed tree so the executor's
-        // node.executed skip logic skips already-confirmed on-chain steps
-        // instead of re-signing/re-submitting them; fall back to a full
-        // rediscovery only when the failure happened before a tree existed.
+        // Typed recovery. A RETRYABLE failure (transient transport / stale
+        // sequence / stale footprint / signing) re-executes the already-mutated
+        // failed tree, so the executor's node.executed skip logic skips
+        // already-confirmed on-chain steps instead of re-signing them. A
+        // NON-retryable failure (a still-open position, an account no longer
+        // mergeable, or an unknown fault) reflects diverged state, so recovery
+        // rebuilds the plan from fresh discovery rather than replaying a stale
+        // tree. A pre-tree failure always rediscovers.
         RETRY: [
-          { target: "executing", guard: ({ context }) => context.tree !== null },
+          {
+            target: "executing",
+            guard: ({ context }) =>
+              context.tree !== null && isRetryableFailure(context.failureKind ?? "unknown"),
+          },
           { target: "discovering" },
         ],
         RESET: { target: "idle", actions: assign(() => initialContext) },
@@ -1114,6 +1137,77 @@ function describeError(err: unknown): string {
   // so delegate to the shared extractor rather than falling straight through to
   // String(err) (which would surface "[object Object]" for a failed RPC exit).
   return errorMessage(err);
+}
+
+// A typed close-failure taxonomy. Rather than one opaque error string and one
+// generic RETRY, a failure is classified into a kind that drives recovery: a
+// transient transport/sequence/footprint/signing fault re-executes the existing
+// (partially-confirmed) tree, while a diverged state (a still-open position, an
+// account that's no longer mergeable) rebuilds the plan from fresh discovery.
+export type FailureKind =
+  | "bad_seq"
+  | "changed_footprint"
+  | "network"
+  | "not_mergeable"
+  | "position_open"
+  | "signing"
+  | "unknown";
+
+export function classifyFailure(errOrMessage: unknown): FailureKind {
+  const m = (typeof errOrMessage === "string" ? errOrMessage : describeError(errOrMessage))
+    .toLowerCase()
+    .trim();
+  if (m.includes("tx_bad_seq") || m.includes("bad_seq")) return "bad_seq";
+  if (
+    m.includes("footprint") ||
+    m.includes("restorepreamble") ||
+    m.includes("restore") ||
+    m.includes("archived") ||
+    m.includes("entry_expired")
+  ) {
+    return "changed_footprint";
+  }
+  if (m.includes("position(s) still open") || m.includes("still open") || m.includes("defi position"))
+    return "position_open";
+  if (m.includes("account_merge blocked") || m.includes("not mergeable") || m.includes("mergeable"))
+    return "not_mergeable";
+  if (m.includes("signing_failed") || m.includes("failed to sign") || m.includes("sign the"))
+    return "signing";
+  if (
+    m.includes("timed out") ||
+    m.includes("timeout") ||
+    m.includes("network") ||
+    m.includes("fetch") ||
+    m.includes("502") ||
+    m.includes("503") ||
+    m.includes("504") ||
+    m.includes("bad gateway") ||
+    m.includes("service unavailable")
+  ) {
+    return "network";
+  }
+  return "unknown";
+}
+
+// A retryable failure re-executes the same (partially-confirmed) tree, so the
+// executor's node.executed skip logic re-runs only what didn't confirm and its
+// fresh-state merge guard re-audits before signing. Transient transport/sequence/
+// footprint/signing faults — and an unclassified fault — are retried this way.
+// Only a DIVERGED-STATE failure rebuilds from fresh discovery: a position that
+// should have closed is still open, or the account is no longer mergeable, means
+// the plan's assumptions changed, so replaying its tree is wrong.
+export function isRetryableFailure(kind: FailureKind): boolean {
+  switch (kind) {
+    case "not_mergeable":
+    case "position_open":
+      return false;
+    case "bad_seq":
+    case "changed_footprint":
+    case "network":
+    case "signing":
+    case "unknown":
+      return true;
+  }
 }
 
 // reflect progress events onto the final-classic-tx / mediator-forward nodes
