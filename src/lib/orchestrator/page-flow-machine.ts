@@ -36,6 +36,7 @@ import type { ClassicMemo, DemolishProgressEvent, DemolishResult } from "@/lib/t
 import { EMPTY_POSITIONS, type ProtocolPositions } from "@/lib/adapters/positions/interface";
 import { DirectContractProvider } from "@/lib/adapters/positions/direct";
 import { blendRepayShortfallWarnings } from "@/lib/adapters/blend/repay-check";
+import { manualCloseRequiredNotice } from "@/lib/safety/manual-close";
 import { enumerateAllowances, type AllowanceRecord } from "@/lib/soroban/allowances";
 import { discoverHeldTokens, type HeldToken } from "@/lib/soroban/held-tokens";
 import type { Connector } from "@/lib/wallet/connector";
@@ -397,6 +398,16 @@ const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({ input 
   // is short on one, the repay step would stop the close, so surface it now
   // rather than letting it surprise the user mid-execution.
   discoveryWarnings.push(...blendRepayShortfallWarnings(audit, positions.blend, input.network));
+
+  // "Manual close required" for protocols we don't support: held tokens from
+  // unrecognized contracts are the visible fingerprint of a position in an
+  // unsupported DeFi app (pool share / vault receipt / staked balance) we can't
+  // auto-unwind. Surface it so the user closes those manually first.
+  const manualClose = manualCloseRequiredNotice({
+    heldTokenCount: heldResult.held.length,
+    unreadableTokenCount: heldResult.unreadable.length,
+  });
+  if (manualClose) discoveryWarnings.push(manualClose);
 
   return {
     audit,
