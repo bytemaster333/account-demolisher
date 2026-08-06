@@ -28,6 +28,14 @@ import {
   type ProtocolPositions,
   type SoroswapPositionSummary,
 } from "./interface";
+import {
+  aquariusPositionSchema,
+  blendBackstopSchema,
+  blendPositionSchema,
+  fxdaoPositionSchema,
+  parsePositions,
+  soroswapPositionSchema,
+} from "./schema";
 
 // default aquarius factory: try the REST provider first, fall back to event-scan
 export interface AquariusProviderFactory {
@@ -208,7 +216,14 @@ export class DirectContractProvider implements IDeFiPositionProvider {
       }
     }
 
-    return { positions, backstop: backstopSummaries, perPoolErrors };
+    // schema-validate before returning: a malformed balance / bad contract id
+    // throws, which the getPositions allSettled turns into a blend discovery
+    // error (fail-closed) instead of carrying bad data into the plan.
+    return {
+      positions: parsePositions(blendPositionSchema, positions),
+      backstop: parsePositions(blendBackstopSchema, backstopSummaries),
+      perPoolErrors,
+    };
   }
 
   private async discoverAquarius(
@@ -245,7 +260,7 @@ export class DirectContractProvider implements IDeFiPositionProvider {
       }
     }
 
-    return [...byIndex.values()].map(aquariusPoolToSummary);
+    return parsePositions(aquariusPositionSchema, [...byIndex.values()].map(aquariusPoolToSummary));
   }
 
   // our own on-chain Soroswap LP discovery: walks the factory's pair list and
@@ -255,7 +270,10 @@ export class DirectContractProvider implements IDeFiPositionProvider {
     network: NetworkConfig,
     userAddress: string,
   ): Promise<readonly SoroswapPositionSummary[]> {
-    return discoverSoroswapPositions(server, network, userAddress);
+    return parsePositions(
+      soroswapPositionSchema,
+      await discoverSoroswapPositions(server, network, userAddress),
+    );
   }
 
   private async discoverFxDAO(
@@ -263,7 +281,7 @@ export class DirectContractProvider implements IDeFiPositionProvider {
     network: NetworkConfig,
   ): Promise<readonly FxDAOPositionSummary[]> {
     const vaults: FxDAOVault[] = await this.deps.fxdaoGetUserVaults(userAddress, network);
-    return vaults.map(fxdaoVaultToSummary);
+    return parsePositions(fxdaoPositionSchema, vaults.map(fxdaoVaultToSummary));
   }
 }
 
