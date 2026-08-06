@@ -6,7 +6,9 @@ import {
   DEFAULT_SLIPPAGE_BPS,
   MAX_SLIPPAGE_BPS,
   MIN_SLIPPAGE_BPS,
+  isMarketSellAcceptable,
   resolveConfiguredSlippageBps,
+  resolveMinMarketOutStroops,
   SlippageGuardTripped,
 } from "@/lib/safety/slippage";
 
@@ -164,5 +166,42 @@ describe("resolveConfiguredSlippageBps — single configurable policy", () => {
       process.env[KEY] = bad;
       expect(resolveConfiguredSlippageBps()).toBe(DEFAULT_SLIPPAGE_BPS);
     }
+  });
+});
+
+describe("value-destroying-sell floor (isMarketSellAcceptable / resolveMinMarketOutStroops)", () => {
+  const KEY = "NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS";
+  const orig = process.env[KEY];
+  afterEach(() => {
+    if (orig === undefined) delete process.env[KEY];
+    else process.env[KEY] = orig;
+  });
+
+  it("defaults the absolute floor to 0 (only a net-nothing sell is refused)", () => {
+    delete process.env[KEY];
+    expect(resolveMinMarketOutStroops()).toBe(0n);
+    process.env[KEY] = "5000";
+    expect(resolveMinMarketOutStroops()).toBe(5000n);
+    process.env[KEY] = "-1";
+    expect(resolveMinMarketOutStroops()).toBe(0n);
+    process.env[KEY] = "garbage";
+    expect(resolveMinMarketOutStroops()).toBe(0n);
+  });
+
+  it("refuses a sell that nets nothing after the haircut (dust)", () => {
+    // 1 stroop out -> applySlippageMin(1, 100) == 0 -> value-destroying
+    expect(isMarketSellAcceptable(1n, DEFAULT_SLIPPAGE_BPS, 0n)).toBe(false);
+    expect(isMarketSellAcceptable(0n, DEFAULT_SLIPPAGE_BPS, 0n)).toBe(false);
+  });
+
+  it("accepts a sell whose slippage-adjusted output clears the floor", () => {
+    // 100000 out @1% -> minAccepted 99000 > 0
+    expect(isMarketSellAcceptable(100_000n, DEFAULT_SLIPPAGE_BPS, 0n)).toBe(true);
+  });
+
+  it("refuses below a configured absolute floor and accepts above it", () => {
+    // minAccepted(100000 @1%) = 99000
+    expect(isMarketSellAcceptable(100_000n, DEFAULT_SLIPPAGE_BPS, 100_000n)).toBe(false);
+    expect(isMarketSellAcceptable(100_000n, DEFAULT_SLIPPAGE_BPS, 50_000n)).toBe(true);
   });
 });

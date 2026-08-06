@@ -5,6 +5,11 @@ import { getHorizon } from "@/lib/stellar/horizon-client";
 import type { NetworkConfig } from "@/lib/config/networks";
 import type { AccountAudit, AssetIdentifier } from "@/lib/types/account";
 import { pathKey, type PathResultRef } from "@/lib/types/plan";
+import {
+  isMarketSellAcceptable,
+  resolveConfiguredSlippageBps,
+  resolveMinMarketOutStroops,
+} from "@/lib/safety/slippage";
 
 export interface PathResult {
   // output amount of native xlm as horizon-decimal string (e.g. "12.3456789")
@@ -53,9 +58,12 @@ export async function findPathToXLM(
 }
 
 // resolve a best XLM-conversion path for every positive credit balance the
-// account holds, keyed by pathKey(asset). Assets with no market path are simply
-// absent from the map (the caller treats those as un-routable). A network error
-// propagates rather than being silently treated as "no path".
+// account holds, keyed by pathKey(asset). Assets with no market path — OR whose
+// best path is value-destroying (its slippage-adjusted output nets ≤ the absolute
+// floor, e.g. an illiquid asset routing its whole balance to dust) — are absent
+// from the map, so the caller treats them as un-routable and disposes of them via
+// issuer-return / send-to-destination instead of selling them for a pittance. A
+// network error propagates rather than being silently treated as "no path".
 export async function resolveCreditPaths(
   audit: AccountAudit,
   network: NetworkConfig,
@@ -69,11 +77,30 @@ export async function resolveCreditPaths(
       res: await findPathToXLM(b.asset, b.amount, network),
     })),
   );
+  const bps = resolveConfiguredSlippageBps();
+  const floor = resolveMinMarketOutStroops();
   const map = new Map<string, PathResultRef>();
   for (const { key, res } of resolved) {
-    if (res) map.set(key, res);
+    if (!res) continue;
+    // refuse a value-destroying sell: a path whose slippage-adjusted output nets
+    // at or below the floor is dropped, so the asset falls through to the
+    // issuer/destination disposal rather than being sold for ~nothing.
+    if (!isMarketSellAcceptable(xlmDecimalToStroops(res.destinationAmount), bps, floor)) {
+      continue;
+    }
+    map.set(key, res);
   }
   return map;
+}
+
+// convert an XLM horizon-decimal string ("12.3456789") to integer stroops.
+// non-numeric / malformed input yields 0n (treated as value-destroying).
+function xlmDecimalToStroops(s: string): bigint {
+  const trimmed = s.trim();
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) return 0n;
+  const [intPart = "0", fracPart = ""] = trimmed.split(".");
+  const frac = (fracPart + "0000000").slice(0, 7);
+  return BigInt(intPart) * 10_000_000n + BigInt(frac);
 }
 
 function hasPositiveAmount(s: string): boolean {

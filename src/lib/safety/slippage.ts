@@ -48,6 +48,32 @@ export function resolveConfiguredSlippageBps(): number {
   }
 }
 
+// Absolute floor (stroops) for a market conversion's XLM output. A sell whose
+// slippage-adjusted minimum output is AT or BELOW this is refused as
+// value-destroying — the asset is routed to issuer/destination disposal instead
+// of being sold. Default 0: refuse only a sell that nets nothing (the classic-
+// path analog of the aggregator/router's zero-output refusal), which catches an
+// illiquid asset whose whole balance routes to dust without blocking a legitimate
+// small sale. Raise via NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS for a stronger floor.
+export function resolveMinMarketOutStroops(): bigint {
+  const raw = process.env.NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS;
+  if (typeof raw !== "string" || !/^\d+$/.test(raw.trim())) return 0n;
+  return BigInt(raw.trim());
+}
+
+// True when a market sell yielding `expectedOutStroops` XLM is worth executing:
+// its slippage-adjusted minimum output must exceed the absolute floor. A sell
+// that nets nothing (or ≤ the configured floor) is value-destroying — refuse it.
+export function isMarketSellAcceptable(
+  expectedOutStroops: bigint,
+  bps: number,
+  floorStroops: bigint,
+): boolean {
+  if (expectedOutStroops <= 0n) return false;
+  const minAccepted = BigInt(applySlippageMin(expectedOutStroops.toString(), bps));
+  return minAccepted > floorStroops;
+}
+
 // validate a slippage-bps value
 export function clampSlippage(bps: number): number {
   if (!Number.isFinite(bps)) {
