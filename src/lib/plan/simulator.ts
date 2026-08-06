@@ -1,10 +1,11 @@
 // per-node simulator: routes soroban nodes to rpc simulate and classic nodes
 // to a well-formedness build pass
 
-import { BASE_FEE, type Horizon, type Transaction, type rpc } from "@stellar/stellar-sdk";
+import { Account, BASE_FEE, type Horizon, type Transaction, type rpc } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { simulate, type SimulationResult } from "@/lib/soroban/simulate";
+import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
 
 import type { PlanNode, SimulationOutcome } from "./tree";
 import { isSorobanNode } from "./tree";
@@ -12,6 +13,9 @@ import { isSorobanNode } from "./tree";
 export interface SimulationDeps {
   readonly server: rpc.Server;
   readonly network: NetworkConfig;
+  // the account being closed; source of the final classic merge, used to build
+  // the batch envelope in-memory for validation.
+  readonly userPublicKey: string;
   readonly fetchSourceAccount: (publicKey: string) => Promise<Horizon.AccountResponse>;
   readonly simulateFn?: (server: rpc.Server, tx: Transaction) => Promise<SimulationResult>;
 }
@@ -107,35 +111,67 @@ async function simulateClassicNode(
 
 async function simulateFinalClassicTx(
   node: Extract<PlanNode, { kind: "FinalClassicTx" }>,
-  _deps: SimulationDeps,
+  deps: SimulationDeps,
 ): Promise<SimulationOutcome> {
   const batches = node.metadata.batches;
   if (batches.length === 0) {
     throw new Error(`simulateNode: FinalClassicTx "${node.id}" has zero batches; cannot validate`);
   }
-  const firstBatch = batches[0]!;
-  const opCount = firstBatch.operations.length;
-  // the real envelope is built at submit time using the live account state
-  // we report what we actually know: op count and the per-op fee floor
+  // In-memory validation: actually BUILD each batch's classic envelope. A synthetic
+  // account (sequence 0) suffices because this is structural well-formedness, not a
+  // submit — buildClassicTransaction throws on an empty/malformed op set or a total
+  // fee over the u32 ceiling, so a doomed classic close surfaces at preview time
+  // instead of xdr:"" hiding it. The executor rebuilds against live account state.
+  const source = new Account(deps.userPublicKey, "0") as unknown as Horizon.AccountResponse;
+  let firstTx: Transaction | undefined;
+  try {
+    for (const batch of batches) {
+      const built = buildClassicTransaction(batch, source, deps.network).transaction;
+      if ("innerTransaction" in built) {
+        throw new Error("buildClassicTransaction returned a fee-bump transaction unexpectedly");
+      }
+      if (firstTx === undefined) firstTx = built;
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new SimulationFailedError(
+      `simulateNode: FinalClassicTx "${node.id}" failed in-memory validation: ${msg}`,
+      node.id,
+      msg,
+    );
+  }
+  const tx = firstTx!;
   return {
     kind: "classic",
-    xdr: "",
-    operationCount: opCount,
-    estimatedFee: (Number.parseInt(BASE_FEE, 10) * opCount).toString(),
+    xdr: tx.toEnvelope().toXDR("base64"), // the real built envelope, not ""
+    operationCount: tx.operations.length,
+    estimatedFee: tx.fee, // real total fee from the built envelope
   };
 }
 
 async function simulateMediatorForward(
-  _node: Extract<PlanNode, { kind: "MediatorForward" }>,
+  node: Extract<PlanNode, { kind: "MediatorForward" }>,
   _deps: SimulationDeps,
 ): Promise<SimulationOutcome> {
-  // the mediator forward is one payment + one accountMerge built at submit time
-  // against the mediator's live sequence number
+  // The mediator forward is exactly one payment + one accountMerge, built and
+  // signed server-side against the mediator's live sequence at submit time (its
+  // envelope can't be reproduced here without the flow token). 2 ops is the fixed,
+  // known structure — not a guess — but validate the metadata carries what the
+  // forward needs so a malformed node fails at preview, not mid-execution.
+  const md = node.metadata;
+  if (!md.mediatorPublicKey || !md.ultimateDestination || !md.flowToken) {
+    throw new SimulationFailedError(
+      `simulateNode: MediatorForward "${node.id}" is missing mediatorPublicKey / ultimateDestination / flowToken`,
+      node.id,
+      "malformed-mediator-forward",
+    );
+  }
+  const FORWARD_OP_COUNT = 2;
   return {
     kind: "classic",
     xdr: "",
-    operationCount: 2,
-    estimatedFee: (Number.parseInt(BASE_FEE, 10) * 2).toString(),
+    operationCount: FORWARD_OP_COUNT,
+    estimatedFee: (Number.parseInt(BASE_FEE, 10) * FORWARD_OP_COUNT).toString(),
   };
 }
 

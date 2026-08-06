@@ -568,6 +568,7 @@ const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) 
       const outcome = await simulateNode(node, {
         server: rpcServer,
         network: input.network,
+        userPublicKey: input.audit.accountId,
         fetchSourceAccount: async (pk) => horizon.loadAccount(pk),
       });
       node.simulated = outcome;
