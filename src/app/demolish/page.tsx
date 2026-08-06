@@ -58,6 +58,12 @@ import {
   type CexInfo,
 } from "@/lib/safety/cex-registry";
 import { runScamHeuristics, type ScamFinding } from "@/lib/safety/scam-heuristics";
+import {
+  HIGH_VALUE_THRESHOLD_XLM,
+  isHighValueTotalXlm,
+  requiredAcknowledgements,
+  allAcknowledged,
+} from "@/lib/safety/high-value";
 import { topologicalOrder, type PlanNode } from "@/lib/plan/tree";
 import type { AccountAudit, AuditSigner } from "@/lib/types/account";
 import type { ClassicMemo } from "@/lib/types/plan";
@@ -67,7 +73,6 @@ import { SecretKeyConnector } from "@/lib/wallet/secret-key";
 import { disconnectSession, getActiveConnector } from "@/lib/wallet/active-connector";
 import { useWalletStore } from "@/stores/wallet";
 
-const HIGH_VALUE_THRESHOLD_XLM = 1000;
 
 const G_ADDRESS = z
   .string()
@@ -592,9 +597,7 @@ function DemolishFlow(): React.JSX.Element {
   const totalXlm = audit ? sumNativeBalance(audit) : "0";
   const isHighValue = useMemo<boolean>(() => {
     if (!audit) return false;
-    const n = Number.parseFloat(totalXlm);
-    if (!Number.isFinite(n)) return false;
-    return n > HIGH_VALUE_THRESHOLD_XLM;
+    return isHighValueTotalXlm(totalXlm);
   }, [audit, totalXlm]);
 
   // two distinct concerns, kept as separate steps:
@@ -4128,13 +4131,13 @@ function AcknowledgePanel({
   const hasAutoHandled = autoParts.length > 0;
   const hasHighValue = highValue !== null;
 
-  const requiredAckKeys: string[] = [
-    hasScam ? "scam" : null,
-    hasDiscovery ? "discovery" : null,
-    hasAutoHandled ? "autoHandled" : null,
-    hasHighValue ? "highValue" : null,
-  ].filter((k): k is string => k !== null);
-  const allAcked = requiredAckKeys.every((k) => acks[k] === true);
+  const requiredAckKeys = requiredAcknowledgements({
+    hasScam,
+    hasDiscovery,
+    hasAutoHandled,
+    hasHighValue,
+  });
+  const allAcked = allAcknowledged(requiredAckKeys, acks);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
