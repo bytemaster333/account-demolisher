@@ -121,6 +121,7 @@ function Navbar() {
       }}
     >
       <div
+        className="resp-nav-bar"
         style={{
           maxWidth: 1180,
           margin: "0 auto",
@@ -164,7 +165,10 @@ function Navbar() {
           </span>
         </Link>
 
-        <nav style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: 8 }}>
+        <nav
+          className="resp-nav-hide"
+          style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: 8 }}
+        >
           <NavLink href="/demolish" active={isDemolish}>
             Demolish
           </NavLink>
@@ -196,6 +200,7 @@ function Navbar() {
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <NetworkSwitcher />
           <a
+            className="resp-nav-hide"
             href="https://github.com/bytemaster333/account-demolisher"
             target="_blank"
             rel="noopener noreferrer"

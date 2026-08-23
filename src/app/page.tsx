@@ -309,11 +309,15 @@ export default function HomePage(): React.JSX.Element {
 
   return (
     <AppShell>
-      <main>
+      {/* overflow-x: clip is a safety net for mobile: it stops any residual
+          horizontal overflow from scrolling the page, without breaking the
+          sticky header (clip, unlike hidden, sets up no scroll container) */}
+      <main style={{ overflowX: "clip" }}>
         {/* hero */}
         <section style={{ borderBottom: "1px solid var(--border)" }}>
           <div style={{ maxWidth: 1180, margin: "0 auto", padding: "0 28px" }}>
             <div
+              className="resp-stack"
               style={{
                 display: "grid",
                 gridTemplateColumns: "1fr 0.82fr",
@@ -325,6 +329,7 @@ export default function HomePage(): React.JSX.Element {
             >
               <div>
                 <h1
+                  className="resp-hero-title"
                   style={{
                     margin: 0,
                     fontSize: 64,
@@ -741,193 +746,198 @@ export default function HomePage(): React.JSX.Element {
               </p>
             </div>
 
-            <div
-              style={{
-                background: "var(--surface)",
-                border: "1px solid var(--border)",
-                borderRadius: 20,
-                overflow: "hidden",
-                boxShadow: "var(--shadow-sm)",
-              }}
-            >
+            {/* on mobile this fixed-width table scrolls inside its own box
+                instead of overflowing the page (see .resp-scroll-x) */}
+            <div className="resp-scroll-x">
               <div
                 style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 116px 116px 140px",
-                  alignItems: "stretch",
+                  background: "var(--surface)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 20,
+                  overflow: "hidden",
+                  boxShadow: "var(--shadow-sm)",
+                  minWidth: 460,
                 }}
               >
                 <div
                   style={{
-                    padding: "20px 26px",
-                    display: "flex",
-                    alignItems: "flex-end",
-                  }}
-                >
-                  <span
-                    style={{
-                      font: "600 11px/1 Geist, sans-serif",
-                      color: "var(--fg-3)",
-                      letterSpacing: "0.07em",
-                      textTransform: "uppercase",
-                    }}
-                  >
-                    What closing an account takes
-                  </span>
-                </div>
-                <div
-                  style={{
-                    padding: "18px 8px 14px",
-                    textAlign: "center",
-                    borderLeft: "1px solid var(--border)",
-                  }}
-                >
-                  <div style={{ fontWeight: 600, fontSize: 13 }}>Exchange</div>
-                  <div
-                    style={{
-                      font: '600 11px/1 "Geist Mono", monospace',
-                      color: "var(--fg-3)",
-                      marginTop: 4,
-                    }}
-                  >
-                    1/6
-                  </div>
-                </div>
-                <div
-                  style={{
-                    padding: "18px 8px 14px",
-                    textAlign: "center",
-                    borderLeft: "1px solid var(--border)",
-                  }}
-                >
-                  <div style={{ fontWeight: 600, fontSize: 13 }}>Classic tools</div>
-                  <div
-                    style={{
-                      font: '600 11px/1 "Geist Mono", monospace',
-                      color: "var(--fg-3)",
-                      marginTop: 4,
-                    }}
-                  >
-                    3/6
-                  </div>
-                </div>
-                <div
-                  style={{
-                    padding: "18px 8px 14px",
-                    textAlign: "center",
-                    borderLeft: "1px solid var(--border)",
-                    background: "var(--surface-2)",
-                  }}
-                >
-                  <div style={{ fontWeight: 700, fontSize: 13, color: "var(--accent)" }}>
-                    Demolisher
-                  </div>
-                  <div
-                    style={{
-                      font: '600 11px/1 "Geist Mono", monospace',
-                      color: "var(--accent)",
-                      marginTop: 4,
-                    }}
-                  >
-                    6/6
-                  </div>
-                </div>
-              </div>
-              {CAP_ROWS.map((c) => (
-                <div
-                  key={c.n}
-                  style={{
                     display: "grid",
                     gridTemplateColumns: "1fr 116px 116px 140px",
-                    alignItems: "center",
-                    borderTop: "1px solid var(--border)",
+                    alignItems: "stretch",
                   }}
                 >
                   <div
                     style={{
-                      padding: "14px 26px",
+                      padding: "20px 26px",
                       display: "flex",
-                      gap: 14,
-                      alignItems: "flex-start",
+                      alignItems: "flex-end",
                     }}
                   >
                     <span
                       style={{
-                        flexShrink: 0,
-                        width: 24,
-                        height: 24,
-                        borderRadius: "50%",
-                        background: "var(--surface-2)",
-                        border: "1px solid var(--border-2)",
-                        display: "grid",
-                        placeItems: "center",
-                        font: '600 11px/1 "Geist Mono", monospace',
+                        font: "600 11px/1 Geist, sans-serif",
                         color: "var(--fg-3)",
-                        marginTop: 1,
+                        letterSpacing: "0.07em",
+                        textTransform: "uppercase",
                       }}
                     >
-                      {c.n}
+                      What closing an account takes
                     </span>
-                    <div>
-                      <div
-                        style={{
-                          fontWeight: 600,
-                          fontSize: 14.5,
-                          letterSpacing: "-0.01em",
-                        }}
-                      >
-                        {c.short}
-                      </div>
-                      <div
-                        style={{
-                          fontSize: 12.5,
-                          lineHeight: 1.45,
-                          color: "var(--fg-2)",
-                          marginTop: 3,
-                        }}
-                      >
-                        {c.desc}
-                      </div>
-                    </div>
                   </div>
-                  <CapCell on={c.exchange} />
-                  <CapCell on={c.classic} />
                   <div
                     style={{
-                      padding: "14px 8px",
-                      display: "grid",
-                      placeItems: "center",
+                      padding: "18px 8px 14px",
+                      textAlign: "center",
                       borderLeft: "1px solid var(--border)",
-                      background: "var(--surface-2)",
-                      alignSelf: "stretch",
                     }}
                   >
-                    <span
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>Exchange</div>
+                    <div
                       style={{
-                        width: 30,
-                        height: 30,
-                        borderRadius: 8,
-                        background: "var(--accent-soft)",
-                        display: "grid",
-                        placeItems: "center",
+                        font: '600 11px/1 "Geist Mono", monospace',
+                        color: "var(--fg-3)",
+                        marginTop: 4,
                       }}
                     >
-                      <svg
-                        width="16"
-                        height="16"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="var(--accent)"
-                        strokeWidth={3}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      >
-                        <path d="M20 6L9 17l-5-5" />
-                      </svg>
-                    </span>
+                      1/6
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      padding: "18px 8px 14px",
+                      textAlign: "center",
+                      borderLeft: "1px solid var(--border)",
+                    }}
+                  >
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>Classic tools</div>
+                    <div
+                      style={{
+                        font: '600 11px/1 "Geist Mono", monospace',
+                        color: "var(--fg-3)",
+                        marginTop: 4,
+                      }}
+                    >
+                      3/6
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      padding: "18px 8px 14px",
+                      textAlign: "center",
+                      borderLeft: "1px solid var(--border)",
+                      background: "var(--surface-2)",
+                    }}
+                  >
+                    <div style={{ fontWeight: 700, fontSize: 13, color: "var(--accent)" }}>
+                      Demolisher
+                    </div>
+                    <div
+                      style={{
+                        font: '600 11px/1 "Geist Mono", monospace',
+                        color: "var(--accent)",
+                        marginTop: 4,
+                      }}
+                    >
+                      6/6
+                    </div>
                   </div>
                 </div>
-              ))}
+                {CAP_ROWS.map((c) => (
+                  <div
+                    key={c.n}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 116px 116px 140px",
+                      alignItems: "center",
+                      borderTop: "1px solid var(--border)",
+                    }}
+                  >
+                    <div
+                      style={{
+                        padding: "14px 26px",
+                        display: "flex",
+                        gap: 14,
+                        alignItems: "flex-start",
+                      }}
+                    >
+                      <span
+                        style={{
+                          flexShrink: 0,
+                          width: 24,
+                          height: 24,
+                          borderRadius: "50%",
+                          background: "var(--surface-2)",
+                          border: "1px solid var(--border-2)",
+                          display: "grid",
+                          placeItems: "center",
+                          font: '600 11px/1 "Geist Mono", monospace',
+                          color: "var(--fg-3)",
+                          marginTop: 1,
+                        }}
+                      >
+                        {c.n}
+                      </span>
+                      <div>
+                        <div
+                          style={{
+                            fontWeight: 600,
+                            fontSize: 14.5,
+                            letterSpacing: "-0.01em",
+                          }}
+                        >
+                          {c.short}
+                        </div>
+                        <div
+                          style={{
+                            fontSize: 12.5,
+                            lineHeight: 1.45,
+                            color: "var(--fg-2)",
+                            marginTop: 3,
+                          }}
+                        >
+                          {c.desc}
+                        </div>
+                      </div>
+                    </div>
+                    <CapCell on={c.exchange} />
+                    <CapCell on={c.classic} />
+                    <div
+                      style={{
+                        padding: "14px 8px",
+                        display: "grid",
+                        placeItems: "center",
+                        borderLeft: "1px solid var(--border)",
+                        background: "var(--surface-2)",
+                        alignSelf: "stretch",
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: 30,
+                          height: 30,
+                          borderRadius: 8,
+                          background: "var(--accent-soft)",
+                          display: "grid",
+                          placeItems: "center",
+                        }}
+                      >
+                        <svg
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="var(--accent)"
+                          strokeWidth={3}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <path d="M20 6L9 17l-5-5" />
+                        </svg>
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </section>
@@ -1136,6 +1146,7 @@ export default function HomePage(): React.JSX.Element {
             </p>
 
             <div
+              className="resp-stack"
               style={{
                 position: "relative",
                 display: "grid",
@@ -1292,6 +1303,7 @@ export default function HomePage(): React.JSX.Element {
             </div>
 
             <div
+              className="resp-stack"
               style={{
                 display: "grid",
                 gridTemplateColumns: "1.3fr 0.9fr",
@@ -1534,6 +1546,7 @@ export default function HomePage(): React.JSX.Element {
             </div>
 
             <div
+              className="resp-stack"
               style={{
                 display: "grid",
                 gridTemplateColumns: "repeat(3, 1fr)",
@@ -1634,6 +1647,7 @@ export default function HomePage(): React.JSX.Element {
         {/* security guarantees */}
         <section style={{ maxWidth: 1180, margin: "0 auto", padding: "84px 28px" }}>
           <div
+            className="resp-stack"
             style={{
               display: "grid",
               gridTemplateColumns: "0.82fr 1.18fr",
@@ -1688,8 +1702,8 @@ export default function HomePage(): React.JSX.Element {
                 }}
               >
                 A tool that drains accounts is a target by definition. These guarantees are enforced
-                in code, not policy. It has not yet completed an independent security audit, so treat
-                mainnet use accordingly.
+                in code, not policy. It has not yet completed an independent security audit, so
+                treat mainnet use accordingly.
               </p>
             </div>
 
@@ -1886,6 +1900,7 @@ export default function HomePage(): React.JSX.Element {
               }}
             >
               <div
+                className="resp-stack"
                 style={{
                   display: "grid",
                   gridTemplateColumns: "200px 1fr",
@@ -1953,6 +1968,7 @@ export default function HomePage(): React.JSX.Element {
                 </div>
               </div>
               <div
+                className="resp-stack"
                 style={{
                   display: "grid",
                   gridTemplateColumns: "200px 1fr",
@@ -2046,6 +2062,7 @@ export default function HomePage(): React.JSX.Element {
         <section style={{ borderTop: "1px solid var(--border)" }}>
           <div style={{ maxWidth: 1180, margin: "0 auto", padding: "76px 28px" }}>
             <div
+              className="resp-stack"
               style={{
                 display: "grid",
                 gridTemplateColumns: "1fr 1fr",
@@ -2200,6 +2217,7 @@ export default function HomePage(): React.JSX.Element {
         {/* FAQ */}
         <section style={{ borderTop: "1px solid var(--border)", background: "var(--bg-2)" }}>
           <div
+            className="resp-stack"
             style={{
               maxWidth: 1180,
               margin: "0 auto",
@@ -2419,6 +2437,7 @@ export default function HomePage(): React.JSX.Element {
             </div>
 
             <div
+              className="resp-stack"
               style={{
                 display: "grid",
                 gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
