@@ -67,6 +67,9 @@ export interface MetricsSnapshot {
 }
 
 const CLOSES_FILE = "closes.jsonl";
+// upper bound on distinct verified closes retained (memory + durable file). The
+// unauthenticated beacon means this must be finite; set well above real volume.
+const MAX_CLOSES = 250_000;
 const COUNTERS_FILE = "counters.json";
 const DEFAULT_RECENT = 50;
 
@@ -174,6 +177,10 @@ export class MetricsStore {
     await this.ensureLoaded();
     return this.enqueue(async () => {
       if (this.hashes.has(close.txHash)) return { added: false };
+      // hard backstop: the close beacon is unauthenticated, so cap the durable
+      // ledger to bound memory/disk growth from a flood of distinct (real) merge
+      // hashes. MAX_CLOSES is far above any legitimate close volume.
+      if (this.closes.length >= MAX_CLOSES) return { added: false };
       this.hashes.add(close.txHash);
       this.closes.push(close);
       await fs.appendFile(path.join(this.dir, CLOSES_FILE), JSON.stringify(close) + "\n", "utf8");
