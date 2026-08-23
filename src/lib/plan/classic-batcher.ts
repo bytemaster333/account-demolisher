@@ -280,8 +280,13 @@ function splitIntoBatches(
   // routed to XLM and their trustlines removed in a subsequent batch.
   const lastWithdraw = ops.findLastIndex((o) => o.kind === "liquidity_pool_withdraw");
   if (lastWithdraw >= 0 && lastWithdraw < ops.length - 1) {
+    // the withdraw-isolation slice must ALSO respect MAX_OPS_PER_TX: an account
+    // with >100 liquidity-pool positions would otherwise produce a single
+    // >100-op batch that Horizon rejects, making the account un-closable. Pack it
+    // (forceNonFinal, so none of its chunks carries the memo/merge), keeping the
+    // leading mediator-funding op at the front of the first chunk.
     return [
-      buildBatch(ops.slice(0, lastWithdraw + 1), options, /*isFinal*/ false),
+      ...packByLimit(ops.slice(0, lastWithdraw + 1), options, /*forceNonFinal*/ true),
       ...packByLimit(ops.slice(lastWithdraw + 1), options),
     ];
   }
@@ -289,23 +294,26 @@ function splitIntoBatches(
 }
 
 // pack ops front-to-back into <=MAX_OPS_PER_TX batches; the merge naturally lands
-// in the last chunk, which is flagged final (memo + mediator inclusion).
+// in the last chunk, which is flagged final (memo + mediator inclusion) unless
+// forceNonFinal is set (used for the leading withdraw-isolation slice, whose
+// chunks are never the final merge batch).
 function packByLimit(
   ops: readonly BatchedOperation[],
   options: BatchOptions,
+  forceNonFinal = false,
 ): readonly ClassicBatch[] {
   if (ops.length === 0) {
     return [];
   }
   if (ops.length <= MAX_OPS_PER_TX) {
-    return [buildBatch(ops, options, /*isFinal*/ true)];
+    return [buildBatch(ops, options, /*isFinal*/ !forceNonFinal)];
   }
   const batches: ClassicBatch[] = [];
   let cursor = 0;
   while (cursor < ops.length) {
     const slice = ops.slice(cursor, cursor + MAX_OPS_PER_TX);
     cursor += slice.length;
-    const isFinal = cursor >= ops.length;
+    const isFinal = !forceNonFinal && cursor >= ops.length;
     batches.push(buildBatch(slice, options, isFinal));
   }
   return batches;
