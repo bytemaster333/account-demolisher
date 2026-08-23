@@ -95,7 +95,7 @@ export function ScamTokenNotice({
   return (
     <Notice
       tone="danger"
-      role="note"
+      role="status"
       data-testid="scam-token-notice"
       {...(footer !== undefined ? { footer } : {})}
       title={

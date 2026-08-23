@@ -113,7 +113,7 @@ export function ResidueConsent({
                 </span>
               </div>
               <div
-                role="radiogroup"
+                role="group"
                 aria-label={`What to do with ${c.amount} ${c.code}`}
                 style={{ display: "flex", gap: 7, flexWrap: "wrap" }}
               >
@@ -177,8 +177,7 @@ function DisposalOption({
   return (
     <button
       type="button"
-      role="radio"
-      aria-checked={selected}
+      aria-pressed={selected}
       onClick={onClick}
       data-testid={testId}
       style={{

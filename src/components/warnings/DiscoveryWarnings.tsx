@@ -23,7 +23,7 @@ export function DiscoveryWarnings({
   return (
     <Notice
       tone="warning"
-      role="note"
+      role="status"
       data-testid="discovery-warnings"
       {...(footer !== undefined ? { footer } : {})}
       title="We couldn't finish scanning this account"
