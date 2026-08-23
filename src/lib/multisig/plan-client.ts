@@ -73,7 +73,15 @@ export function subscribePlan(
   onError?: (info: { readonly terminal: boolean }) => void,
 ): () => void {
   const source = new EventSource(`/api/plan/${encodeURIComponent(id)}/events`);
+  // A CLOSED readyState is terminal immediately. But an UNREACHABLE relay stays in
+  // CONNECTING and retries forever, so onerror alone would never report terminal
+  // and the progress view would freeze silently. Escalate to terminal after a few
+  // consecutive failed reconnects with no successful frame, so the caller can show
+  // a 'refresh to resync' affordance instead of an indefinitely stale view.
+  const MAX_RECONNECT_ERRORS = 5;
+  let consecutiveErrors = 0;
   source.onmessage = (ev: MessageEvent<string>) => {
+    consecutiveErrors = 0; // a frame arrived: the stream is live again
     try {
       const plan = JSON.parse(ev.data) as Partial<RelayPlan>;
       if (typeof plan.network === "string" && typeof plan.xdr === "string") {
@@ -84,7 +92,10 @@ export function subscribePlan(
     }
   };
   source.onerror = () => {
-    if (onError) onError({ terminal: source.readyState === EventSource.CLOSED });
+    consecutiveErrors += 1;
+    const terminal =
+      source.readyState === EventSource.CLOSED || consecutiveErrors >= MAX_RECONNECT_ERRORS;
+    if (onError) onError({ terminal });
   };
   return () => source.close();
 }
