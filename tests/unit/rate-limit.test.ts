@@ -45,4 +45,29 @@ describe("getRemoteIp", () => {
     );
     expect(getRemoteIp(new Request("http://host.example/path"))).toBe("host.example");
   });
+
+  it("does NOT trust an X-Forwarded-For shorter than the configured trusted hops", () => {
+    const prev = process.env.TRUSTED_PROXY_HOPS;
+    process.env.TRUSTED_PROXY_HOPS = "2";
+    try {
+      // 1 entry but 2 trusted hops: the chain is shorter than expected, so the
+      // (client-controlled) value must NOT become the rate-limit key. Fall to
+      // x-real-ip, and otherwise host, never the spoofable XFF value.
+      expect(
+        getRemoteIp(
+          new Request("http://x/", {
+            headers: { "x-forwarded-for": "6.6.6.6", "x-real-ip": "9.9.9.9" },
+          }),
+        ),
+      ).toBe("9.9.9.9");
+      expect(
+        getRemoteIp(
+          new Request("http://host.example/p", { headers: { "x-forwarded-for": "6.6.6.6" } }),
+        ),
+      ).toBe("host.example");
+    } finally {
+      if (prev === undefined) delete process.env.TRUSTED_PROXY_HOPS;
+      else process.env.TRUSTED_PROXY_HOPS = prev;
+    }
+  });
 });

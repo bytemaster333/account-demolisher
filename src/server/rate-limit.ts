@@ -79,7 +79,13 @@ export function getRemoteIp(request: Request): string {
         .map((p) => p.trim())
         .filter((p) => p.length > 0);
       const idx = parts.length - hops;
-      const picked = idx >= 0 ? parts[idx] : parts[0];
+      // Only trust the entry the trusted proxies actually appended. If the header
+      // has FEWER entries than the configured hops, the chain is shorter than
+      // expected (misconfig, or a client that sent its own X-Forwarded-For): the
+      // leftmost value is client-controlled and must NOT be used as the rate-limit
+      // key (it would let an attacker rotate keys to evade the limit or spoof a
+      // victim's IP to lock them out). Fall through to x-real-ip instead.
+      const picked = idx >= 0 ? parts[idx] : undefined;
       if (picked !== undefined && picked.length > 0) return picked;
     }
     const xRealIp = request.headers.get("x-real-ip");
