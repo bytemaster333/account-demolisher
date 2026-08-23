@@ -696,7 +696,17 @@ const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ input }) 
   // review (or a slow multi-position execution) expire the token AFTER the balance
   // had already been merged into the ephemeral account, stranding it permanently.
   const mediatorForwardNode = tree.allNodes.get(MEDIATOR_FORWARD_NODE_ID);
-  if (mediatorForwardNode && mediatorForwardNode.status !== "skipped") {
+  // Only re-mint when the merge into the previous mediator has NOT already landed.
+  // On a RETRY after the merge confirmed but the forward failed, the user's balance
+  // sits in the previously-minted ephemeral account; minting a fresh flow would
+  // repoint the forward (and overwrite the recovery record) at a new, empty account,
+  // stranding those funds. In that state, keep the existing flow so the forward
+  // retries against the account that actually holds the balance, and leave the saved
+  // recovery record intact for reload-based recovery.
+  const finalClassicNode = tree.allNodes.get("final-classic-tx");
+  const mergeAlreadyLanded =
+    finalClassicNode?.status === "confirmed" || finalClassicNode?.executed !== undefined;
+  if (mediatorForwardNode && mediatorForwardNode.status !== "skipped" && !mergeAlreadyLanded) {
     // re-mint bound to the SAME destination the forward will target (committed
     // into the token so the sign route enforces it — SEC-16)
     const forwardDestination = (
