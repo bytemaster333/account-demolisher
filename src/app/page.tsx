@@ -998,7 +998,7 @@ export default function HomePage(): React.JSX.Element {
             }}
           >
             {HANDLES.map((h) => (
-              <div key={h.num} className="cov-flip" style={{ height: 158 }}>
+              <div key={h.num} className="cov-flip" tabIndex={0} style={{ height: 158 }}>
                 <div
                   className="cov-inner"
                   style={{
