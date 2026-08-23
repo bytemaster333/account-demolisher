@@ -26,6 +26,8 @@ export interface BulkRevokeBarProps {
   readonly connectorRef: React.RefObject<Connector | null> | null;
   // re-enumerate after the sweep so revoked (now-expired) rows drop out
   readonly onComplete: () => void;
+  // reports whether a sweep is running, so the caller can disable per-row revokes
+  readonly onRunningChange?: (running: boolean) => void;
 }
 
 type Outcome =
@@ -40,6 +42,7 @@ export function BulkRevokeBar({
   network,
   connectorRef,
   onComplete,
+  onRunningChange,
 }: BulkRevokeBarProps): React.JSX.Element | null {
   const activeRevocable = useMemo(() => records.filter((r) => !r.expired), [records]);
   const unknownActive = useMemo(
@@ -70,6 +73,11 @@ export function BulkRevokeBar({
       stopRef.current = true;
     };
   }, []);
+
+  // tell the caller when a sweep is running so it can disable per-row revokes
+  useEffect(() => {
+    onRunningChange?.(phase === "running");
+  }, [phase, onRunningChange]);
 
   // a mid-sweep network switch invalidates the connected account and the
   // closed-over network the loop is still signing against; treat it as a stop.

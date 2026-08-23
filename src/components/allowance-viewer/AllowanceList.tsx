@@ -31,6 +31,8 @@ export interface AllowanceListProps {
   readonly showExpired: boolean;
   // re-enumerate after a successful revoke
   readonly onRevoked?: ((record: AllowanceRecord, txHash: string) => void) | undefined;
+  // a bulk sweep is running: disable the per-row revoke buttons
+  readonly busy?: boolean;
 }
 
 const HEADER_CELL: React.CSSProperties = {
@@ -54,6 +56,7 @@ export function AllowanceList({
   connectorRef,
   showExpired,
   onRevoked,
+  busy,
 }: AllowanceListProps): React.JSX.Element {
   const visible = useMemo(
     () => (showExpired ? records : records.filter((r) => !r.expired)),
@@ -132,6 +135,7 @@ export function AllowanceList({
                 currentLedger={currentLedger}
                 connectorRef={connectorRef}
                 onRevoked={onRevoked}
+                busy={busy ?? false}
               />
             ))}
           </div>
@@ -148,6 +152,7 @@ interface AllowanceRowProps {
   readonly currentLedger: number;
   readonly connectorRef: React.RefObject<Connector | null> | null;
   readonly onRevoked?: ((record: AllowanceRecord, txHash: string) => void) | undefined;
+  readonly busy?: boolean;
 }
 
 function AllowanceRow({
@@ -157,6 +162,7 @@ function AllowanceRow({
   currentLedger,
   connectorRef,
   onRevoked,
+  busy,
 }: AllowanceRowProps): React.JSX.Element {
   const [tokenSymbol, setTokenSymbol] = useState<string | null>(null);
   const [tokenDecimals, setTokenDecimals] = useState<number | null>(null);
@@ -355,6 +361,7 @@ function AllowanceRow({
           network={network}
           connectorRef={connectorRef}
           onRevoked={onRevoked}
+          busy={busy ?? false}
         />
       </div>
     </div>

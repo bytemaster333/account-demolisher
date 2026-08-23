@@ -59,6 +59,8 @@ export default function AllowancesPage(): React.JSX.Element {
   const [records, setRecords] = useState<readonly AllowanceRecord[] | null>(null);
   const [currentLedger, setCurrentLedger] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  // true while a bulk revoke sweep runs, so per-row revokes are disabled
+  const [bulkRunning, setBulkRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showExpired, setShowExpired] = useState(false);
 
@@ -347,6 +349,7 @@ export default function AllowancesPage(): React.JSX.Element {
                   network={network}
                   connectorRef={canRevoke ? connectorRef : null}
                   onComplete={onBulkComplete}
+                  onRunningChange={setBulkRunning}
                 />
                 <AllowanceList
                   records={records}
@@ -356,6 +359,7 @@ export default function AllowancesPage(): React.JSX.Element {
                   connectorRef={canRevoke ? connectorRef : null}
                   showExpired={showExpired}
                   onRevoked={onSingleRevoked}
+                  busy={bulkRunning}
                 />
               </>
             )

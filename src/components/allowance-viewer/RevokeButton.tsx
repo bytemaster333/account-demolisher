@@ -20,6 +20,9 @@ export interface RevokeButtonProps {
   readonly connectorRef: React.RefObject<Connector | null> | null;
   // explicit `| undefined` keeps this forwardable under exactOptionalPropertyTypes
   readonly onRevoked?: ((record: AllowanceRecord, txHash: string) => void) | undefined;
+  // a bulk revoke sweep is running: disable per-row revokes so a click can't
+  // enqueue a redundant approve(0) the bulk progress wouldn't count
+  readonly busy?: boolean;
 }
 
 type Phase = "idle" | "submitting" | "confirmed" | "failed";
@@ -30,6 +33,7 @@ export function RevokeButton({
   network,
   connectorRef,
   onRevoked,
+  busy,
 }: RevokeButtonProps): React.JSX.Element {
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -171,6 +175,22 @@ export function RevokeButton({
         size="sm"
         disabled
         disabledReason="Connect the wallet that owns this address to revoke"
+        data-testid={testId}
+      >
+        Revoke
+      </Button>
+    );
+  }
+
+  // a bulk sweep is running: block per-row revokes (they'd be redundant and
+  // wouldn't be counted by the bulk progress)
+  if (busy) {
+    return (
+      <Button
+        variant="secondary"
+        size="sm"
+        disabled
+        disabledReason="A bulk revoke is in progress"
         data-testid={testId}
       >
         Revoke
