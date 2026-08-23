@@ -105,8 +105,9 @@ export function ScamTokenNotice({
       }
     >
       <span style={{ display: "block", fontSize: 12.5, lineHeight: 1.5, color: "var(--fg-2)" }}>
-        Closing the account discards these, which is safe, they hold no real value. We&apos;re only
-        flagging them so you recognize what you held.
+        These match patterns we use to spot scam or impersonating tokens, but the check isn&apos;t
+        proof, a real asset can trip it too. We&apos;re flagging them so you can double-check you
+        recognize what you held before you continue.
       </span>
       <ul
         style={{
