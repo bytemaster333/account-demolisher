@@ -1,0 +1,117 @@
+---
+title: Integrator guide
+description: "For wallet developers and exchange operators: how the demolisher interoperates, and what you need to build."
+---
+
+Account Demolisher is a non-custodial account closer. It is a Next.js app a person opens in their own browser, connects their own wallet to, and uses to drain and merge one Stellar account. It is not a service you call, and it holds no user key. Nothing about it requires a wallet or an exchange to integrate before a user can close an account into your address.
+
+There are two places where your product and the demolisher touch, and this page covers both:
+
+- **Exchanges** interoperate through the destination and the memo. A close can send the recovered XLM to an exchange deposit address, and the demolisher has specific handling for exchange hot wallets that require a deposit memo.
+- **Wallets** interoperate through signing. Every transaction is signed on the user's device by their wallet, through Stellar Wallets Kit.
+
+If you run your own copy of the app instead, see [Self host](/docs/self-host). The rest of this page describes the reference behavior, which is the same code you would be running.
+
+## For exchange operators
+
+### Why a plain merge to your hot wallet is not enough
+
+Stellar's `ACCOUNT_MERGE` moves the whole balance, including the base reserve, to a destination account. Most centralized exchanges do not credit an incoming merge: the lumens land on the ledger at your hot wallet, but the deposit is never attributed to a user, because exchanges credit *payments* carrying a deposit memo, not merges. See [Destinations and the mediator](/docs/destinations-and-mediator) for the full write-up.
+
+The demolisher solves this with a mediator hop, and it engages that hop **only for destinations it recognizes as exchange hot wallets**. Recognition is a lookup in a compiled-in registry (`lookupCex` in `src/lib/safety/cex-registry.ts`). If your hot-wallet address is in that registry, a close to it is routed through the mediator and arrives as a creditable memo-bearing payment. If it is not, a close to your address is a direct `ACCOUNT_MERGE`, which your exchange will most likely not credit. The practical consequence: for closes to be usable at your exchange, your deposit address needs to be in the registry.
+
+### What the mediator does
+
+When the destination is a registry-listed exchange, the flag `useMediator` is set (`src/app/demolish/page.tsx`, where `useMediator = cex !== null`) and the close runs through a temporary mediator account:
+
+1. The classic close funds a fresh ephemeral mediator account (a `CREATE_ACCOUNT` for 2 XLM) and merges the user's account into that mediator instead of into your address.
+2. The server builds and co-signs a two-operation forward from the mediator: a native `PAYMENT` to your deposit address carrying the deposit memo, then an `ACCOUNT_MERGE` that sends the mediator's remainder to the **same** address. Both operations are built in `submitMediatorForward` (`src/lib/mediator/forward.ts`) and the payment carries the memo (`memoToSdk`).
+3. Your exchange receives a normal native payment with the correct memo and credits it. The mediator account is removed in the same transaction.
+
+The mediator's signing key is a per-flow throwaway derived from a server-held HMAC master (`src/server/mediator-secret.ts`), and the server only co-signs an envelope that passes strict validation (`validateMediatorForwardEnvelope` in `src/lib/mediator/validator.ts`). From your side none of that is visible: you receive a standard XLM deposit payment with a memo. **A memo-required deposit account works out of the box once it is in the registry. You do not need to run a SEP anchor, expose an API, or change anything about how your deposit addresses work.**
+
+### The exchange registry
+
+The registry is `src/lib/safety/cex-registry.ts`. Each entry is a `CexInfo`:
+
+```ts
+export interface CexInfo {
+  readonly address: string;        // G... hot-wallet account id
+  readonly name: string;           // shown to the user
+  readonly requiresMemo: boolean;  // true for every current entry
+  readonly memoType?: CexMemoType; // "text" | "id" | "hash" | "return"
+  readonly minimumDeposit?: string;// decimal-string XLM minimum, if published
+  readonly verifiedAt: string;     // ISO date the address+policy was checked
+  readonly source: string;         // citation for the address and policy
+}
+```
+
+The registry currently carries twelve hot-wallet entries (Kraken, Binance and a secondary Binance deposit address, Bitfinex, Bitstamp, KuCoin, Upbit, CEX.IO, Crypto.com, Robinhood, Coinbase Deposits, Blockchain.com). Every entry is marked `requiresMemo: true`. Most use a `text` memo; Binance, the secondary Binance address, and Bitstamp use an `id` (numeric) memo.
+
+### Adding or correcting an entry
+
+The registry is source code, not runtime configuration. A discovered or pasted address can never add itself, the same posture the contract allow-list takes. To add an exchange:
+
+1. Append a `CexInfo` to the `KNOWN_CEXES` array with your hot-wallet `address`, `name`, `requiresMemo`, the `memoType` your deposits require, and a `source` citing where the address and memo policy were verified.
+2. `lookupCex(address)` then returns your entry, `useMediator` becomes true for closes to it, and the memo gate below starts enforcing your memo policy.
+
+`verifiedAt` and `source` exist so the address and policy are auditable, not fabricated. Keep them accurate; a wrong hot-wallet address here routes user funds to the wrong place.
+
+### Memo enforcement
+
+Before a close to a registry exchange can start, the demolisher enforces the memo with `requireMemoEnforcement` (`src/lib/safety/cex-registry.ts`), called from the configure step in `src/app/demolish/page.tsx`. It refuses to proceed when:
+
+- The exchange requires a memo and none was supplied.
+- The supplied memo type does not match the exchange's `memoType` (for example an `id` memo where the exchange expects `text`).
+- The memo value is empty or malformed for its type. Value shape is checked by `validateMemoFormat`: an `id` memo must be a `uint64`, a `text` memo must be at most 28 bytes, and a `hash` or `return` memo must be exactly 32 bytes (hex or base64).
+
+The content of the memo cannot be checked against your books from the client, so only the type and shape are validated. The user is responsible for the memo value itself.
+
+An exchange that is **not** in the registry can still be used as a destination, but the demolisher cannot verify its memo policy and does not route through the mediator, so it warns the user to follow the exchange's own deposit instructions. This is why registry membership matters for credit-ability.
+
+## For wallet developers
+
+### How signing works
+
+The demolisher never sees a secret key. It builds an unsigned transaction, hands it to the connected wallet, and the wallet returns a signed envelope. That handoff goes through [Stellar Wallets Kit](https://github.com/Creit-Tech/Stellar-Wallets-Kit) (`@creit.tech/stellar-wallets-kit`, pinned at `2.3.0` in `package.json`), wired in `src/lib/wallet/kit.ts`. The app's own `Connector` abstraction (`src/lib/wallet/connector.ts`) wraps the kit's `signTransaction` and `signAuthEntry` calls.
+
+### How a wallet gets listed in the picker
+
+The module list is assembled in `buildModules` (`src/lib/wallet/kit.ts`):
+
+```ts
+const modules = [...defaultModules(), new LedgerModule()];
+// plus WalletConnect when NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID is set
+```
+
+- `defaultModules()` is the kit's zero-config set of eleven wallets: Albedo, Freighter, Fordefi, Rabet, xBull, Lobstr, Hana, Klever, OneKey, Bitget, and CactusLink. A wallet that ships a module in the kit's defaults appears in the picker automatically once the app is on a kit version that includes it. There is nothing to register on the demolisher side.
+- `LedgerModule` is always added, so Ledger hardware wallets (over WebUSB) are supported.
+- `WalletConnectModule` is added when `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` is configured, so WalletConnect (mobile wallets by QR) is supported on the public and testnet chains. It is left out entirely when no project id is set.
+
+An operator self-hosting the app can add a custom module to `buildModules`, so a wallet that is not yet in the kit's defaults can still be listed by whoever runs the deployment.
+
+### The wallet interface is SEP-43
+
+Wallet modules implement the kit's `ModuleInterface`. Its signing methods are documented as compatible with [SEP-43](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0043.md), the ecosystem standard for wallet signing: `signTransaction`, `signAuthEntry`, and `signMessage` in `node_modules/@creit.tech/stellar-wallets-kit/esm/types/mod.d.ts` each cite the SEP-43 spec, and the app's connector comments its two signing calls as "sep-43 sign". The demolisher only uses `getAddress`, `signTransaction`, and `signAuthEntry`. So the requirement on a wallet is exactly the SEP-43 signing surface: return the user's address, sign a transaction XDR against a given network passphrase, and (for Soroban steps) sign an auth entry. Nothing app-specific is required.
+
+## SEP compliance
+
+The demolisher touches a small, specific set of Stellar Ecosystem Proposals. It is worth being precise about which, because most anchor-oriented SEPs are deliberately not part of this tool.
+
+Implemented or relied on:
+
+- **SEP-1 (stellar.toml).** `public/stellar.toml` is an origin declaration for the reference deployment: organization info and a responsible principal. It intentionally declares **no** `SIGNING_KEY` and no `SIGNERS`, because the mediator co-signs with a per-flow ephemeral key and there is no single long-lived account to name (the file says so in a comment). Embedders who self-host must replace the placeholder org details and canonical URL with their own and re-sign for their domain. The canonical SEP-1 location is `/.well-known/stellar.toml`; the file is served from `public/` and operators add a rewrite so both paths resolve.
+- **SEP-41 (Soroban token interface).** The allowance viewer and the revoke steps work against SEP-41 tokens. Allowances are enumerated from on-chain `approve` events (`src/lib/soroban/allowances.ts`), read back from the token's `allowance(from, spender)` to confirm the event was not fabricated, and revoked by building `approve(from, spender, 0, ledger)` (`src/lib/soroban/sep41.ts`). See [Allowance viewer](/docs/allowance-viewer).
+- **SEP-43 (wallet interface).** Used through Stellar Wallets Kit, as described above.
+
+Not implemented, and not needed for what this tool does:
+
+- **SEP-10 (web authentication).** There is no `WEB_AUTH_ENDPOINT` challenge flow. Authentication to the app is holding the key and signing a real closure transaction, not a SEP-10 challenge. (`public/stellar.toml` reuses the `WEB_AUTH_ENDPOINT` key only to record the canonical URL; the app runs no SEP-10 server.)
+- **SEP-24, SEP-6 (hosted and programmatic deposit/withdraw).** The demolisher is not an anchor. It does not run interactive or programmatic deposit/withdrawal flows. Exchange interop is the mediator-payment path above, not an anchor protocol.
+- **SEP-31 (cross-border payments).** Not applicable; the tool moves a user's own balance to a destination they chose, it is not a payment corridor.
+
+If you are integrating an anchor, none of those endpoints exist here to call. The only server surface is the mediator co-signer, the multisig signing relay, and the Soroswap conversion proxy, all documented under [Security](/docs/security).
+
+## Running your own instance
+
+Exchanges and wallets that want to operate the closer under their own domain, with their own mediator key, can self-host it. The mediator key is per-deployment and derives throwaway per-flow keys, so you generate one seed and fund nothing. See [Self host](/docs/self-host) for the environment variables, the deployment modes (`reference` runs the mediator, `self-hosted` refuses exchange closes rather than routing them), and the reverse-proxy and CSP notes.
