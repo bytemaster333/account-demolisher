@@ -61,13 +61,15 @@ export function BulkRevokeBar({
   // so it can't keep submitting real approve(0) txs with the Stop control gone.
   // stops at the next iteration check; a signature already in flight still lands.
   const mountedRef = useRef(true);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // reset on (re)mount: under StrictMode's mount/unmount/remount the cleanup
+    // below would otherwise leave it false and the sweep loop would halt at once.
+    mountedRef.current = true;
+    return () => {
       mountedRef.current = false;
       stopRef.current = true;
-    },
-    [],
-  );
+    };
+  }, []);
 
   // a mid-sweep network switch invalidates the connected account and the
   // closed-over network the loop is still signing against; treat it as a stop.
