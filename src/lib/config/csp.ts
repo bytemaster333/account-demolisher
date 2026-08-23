@@ -1,8 +1,10 @@
-// Content-Security-Policy, shared between the request middleware (which injects a
-// per-request nonce for a STRICT script-src, replacing 'unsafe-inline') and the
-// security-headers test. Sourced from `grep -RE "https://" src/` to cover exactly
-// the Horizon / Soroban RPC / AMM / Friendbot endpoints the app talks to, for
-// BOTH networks (one deployment serves testnet + mainnet).
+// Content-Security-Policy, applied per response by the request middleware and
+// asserted by the security-headers test. script-src is 'self' + 'unsafe-inline'
+// (see buildContentSecurityPolicy below for why: Next's inline hydration is not
+// nonce-stamped here), NOT a per-request nonce. connect-src is sourced from
+// `grep -RE "https://" src/` to cover exactly the Horizon / Soroban RPC / AMM /
+// Friendbot endpoints the app talks to, for BOTH networks (one deployment serves
+// testnet + mainnet), plus the WalletConnect hosts below.
 export const CONNECT_SRC_ENDPOINTS = [
   "https://horizon.stellar.org",
   "https://horizon-testnet.stellar.org",

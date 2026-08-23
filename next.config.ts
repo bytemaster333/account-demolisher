@@ -19,6 +19,11 @@ const config: NextConfig = {
   ...(isExport ? { output: "export" as const } : {}),
   reactStrictMode: true,
   poweredByHeader: false,
+  // pin the workspace root to this directory. a parent-level lockfile (the docs
+  // app / a monorepo checkout) would otherwise make Next infer the parent as the
+  // root and mis-resolve file tracing.
+  turbopack: { root: import.meta.dirname },
+  outputFileTracingRoot: import.meta.dirname,
   images: {
     // account demolisher does not load remote images; tight allow-list
     remotePatterns: [],
