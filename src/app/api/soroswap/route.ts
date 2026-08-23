@@ -195,14 +195,17 @@ const DEV_ALLOWED_ORIGINS = new Set<string>([
 ]);
 
 // same-origin / CSRF control for this unauthenticated proxy. The app's own
-// browser client is same-origin, so it's always allowed; a cross-origin site
-// trying to drive the user's browser into spending our Soroswap API quota is
-// rejected. A non-browser caller (no Origin header) is allowed but bounded by
-// the per-IP rate limit. A fully closed control would need request auth this
-// proxy intentionally does not have.
+// browser client is same-origin and posts to a relative URL, so browsers always
+// attach an Origin header on these requests; a cross-origin site trying to drive
+// the user's browser into spending our Soroswap API quota is rejected. A request
+// with no Origin at all (non-browser caller) is also rejected: the only
+// legitimate traffic is the browser client, which always sends one. A determined
+// non-browser attacker can still forge the header, but they're bounded by the
+// per-IP rate limit; a fully closed control would need request auth this proxy
+// intentionally does not have.
 function isAllowedOrigin(request: Request): boolean {
   const origin = request.headers.get("origin");
-  if (origin === null) return true;
+  if (origin === null) return false;
   let originHost: string;
   try {
     originHost = new URL(origin).host;
