@@ -271,6 +271,8 @@ const WALLETS: ReadonlyArray<Wallet> = [
   { initial: "R", name: "Rabet" },
   { initial: "L", name: "Lobstr" },
   { initial: "H", name: "Hana" },
+  { initial: "L", name: "Ledger" },
+  { initial: "W", name: "WalletConnect" },
 ];
 
 const FAQS: ReadonlyArray<Faq> = [
