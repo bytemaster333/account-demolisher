@@ -68,11 +68,34 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm audit --prod
 
-  # End-to-end + accessibility sweep against the built app with an injected fake
-  # wallet (no real signing). Kept as its own job because it installs a browser.
+  # Live-testnet integration suite: real round-trips against Horizon, Soroban RPC,
+  # and Friendbot (funds throwaway accounts and closes them for real). Kept as its
+  # own job because it depends on the public testnet being reachable.
+  integration:
+    name: integration (live testnet)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Integration tests
+        run: pnpm test:integration
+
+  # End-to-end + accessibility sweep against the built app. smoke/accessibility use
+  # no wallet; secret-key-close and walletconnect-close drive real testnet closes
+  # (a pasted key and a headless WalletConnect wallet). Own job: it installs a
+  # browser, and the WalletConnect spec self-skips unless the project id is set.
   e2e:
     name: e2e · accessibility
     runs-on: ubuntu-latest
+    env:
+      NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: ${{ secrets.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
