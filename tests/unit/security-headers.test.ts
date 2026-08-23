@@ -12,18 +12,27 @@ describe("security headers (next.config)", () => {
   it("emits the static hardening headers for every route", async () => {
     expect(typeof nextConfig.headers).toBe("function");
     const rules = await nextConfig.headers!();
-    expect(rules).toHaveLength(1);
 
-    const rule = rules[0]!;
-    expect(rule.source).toBe("/(.*)");
+    const global = rules.find((r) => r.source === "/(.*)")!;
+    expect(global).toBeDefined();
 
     const byKey: Record<string, string> = {};
-    for (const h of rule.headers) byKey[h.key] = String(h.value);
+    for (const h of global.headers) byKey[h.key] = String(h.value);
 
     expect(byKey["X-Frame-Options"]).toBe("DENY");
     expect(byKey["X-Content-Type-Options"]).toBe("nosniff");
     expect(byKey["Referrer-Policy"]).toBe("no-referrer");
     expect(byKey["Permissions-Policy"]).toBeDefined();
+  });
+
+  it("serves the well-known stellar.toml CORS-readable as TOML", async () => {
+    const rules = await nextConfig.headers!();
+    const wellKnown = rules.find((r) => r.source === "/.well-known/stellar.toml")!;
+    expect(wellKnown).toBeDefined();
+    const byKey: Record<string, string> = {};
+    for (const h of wellKnown.headers) byKey[h.key] = String(h.value);
+    expect(byKey["Access-Control-Allow-Origin"]).toBe("*");
+    expect(byKey["Content-Type"]).toMatch(/text\/plain/);
   });
 });
 
