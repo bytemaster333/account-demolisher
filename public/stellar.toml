@@ -11,15 +11,15 @@
 # rewrite (a `next.config.ts` `rewrites()` entry, or an equivalent rule at the
 # reverse proxy) so that both paths resolve here.
 #
-# Embedders that self-host (CEXes, wallets) MUST replace every placeholder
-# below with their own operator details and SIGNING_KEY, then re-sign the
-# release artifact. The placeholder values are NOT valid for production traffic.
+# The values below are the reference deployment's real operator details.
+# Embedders that self-host (CEXes, wallets) MUST replace them with their own
+# operator details and canonical URL for their domain.
 
 # ---------------------------------------------------------------------------
 # General information
 # ---------------------------------------------------------------------------
 
-VERSION = "0.0.0"
+VERSION = "1.0.0"
 NETWORK_PASSPHRASE = "Public Global Stellar Network ; September 2015"
 
 # The canonical URL that this TOML attests to. The reference deployment is
@@ -42,8 +42,8 @@ FxDAO). The reference deployment is operated by the Account Demolisher
 project maintainers. Embedders (wallets, exchanges) may self-host with their
 own per-deployment mediator key.
 """
-ORG_OFFICIAL_EMAIL = "demolisher@demolisher.app"
-ORG_SUPPORT_EMAIL = "demolisher-support@demolisher.app"
+ORG_OFFICIAL_EMAIL = "salihtorunr@gmail.com"
+ORG_SUPPORT_EMAIL = "salihtorunr@gmail.com"
 ORG_GITHUB = "bytemaster333/account-demolisher"
 ORG_KEYBASE = ""
 ORG_TWITTER = ""
@@ -54,8 +54,8 @@ ORG_LICENSING_AUTHORITY = "n/a — Apache-2.0 open source software"
 # ---------------------------------------------------------------------------
 
 [[PRINCIPALS]]
-name = "Reference Deployment Operator"
-email = "demolisher@demolisher.app"
+name = "Salih Toruner"
+email = "salihtorunr@gmail.com"
 keybase = ""
 twitter = ""
 github = "bytemaster333"
