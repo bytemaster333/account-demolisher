@@ -2,6 +2,7 @@
 // Returns { id } (the transaction hash). No secret material is accepted or stored.
 
 import { createLimiter, getRemoteIp } from "@/server/rate-limit";
+import { readJsonCapped, MAX_JSON_BODY_BYTES, BodyTooLargeError } from "@/server/read-body";
 import { createPlan } from "@/server/signing-relay";
 
 // node runtime: stellar-sdk decoding + Horizon lookup aren't edge-compatible
@@ -25,7 +26,7 @@ export async function POST(request: Request): Promise<Response> {
   let network: string;
   let xdr: string;
   try {
-    const raw = (await request.json()) as unknown;
+    const raw = (await readJsonCapped(request, MAX_JSON_BODY_BYTES)) as unknown;
     if (typeof raw !== "object" || raw === null)
       return json({ ok: false, reason: "Bad body." }, 400);
     const rec = raw as Record<string, unknown>;
@@ -34,7 +35,8 @@ export async function POST(request: Request): Promise<Response> {
     }
     network = rec.network;
     xdr = rec.xdr;
-  } catch {
+  } catch (e) {
+    if (e instanceof BodyTooLargeError) return json({ ok: false, reason: "Body too large." }, 413);
     return json({ ok: false, reason: "Body is not valid JSON." }, 400);
   }
 

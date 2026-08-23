@@ -5,6 +5,7 @@ import { Agent, fetch as undiciFetch } from "undici";
 
 import { getServerEnv, requireServerEnv } from "@/server/server-env";
 import { createLimiter, getRemoteIp } from "@/server/rate-limit";
+import { readJsonCapped, MAX_JSON_BODY_BYTES, BodyTooLargeError } from "@/server/read-body";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -236,8 +237,11 @@ export async function POST(request: Request): Promise<Response> {
 
   let parsed: unknown;
   try {
-    parsed = await request.json();
-  } catch {
+    parsed = await readJsonCapped(request, MAX_JSON_BODY_BYTES);
+  } catch (e) {
+    if (e instanceof BodyTooLargeError) {
+      return jsonResponse({ ok: false, code: "BAD_REQUEST", reason: "Request body too large." }, 413);
+    }
     return jsonResponse(
       { ok: false, code: "BAD_REQUEST", reason: "Request body is not valid JSON." },
       400,

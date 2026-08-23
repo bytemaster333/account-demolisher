@@ -7,6 +7,7 @@ import { resolveNetwork } from "@/lib/config/networks";
 import { validateMediatorForwardEnvelope } from "@/lib/mediator/validator";
 import { resolveMediatorFlow, startMediatorFlow } from "@/server/mediator-secret";
 import { createLimiter, getRemoteIp } from "@/server/rate-limit";
+import { readJsonCapped, MAX_JSON_BODY_BYTES, BodyTooLargeError } from "@/server/read-body";
 
 // node runtime: the flow-key derivation (node:crypto) and the validator pull in
 // stellar-sdk / node crypto, which aren't edge-compatible
@@ -98,7 +99,7 @@ export async function POST(request: Request): Promise<Response> {
   let flowToken: string;
   let networkId: string | undefined;
   try {
-    const raw = (await request.json()) as unknown;
+    const raw = (await readJsonCapped(request, MAX_JSON_BODY_BYTES)) as unknown;
     if (typeof raw !== "object" || raw === null) {
       return badRequest("Request body must be a JSON object.", cors);
     }
@@ -123,7 +124,8 @@ export async function POST(request: Request): Promise<Response> {
     }
     envelopeXdr = rec.envelopeXdr;
     flowToken = rec.flowToken;
-  } catch {
+  } catch (e) {
+    if (e instanceof BodyTooLargeError) return badRequest("Request body is too large.", cors);
     return badRequest("Request body is not valid JSON.", cors);
   }
 

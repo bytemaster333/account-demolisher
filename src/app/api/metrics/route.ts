@@ -8,6 +8,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 
 import { createLimiter, getRemoteIp } from "@/server/rate-limit";
+import { readTextCapped, BodyTooLargeError } from "@/server/read-body";
 import { getMetricsStore } from "@/server/metrics-store";
 import { verifyCloseTx } from "@/server/close-verify";
 import { metricEventSchema } from "@/lib/metrics/events";
@@ -33,8 +34,13 @@ export async function POST(request: Request): Promise<Response> {
     return json({ ok: false, code: "RATE_LIMITED" }, 429);
   }
 
-  const raw = await request.text();
-  if (raw.length > MAX_BODY_BYTES) return json({ ok: false, reason: "Body too large." }, 413);
+  let raw: string;
+  try {
+    raw = await readTextCapped(request, MAX_BODY_BYTES);
+  } catch (e) {
+    if (e instanceof BodyTooLargeError) return json({ ok: false, reason: "Body too large." }, 413);
+    return json({ ok: false, reason: "Could not read the request body." }, 400);
+  }
 
   let parsedJson: unknown;
   try {
