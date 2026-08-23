@@ -24,8 +24,11 @@ function readStoredTheme(): Theme {
     // white-screen the whole app. Default to "dark" instead.
     const stored = window.localStorage.getItem(STORAGE_KEY);
     if (stored === "dark" || stored === "light") return stored;
+    // no explicit choice yet: honor the OS preference (matches the pre-hydration
+    // inline script in layout.tsx, so there is no theme flash on first paint)
+    if (window.matchMedia?.("(prefers-color-scheme: light)").matches) return "light";
   } catch {
-    // storage unavailable; fall through to the default
+    // storage/matchMedia unavailable; fall through to the default
   }
   return "dark";
 }

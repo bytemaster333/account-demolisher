@@ -35,6 +35,16 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="en" suppressHydrationWarning className={`${geist.variable} ${geistMono.variable}`}>
       <body>
+        {/* set data-theme before first paint so a returning light-mode user (or a
+            light-OS visitor) never flashes the dark default. Mirrors readStoredTheme. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "try{var t=localStorage.getItem('demolisher.theme');" +
+              "if(t!=='dark'&&t!=='light'){t=window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';}" +
+              "document.documentElement.dataset.theme=t;}catch(e){document.documentElement.dataset.theme='dark';}",
+          }}
+        />
         <ThemeProvider>{children}</ThemeProvider>
       </body>
     </html>
