@@ -382,6 +382,25 @@ describe("executePlanTreeOnChain, merge fee/reprice retry", () => {
     expect(fees[1]).toBe(fees[0]);
   });
 
+  it("does NOT retry a deleted-issuer disposal (op_no_issuer is terminal), fails fast", async () => {
+    // adversarial corpus: the account holds a credit whose issuer account was
+    // deleted, so returning it to its issuer fails with op_no_issuer. This is
+    // deterministic (retrying can never succeed), so it must NOT be classified as
+    // recoverable: submit exactly once and surface the error, never loop or strand.
+    const deps = makeDeps();
+    (deps.submitClassic as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('submitClassic rejected: {"operations":["op_no_issuer"]}'),
+    );
+
+    const { tree } = makeFinalClassicTree();
+    const promise = executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
+    const settled = expect(promise).rejects.toThrow(/op_no_issuer/);
+    await vi.runAllTimersAsync();
+    await settled;
+    expect(deps.submitClassic).toHaveBeenCalledTimes(1);
+    expect(auditAccount).toHaveBeenCalledTimes(1);
+  });
+
   it("recovers from a stale sequence (tx_bad_seq): re-audits, rebuilds in-sequence, succeeds", async () => {
     const deps = makeDeps();
     // the account's sequence advanced between build and submit; the retry reloads
