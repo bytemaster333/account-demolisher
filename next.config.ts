@@ -4,9 +4,14 @@ import type { NextConfig } from "next";
 const isExport = process.env.OUTPUT === "export";
 const isDev = process.env.NODE_ENV !== "production";
 
-// NOTE: the Content-Security-Policy is set per-request in `src/middleware.ts` so
-// it can carry a fresh nonce (strict script-src, no 'unsafe-inline'). The static
-// security headers below apply to every response.
+// NOTE: the Content-Security-Policy is set per-request in `src/middleware.ts`
+// (source of truth: src/lib/config/csp.ts). script-src is 'self' + 'unsafe-inline'
+// rather than a per-request nonce: Next's inline hydration scripts are not
+// nonce-stamped here, and a nonce would also force every page out of static
+// prerendering (undesirable for CDN serving). The policy loads NO third-party
+// script origin and locks default-src/object-src/frame-ancestors/base-uri, so the
+// residual risk of 'unsafe-inline' is bounded. The static headers below apply to
+// every response.
 
 const config: NextConfig = {
   // only set `output` for the static-export build; omitting it entirely (rather
@@ -17,6 +22,12 @@ const config: NextConfig = {
   images: {
     // account demolisher does not load remote images; tight allow-list
     remotePatterns: [],
+  },
+  // serve the SEP-1 stellar.toml at its canonical well-known path. rewrites do not
+  // run under static export, where the host must map the path itself.
+  async rewrites() {
+    if (isExport) return [];
+    return [{ source: "/.well-known/stellar.toml", destination: "/stellar.toml" }];
   },
   async headers() {
     if (isExport) {
@@ -46,6 +57,14 @@ const config: NextConfig = {
                   value: "max-age=63072000; includeSubDomains; preload",
                 },
               ]),
+        ],
+      },
+      {
+        // SEP-1 requires the stellar.toml to be CORS-readable and served as TOML
+        source: "/.well-known/stellar.toml",
+        headers: [
+          { key: "Access-Control-Allow-Origin", value: "*" },
+          { key: "Content-Type", value: "text/plain; charset=utf-8" },
         ],
       },
     ];

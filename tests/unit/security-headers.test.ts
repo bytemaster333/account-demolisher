@@ -4,8 +4,10 @@ import nextConfig from "../../next.config";
 import { buildContentSecurityPolicy } from "@/lib/config/csp";
 
 // Locks in that next.config emits the static hardening headers, and that the
-// per-request CSP (built in the middleware) is strict: nonce-gated scripts with
-// no 'unsafe-inline', both networks allow-listed.
+// per-request CSP (built in the middleware) is locked down: no third-party script
+// origins, no 'unsafe-eval' in prod, object-src/frame-ancestors/base-uri closed,
+// both networks allow-listed. script-src carries 'unsafe-inline' by design (Next
+// inline hydration is not nonce-stamped here); these tests assert that posture.
 describe("security headers (next.config)", () => {
   it("emits the static hardening headers for every route", async () => {
     expect(typeof nextConfig.headers).toBe("function");
