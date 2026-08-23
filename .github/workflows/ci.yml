@@ -48,14 +48,14 @@ jobs:
       - name: Production build
         run: pnpm build
 
-  # Dependency advisories are reported but do not fail the build: the current
-  # criticals/highs are transitive (stellar-wallets-kit → @trezor/connect chain)
-  # and not yet fixable from here. Surfaced so a newly-introduced,
-  # directly-fixable advisory is visible in the run log.
+  # Dependency audit gated as a release blocker: any high or critical advisory in
+  # the production tree fails the build. Deep-transitive low/moderate advisories
+  # that are not reachable in this app are justified and pinned in
+  # package.json > pnpm.auditConfig.ignoreGhsas; fixable ones are patched via
+  # pnpm.overrides. A newly-introduced high/critical will fail here.
   audit:
-    name: dependency audit (informational)
+    name: dependency audit (high/critical gate)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -66,7 +66,7 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm audit --prod
+      - run: pnpm audit --prod --audit-level high
 
   # Live-testnet integration suite: real round-trips against Horizon, Soroban RPC,
   # and Friendbot (funds throwaway accounts and closes them for real). Kept as its
