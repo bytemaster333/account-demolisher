@@ -586,11 +586,21 @@ export async function executePlanTreeOnChain(
 
     // Pre-sign allow-list gate (defense-in-depth on top of each adapter's own
     // build-time check): every remaining DeFi-protocol node must invoke only
-    // allow-listed contracts.
-    const receipt = await signAndSubmitSorobanNode(node, input.publicKey, deps, {
-      allowlist: true,
-      onSigned: () => notify(node),
-    });
+    // allow-listed contracts. A failure here IS fatal (it blocks the merge via the
+    // cascade-skip), so mark the node failed with its error before propagating,
+    // instead of leaving it stuck at the "signed" status with no reason shown.
+    let receipt: ConfirmationReceipt;
+    try {
+      receipt = await signAndSubmitSorobanNode(node, input.publicKey, deps, {
+        allowlist: true,
+        onSigned: () => notify(node),
+      });
+    } catch (err) {
+      node.status = "failed";
+      node.error = err instanceof Error ? err.message : String(err);
+      notify(node);
+      throw err;
+    }
 
     node.status = "confirmed";
     node.executed = { txHash: receipt.txHash, ledger: receipt.ledger };
