@@ -50,21 +50,25 @@ const FXDAO_ALLOWLIST_ENTRIES: readonly AllowedContract[] = FXDAO_MAINNET_CONTRA
   }),
 );
 
+// soroswap mainnet router + factory, from the protocol's own published
+// deployment file (re-verified against upstream 2026-08-23)
+const SOROSWAP_MAINNET_SOURCE = "github.com/soroswap/core@main/public/mainnet.contracts.json";
+
 export const MAINNET_ALLOWLIST: readonly AllowedContract[] = [
   // soroswap (github.com/soroswap/core)
   {
     id: "CAG5LRYQ5JVEUI5TEID72EYOVX44TTUJT5BQR2J6J77FH65PCCFAJDDH",
     name: "SoroswapRouter",
     protocol: "soroswap",
-    verified_at: "2026-05-15",
-    source: "research-tech-research.md §5c",
+    verified_at: "2026-08-23",
+    source: SOROSWAP_MAINNET_SOURCE,
   },
   {
     id: "CA4HEQTL2WPEUYKYKCDOHCDNIV4QHNJ7EL4J4NQ6VADP7SYHVRYZ7AW2",
     name: "SoroswapFactory",
     protocol: "soroswap",
-    verified_at: "2026-05-15",
-    source: "research-tech-research.md §5c",
+    verified_at: "2026-08-23",
+    source: SOROSWAP_MAINNET_SOURCE,
   },
   // blend (github.com/blend-capital/blend-utils)
   ...BLEND_ALLOWLIST_ENTRIES,
@@ -73,8 +77,9 @@ export const MAINNET_ALLOWLIST: readonly AllowedContract[] = [
     id: "CBQDHNBFBZYE4MKPWBSJOPIYLW4SFSXAXUTSXJN76GNKYVYPCKWC6QUK",
     name: "AquariusAmmRouter",
     protocol: "aquarius",
-    verified_at: "2026-05-15",
-    source: "research-tech-research.md §5b",
+    verified_at: "2026-08-23",
+    source:
+      "docs.aqua.network/developers/code-examples/prerequisites-and-basics (mainnet AMM contract id); cross-confirmed against AquaToken/soroban-amm liquidity_pool_router",
   },
   // fxdao (www.fxdao.io/docs/addresses/)
   ...FXDAO_ALLOWLIST_ENTRIES,
