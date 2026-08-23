@@ -240,7 +240,10 @@ export async function POST(request: Request): Promise<Response> {
     parsed = await readJsonCapped(request, MAX_JSON_BODY_BYTES);
   } catch (e) {
     if (e instanceof BodyTooLargeError) {
-      return jsonResponse({ ok: false, code: "BAD_REQUEST", reason: "Request body too large." }, 413);
+      return jsonResponse(
+        { ok: false, code: "BAD_REQUEST", reason: "Request body too large." },
+        413,
+      );
     }
     return jsonResponse(
       { ok: false, code: "BAD_REQUEST", reason: "Request body is not valid JSON." },
