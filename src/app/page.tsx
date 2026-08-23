@@ -240,7 +240,7 @@ const SECURITY: ReadonlyArray<SecurityRow> = [
   {
     num: "02",
     title: "Every contract is on a hardcoded allow-list",
-    body: "Only known Blend, Aquarius, Soroswap, and FxDAO contracts are ever invoked, re-verified before each signature.",
+    body: "No unknown DeFi contract is ever invoked: only the hardcoded Blend, Aquarius, Soroswap, and FxDAO allow-list, re-verified before each signature.",
     icon: "M9 11l3 3L22 4",
   },
   {
@@ -1688,7 +1688,8 @@ export default function HomePage(): React.JSX.Element {
                 }}
               >
                 A tool that drains accounts is a target by definition. These guarantees are enforced
-                in code, not policy.
+                in code, not policy. It has not yet completed an independent security audit, so treat
+                mainnet use accordingly.
               </p>
             </div>
 
@@ -1871,8 +1872,8 @@ export default function HomePage(): React.JSX.Element {
                   color: "var(--fg-2)",
                 }}
               >
-                Full Soroban parity with classic assets, every integration on a hardcoded
-                allow-list.
+                Soroban DeFi positions unwound alongside classic assets, every integration on a
+                hardcoded allow-list.
               </p>
             </div>
 
