@@ -46,6 +46,18 @@ jobs:
           pnpm test
 
       - name: Production build
+        # NEXT_PUBLIC_* are inlined at build time, so the released artifact bakes
+        # in this config. Repo variables override; the fallbacks are the reference
+        # deployment's public values (testnet default, mainnet reachable via the
+        # in-app switch behind the unaudited-audit notice). The WalletConnect
+        # projectId is a public client identifier, not a secret. Set the prod
+        # domain and any secret env (MEDIATOR_SECRET, SOROSWAP_API_KEY, ...) on the
+        # deployment host at runtime, not here.
+        env:
+          NEXT_PUBLIC_STELLAR_NETWORK: ${{ vars.NEXT_PUBLIC_STELLAR_NETWORK || 'testnet' }}
+          NEXT_PUBLIC_DEPLOYMENT_MODE: ${{ vars.NEXT_PUBLIC_DEPLOYMENT_MODE || 'reference' }}
+          NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: ${{ vars.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || '5e8254e53e856a4b90f676c51efea4d4' }}
+          NEXT_PUBLIC_SITE_URL: ${{ vars.NEXT_PUBLIC_SITE_URL || 'https://demolisher.app' }}
         run: pnpm build
 
       - name: Resolve artifact name
