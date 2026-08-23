@@ -47,6 +47,8 @@ export function TypedConfirmation({
   const destTail = destination.length > 0 ? destination.slice(-4) : "";
 
   const [typed, setTyped] = useState("");
+  const [submitted, setSubmitted] = useState(false);
+  const submittedRef = useRef(false);
   // elapsed ms since mount, capped at delayMs. used both for the bar fill and the unlock gate
   const [elapsedMs, setElapsedMs] = useState(delayMs <= 0 ? delayMs : 0);
 
@@ -112,7 +114,17 @@ export function TypedConfirmation({
 
   const delayElapsed = elapsedMs >= delayMs;
   const matches = typed === required && required.length > 0;
-  const canConfirm = matches && delayElapsed;
+  const canConfirm = matches && delayElapsed && !submitted;
+
+  // single-fire guard: this confirms an IRREVERSIBLE merge, so a fast double-click
+  // or a held Enter must never dispatch onConfirm twice. The ref is checked/set
+  // synchronously (a state update wouldn't have re-rendered yet within one tick).
+  const confirm = (): void => {
+    if (submittedRef.current || !matches || !delayElapsed) return;
+    submittedRef.current = true;
+    setSubmitted(true);
+    onConfirm(typed);
+  };
   // only flag a mismatch once the user has typed the full 4 characters
   const showMismatch = typed.length === 4 && !matches;
   const timerPct = delayMs > 0 ? Math.min(100, (elapsedMs / delayMs) * 100) : 100;
@@ -261,7 +273,7 @@ export function TypedConfirmation({
           value={typed}
           onChange={(e) => setTyped(e.currentTarget.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && canConfirm) onConfirm(typed);
+            if (e.key === "Enter") confirm();
           }}
           maxLength={4}
           spellCheck={false}
@@ -350,7 +362,7 @@ export function TypedConfirmation({
         ) : (
           <button
             type="button"
-            onClick={() => onConfirm(typed)}
+            onClick={confirm}
             disabled={!canConfirm}
             aria-disabled={!canConfirm}
             data-testid="typed-confirmation-confirm"
