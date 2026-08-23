@@ -1,7 +1,7 @@
 // the in-house connector abstraction: the only signing surface anything
 import type { FeeBumpTransaction, Transaction } from "@stellar/stellar-sdk";
 
-import { getKit, type KitHandle } from "@/lib/wallet/kit";
+import { ensureWalletConnectReady, getKit, type KitHandle } from "@/lib/wallet/kit";
 import type { NetworkConfig } from "@/lib/config/networks";
 
 export type ConnectorKind = "kit" | "secret";
@@ -36,6 +36,9 @@ export class WalletKitConnector implements Connector {
 
   // opens the kit's authModal, returns the picked wallet's public key
   async connect(): Promise<{ publicKey: string }> {
+    // make sure a configured WalletConnect has finished its relay handshake so it
+    // renders as connectable in the picker (see ensureWalletConnectReady)
+    await ensureWalletConnectReady();
     const { address } = await this.kit.authModal();
     this.cachedAddress = address;
     return { publicKey: address };

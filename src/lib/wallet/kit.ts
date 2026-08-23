@@ -113,6 +113,28 @@ function buildModules(network: NetworkConfig) {
   return modules;
 }
 
+// WalletConnect's isAvailable() only flips true once its SignClient.init round
+// trip to the relay resolves. The kit samples availability when the picker
+// renders and never re-renders, so opening the picker before init finishes lists
+// WC as unavailable, and the kit then treats a click as "not installed" and opens
+// walletconnect.com instead of the QR. Await readiness (bounded) before opening
+// the picker so a configured WalletConnect is actually connectable. No-op when WC
+// isn't configured or is already ready; falls through on timeout (WC just shows
+// as needing install, the pre-existing degraded state, never a hang).
+export async function ensureWalletConnectReady(timeoutMs = 2500): Promise<void> {
+  const wc = wcModule;
+  if (!wc) return;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      if (await wc.isAvailable()) return;
+    } catch {
+      // isAvailable shouldn't throw; never let readiness polling break connect
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 // tracks the passphrase the kit was last initialized for, so we can switch
 // networks but skip the init when it already matches
 let initializedPassphrase: string | null = null;
