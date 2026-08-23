@@ -38,13 +38,20 @@ export function PendingForwardBanner({
   const onResume = async (): Promise<void> => {
     setResuming(true);
     setError(null);
-    const result = await resumePendingForward(pending);
-    if (result.ok) {
-      setPending(null);
-    } else {
-      setError(result.error);
+    try {
+      const result = await resumePendingForward(pending);
+      if (result.ok) {
+        setPending(null);
+      } else {
+        setError(result.error);
+      }
+    } catch (err) {
+      // resumePendingForward can throw (tx build / network) outside its own try;
+      // surface it instead of leaving the button stuck on "Resuming…" forever.
+      setError(err instanceof Error ? err.message : "Could not resume the forward. Try again.");
+    } finally {
+      setResuming(false);
     }
-    setResuming(false);
   };
 
   return (
