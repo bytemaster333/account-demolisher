@@ -5,7 +5,10 @@
 # Public config (NEXT_PUBLIC_*) is build-time; defaults to testnet. Server-only
 # secrets (MEDIATOR_SECRET, SOROSWAP_API_KEY) are supplied at runtime.
 
-FROM node:22-slim AS base
+# base image pinned by digest (multi-arch index for node:22-slim, resolved
+# 2026-08-23) so the build is reproducible and the base can't drift under the tag.
+# Update the digest deliberately when bumping the base.
+FROM node:22-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS base
 ENV PNPM_HOME="/pnpm" PATH="/pnpm:$PATH"
 RUN corepack enable
 
