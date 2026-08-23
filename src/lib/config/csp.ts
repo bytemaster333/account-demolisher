@@ -22,6 +22,43 @@ export const CONNECT_SRC_ENDPOINTS = [
   "https://friendbot-futurenet.stellar.org",
 ] as const;
 
+// WalletConnect / Reown AppKit hosts. Reached only when a user picks the
+// WalletConnect wallet (the relay carries the encrypted session, the api/rpc
+// hosts back the modal). Listed unconditionally alongside the RPC endpoints:
+// they are contacted only if WC actually runs, and one deployment serves every
+// network + wallet. https AND wss variants of the relay are both required.
+const WALLETCONNECT_CONNECT_SRC = [
+  "https://relay.walletconnect.com",
+  "https://relay.walletconnect.org",
+  "wss://relay.walletconnect.com",
+  "wss://relay.walletconnect.org",
+  "https://rpc.walletconnect.com",
+  "https://rpc.walletconnect.org",
+  "https://pulse.walletconnect.com",
+  "https://pulse.walletconnect.org",
+  "https://api.web3modal.com",
+  "https://api.web3modal.org",
+  "https://explorer-api.walletconnect.com",
+] as const;
+
+// the AppKit "verify" security iframe origins
+const WALLETCONNECT_FRAME_SRC = [
+  "https://verify.walletconnect.com",
+  "https://verify.walletconnect.org",
+  "https://secure.walletconnect.com",
+  "https://secure.walletconnect.org",
+] as const;
+
+// wallet logos in the picker + the AppKit modal. stellar.creit.tech serves the
+// kit's own wallet-icon set (every module, WalletConnect and Ledger included).
+const WALLETCONNECT_IMG_SRC = [
+  "https://api.web3modal.com",
+  "https://api.web3modal.org",
+  "https://explorer-api.walletconnect.com",
+  "https://imagedelivery.net",
+  "https://stellar.creit.tech",
+] as const;
+
 export interface CspOptions {
   readonly isDev: boolean;
 }
@@ -37,11 +74,12 @@ export interface CspOptions {
 export function buildContentSecurityPolicy({ isDev }: CspOptions): string {
   return [
     "default-src 'self'",
-    `connect-src 'self' ${isDev ? "ws: wss: " : ""}${CONNECT_SRC_ENDPOINTS.join(" ")}`,
+    `connect-src 'self' ${isDev ? "ws: wss: " : ""}${CONNECT_SRC_ENDPOINTS.join(" ")} ${WALLETCONNECT_CONNECT_SRC.join(" ")}`,
     `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'${isDev ? " 'unsafe-eval'" : ""}`,
     "style-src 'self' 'unsafe-inline'",
-    `img-src 'self' data:${isDev ? " blob:" : ""}`,
+    `img-src 'self' data:${isDev ? " blob:" : ""} ${WALLETCONNECT_IMG_SRC.join(" ")}`,
     `font-src 'self'${isDev ? " data:" : ""}`,
+    `frame-src 'self' ${WALLETCONNECT_FRAME_SRC.join(" ")}`,
     "object-src 'none'",
     "frame-ancestors 'none'",
     "base-uri 'self'",
