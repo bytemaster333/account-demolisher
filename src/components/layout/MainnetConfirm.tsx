@@ -6,7 +6,7 @@
 // the destructive-action dialog language used by TypedConfirmation (same
 // overlay, panel, danger CTA, Escape/backdrop cancel, focus trap).
 
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 export interface MainnetConfirmProps {
   readonly onConfirm: () => void;
@@ -16,13 +16,19 @@ export interface MainnetConfirmProps {
 export function MainnetConfirm({ onConfirm, onCancel }: MainnetConfirmProps): React.JSX.Element {
   const titleId = useId();
   const bodyId = useId();
+  const auditId = useId();
   const panelRef = useRef<HTMLDivElement | null>(null);
-  const confirmRef = useRef<HTMLButtonElement | null>(null);
+  const ackRef = useRef<HTMLInputElement | null>(null);
 
-  // focus the primary action on open; restore focus to the switcher on close
+  // mainnet is gated behind acknowledging that the tool has not been through an
+  // independent security audit yet; the confirm CTA stays disabled until ticked
+  const [auditAcknowledged, setAuditAcknowledged] = useState(false);
+
+  // focus the acknowledgement on open (the confirm CTA starts disabled); restore
+  // focus to the switcher on close
   useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null;
-    confirmRef.current?.focus();
+    ackRef.current?.focus();
     return () => {
       if (previouslyFocused && typeof previouslyFocused.focus === "function") {
         previouslyFocused.focus();
@@ -158,12 +164,45 @@ export function MainnetConfirm({ onConfirm, onCancel }: MainnetConfirmProps): Re
         </p>
         <p
           id={bodyId}
-          style={{ margin: "0 0 22px", fontSize: 13.5, lineHeight: 1.6, color: "var(--fg-2)" }}
+          style={{ margin: "0 0 16px", fontSize: 13.5, lineHeight: 1.6, color: "var(--fg-2)" }}
         >
           Account Demolisher closes accounts by merging them away. A mainnet merge cannot be undone,
-          reversed, or recovered by anyone — including us. Only continue if you mean to operate on
+          reversed, or recovered by anyone (including us). Only continue if you mean to operate on
           real balances.
         </p>
+
+        <label
+          htmlFor={auditId}
+          data-testid="mainnet-audit-notice"
+          style={{
+            display: "flex",
+            gap: 10,
+            alignItems: "flex-start",
+            margin: "0 0 22px",
+            padding: "12px 13px",
+            borderRadius: 12,
+            background: "var(--danger-soft)",
+            border: "1px solid color-mix(in srgb, var(--danger) 30%, transparent)",
+            cursor: "pointer",
+          }}
+        >
+          <input
+            ref={ackRef}
+            id={auditId}
+            type="checkbox"
+            checked={auditAcknowledged}
+            onChange={(e) => setAuditAcknowledged(e.target.checked)}
+            data-testid="mainnet-audit-ack"
+            style={{ marginTop: 2, width: 16, height: 16, flexShrink: 0, accentColor: "var(--danger)" }}
+          />
+          <span style={{ fontSize: 12.5, lineHeight: 1.55, color: "var(--fg-2)" }}>
+            <span style={{ color: "var(--fg)", fontWeight: 600 }}>
+              This tool has not completed an independent security audit.
+            </span>{" "}
+            A third-party review is pending. Using it on mainnet is at your own risk. I understand and
+            want to continue.
+          </span>
+        </label>
 
         <div style={{ display: "flex", gap: 10 }}>
           <button
@@ -185,9 +224,10 @@ export function MainnetConfirm({ onConfirm, onCancel }: MainnetConfirmProps): Re
             Stay on Testnet
           </button>
           <button
-            ref={confirmRef}
             type="button"
             onClick={onConfirm}
+            disabled={!auditAcknowledged}
+            aria-disabled={!auditAcknowledged}
             data-testid="mainnet-confirm-confirm"
             style={{
               flex: 1,
@@ -202,7 +242,8 @@ export function MainnetConfirm({ onConfirm, onCancel }: MainnetConfirmProps): Re
               color: "var(--danger)",
               fontWeight: 600,
               fontSize: 14,
-              cursor: "pointer",
+              cursor: auditAcknowledged ? "pointer" : "not-allowed",
+              opacity: auditAcknowledged ? 1 : 0.5,
             }}
           >
             <span

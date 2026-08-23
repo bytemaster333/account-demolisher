@@ -18,13 +18,29 @@ describe("MainnetConfirm", () => {
     );
   });
 
-  it("confirming calls onConfirm and never onCancel", () => {
+  it("confirming (after acknowledging the audit notice) calls onConfirm and never onCancel", () => {
     const onConfirm = vi.fn();
     const onCancel = vi.fn();
     render(<MainnetConfirm onConfirm={onConfirm} onCancel={onCancel} />);
+    // the confirm CTA is gated behind the unaudited-status acknowledgement
+    fireEvent.click(screen.getByTestId("mainnet-audit-ack"));
     fireEvent.click(screen.getByTestId("mainnet-confirm-confirm"));
     expect(onConfirm).toHaveBeenCalledTimes(1);
     expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it("gates the confirm CTA on acknowledging the unaudited-status notice", () => {
+    const onConfirm = vi.fn();
+    render(<MainnetConfirm onConfirm={onConfirm} onCancel={() => {}} />);
+    const confirm = screen.getByTestId("mainnet-confirm-confirm") as HTMLButtonElement;
+    // notice is present and the CTA is disabled until it is acknowledged
+    expect(screen.getByTestId("mainnet-audit-notice")).toBeTruthy();
+    expect(confirm.disabled).toBe(true);
+    fireEvent.click(confirm);
+    expect(onConfirm).not.toHaveBeenCalled();
+    // ticking the acknowledgement enables it
+    fireEvent.click(screen.getByTestId("mainnet-audit-ack"));
+    expect(confirm.disabled).toBe(false);
   });
 
   it('"Stay on Testnet" calls onCancel and never onConfirm', () => {
