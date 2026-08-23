@@ -197,6 +197,16 @@ export default function SignPage(): React.JSX.Element {
       try {
         const tx = TransactionBuilder.fromXDR(xdr, network.passphrase) as Transaction;
         const { signedXdr, signerPublicKey } = await sign(tx);
+        // Reject a signature from a key that is NOT a signer on this account BEFORE
+        // posting it to the relay. Submitting a non-signer signature pollutes the
+        // plan and would otherwise flip the UI to "signed here" (unmounting the sign
+        // form) with no way to sign with the correct key.
+        if (facts !== null && !facts.signerKeys.includes(signerPublicKey)) {
+          setSignError(
+            `That key (${signerPublicKey.slice(0, 6)}…${signerPublicKey.slice(-4)}) is not a signer on this account. Nothing was submitted; connect a signer key and try again.`,
+          );
+          return;
+        }
         const merged = await submitSignature(planId, signedXdr);
         setXdr(merged.xdr);
         setLastSigner(signerPublicKey);
@@ -207,7 +217,7 @@ export default function SignPage(): React.JSX.Element {
         setSigning(false);
       }
     },
-    [network, xdr, planId],
+    [network, xdr, planId, facts],
   );
 
   const signWithWallet = useCallback(() => {
