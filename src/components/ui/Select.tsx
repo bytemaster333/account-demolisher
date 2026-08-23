@@ -61,7 +61,11 @@ export function Select({
     if (items === undefined || items.length === 0) return;
     const selectedIdx = options.findIndex((o) => o.value === value);
     items[selectedIdx >= 0 ? selectedIdx : 0]?.focus();
-  }, [open, options, value]);
+    // only when the menu OPENS: `options` is often a fresh array literal each parent
+    // render, and including it here would yank focus back mid-navigation on any
+    // re-render while the menu is open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   // roving focus within the open listbox: Up/Down move between options, Home/End
   // jump to the ends. Enter/Space activate via the option's native button.
@@ -169,6 +173,10 @@ export function Select({
                 onClick={() => {
                   onChange(o.value);
                   setOpen(false);
+                  // return focus to the trigger (not <body>) so keyboard users stay
+                  // oriented and a dialog opened by onChange captures the trigger as
+                  // its focus-restore target
+                  triggerRef.current?.focus();
                 }}
                 data-value={o.value}
                 onMouseEnter={() => setHovered(o.value)}
