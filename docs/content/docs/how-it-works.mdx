@@ -25,7 +25,7 @@ The audit computes a feasibility verdict. Two cases are hard stops:
 
 Both are shown with explicit reasons, not silent failures. There is one nuance worth knowing: if the only sponsored entries are self-sponsored claimable balances the account itself can claim, the closure proceeds, because those balances are claimed during the close and the sponsorship count drops to zero before the merge.
 
-The hard stops are not the only thing the preview surfaces. When discovery cannot see everything, the preview says so instead of proceeding as if the account were fully understood: an allowance scan that only reaches back through the RPC retention window, a DeFi probe that failed for one protocol ("we couldn't check your Blend positions right now"), or the Blend borrow shortfall noted above. A partial plan is shown as partial.
+The hard stops are not the only thing the preview surfaces. When discovery cannot see everything, the preview says so instead of proceeding as if the account were fully understood: an allowance scan that only reaches back through the RPC retention window, a DeFi probe that failed for one protocol (the preview tells you it could not check your Blend positions), or the Blend borrow shortfall noted above. A partial plan is shown as partial.
 
 ## Build the plan
 

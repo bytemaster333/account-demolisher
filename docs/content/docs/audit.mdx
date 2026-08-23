@@ -34,7 +34,7 @@ The following defensive changes were made as part of the mainnet-readiness work 
 
 ## Deferred, pending the audit
 
-- **A full per-contract authorization-scope walk.** Beyond the create/upload guard above, a general check that every contract named anywhere in an authorization tree is allow-listed was intentionally not shipped. A naive version breaks legitimate closes: a real swap or withdrawal authorizes token transfers on the user's own token contracts, which are not on the protocol allow-list. Getting this right needs the real authorization trees each protocol produces on mainnet, which the external audit is the right place to validate. It is the most likely place an external finding lands, and it is called out here so it is not mistaken for an oversight.
+- **A full per-contract authorization-scope walk.** Beyond the create/upload guard above, a general check that every contract named anywhere in an authorization tree is allow-listed was intentionally not shipped. A naive version breaks legitimate closes: a real swap or withdrawal authorizes token transfers on the account owner's own token contracts, which are not on the protocol allow-list. Getting this right needs the real authorization trees each protocol produces on mainnet, which the external audit is the right place to validate. It is the most likely place an external finding lands, and it is called out here so it is not mistaken for an oversight.
 
 ## Dependency posture
 
