@@ -26,7 +26,7 @@ Yes. That is the main thing the demolisher adds over a classic-only closer. It u
 
 ## What about a Blend backstop deposit?
 
-A backstop deposit is a separate class of Blend position, and its withdrawal goes through a queue that takes 17 days. The demolisher does **not** unwind it for you, and it does not wait on the queue. On mainnet the audit detects a backstop deposit and warns you: withdraw it from the Blend backstop yourself (the 17-day queued process) before closing, or those funds will be stranded. A backstop deposit does not block the merge, so the rest of the closure can still run; it is on you to handle the backstop separately.
+A backstop deposit is a separate class of Blend position, and its withdrawal runs through a queue that takes 17 days. On mainnet the plan queues the withdrawal for you with one `queue_withdrawal` transaction, then stops at the merge. The account cannot be deleted while a backstop position is active or queued, because it has to survive to receive the withdrawal. You return on or after the unlock date, withdraw the backstop, and finish closing. This keeps the funds from being stranded on a deleted account.
 
 ## Why is the Soroswap step skipped on testnet?
 

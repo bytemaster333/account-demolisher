@@ -16,7 +16,7 @@ DeFi discovery runs four probes in parallel, one per protocol, against the live 
 - **Soroswap**: LP positions, found by walking the factory's pair list and checking your LP-token balances.
 - **FxDAO**: open vaults and their debt.
 
-On mainnet the audit also checks for a **Blend backstop deposit**. Backstop withdrawals go through a separate 17-day queue, so the close does not unwind them. If it finds one, it surfaces a warning telling you to withdraw it from the Blend backstop yourself before closing, so the funds are not stranded.
+On mainnet the audit also checks for a **Blend backstop deposit**. A backstop withdrawal runs through a separate 17-day queue, so the plan queues the withdrawal for you (one `queue_withdrawal` transaction) and stops at the merge. The account cannot be deleted while a backstop position is active or queued. You return on or after the unlock date, withdraw the backstop, and finish closing. This keeps the funds from being stranded on a deleted account.
 
 The audit computes a feasibility verdict. Two cases are hard stops:
 
@@ -29,17 +29,18 @@ The hard stops are not the only thing the preview surfaces. When discovery canno
 
 ## Build the plan
 
-The audit, the discovered positions, and the discovered allowances feed a pure plan generator. It produces a directed acyclic graph (DAG) of nodes. The plan tree defines thirteen node kinds; the generator emits ten of them, grouped by what they do:
+The audit, the discovered positions, and the discovered allowances feed a pure plan generator. It produces a directed acyclic graph (DAG) of nodes. The plan tree defines thirteen node kinds, grouped by what they do:
 
 - **Allowance**: `RevokeAllowance` (set a SEP-41 approval to zero).
-- **Blend**: `RepayBlend`, `WithdrawBlend`, `ClaimBlendEmissions`.
+- **Blend**: `RepayBlend`, `WithdrawBlend`, `ClaimBlendEmissions`, and `BackstopQueue` (queue a Blend backstop withdrawal on mainnet).
 - **Aquarius**: `WithdrawAquarius`, `ClaimAquariusRewards`.
 - **Soroswap**: `WithdrawSoroswapLp`.
 - **FxDAO**: `PayFxDAODebt` (a full `pay_debt` that closes the vault and reclaims its collateral; there is no separate redeem step, because `pay_debt` already returns the collateral).
+- **Standalone tokens**: `TransferAsIs` (send a leftover SEP-41 token to your destination) and `ConvertSorobanToXLM` (swap a leftover token to XLM through Soroswap). These run on direct closes; an exchange destination gets a warning to move these tokens first instead.
 - **Classic**: `FinalClassicTx` (the batched classical close).
 - **Mediator**: `MediatorForward` (used only when the destination is a centralized exchange).
 
-The remaining three kinds (`ConvertSorobanToXLM`, `TransferAsIs`, and `BackstopQueue`) are defined in the tree type and wired through the executor, but the current generator does not emit them. They are reserved surface, not active steps, and are called out here so the type list and the real behavior do not drift apart.
+The generator emits each kind only when the account needs it. An account with no Blend backstop deposit produces no `BackstopQueue` node, and the standalone-token nodes appear only when you select tokens to sweep on a direct close. Every node in a generated plan is a real step, executed on chain.
 
 Each node carries its dependencies as explicit edges. A Blend withdraw waits for that pool's repay. An emissions or rewards claim waits for the matching withdraw. `FinalClassicTx` waits for every Soroban node, so the merge never runs while a position is still open. `MediatorForward`, when present, waits for `FinalClassicTx`.
 
