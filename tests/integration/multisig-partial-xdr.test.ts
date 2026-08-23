@@ -93,9 +93,14 @@ describe("integration: 2-of-3 multisig close via partial-XDR merge (testnet)", (
       const partialA = partialSign(canonicalXdr, cosignerA);
 
       // merge their signatures into the canonical envelope (hash-bound)
-      const mergedXdr = mergeSignatures(canonicalXdr, [partialMaster, partialA], TESTNET.passphrase, {
-        expectedSigners,
-      });
+      const mergedXdr = mergeSignatures(
+        canonicalXdr,
+        [partialMaster, partialA],
+        TESTNET.passphrase,
+        {
+          expectedSigners,
+        },
+      );
       const merged = TransactionBuilder.fromXDR(mergedXdr, TESTNET.passphrase) as Transaction;
       // exactly the two collected signatures; the 2-of-3 threshold is met
       expect(merged.signatures.length).toBe(2);

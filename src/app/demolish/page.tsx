@@ -73,7 +73,6 @@ import { SecretKeyConnector } from "@/lib/wallet/secret-key";
 import { disconnectSession, getActiveConnector } from "@/lib/wallet/active-connector";
 import { useWalletStore } from "@/stores/wallet";
 
-
 const G_ADDRESS = z
   .string()
   .min(1, { message: "Destination address is required." })
@@ -3046,7 +3045,9 @@ function PlanRow({
                 position: "absolute",
                 inset: 0,
                 borderRadius: "50%",
-                border: isSimulated ? "1.5px solid var(--accent-line)" : "1.5px solid var(--border-2)",
+                border: isSimulated
+                  ? "1.5px solid var(--accent-line)"
+                  : "1.5px solid var(--border-2)",
                 display: "grid",
                 placeItems: "center",
                 font: "600 11px/1 'Geist Mono', monospace",

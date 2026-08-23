@@ -16,6 +16,7 @@ plan.md
 
 # Generated
 next-env.d.ts
+.source/
 
 # Test artifacts
 playwright-report/

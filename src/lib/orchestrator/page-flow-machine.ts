@@ -1168,7 +1168,11 @@ export function classifyFailure(errOrMessage: unknown): FailureKind {
   ) {
     return "changed_footprint";
   }
-  if (m.includes("position(s) still open") || m.includes("still open") || m.includes("defi position"))
+  if (
+    m.includes("position(s) still open") ||
+    m.includes("still open") ||
+    m.includes("defi position")
+  )
     return "position_open";
   if (m.includes("account_merge blocked") || m.includes("not mergeable") || m.includes("mergeable"))
     return "not_mergeable";

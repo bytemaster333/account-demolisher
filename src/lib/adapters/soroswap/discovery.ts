@@ -104,7 +104,14 @@ export async function discoverSoroswapPositions(
   //    tokens. simulate is the source of truth for the share amount here.
   const positions: SoroswapPositionSummary[] = [];
   for (const pairId of candidates) {
-    const balRet = await read(server, pairId, "balance", [scvAddress(userAddress)], userAddress, network);
+    const balRet = await read(
+      server,
+      pairId,
+      "balance",
+      [scvAddress(userAddress)],
+      userAddress,
+      network,
+    );
     const shares = fromScValI128(balRet.retval);
     if (shares <= 0n) continue;
     const [t0Ret, t1Ret] = await Promise.all([
@@ -139,10 +146,7 @@ async function resolvePairAddresses(
       xdr.LedgerKey.contractData(
         new xdr.LedgerKeyContractData({
           contract: factoryScAddress,
-          key: xdr.ScVal.scvVec([
-            xdr.ScVal.scvSymbol(PAIR_INDEX_SYMBOL),
-            xdr.ScVal.scvU32(i),
-          ]),
+          key: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(PAIR_INDEX_SYMBOL), xdr.ScVal.scvU32(i)]),
           durability: xdr.ContractDataDurability.persistent(),
         }),
       ),

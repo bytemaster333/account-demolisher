@@ -126,10 +126,13 @@ describe("integration: custom SEP-41 drain + allowance revoke on live testnet", 
 
     // enumerate by event scan finds the approval the owner just made
     const afterApprove = await rpc.getLatestLedger();
-    const records = await enumerateAllowances(rpc, owner.publicKey(), afterApprove.sequence, 20_000);
-    const mine = records.find(
-      (r) => r.contractId === tokenId && r.spender === spender.publicKey(),
+    const records = await enumerateAllowances(
+      rpc,
+      owner.publicKey(),
+      afterApprove.sequence,
+      20_000,
     );
+    const mine = records.find((r) => r.contractId === tokenId && r.spender === spender.publicKey());
     expect(mine, "the approve event should be discovered by the event scan").toBeDefined();
     expect(mine!.amount).toBe(500_0000000n);
 

@@ -52,18 +52,21 @@ describe("buildFailoverServer", () => {
     const result = await (server as unknown as { getEvents: () => Promise<unknown> }).getEvents();
 
     expect(result).toEqual({ events: ["ok"] });
-    expect((a as unknown as { getEvents: ReturnType<typeof vi.fn> }).getEvents).toHaveBeenCalledTimes(
-      1,
-    );
-    expect((b as unknown as { getEvents: ReturnType<typeof vi.fn> }).getEvents).toHaveBeenCalledTimes(
-      1,
-    );
+    expect(
+      (a as unknown as { getEvents: ReturnType<typeof vi.fn> }).getEvents,
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      (b as unknown as { getEvents: ReturnType<typeof vi.fn> }).getEvents,
+    ).toHaveBeenCalledTimes(1);
   });
 
   it("does NOT fail over on a deterministic 4xx and propagates it", async () => {
     const aFn = vi.fn().mockRejectedValue(httpError(400, "bad request"));
     const bFn = vi.fn().mockResolvedValue({ events: [] });
-    const server = buildFailoverServer([fakeServer({ getEvents: aFn }), fakeServer({ getEvents: bFn })]);
+    const server = buildFailoverServer([
+      fakeServer({ getEvents: aFn }),
+      fakeServer({ getEvents: bFn }),
+    ]);
 
     await expect(
       (server as unknown as { getEvents: () => Promise<unknown> }).getEvents(),
@@ -75,7 +78,10 @@ describe("buildFailoverServer", () => {
   it("sticks to the recovered host for subsequent calls", async () => {
     const aFn = vi.fn().mockRejectedValue(httpError(429));
     const bFn = vi.fn().mockResolvedValue("from-b");
-    const server = buildFailoverServer([fakeServer({ getEvents: aFn }), fakeServer({ getEvents: bFn })]);
+    const server = buildFailoverServer([
+      fakeServer({ getEvents: aFn }),
+      fakeServer({ getEvents: bFn }),
+    ]);
     const call = () => (server as unknown as { getEvents: () => Promise<unknown> }).getEvents();
 
     await call(); // a throws 429 -> fail over to b, stick to b
@@ -88,7 +94,10 @@ describe("buildFailoverServer", () => {
   it("propagates the last error when every host faults", async () => {
     const aFn = vi.fn().mockRejectedValue(httpError(429, "a down"));
     const bFn = vi.fn().mockRejectedValue(httpError(503, "b down"));
-    const server = buildFailoverServer([fakeServer({ getEvents: aFn }), fakeServer({ getEvents: bFn })]);
+    const server = buildFailoverServer([
+      fakeServer({ getEvents: aFn }),
+      fakeServer({ getEvents: bFn }),
+    ]);
 
     await expect(
       (server as unknown as { getEvents: () => Promise<unknown> }).getEvents(),

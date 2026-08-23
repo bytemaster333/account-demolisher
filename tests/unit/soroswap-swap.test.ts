@@ -106,7 +106,10 @@ describe("buildSwapToXLM", () => {
   it("rejects an LP-share asset (must remove liquidity first)", async () => {
     const { deps } = captureDeps();
     await expect(
-      buildSwapToXLM({ ...baseArgs, assetIn: { kind: "liquidity_pool_shares", poolId: "x" } }, deps),
+      buildSwapToXLM(
+        { ...baseArgs, assetIn: { kind: "liquidity_pool_shares", poolId: "x" } },
+        deps,
+      ),
     ).rejects.toThrow(/remove liquidity first/);
   });
 });

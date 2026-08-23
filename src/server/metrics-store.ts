@@ -51,7 +51,10 @@ export interface MetricsSnapshot {
   readonly closes: {
     readonly total: number;
     readonly byNetwork: Record<string, number>;
-    readonly reclaimedStroops: { readonly total: string; readonly byNetwork: Record<string, string> };
+    readonly reclaimedStroops: {
+      readonly total: string;
+      readonly byNetwork: Record<string, string>;
+    };
     readonly ops: Omit<CloseOpCounts, "other">;
     readonly recent: readonly VerifiedClose[];
   };
@@ -138,7 +141,11 @@ export class MetricsStore {
     await fs.rename(tmp, path.join(this.dir, COUNTERS_FILE));
   }
 
-  async recordVisit(page: MetricPage, network?: MetricNetwork, nowMs: number = Date.now()): Promise<void> {
+  async recordVisit(
+    page: MetricPage,
+    network?: MetricNetwork,
+    nowMs: number = Date.now(),
+  ): Promise<void> {
     await this.ensureLoaded();
     await this.enqueue(async () => {
       const key = `${dayOf(nowMs)}|${page}|${network ?? "-"}`;
@@ -180,7 +187,13 @@ export class MetricsStore {
     const byNetwork: Record<string, number> = {};
     const reclaimedByNetwork: Record<string, bigint> = {};
     let reclaimedTotal = 0n;
-    const ops = { total: 0, accountMerge: 0, changeTrust: 0, revokeSponsorship: 0, invokeHostFunction: 0 };
+    const ops = {
+      total: 0,
+      accountMerge: 0,
+      changeTrust: 0,
+      revokeSponsorship: 0,
+      invokeHostFunction: 0,
+    };
 
     for (const c of this.closes) {
       byNetwork[c.network] = (byNetwork[c.network] ?? 0) + 1;
@@ -195,7 +208,8 @@ export class MetricsStore {
     }
 
     const reclaimedByNetworkStr: Record<string, string> = {};
-    for (const [k, v] of Object.entries(reclaimedByNetwork)) reclaimedByNetworkStr[k] = v.toString();
+    for (const [k, v] of Object.entries(reclaimedByNetwork))
+      reclaimedByNetworkStr[k] = v.toString();
 
     const byDay: Record<string, number> = {};
     const byPage: Record<string, number> = {};

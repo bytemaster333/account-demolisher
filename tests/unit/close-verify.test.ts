@@ -39,7 +39,10 @@ describe("xlmToStroops", () => {
 describe("verifyCloseTx", () => {
   it("accepts a successful account_merge and derives reclaimed XLM + op counts", async () => {
     const fetchImpl = mockHorizon({
-      tx: { status: 200, body: { successful: true, ledger: 555, created_at: "2026-07-30T12:00:00Z" } },
+      tx: {
+        status: 200,
+        body: { successful: true, ledger: 555, created_at: "2026-07-30T12:00:00Z" },
+      },
       ops: {
         status: 200,
         body: {
@@ -57,7 +60,12 @@ describe("verifyCloseTx", () => {
         body: {
           _embedded: {
             records: [
-              { type: "account_credited", account: "GDEST", asset_type: "native", amount: "12.3456789" },
+              {
+                type: "account_credited",
+                account: "GDEST",
+                asset_type: "native",
+                amount: "12.3456789",
+              },
               { type: "account_removed", account: "GSRC" },
             ],
           },
@@ -71,14 +79,25 @@ describe("verifyCloseTx", () => {
     expect(res.close.ledger).toBe(555);
     expect(res.close.closedAt).toBe(Math.floor(Date.parse("2026-07-30T12:00:00Z") / 1000));
     expect(res.close.reclaimedStroops).toBe("123456789");
-    expect(res.close.ops).toMatchObject({ total: 3, accountMerge: 1, changeTrust: 1, invokeHostFunction: 1 });
+    expect(res.close.ops).toMatchObject({
+      total: 3,
+      accountMerge: 1,
+      changeTrust: 1,
+      invokeHostFunction: 1,
+    });
     expect(res.close.network).toBe("testnet");
   });
 
   it("ignores native credits to accounts other than the merge destination", async () => {
     const fetchImpl = mockHorizon({
-      tx: { status: 200, body: { successful: true, ledger: 1, created_at: "2026-07-30T12:00:00Z" } },
-      ops: { status: 200, body: { _embedded: { records: [{ type: "account_merge", into: "GDEST" }] } } },
+      tx: {
+        status: 200,
+        body: { successful: true, ledger: 1, created_at: "2026-07-30T12:00:00Z" },
+      },
+      ops: {
+        status: 200,
+        body: { _embedded: { records: [{ type: "account_merge", into: "GDEST" }] } },
+      },
       effects: {
         status: 200,
         body: {
@@ -104,7 +123,10 @@ describe("verifyCloseTx", () => {
 
   it("rejects a transaction with no account_merge (not retryable)", async () => {
     const fetchImpl = mockHorizon({
-      tx: { status: 200, body: { successful: true, ledger: 1, created_at: "2026-07-30T12:00:00Z" } },
+      tx: {
+        status: 200,
+        body: { successful: true, ledger: 1, created_at: "2026-07-30T12:00:00Z" },
+      },
       ops: { status: 200, body: { _embedded: { records: [{ type: "payment" }] } } },
       effects: { status: 200, body: { _embedded: { records: [] } } },
     });
@@ -120,7 +142,9 @@ describe("verifyCloseTx", () => {
   });
 
   it("fails CLOSED and retryable when Horizon 5xxs or the request throws", async () => {
-    const five = await verifyCloseTx(TESTNET, HASH, { fetchImpl: mockHorizon({ tx: { status: 503 } }) });
+    const five = await verifyCloseTx(TESTNET, HASH, {
+      fetchImpl: mockHorizon({ tx: { status: 503 } }),
+    });
     expect(five).toMatchObject({ ok: false, retryable: true });
 
     const threw = await verifyCloseTx(TESTNET, HASH, {

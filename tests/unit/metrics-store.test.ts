@@ -24,7 +24,14 @@ function close(txHash: string, network: VerifiedClose["network"], stroops: strin
     ledger: 100,
     closedAt: 1_700_000_000,
     reclaimedStroops: stroops,
-    ops: { total: 3, accountMerge: 1, changeTrust: 1, revokeSponsorship: 0, invokeHostFunction: 1, other: 0 },
+    ops: {
+      total: 3,
+      accountMerge: 1,
+      changeTrust: 1,
+      revokeSponsorship: 0,
+      invokeHostFunction: 1,
+      other: 0,
+    },
     recordedAt: 1_700_000_001_000,
   };
 }
@@ -50,7 +57,9 @@ describe("MetricsStore", () => {
 
   it("records verified closes and aggregates counts, reclaimed XLM, and ops", async () => {
     const store = new MetricsStore(dir);
-    expect((await store.recordClose(close("a".repeat(64), "mainnet", "10000000"))).added).toBe(true);
+    expect((await store.recordClose(close("a".repeat(64), "mainnet", "10000000"))).added).toBe(
+      true,
+    );
     expect((await store.recordClose(close("b".repeat(64), "testnet", "5000000"))).added).toBe(true);
 
     const snap = await store.snapshot();

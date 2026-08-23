@@ -100,7 +100,9 @@ export async function buildSwapToXLM(
   const assemble = deps.assemble ?? assembleSubmittable;
   const prepared = await assemble(deps.server, tx);
   if ("innerTransaction" in prepared) {
-    throw new Error("buildSwapToXLM: prepareTransaction returned a FeeBumpTransaction unexpectedly");
+    throw new Error(
+      "buildSwapToXLM: prepareTransaction returned a FeeBumpTransaction unexpectedly",
+    );
   }
   assertTransactionAllowed(prepared, args.network);
   return prepared;

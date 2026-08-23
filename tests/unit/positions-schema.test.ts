@@ -24,9 +24,7 @@ describe("position provider schemas — validated boundary", () => {
       emissionReserveTokenIds: [0, 3],
     };
     expect(() => blendPositionSchema.parse(ok)).not.toThrow();
-    expect(() =>
-      blendPositionSchema.parse({ ...ok, liabilities: new Map([[C2, -1n]]) }),
-    ).toThrow();
+    expect(() => blendPositionSchema.parse({ ...ok, liabilities: new Map([[C2, -1n]]) })).toThrow();
     // a non-contract-id asset key is rejected
     expect(() =>
       blendPositionSchema.parse({ ...ok, collateral: new Map([["not-a-contract", 1n]]) }),
@@ -75,7 +73,10 @@ describe("position provider schemas — validated boundary", () => {
     const good = { denomination: "EUR", debt: 1n, collateral: 2n };
     expect(parsePositions(fxdaoPositionSchema, [good, good])).toHaveLength(2);
     expect(() =>
-      parsePositions(fxdaoPositionSchema, [good, { denomination: "GBP", debt: -1n, collateral: 2n }]),
+      parsePositions(fxdaoPositionSchema, [
+        good,
+        { denomination: "GBP", debt: -1n, collateral: 2n },
+      ]),
     ).toThrow();
   });
 });

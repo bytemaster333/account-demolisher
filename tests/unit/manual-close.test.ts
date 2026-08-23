@@ -24,8 +24,8 @@ describe("manualCloseRequiredNotice", () => {
   });
 
   it("fires on unreadable tokens alone (a hostile/broken contract is still a signal)", () => {
-    expect(
-      manualCloseRequiredNotice({ heldTokenCount: 0, unreadableTokenCount: 2 }),
-    ).toMatch(/manual close/i);
+    expect(manualCloseRequiredNotice({ heldTokenCount: 0, unreadableTokenCount: 2 })).toMatch(
+      /manual close/i,
+    );
   });
 });

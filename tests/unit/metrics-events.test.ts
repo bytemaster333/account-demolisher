@@ -32,7 +32,13 @@ describe("metricEventSchema", () => {
   });
 
   it("rejects malformed tx hashes (wrong length, uppercase, non-hex)", () => {
-    for (const bad of ["A".repeat(64), "a".repeat(63), "a".repeat(65), "xyz", `${"a".repeat(63)}g`]) {
+    for (const bad of [
+      "A".repeat(64),
+      "a".repeat(63),
+      "a".repeat(65),
+      "xyz",
+      `${"a".repeat(63)}g`,
+    ]) {
       expect(
         metricEventSchema.safeParse({ type: "close", network: "mainnet", txHash: bad }).success,
       ).toBe(false);
@@ -41,7 +47,9 @@ describe("metricEventSchema", () => {
 
   it("rejects an unknown event type and requires funnel/close to carry network", () => {
     expect(metricEventSchema.safeParse({ type: "wat", page: "landing" }).success).toBe(false);
-    expect(metricEventSchema.safeParse({ type: "funnel", step: "close_started" }).success).toBe(false);
+    expect(metricEventSchema.safeParse({ type: "funnel", step: "close_started" }).success).toBe(
+      false,
+    );
     expect(metricEventSchema.safeParse({ type: "close", txHash: HASH }).success).toBe(false);
   });
 });

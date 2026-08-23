@@ -205,7 +205,11 @@ describe("hydratePlanTransactions, ConvertSorobanToXLM (Soroswap-router swap) fl
       adapters: { buildSwapToXLM },
     });
 
-    const { failures } = await hydratePlanTransactions(buildPlanTree([convertNode()]), "GUSER", deps);
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([convertNode()]),
+      "GUSER",
+      deps,
+    );
 
     expect(failures).toEqual([]);
     expect(calls.length).toBe(2);
@@ -224,7 +228,11 @@ describe("hydratePlanTransactions, ConvertSorobanToXLM (Soroswap-router swap) fl
       adapters: { buildSwapToXLM },
     });
 
-    const { failures } = await hydratePlanTransactions(buildPlanTree([convertNode()]), "GUSER", deps);
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([convertNode()]),
+      "GUSER",
+      deps,
+    );
 
     expect(failures.length).toBe(1);
     expect(failures[0]!.reason).toMatch(/zero XLM out/);

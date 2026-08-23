@@ -1,11 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import {
-  BASE_FEE,
-  Horizon,
-  Keypair,
-  Operation,
-  TransactionBuilder,
-} from "@stellar/stellar-sdk";
+import { BASE_FEE, Horizon, Keypair, Operation, TransactionBuilder } from "@stellar/stellar-sdk";
 
 // close-verify is server-only; stub the guard so it imports under vitest's node env
 vi.mock("server-only", () => ({}));

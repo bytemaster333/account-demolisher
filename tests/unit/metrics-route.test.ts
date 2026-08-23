@@ -58,7 +58,14 @@ const okClose = {
     ledger: 10,
     closedAt: 1_700_000_000,
     reclaimedStroops: "5000000",
-    ops: { total: 1, accountMerge: 1, changeTrust: 0, revokeSponsorship: 0, invokeHostFunction: 0, other: 0 },
+    ops: {
+      total: 1,
+      accountMerge: 1,
+      changeTrust: 0,
+      revokeSponsorship: 0,
+      invokeHostFunction: 0,
+      other: 0,
+    },
   },
 };
 
@@ -70,7 +77,9 @@ describe("POST /api/metrics", () => {
   });
 
   it("records a funnel step (204)", async () => {
-    expect((await post({ type: "funnel", step: "close_started", network: "mainnet" })).status).toBe(204);
+    expect((await post({ type: "funnel", step: "close_started", network: "mainnet" })).status).toBe(
+      204,
+    );
     const snap = await snapshot();
     expect((snap.funnel as Record<string, number>)["mainnet|close_started"]).toBe(1);
   });
@@ -91,14 +100,22 @@ describe("POST /api/metrics", () => {
   });
 
   it("returns 422 for an unverifiable close and records nothing", async () => {
-    vi.mocked(verifyCloseTx).mockResolvedValue({ ok: false, reason: "no account_merge", retryable: false });
+    vi.mocked(verifyCloseTx).mockResolvedValue({
+      ok: false,
+      reason: "no account_merge",
+      retryable: false,
+    });
     const res = await post({ type: "close", network: "testnet", txHash: HASH });
     expect(res.status).toBe(422);
     expect((await snapshot()).closes).toMatchObject({ total: 0 });
   });
 
   it("returns 503 (retryable) when verification is unavailable", async () => {
-    vi.mocked(verifyCloseTx).mockResolvedValue({ ok: false, reason: "Horizon unavailable", retryable: true });
+    vi.mocked(verifyCloseTx).mockResolvedValue({
+      ok: false,
+      reason: "Horizon unavailable",
+      retryable: true,
+    });
     expect((await post({ type: "close", network: "testnet", txHash: HASH })).status).toBe(503);
   });
 
@@ -133,8 +150,11 @@ describe("GET /api/metrics (admin)", () => {
   it("401s without a valid bearer token", async () => {
     expect((await GET(new Request("http://x/api/metrics"))).status).toBe(401);
     expect(
-      (await GET(new Request("http://x/api/metrics", { headers: { authorization: "Bearer wrong" } })))
-        .status,
+      (
+        await GET(
+          new Request("http://x/api/metrics", { headers: { authorization: "Bearer wrong" } }),
+        )
+      ).status,
     ).toBe(401);
   });
 

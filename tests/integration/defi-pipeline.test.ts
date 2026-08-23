@@ -43,7 +43,10 @@ async function friendbot(pk: string): Promise<void> {
 
 async function submitClassic(kp: Keypair, build: (b: TransactionBuilder) => void): Promise<void> {
   const account = await horizonDirect.loadAccount(kp.publicKey());
-  const b = new TransactionBuilder(account, { fee: BASE_FEE, networkPassphrase: TESTNET.passphrase });
+  const b = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: TESTNET.passphrase,
+  });
   build(b);
   const tx = b.setTimeout(120).build();
   tx.sign(kp);

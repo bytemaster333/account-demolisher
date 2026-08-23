@@ -116,7 +116,15 @@ describe("sep41 read helpers (simulate-backed)", () => {
 
 describe("sep41 builders decode to the correct ABI", () => {
   it("buildTransfer builds transfer(from, to, amount)", async () => {
-    const tx = await buildTransfer({} as rpc.Server, TOKEN, USER, SPENDER, 900n, TESTNET, sourceAccount());
+    const tx = await buildTransfer(
+      {} as rpc.Server,
+      TOKEN,
+      USER,
+      SPENDER,
+      900n,
+      TESTNET,
+      sourceAccount(),
+    );
     const { contract, fn, args } = invokeCall(tx);
     expect(contract).toBe(TOKEN);
     expect(fn).toBe("transfer");

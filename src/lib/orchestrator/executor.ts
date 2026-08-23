@@ -332,9 +332,7 @@ export async function executePlanTreeOnChain(
             // multi-endpoint RPC failover makes this a rare, genuine outage rather
             // than routine rate-limiting.)
             if (remaining.errors.length > 0) {
-              const detail = remaining.errors
-                .map((e) => `${e.protocol}: ${e.message}`)
-                .join("; ");
+              const detail = remaining.errors.map((e) => `${e.protocol}: ${e.message}`).join("; ");
               throw new Error(
                 `account_merge blocked: could not confirm your DeFi positions are all closed ` +
                   `(${detail}). This is a safety stop so an unreadable position isn't merged ` +
