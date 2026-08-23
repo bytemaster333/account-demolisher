@@ -1,8 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 
-// e2e / accessibility specs. They drive the real Next.js app (built + started)
-// and use an injected fake wallet so no real signing is required. Browser
-// binaries must be installed once with `pnpm exec playwright install chromium`.
+// e2e / accessibility specs. They drive the real Next.js app (built + started).
+// smoke/accessibility use no wallet; secret-key-close signs a real close on
+// testnet with a throwaway pasted key. Browser binaries must be installed once
+// with `pnpm exec playwright install chromium`.
 export default defineConfig({
   testDir: "./tests/e2e",
   fullyParallel: true,
