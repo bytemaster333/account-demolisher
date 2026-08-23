@@ -335,9 +335,10 @@ async function hydrateNode(
         {
           denomination: node.metadata.vaultDenomination,
           debt: node.metadata.debt,
-          // pay_debt uses only the debt; a full repayment releases the vault's
-          // collateral to the owner on-chain in the same call.
-          collateral: 0n,
+          // collateral is needed to reconstruct the vault_key.index the pay_debt
+          // validator checks (index = 1e9 * collateral / debt). A full repayment
+          // then releases that collateral to the owner in the same call.
+          collateral: node.metadata.collateral,
         },
         userPublicKey,
         deps.network,

@@ -114,8 +114,17 @@ function optionalVaultKeyNone(): xdr.ScVal {
   return xdr.ScVal.scvVec([nativeToScVal("None", { type: "symbol" })]);
 }
 
+// mirror the VaultsContract's calculate_user_vault_index: index = 1e9 * collateral
+// / debt (integer division). pay_debt's assert_regular_vault_updates_validations
+// rejects a vault_key whose index != the stored one with IndexProvidedIsNotTheOneSaved
+// (error 509), so the caller-supplied index MUST equal this exactly.
+const VAULT_INDEX_PRECISION = 1_000_000_000n;
+function calculateVaultIndex(collateral: bigint, debt: bigint): bigint {
+  return (VAULT_INDEX_PRECISION * collateral) / debt;
+}
+
 // encode a VaultKey struct as scvMap with fields ordered alphabetically (host invariant)
-function vaultKeyScVal(account: string, denomination: string, index: bigint = 0n): xdr.ScVal {
+function vaultKeyScVal(account: string, denomination: string, index: bigint): xdr.ScVal {
   return xdr.ScVal.scvMap([
     new xdr.ScMapEntry({
       key: nativeToScVal("account", { type: "symbol" }),
@@ -144,7 +153,11 @@ function buildPayDebtTx(
   const contract = new Contract(vaultsContractId);
   const callArgs: xdr.ScVal[] = [
     optionalVaultKeyScVal(prevKey), // prev_key resolved by hydration via findPrevVaultKey
-    vaultKeyScVal(userPublicKey, vault.denomination),
+    vaultKeyScVal(
+      userPublicKey,
+      vault.denomination,
+      calculateVaultIndex(vault.collateral, vault.debt),
+    ),
     optionalVaultKeyNone(), // new_prev_key: None because amount == debt closes the vault
     nativeToScVal(vault.debt, { type: "u128" }), // full debt
   ];

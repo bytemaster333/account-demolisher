@@ -137,6 +137,7 @@ export function generatePlan(
         kind: "PayFxDAODebt",
         vaultDenomination: vault.denomination,
         debt: vault.debt,
+        collateral: vault.collateral,
       },
     });
   }

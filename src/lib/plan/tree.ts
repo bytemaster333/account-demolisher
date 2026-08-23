@@ -81,6 +81,9 @@ export interface PayFxDAODebtMetadata {
   readonly kind: "PayFxDAODebt";
   readonly vaultDenomination: string;
   readonly debt: bigint;
+  // the vault's collateral, needed to reconstruct the on-chain vault_key.index
+  // (index = 1e9 * collateral / debt) that pay_debt's validator checks against
+  readonly collateral: bigint;
   readonly transaction?: Transaction;
 }
 

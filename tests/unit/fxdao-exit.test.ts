@@ -86,6 +86,31 @@ describe("buildVaultExit encoding", () => {
     expect(scValToNative(args[3]!)).toBe(DEBT);
   });
 
+  it("encodes vault_key.index as the contract's 1e9 * collateral / debt, not 0 (pay_debt rejects a wrong index, error 509)", async () => {
+    const COLLATERAL = 5_000_0000000n; // matches vault()
+    const { payDebt } = await buildVaultExit(
+      vault(DEBT),
+      USER,
+      TESTNET,
+      sourceAccount(),
+      null,
+      IDENTITY_ASSEMBLE,
+    );
+    const { args } = invokeArgs(payDebt);
+    // arg[1] is the vault_key struct { account, denomination, index }
+    const vaultKey = scValToNative(args[1]!) as {
+      account: string;
+      denomination: string;
+      index: bigint;
+    };
+    expect(vaultKey.account).toBe(USER);
+    expect(vaultKey.denomination).toBe("USD");
+    // the stored index the validator compares against; a hardcoded 0 (the old bug)
+    // reverts every real vault close on-chain
+    expect(vaultKey.index).toBe((1_000_000_000n * COLLATERAL) / DEBT);
+    expect(vaultKey.index).not.toBe(0n);
+  });
+
   it("builds only pay_debt, no redeem step (redeem targets the lowest vault, not the caller's)", async () => {
     const exit = await buildVaultExit(
       vault(DEBT),
