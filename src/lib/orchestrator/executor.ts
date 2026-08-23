@@ -17,6 +17,7 @@ import { resolveCreditPaths } from "@/lib/stellar/path-finder";
 import { submitMediatorForward } from "@/lib/mediator/forward";
 import { resolveContractIdForAsset } from "@/lib/plan/hydration";
 import { assertSafeTransferInvocation } from "@/lib/soroban/transfer-guard";
+import { assertSafeRevokeInvocation } from "@/lib/soroban/revoke-guard";
 import { isSorobanNode, topologicalOrder, type PlanNode, type PlanTree } from "@/lib/plan/tree";
 import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
 
@@ -399,7 +400,11 @@ export async function executePlanTreeOnChain(
           notify(node);
           receipt = await deps.submitClassic(signed.signedXdr);
           node.status = "submitted";
-          node.executed = { txHash: receipt.txHash, ledger: receipt.ledger };
+          // NB: do NOT set node.executed here. node.executed is the resume signal
+          // (top-of-loop, line ~216): setting it on an INTERMEDIATE batch would let
+          // a retry treat the whole FinalClassicTx as done and skip the still-unrun
+          // account_merge while reporting success. It is set only after convergence
+          // (below), so a retry re-audits and finishes the merge from fresh state.
           notify(node);
 
           // once the mediator-funding op has landed, later phases must not
@@ -545,13 +550,45 @@ export async function executePlanTreeOnChain(
       continue;
     }
 
+    // RevokeAllowance targets the user's OWN token contracts (chosen from an RPC
+    // allowance scan, not the DeFi allow-list), so it is exempt from the allow-list
+    // gate. But the contract id and its simulation-supplied auth tree are
+    // attacker-influenceable (a hostile token can emit a fabricated approve event
+    // to surface here), so it MUST be guarded exactly like TransferAsIs: refuse to
+    // sign unless the built tx is exactly approve(0) authorizing nothing else. And
+    // it is BEST-EFFORT (skip on any failure, never fatal): the account is about to
+    // be deleted, which removes its allowances anyway, so a hostile token must be
+    // able neither to drain (guard blocks it) nor to BLOCK the close (skip, not
+    // abort). This mirrors the guarded, skip-not-fatal TransferAsIs branch above.
+    if (node.kind === "RevokeAllowance") {
+      try {
+        const revokeReceipt = await signAndSubmitSorobanNode(node, input.publicKey, deps, {
+          allowlist: false,
+          guard: (tx) =>
+            assertSafeRevokeInvocation(tx, {
+              contractId: node.metadata.contractId,
+              from: input.publicKey,
+              spender: node.metadata.spender,
+            }),
+          onSigned: () => notify(node),
+        });
+        node.status = "confirmed";
+        node.executed = { txHash: revokeReceipt.txHash, ledger: revokeReceipt.ledger };
+        receipts[node.id] = revokeReceipt;
+        notify(node);
+      } catch (err) {
+        node.status = "skipped";
+        node.error = `Allowance revoke skipped: ${err instanceof Error ? err.message : String(err)}`;
+        notify(node);
+      }
+      continue;
+    }
+
     // Pre-sign allow-list gate (defense-in-depth on top of each adapter's own
-    // build-time check): every DeFi-protocol node must invoke only allow-listed
-    // contracts. RevokeAllowance is the deliberate exception: it targets the
-    // user's own token contracts (chosen from an RPC allowance scan, not the DeFi
-    // allow-list) and only ever builds a safe approve(0) sourced from the user.
+    // build-time check): every remaining DeFi-protocol node must invoke only
+    // allow-listed contracts.
     const receipt = await signAndSubmitSorobanNode(node, input.publicKey, deps, {
-      allowlist: node.kind !== "RevokeAllowance",
+      allowlist: true,
       onSigned: () => notify(node),
     });
 

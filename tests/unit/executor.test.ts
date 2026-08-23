@@ -53,6 +53,20 @@ vi.mock("@/lib/soroban/transfer-guard", () => ({
   UnsafeTransferError: class UnsafeTransferError extends Error {},
 }));
 
+// the revoke-guard has its own exhaustive tests; the RevokeAllowance branch is
+// covered by allowlist.test.ts. Here we control it so the generic-node tests
+// below can drive the shared rebuild/recovery path.
+const assertSafeRevokeInvocation = vi.fn();
+vi.mock("@/lib/soroban/revoke-guard", () => ({
+  assertSafeRevokeInvocation: (...args: unknown[]) => assertSafeRevokeInvocation(...args),
+}));
+
+// the allow-list gate is tested exhaustively in allowlist.test.ts; the generic
+// Soroban-node tests below use a dummy tx, so no-op it here.
+vi.mock("@/lib/stellar/allowlist", () => ({
+  assertTransactionAllowed: vi.fn(),
+}));
+
 // imported AFTER the mocks are registered so the executor picks them up
 import { executePlanTreeOnChain } from "@/lib/orchestrator/executor";
 import type { ExecutorDeps } from "@/lib/orchestrator/executor";
@@ -716,29 +730,28 @@ describe("executePlanTreeOnChain, held-token conversion is best-effort", () => {
   });
 });
 
-// A single RevokeAllowance node: a Soroban step that is allow-list-exempt (it
-// targets the user's own token contract), so it exercises the generic Soroban
-// submit path without needing the DeFi allow-list mocked.
-function makeRevokeTree() {
-  const revoke = {
-    id: "revoke",
-    kind: "RevokeAllowance" as const,
+// A single generic DeFi Soroban node (WithdrawBlend), which exercises the shared
+// signAndSubmitSorobanNode rebuild/recovery path. The allow-list gate is mocked
+// no-op above (its own coverage is in allowlist.test.ts), and the connector is
+// mocked, so the dummy pre-built tx is never inspected.
+function makeSorobanNodeTree() {
+  const node = {
+    id: "soroban",
+    kind: "WithdrawBlend" as const,
     dependencies: [] as string[],
     status: "pending",
     metadata: {
-      kind: "RevokeAllowance" as const,
-      contractId: "CTOKENAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1",
-      spender: "CSPENDERAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1",
+      kind: "WithdrawBlend" as const,
       // dummy pre-built tx (the preview build); the connector is mocked so it is
       // never inspected. rebuildSorobanNode is mocked, so it stays in place.
       transaction: {} as never,
     },
   };
   return {
-    revoke,
+    node,
     tree: {
-      rootNodes: [revoke],
-      allNodes: new Map([[revoke.id, revoke]]),
+      rootNodes: [node],
+      allNodes: new Map([[node.id, node]]),
     } as unknown as PlanTree,
   };
 }
@@ -751,15 +764,15 @@ describe("executePlanTreeOnChain, Soroban nodes are rebuilt fresh before signing
   it("rebuilds the node against fresh state immediately before signing (A1)", async () => {
     const rebuildSorobanNode = vi.fn(async () => {});
     const deps = makeDeps({ rebuildSorobanNode });
-    const { tree, revoke } = makeRevokeTree();
+    const { tree, node } = makeSorobanNodeTree();
 
     await executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
 
     // the fresh rebuild ran once, for THIS node, before the single submit
     expect(rebuildSorobanNode).toHaveBeenCalledTimes(1);
-    expect(rebuildSorobanNode).toHaveBeenCalledWith(revoke, "GUSER");
+    expect(rebuildSorobanNode).toHaveBeenCalledWith(node, "GUSER");
     expect(deps.submitSoroban).toHaveBeenCalledTimes(1);
-    expect(revoke.status).toBe("confirmed");
+    expect(node.status).toBe("confirmed");
   });
 
   it("recovers from a stale sequence (tx_bad_seq) by rebuilding and retrying (A2)", async () => {
@@ -768,7 +781,7 @@ describe("executePlanTreeOnChain, Soroban nodes are rebuilt fresh before signing
     (deps.submitSoroban as ReturnType<typeof vi.fn>)
       .mockRejectedValueOnce(new Error("submitSoroban: sendTransaction returned tx_bad_seq"))
       .mockResolvedValueOnce({ txHash: "OK", ledger: 9 });
-    const { tree, revoke } = makeRevokeTree();
+    const { tree, node } = makeSorobanNodeTree();
 
     const output = await executePlanTreeOnChain(
       { publicKey: "GUSER", tree, previousReceipts: {} },
@@ -778,8 +791,8 @@ describe("executePlanTreeOnChain, Soroban nodes are rebuilt fresh before signing
     // rebuilt again on the retry (fresh sequence), then submitted successfully
     expect(rebuildSorobanNode).toHaveBeenCalledTimes(2);
     expect(deps.submitSoroban).toHaveBeenCalledTimes(2);
-    expect(revoke.status).toBe("confirmed");
-    expect(output.receipts["revoke"]).toEqual({ txHash: "OK", ledger: 9 });
+    expect(node.status).toBe("confirmed");
+    expect(output.receipts["soroban"]).toEqual({ txHash: "OK", ledger: 9 });
   });
 
   it("recovers from a changed/expired footprint by re-simulating and retrying (A3)", async () => {
@@ -788,12 +801,12 @@ describe("executePlanTreeOnChain, Soroban nodes are rebuilt fresh before signing
     (deps.submitSoroban as ReturnType<typeof vi.fn>)
       .mockRejectedValueOnce(new Error("transaction simulation failed: restorePreamble required"))
       .mockResolvedValueOnce({ txHash: "OK2", ledger: 10 });
-    const { tree, revoke } = makeRevokeTree();
+    const { tree, node } = makeSorobanNodeTree();
 
     await executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
 
     expect(rebuildSorobanNode).toHaveBeenCalledTimes(2);
-    expect(revoke.status).toBe("confirmed");
+    expect(node.status).toBe("confirmed");
   });
 
   it("gives up after MAX attempts on a persistent recoverable failure (bounded)", async () => {
@@ -802,7 +815,7 @@ describe("executePlanTreeOnChain, Soroban nodes are rebuilt fresh before signing
     (deps.submitSoroban as ReturnType<typeof vi.fn>).mockRejectedValue(
       new Error("submitSoroban: sendTransaction returned tx_bad_seq"),
     );
-    const { tree } = makeRevokeTree();
+    const { tree } = makeSorobanNodeTree();
 
     await expect(
       executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps),
@@ -816,7 +829,7 @@ describe("executePlanTreeOnChain, Soroban nodes are rebuilt fresh before signing
     (deps.submitSoroban as ReturnType<typeof vi.fn>).mockRejectedValue(
       new Error("submitSoroban: transaction HASH failed on-chain"),
     );
-    const { tree } = makeRevokeTree();
+    const { tree } = makeSorobanNodeTree();
 
     await expect(
       executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps),
@@ -830,12 +843,67 @@ describe("executePlanTreeOnChain, Soroban nodes are rebuilt fresh before signing
     (deps.submitSoroban as ReturnType<typeof vi.fn>).mockRejectedValue(
       new Error("submitSoroban: sendTransaction returned tx_bad_seq"),
     );
-    const { tree } = makeRevokeTree();
+    const { tree } = makeSorobanNodeTree();
 
     await expect(
       executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps),
     ).rejects.toThrow(/tx_bad_seq/);
     // resubmitting the identical stale tx can't help, so it fails after one try
     expect(deps.submitSoroban).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The close-plan RevokeAllowance node targets an attacker-influenceable token
+// contract with a simulation-supplied auth tree, so it MUST run the revoke safety
+// guard before signing (like the standalone /allowances path), and be best-effort
+// (skip, never abort the close) so a hostile token can neither drain nor block.
+describe("executePlanTreeOnChain, RevokeAllowance is guarded and best-effort", () => {
+  function makeRevokeTree() {
+    const revoke = {
+      id: "revoke",
+      kind: "RevokeAllowance" as const,
+      dependencies: [] as string[],
+      status: "pending",
+      metadata: {
+        kind: "RevokeAllowance" as const,
+        contractId: "CTOKENAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1",
+        spender: "CSPENDERAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1",
+        transaction: {} as never,
+      },
+    };
+    return {
+      revoke,
+      tree: {
+        rootNodes: [revoke],
+        allNodes: new Map([[revoke.id, revoke]]),
+      } as unknown as PlanTree,
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("runs the revoke safety guard before signing", async () => {
+    const deps = makeDeps({ rebuildSorobanNode: vi.fn(async () => {}) });
+    const { tree } = makeRevokeTree();
+    await executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
+    expect(assertSafeRevokeInvocation).toHaveBeenCalledTimes(1);
+  });
+
+  it("SKIPS the revoke (never signs) when the guard rejects a hostile auth tree, without aborting the close", async () => {
+    assertSafeRevokeInvocation.mockImplementationOnce(() => {
+      throw new Error("unsafe revoke: auth authorizes an extra call");
+    });
+    const deps = makeDeps({ rebuildSorobanNode: vi.fn(async () => {}) });
+    const { tree, revoke } = makeRevokeTree();
+
+    // best-effort: does not throw
+    await executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
+
+    expect(revoke.status).toBe("skipped");
+    // the hostile tx is never signed or submitted
+    expect(deps.connector.signTransaction).not.toHaveBeenCalled();
+    expect(deps.submitSoroban).not.toHaveBeenCalled();
   });
 });
