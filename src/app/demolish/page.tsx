@@ -579,6 +579,19 @@ function DemolishFlow(): React.JSX.Element {
   ]);
   const isCancelled = state === "cancelled";
 
+  // Abort the close if the wallet is torn down while parked at the confirmation
+  // step (the user hit Disconnect, or switched network — which disconnects the
+  // session). Without this the machine keeps its plan and the Review panel + the
+  // confirm button stay live, so a secret-key/demo connector (whose disconnect is a
+  // no-op and whose instance is retained in the machine context) would still run
+  // the irreversible merge on CONFIRM, on the old network. Leaving the confirmation
+  // state makes CONFIRM inert until the user reconnects and rebuilds the plan.
+  useEffect(() => {
+    if (publicKey === null && isAwaitingConfirmation) {
+      send({ type: "CANCEL" });
+    }
+  }, [publicKey, isAwaitingConfirmation, send]);
+
   // derived UI sub-states from the design ↔ real machine mapping
   const isIdle = isMachineIdle && publicKey === null;
   const authImmutable = audit?.flags.authImmutable === true;
