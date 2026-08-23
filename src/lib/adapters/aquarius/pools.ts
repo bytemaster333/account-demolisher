@@ -10,6 +10,11 @@ import {
   vec as scvVec,
 } from "@/lib/soroban/scval";
 import { simulateRead } from "@/lib/soroban/simulate";
+import {
+  MAX_RETENTION_RETRIES,
+  RETENTION_RETRY_MARGIN_LEDGERS,
+  parseRetentionFloor,
+} from "@/lib/soroban/event-retention";
 
 // one pool the user holds shares in
 export interface AquariusPool {
@@ -314,12 +319,13 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
 
   async getUserPools(userPublicKey: string): Promise<AquariusPool[]> {
     const latest = await this.server.getLatestLedger();
-    const startLedger = Math.max(1, latest.sequence - this.lookbackLedgers);
+    let startLedger = Math.max(1, latest.sequence - this.lookbackLedgers);
 
     // dedupe by tokens+poolAddress since the same pool appears in many events
     const observed = new Map<string, { tokens: string[]; poolAddress: string }>();
 
     let cursor: string | undefined;
+    let retentionRetries = 0;
     for (let page = 0; page < this.maxPages; page++) {
       const request: rpc.Api.GetEventsRequest =
         cursor === undefined
@@ -344,8 +350,23 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
               limit: EVENT_PAGE_LIMIT,
             };
 
-      const resp = await this.server.getEvents(request);
-      if (resp.events.length === 0) break;
+      let resp: rpc.Api.GetEventsResponse;
+      try {
+        resp = await this.server.getEvents(request);
+      } catch (err) {
+        // on the first page, a startLedger below the RPC retention floor throws a
+        // "ledger range" error. Re-clamp to the reported floor (plus a margin) and
+        // redo this page instead of aborting the whole (fallback) scan.
+        const floor = cursor === undefined ? parseRetentionFloor(err) : null;
+        if (floor === null || retentionRetries >= MAX_RETENTION_RETRIES) throw err;
+        retentionRetries += 1;
+        startLedger = Math.min(latest.sequence, floor + RETENTION_RETRY_MARGIN_LEDGERS);
+        page -= 1; // the for-loop's page++ then redoes this page with the clamp
+        continue;
+      }
+      // NB: do NOT break on an empty page. getEvents can return an empty page with
+      // a still-advancing cursor; the cursor-stall check below is the real end
+      // condition, and maxPages bounds the loop.
 
       for (const ev of resp.events) {
         const decoded = tryDecodeDepositOrWithdrawEvent(ev, userPublicKey, this.routerId);

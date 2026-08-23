@@ -4,6 +4,11 @@ import { Address, rpc, xdr, type Horizon, type Transaction } from "@stellar/stel
 import type { NetworkConfig } from "@/lib/config/networks";
 import { fromScValAddress, fromScValI128, fromScValSymbol, fromScValU32 } from "./scval";
 import { allowance as readAllowance, buildApprove } from "./sep41";
+import {
+  MAX_RETENTION_RETRIES,
+  RETENTION_RETRY_MARGIN_LEDGERS,
+  parseRetentionFloor,
+} from "./event-retention";
 
 // one active sep-41 allowance attributable to the user
 export interface AllowanceRecord {
@@ -88,31 +93,8 @@ const PAGE_LIMIT = 10_000;
 // ledger closing between the error and the retry would drop us back below it and
 // fail again. A small margin absorbs that (skipping a few ledgers at the very
 // oldest edge is immaterial for a best-effort "latest allowance state" scan).
-const RETENTION_RETRY_MARGIN_LEDGERS = 60;
-
-// how many times we'll re-clamp startLedger and retry after a retention-range
-// error. The floor advances ~1 ledger / 5s, so the margin above absorbs any
-// realistic retry gap in one shot, but a bounded loop keeps a second range
-// error from propagating uncaught out of enumerateAllowances.
-const MAX_RETENTION_RETRIES = 3;
-
-// parses the retention floor from a getEvents "ledger range: N - M" error,
-// checking both the direct message and a nested cause. returns null if the
-// error isn't a recognizable range error.
-function parseRetentionFloor(err: unknown): number | null {
-  const directMessage =
-    typeof (err as { message?: unknown } | undefined)?.message === "string"
-      ? (err as { message: string }).message
-      : "";
-  const causeMsg =
-    typeof (err as { cause?: { message?: unknown } } | undefined)?.cause?.message === "string"
-      ? (err as { cause: { message: string } }).cause.message
-      : "";
-  const match = `${directMessage} ${causeMsg}`.match(/ledger range:\s*(\d+)\s*-\s*(\d+)/);
-  if (!match) return null;
-  const floor = Number.parseInt(match[1]!, 10);
-  return Number.isFinite(floor) ? floor : null;
-}
+// retention-floor helpers are shared with the other event scanners
+// (RETENTION_RETRY_MARGIN_LEDGERS, MAX_RETENTION_RETRIES, parseRetentionFloor)
 
 // enumerate active sep-41 allowances the user granted
 export async function enumerateAllowances(
