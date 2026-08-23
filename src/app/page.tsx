@@ -199,7 +199,7 @@ const STEPS: ReadonlyArray<Step> = [
   {
     num: "01",
     title: "Connect",
-    body: "Connect through Freighter, xBull, Albedo, Rabet, Lobstr, or Hana. No keys leave your device.",
+    body: "Connect through Freighter, xBull, Albedo, Rabet, Lobstr, Hana, Ledger, WalletConnect, and more. No keys leave your device.",
     highlight: false,
   },
   {
@@ -280,7 +280,7 @@ const FAQS: ReadonlyArray<Faq> = [
   },
   {
     q: "Does the app ever see my secret key?",
-    a: "No. The wallet integrations (Freighter, xBull, Albedo, Rabet, Lobstr, Hana via stellar-wallets-kit) keep the key on your device. The secret-key fallback is a last-resort option, entered locally in your browser, never sent to a server.",
+    a: "No. The wallet integrations (Freighter, xBull, Albedo, Rabet, Lobstr, Hana and more via stellar-wallets-kit, plus Ledger hardware and WalletConnect mobile) keep the key on your device. The secret-key fallback is a last-resort option, entered locally in your browser, never sent to a server.",
   },
   {
     q: "What is the mediator account and why does it exist?",

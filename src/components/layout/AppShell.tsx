@@ -359,9 +359,17 @@ function WalletMenu({
   }, [open]);
 
   const onCopy = useCallback(() => {
-    void navigator.clipboard?.writeText(publicKey);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1400);
+    // only flag "Copied" if the write actually succeeded, and swallow the rejection
+    // (clipboard access can be blocked) so it isn't an unhandled promise rejection
+    navigator.clipboard
+      ?.writeText(publicKey)
+      .then(() => {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1400);
+      })
+      .catch(() => {
+        // clipboard blocked; leave the label unchanged
+      });
   }, [publicKey]);
 
   const onDisconnectClick = useCallback(() => {

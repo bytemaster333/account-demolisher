@@ -1476,7 +1476,8 @@ function IdleConnect({
                 Connect a wallet
               </span>
               <span style={{ fontSize: 12.5, color: "var(--fg-3)", lineHeight: 1.5 }}>
-                Works with Freighter, xBull, Albedo, Rabet, Lobstr, and Hana. Connecting only shares
+                Works with Freighter, xBull, Albedo, Rabet, Lobstr, Hana, Ledger, WalletConnect, and
+                more. Connecting only shares
                 your public address, you approve each step in your wallet, and we never see your
                 secret key.
               </span>
