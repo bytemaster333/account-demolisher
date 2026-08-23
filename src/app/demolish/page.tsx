@@ -3834,10 +3834,10 @@ function ConfigurePanel({
               <circle cx="12" cy="12" r="9" />
             </svg>
             <span style={{ fontSize: 12.5, color: "var(--fg-2)", lineHeight: 1.45 }}>
-              <strong style={{ color: "var(--fg)" }}>Memo added.</strong> Because a plain account
-              close-out can&apos;t carry a memo, we hop the funds through a temporary helper account
-              so your exchange still sees the memo and credits your deposit. Nothing extra for you
-              to do.
+              <strong style={{ color: "var(--fg)" }}>Memo added.</strong>{" "}
+              {cex
+                ? "Because a plain account close-out can't carry a memo, we hop the funds through a temporary helper account so your exchange still sees the memo and credits your deposit. Nothing extra for you to do."
+                : "It's attached directly to the closing transaction, so your destination receives it alongside the funds. Nothing extra for you to do."}
             </span>
           </div>
         ) : null}

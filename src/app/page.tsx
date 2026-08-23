@@ -1566,7 +1566,7 @@ export default function HomePage(): React.JSX.Element {
                       marginTop: 2,
                     }}
                   >
-                    Real fees and auth counts, not estimates.
+                    Real fees from a live simulation, not estimates.
                   </span>
                 </div>
               </div>
