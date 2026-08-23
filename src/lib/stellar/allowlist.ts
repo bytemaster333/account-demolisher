@@ -63,6 +63,58 @@ function collectOperations(tx: Transaction | FeeBumpTransaction): readonly Opera
   return (tx as Transaction).operations;
 }
 
+// Walk an invokeHostFunction op's Soroban authorization entries and flag any that
+// AUTHORIZE contract creation or wasm upload anywhere in their invocation tree. A
+// legitimate DeFi auth tree only authorizes contract-function calls (the protocol
+// entry point plus token transfers); an entry authorizing create/upload is a
+// smuggled privilege the op-level check alone would miss. Sub-invocations to
+// non-allow-listed token contracts are intentionally NOT flagged here (they are a
+// normal part of a swap/withdraw and hard-gating them would break real closes; the
+// broader per-contract auth-scope walk is left for the external audit).
+function inspectAuthEntries(
+  ihf: Operation.InvokeHostFunction,
+): AllowlistViolationDetail | null {
+  const auth = ihf.auth;
+  if (!auth || auth.length === 0) return null;
+
+  const isForbidden = (name: string): boolean => /createContract|uploadContractWasm/i.test(name);
+
+  const walk = (invocation: {
+    function: () => { switch: () => { name: string } };
+    subInvocations: () => readonly unknown[];
+  }): boolean => {
+    let fnName: string;
+    try {
+      fnName = invocation.function().switch().name;
+    } catch {
+      return false;
+    }
+    if (isForbidden(fnName)) return true;
+    for (const sub of invocation.subInvocations()) {
+      if (walk(sub as typeof invocation)) return true;
+    }
+    return false;
+  };
+
+  for (const entry of auth) {
+    try {
+      if (walk(entry.rootInvocation() as unknown as Parameters<typeof walk>[0])) {
+        return {
+          contractId: "<auth-entry>",
+          reason: "A Soroban authorization entry authorizes contract creation or wasm upload.",
+        };
+      }
+    } catch {
+      // an unparseable auth entry is suspicious; refuse rather than sign blind
+      return {
+        contractId: "<auth-entry>",
+        reason: "Could not inspect a Soroban authorization entry.",
+      };
+    }
+  }
+  return null;
+}
+
 // returns null for classical ops or for allow-listed invocations
 function inspectOperation(
   op: Operation,
@@ -71,6 +123,8 @@ function inspectOperation(
   if (op.type !== "invokeHostFunction") return null;
 
   const ihf = op as Operation.InvokeHostFunction;
+  const authViolation = inspectAuthEntries(ihf);
+  if (authViolation !== null) return authViolation;
   const func = ihf.func;
 
   let kind: string;

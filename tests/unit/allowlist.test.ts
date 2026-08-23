@@ -1,13 +1,15 @@
 import { describe, it, expect } from "vitest";
 import {
   Account,
+  Address,
   Asset,
   BASE_FEE,
   Contract,
+  hash,
   Operation,
   StrKey,
   TransactionBuilder,
-  type xdr,
+  xdr,
 } from "@stellar/stellar-sdk";
 
 import {
@@ -70,6 +72,60 @@ describe("assertTransactionAllowed — sign-time allow-list gate fires", () => {
     const t = tx(Operation.uploadContractWasm({ wasm: Buffer.from([0, 1, 2, 3]) }));
     expect(() => assertTransactionAllowed(t, TESTNET)).toThrow(/WASM-upload/);
     expect(getViolations(t, TESTNET)[0]!.contractId).toBe("<upload-wasm>");
+  });
+
+  // build an invokeContract op against an allow-listed contract, carrying the
+  // given Soroban authorization entries
+  function invokeWithAuth(auth: xdr.SorobanAuthorizationEntry[]) {
+    const func = xdr.HostFunction.hostFunctionTypeInvokeContract(
+      new xdr.InvokeContractArgs({
+        contractAddress: Address.fromString(ALLOWED_ROUTER).toScAddress(),
+        functionName: "swap",
+        args: [],
+      }),
+    );
+    return Operation.invokeHostFunction({ func, auth });
+  }
+  const sourceCreds = xdr.SorobanCredentials.sorobanCredentialsSourceAccount();
+
+  it("BLOCKS an op whose auth entry authorizes contract creation", () => {
+    const preimage = xdr.ContractIdPreimage.contractIdPreimageFromAddress(
+      new xdr.ContractIdPreimageFromAddress({
+        address: Address.fromString(ALLOWED_ROUTER).toScAddress(),
+        salt: Buffer.alloc(32, 1),
+      }),
+    );
+    const createFn = xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeCreateContractHostFn(
+      new xdr.CreateContractArgs({
+        contractIdPreimage: preimage,
+        executable: xdr.ContractExecutable.contractExecutableWasm(hash(Buffer.from("x"))),
+      }),
+    );
+    const entry = new xdr.SorobanAuthorizationEntry({
+      credentials: sourceCreds,
+      rootInvocation: new xdr.SorobanAuthorizedInvocation({ function: createFn, subInvocations: [] }),
+    });
+    const t = tx(invokeWithAuth([entry]));
+    expect(() => assertTransactionAllowed(t, TESTNET)).toThrow(AllowlistViolation);
+    expect(getViolations(t, TESTNET)[0]!.reason).toMatch(/authorization entry authorizes/i);
+  });
+
+  it("ALLOWS an auth entry that authorizes a normal token sub-invocation", () => {
+    // a legitimate swap authorizes token.transfer on a (possibly non-allow-listed)
+    // token contract; the auth guard must NOT reject that
+    const token = StrKey.encodeContract(Buffer.alloc(32, 3));
+    const contractFn = xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeContractFn(
+      new xdr.InvokeContractArgs({
+        contractAddress: Address.fromString(token).toScAddress(),
+        functionName: "transfer",
+        args: [],
+      }),
+    );
+    const entry = new xdr.SorobanAuthorizationEntry({
+      credentials: sourceCreds,
+      rootInvocation: new xdr.SorobanAuthorizedInvocation({ function: contractFn, subInvocations: [] }),
+    });
+    expect(getViolations(tx(invokeWithAuth([entry])), TESTNET)).toEqual([]);
   });
 
   it("reports EVERY violation across a multi-op transaction", () => {
