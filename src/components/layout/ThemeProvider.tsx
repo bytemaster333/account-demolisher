@@ -34,24 +34,38 @@ function readStoredTheme(): Theme {
 }
 
 export function ThemeProvider({ children }: { readonly children: React.ReactNode }) {
-  // lazy init so the initial state already reflects localStorage, avoiding a
-  // synchronous setState inside an effect (cascading render)
-  const [theme, setTheme] = useState<Theme>(readStoredTheme);
+  // null until resolved after mount. The server and the FIRST client render must
+  // agree (both "dark", the SSR default) or React throws a hydration mismatch, so
+  // we do NOT read localStorage/prefers-color-scheme during render. The real theme
+  // is applied in the mount effect below; the pre-hydration inline script in
+  // layout.tsx has already set data-theme for CSS, so there is no visual flash,
+  // only a one-frame correction of the theme-toggle icon.
+  const [theme, setTheme] = useState<Theme | null>(null);
 
   useEffect(() => {
+    setTheme(readStoredTheme());
+  }, []);
+
+  useEffect(() => {
+    if (theme === null) return; // leave the pre-hydration script's data-theme in place
     document.documentElement.dataset.theme = theme;
-    try {
-      window.localStorage.setItem(STORAGE_KEY, theme);
-    } catch {
-      // ignore quota errors
-    }
   }, [theme]);
 
+  const resolved: Theme = theme ?? "dark";
   const value: ThemeContextValue = {
-    theme,
-    isDark: theme === "dark",
-    isLight: theme === "light",
-    toggle: () => setTheme((t) => (t === "dark" ? "light" : "dark")),
+    theme: resolved,
+    isDark: resolved === "dark",
+    isLight: resolved === "light",
+    toggle: () =>
+      setTheme((t) => {
+        const next: Theme = (t ?? "dark") === "dark" ? "light" : "dark";
+        try {
+          window.localStorage.setItem(STORAGE_KEY, next);
+        } catch {
+          // ignore quota / storage-disabled errors
+        }
+        return next;
+      }),
   };
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
