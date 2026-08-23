@@ -193,14 +193,20 @@ export function MainnetConfirm({ onConfirm, onCancel }: MainnetConfirmProps): Re
             checked={auditAcknowledged}
             onChange={(e) => setAuditAcknowledged(e.target.checked)}
             data-testid="mainnet-audit-ack"
-            style={{ marginTop: 2, width: 16, height: 16, flexShrink: 0, accentColor: "var(--danger)" }}
+            style={{
+              marginTop: 2,
+              width: 16,
+              height: 16,
+              flexShrink: 0,
+              accentColor: "var(--danger)",
+            }}
           />
           <span style={{ fontSize: 12.5, lineHeight: 1.55, color: "var(--fg-2)" }}>
             <span style={{ color: "var(--fg)", fontWeight: 600 }}>
               This tool has not completed an independent security audit.
             </span>{" "}
-            A third-party review is pending. Using it on mainnet is at your own risk. I understand and
-            want to continue.
+            A third-party review is pending. Using it on mainnet is at your own risk. I understand
+            and want to continue.
           </span>
         </label>
 

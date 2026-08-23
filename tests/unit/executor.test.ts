@@ -393,7 +393,10 @@ describe("executePlanTreeOnChain, merge fee/reprice retry", () => {
     );
 
     const { tree } = makeFinalClassicTree();
-    const promise = executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
+    const promise = executePlanTreeOnChain(
+      { publicKey: "GUSER", tree, previousReceipts: {} },
+      deps,
+    );
     const settled = expect(promise).rejects.toThrow(/op_no_issuer/);
     await vi.runAllTimersAsync();
     await settled;
@@ -410,7 +413,10 @@ describe("executePlanTreeOnChain, merge fee/reprice retry", () => {
       .mockResolvedValueOnce({ txHash: "HASH2", ledger: 45 });
 
     const { tree } = makeFinalClassicTree();
-    const promise = executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
+    const promise = executePlanTreeOnChain(
+      { publicKey: "GUSER", tree, previousReceipts: {} },
+      deps,
+    );
     await vi.runAllTimersAsync();
     const output = await promise;
 
@@ -428,7 +434,10 @@ describe("executePlanTreeOnChain, merge fee/reprice retry", () => {
     );
 
     const { tree } = makeFinalClassicTree();
-    const promise = executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
+    const promise = executePlanTreeOnChain(
+      { publicKey: "GUSER", tree, previousReceipts: {} },
+      deps,
+    );
     const settled = expect(promise).rejects.toThrow(/tx_bad_seq/);
     await vi.runAllTimersAsync();
     await settled;
@@ -661,7 +670,12 @@ function makeConvertThenMergeTree() {
     kind: "FinalClassicTx" as const,
     dependencies: ["convert"],
     status: "pending",
-    metadata: { kind: "FinalClassicTx" as const, batches: [], destination: "GDEST", useMediator: false },
+    metadata: {
+      kind: "FinalClassicTx" as const,
+      batches: [],
+      destination: "GDEST",
+      useMediator: false,
+    },
   };
   return {
     tree: {

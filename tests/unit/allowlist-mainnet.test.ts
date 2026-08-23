@@ -9,7 +9,11 @@ import {
   type xdr,
 } from "@stellar/stellar-sdk";
 
-import { assertTransactionAllowed, getViolations, AllowlistViolation } from "@/lib/stellar/allowlist";
+import {
+  assertTransactionAllowed,
+  getViolations,
+  AllowlistViolation,
+} from "@/lib/stellar/allowlist";
 import {
   MAINNET_ALLOWLIST,
   TESTNET_ALLOWLIST,
@@ -56,7 +60,10 @@ describe("mainnet allow-list — sign-time enforcement", () => {
 
   it("BLOCKS contract-creation and wasm-upload host functions on mainnet", () => {
     expect(() =>
-      assertTransactionAllowed(mainnetTx(Operation.uploadContractWasm({ wasm: Buffer.from([1]) })), MAINNET),
+      assertTransactionAllowed(
+        mainnetTx(Operation.uploadContractWasm({ wasm: Buffer.from([1]) })),
+        MAINNET,
+      ),
     ).toThrow(/WASM-upload/);
   });
 });
@@ -71,7 +78,8 @@ describe("mainnet allow-list — completeness and provenance", () => {
 
   it("every entry is a valid, uniquely-listed contract id", () => {
     const ids = MAINNET_ALLOWLIST.map((c) => c.id);
-    for (const id of ids) expect(StrKey.isValidContract(id), `invalid contract id: ${id}`).toBe(true);
+    for (const id of ids)
+      expect(StrKey.isValidContract(id), `invalid contract id: ${id}`).toBe(true);
     expect(new Set(ids).size, "duplicate ids in mainnet allow-list").toBe(ids.length);
   });
 

@@ -95,15 +95,19 @@ describe("assertTransactionAllowed — sign-time allow-list gate fires", () => {
         salt: Buffer.alloc(32, 1),
       }),
     );
-    const createFn = xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeCreateContractHostFn(
-      new xdr.CreateContractArgs({
-        contractIdPreimage: preimage,
-        executable: xdr.ContractExecutable.contractExecutableWasm(hash(Buffer.from("x"))),
-      }),
-    );
+    const createFn =
+      xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeCreateContractHostFn(
+        new xdr.CreateContractArgs({
+          contractIdPreimage: preimage,
+          executable: xdr.ContractExecutable.contractExecutableWasm(hash(Buffer.from("x"))),
+        }),
+      );
     const entry = new xdr.SorobanAuthorizationEntry({
       credentials: sourceCreds,
-      rootInvocation: new xdr.SorobanAuthorizedInvocation({ function: createFn, subInvocations: [] }),
+      rootInvocation: new xdr.SorobanAuthorizedInvocation({
+        function: createFn,
+        subInvocations: [],
+      }),
     });
     const t = tx(invokeWithAuth([entry]));
     expect(() => assertTransactionAllowed(t, TESTNET)).toThrow(AllowlistViolation);
@@ -123,7 +127,10 @@ describe("assertTransactionAllowed — sign-time allow-list gate fires", () => {
     );
     const entry = new xdr.SorobanAuthorizationEntry({
       credentials: sourceCreds,
-      rootInvocation: new xdr.SorobanAuthorizedInvocation({ function: contractFn, subInvocations: [] }),
+      rootInvocation: new xdr.SorobanAuthorizedInvocation({
+        function: contractFn,
+        subInvocations: [],
+      }),
     });
     expect(getViolations(tx(invokeWithAuth([entry])), TESTNET)).toEqual([]);
   });

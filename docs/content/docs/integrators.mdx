@@ -16,7 +16,7 @@ If you run your own copy of the app instead, see [Self host](/docs/self-host). T
 
 ### Why a plain merge to your hot wallet is not enough
 
-Stellar's `ACCOUNT_MERGE` moves the whole balance, including the base reserve, to a destination account. Most centralized exchanges do not credit an incoming merge: the lumens land on the ledger at your hot wallet, but the deposit is never attributed to a user, because exchanges credit *payments* carrying a deposit memo, not merges. See [Destinations and the mediator](/docs/destinations-and-mediator) for the full write-up.
+Stellar's `ACCOUNT_MERGE` moves the whole balance, including the base reserve, to a destination account. Most centralized exchanges do not credit an incoming merge: the lumens land on the ledger at your hot wallet, but the deposit is never attributed to a user, because exchanges credit _payments_ carrying a deposit memo, not merges. See [Destinations and the mediator](/docs/destinations-and-mediator) for the full write-up.
 
 The demolisher solves this with a mediator hop, and it engages that hop **only for destinations it recognizes as exchange hot wallets**. Recognition is a lookup in a compiled-in registry (`lookupCex` in `src/lib/safety/cex-registry.ts`). If your hot-wallet address is in that registry, a close to it is routed through the mediator and arrives as a creditable memo-bearing payment. If it is not, a close to your address is a direct `ACCOUNT_MERGE`, which your exchange will most likely not credit. The practical consequence: for closes to be usable at your exchange, your deposit address needs to be in the registry.
 
@@ -36,13 +36,13 @@ The registry is `src/lib/safety/cex-registry.ts`. Each entry is a `CexInfo`:
 
 ```ts
 export interface CexInfo {
-  readonly address: string;        // G... hot-wallet account id
-  readonly name: string;           // shown to the user
-  readonly requiresMemo: boolean;  // true for every current entry
+  readonly address: string; // G... hot-wallet account id
+  readonly name: string; // shown to the user
+  readonly requiresMemo: boolean; // true for every current entry
   readonly memoType?: CexMemoType; // "text" | "id" | "hash" | "return"
-  readonly minimumDeposit?: string;// decimal-string XLM minimum, if published
-  readonly verifiedAt: string;     // ISO date the address+policy was checked
-  readonly source: string;         // citation for the address and policy
+  readonly minimumDeposit?: string; // decimal-string XLM minimum, if published
+  readonly verifiedAt: string; // ISO date the address+policy was checked
+  readonly source: string; // citation for the address and policy
 }
 ```
 

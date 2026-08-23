@@ -71,9 +71,7 @@ function collectOperations(tx: Transaction | FeeBumpTransaction): readonly Opera
 // non-allow-listed token contracts are intentionally NOT flagged here (they are a
 // normal part of a swap/withdraw and hard-gating them would break real closes; the
 // broader per-contract auth-scope walk is left for the external audit).
-function inspectAuthEntries(
-  ihf: Operation.InvokeHostFunction,
-): AllowlistViolationDetail | null {
+function inspectAuthEntries(ihf: Operation.InvokeHostFunction): AllowlistViolationDetail | null {
   const auth = ihf.auth;
   if (!auth || auth.length === 0) return null;
 
