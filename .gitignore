@@ -26,12 +26,18 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# local env
+# local env (including any backup copies, which hold live secrets)
 .env
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
+.env.local.*
+.env*.bak*
+*.bak
+
+# internal tranche/working notes (the .md twin is already covered by *.md below)
+m2-tranche.txt
 
 # vercel
 .vercel/
