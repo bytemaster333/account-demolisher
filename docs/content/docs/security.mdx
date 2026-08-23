@@ -28,7 +28,7 @@ The only privileged secret the deployment uses is `MEDIATOR_SECRET`, and it is n
 
 The constraints on what a derived key can do:
 
-- The validator at `src/lib/mediator/validator.ts` enforces a single accepted envelope shape and rejects everything else with one of twelve distinct failure codes. The mediator must be the transaction source and the source of both operations; the first operation must be a native payment; the second must be an `ACCOUNT_MERGE`; both must target the same destination; the time bounds must be present and no more than one hour in the future.
+- The validator at `src/lib/mediator/validator.ts` enforces a single accepted envelope shape and rejects everything else with one of thirteen distinct failure codes. The mediator must be the transaction source and the source of both operations; the first operation must be a native payment; the second must be an `ACCOUNT_MERGE`; both must target the same destination; the time bounds must be present and no more than one hour in the future.
 - Fee-bump envelopes are refused outright.
 - The endpoint is rate limited to five requests per minute per IP.
 
@@ -73,8 +73,66 @@ Before any signing happens you pass through:
 
 ## Content Security Policy
 
-The production deployment serves a strict CSP (`next.config.ts`). `connect-src` allows `'self'` plus exactly eleven upstream endpoints: Horizon (mainnet, testnet, futurenet), Soroban RPC (mainnet, testnet, futurenet), the Aquarius API (mainnet and testnet), the Soroswap API, and Friendbot (testnet and futurenet). `script-src` allows `'self'`, `'unsafe-inline'` (required by the Next.js React Server Components inline payload), and `'wasm-unsafe-eval'` (required by the Stellar SDK's ed25519 WASM module). `object-src` is `'none'`, frames are denied (`frame-ancestors 'none'`), and `form-action` is restricted to `'self'`. Any request to an endpoint not on the list is blocked by the browser at the CSP layer.
+The production deployment serves a locked-down CSP built in `src/lib/config/csp.ts` and applied per response in `src/middleware.ts`. `connect-src` allows `'self'` plus a fixed allow-list of Stellar upstreams: Horizon (mainnet, testnet, futurenet), Soroban RPC (mainnet, testnet, futurenet, plus the pinned failover hosts), the Aquarius API (mainnet and testnet), the Soroswap API, and Friendbot (testnet and futurenet); when WalletConnect is configured, the WalletConnect relay and Reown API hosts are added. `script-src` allows `'self'`, `'unsafe-inline'` (Next's inline hydration is not nonce-stamped here, and a nonce would force every page out of static prerendering), and `'wasm-unsafe-eval'` (required by the Stellar SDK's ed25519 WASM module). No third-party script origin is allowed. `object-src` is `'none'`, frames are denied (`frame-ancestors 'none'`), and `form-action` is restricted to `'self'`. Any request to an endpoint not on the list is blocked by the browser at the CSP layer.
 
 ## A note on `public/stellar.toml`
 
-The bundled `public/stellar.toml` is a SEP-1 origin declaration for a reference deployment. Its signing key and signer entries are placeholders. If you run your own deployment and want embedders to be able to verify your origin, replace those values and re-sign the file for your domain. It is a declaration about the site, not the source of the mediator's signing key, which is derived from `MEDIATOR_SECRET` as described above.
+The bundled `public/stellar.toml` is a SEP-1 origin declaration for a reference deployment, served at the canonical `/.well-known/stellar.toml` path. It intentionally declares no `SIGNING_KEY` and no `SIGNERS`: the mediator co-signs with per-flow ephemeral keys, so there is no long-lived account to name. The organization details and canonical URL are placeholders. If you run your own deployment and want embedders to be able to verify your origin, replace those values for your domain. It is a declaration about the site, not the source of the mediator's signing key, which is derived from `MEDIATOR_SECRET` as described above.
+
+## Formal threat model
+
+The table above is the quick reference. This section is the explicit version: what is being protected, who might attack it, where the trust boundaries fall, and the concrete code that defends each one. Every mitigation named here is a real file in the repository, cited so you can read it rather than take it on faith.
+
+### Assets
+
+What the design is protecting, in rough order of severity:
+
+- **The user's account and its funds.** The closing account, its balances, its DeFi positions, and the recovered XLM that the merge releases. This is the whole point: a close is irreversible, so getting the destination and the disposal right is the primary asset.
+- **The mediator HMAC master secret (`MEDIATOR_SECRET`).** A server-only seed. If it leaked, an attacker could derive any flow's signing key. It never signs directly and never holds a balance (`src/server/mediator-secret.ts`).
+- **Signing keys.** The user's wallet key (which never reaches the server) and each flow's ephemeral mediator key (derived on demand, never stored).
+- **Allow-list integrity.** The set of Soroban contract ids the tool will ever sign an invocation against. If this set could be widened at runtime, a malicious position could smuggle an arbitrary contract call into a signature.
+- **Plan correctness.** The guarantee that the transactions actually signed and submitted match the plan the user reviewed, against current on-chain state, and that a merge never runs while a position is still open.
+
+### Adversaries
+
+The threat actors the design assumes:
+
+- **A malicious dApp or token contract.** An attacker-controlled contract can emit fabricated `approve` or `transfer` events so it surfaces in discovery, and can return a hostile Soroban authorization tree from simulation, trying to get the user's one signature to authorize more than the intended call.
+- **A compromised or hostile RPC / Horizon endpoint.** A data source that lies: wrong balances, stale footprints, a fake "account not found", or a manipulated simulation result.
+- **A network man-in-the-middle.** An attacker on the wire between the browser and any upstream, trying to alter an envelope or a response in flight.
+- **A malicious co-signer.** On a multisig account, one keyholder trying to get a different transaction signed than the one the others agreed to, or to bloat or wedge the signing request.
+- **A hostile exchange or a wrong destination.** A destination that will not credit a merge, or a tampered forward that tries to redirect funds to an address the user did not choose.
+- **A supply-chain attacker.** A malicious dependency, wallet SDK, or injected script trying to exfiltrate the key or reach an unexpected host.
+- **The operator.** Whoever runs the deployment. The design limits what a hostile or compromised server can do, so that self-hosting or the reference deployment does not require trusting the operator with the user's key or funds.
+
+### Trust boundaries
+
+- **Client browser (holds the most trust).** The user's key lives here and nowhere else. Discovery, plan generation, simulation, the allow-list check, the safety gates, and signing all happen client-side. The browser is trusted with the key because the key never leaves it.
+- **Server (mediator co-signer, multisig relay, Soroswap proxy).** Semi-trusted. It holds `MEDIATOR_SECRET` but never a user key, and its powers are bounded by strict validators. A fully compromised server still cannot move funds anywhere except the destination the user committed to (see the mediator validator below).
+- **External RPC / Horizon (untrusted for integrity).** Read results are treated as hints, not truth: the classic close is re-audited and rebuilt from fresh state at submit time, Soroban nodes are re-simulated, event-derived allowances are confirmed against on-chain reads, and a merge is refused if positions cannot be confirmed closed.
+- **Wallet (trusted signer, separate boundary).** The wallet shows its own confirmation and signs on its own; the app hands it an XDR and gets an envelope back through the SEP-43 interface. It is a distinct trust domain from the app.
+- **On-chain contracts (untrusted).** Any contract a position points at is untrusted until it is on the allow-list, and even an allow-listed call is re-checked immediately before signing.
+
+### Mitigations by asset
+
+| Asset | Concrete mitigation in this codebase |
+| ----- | ------------------------------------ |
+| User account and funds (wrong destination) | Typed last-four confirmation plus a 4-second timer and a high-value warning in `src/app/demolish/page.tsx`; memo enforcement for known exchanges (`requireMemoEnforcement`, `src/lib/safety/cex-registry.ts`); scam-token heuristics (`src/lib/safety/scam-heuristics.ts`) |
+| User account and funds (merging around an open position) | Execute-time re-audit, mergeability re-check, and a fail-closed Soroban re-probe before the merge (`src/lib/orchestrator/executor.ts`); a failed DeFi exit cascades to skip its dependents rather than merge around them |
+| Mediator HMAC master secret | Used only as an HMAC key to derive per-flow keys, never as a signing key, never holding funds; loaded once and memoized; malformed seed throws at load (`src/server/mediator-secret.ts`) |
+| Signing keys | User key never sent to the server; wallet path signs on-device via SEP-43; the secret-key fallback keeps the seed in browser memory only and builds a fresh `Keypair` per signing call (`src/lib/wallet/kit.ts`, `src/lib/wallet/connector.ts`); each mediator flow uses a throwaway key |
+| Allow-list integrity | The list is compiled into `src/lib/config/contracts.ts` and cannot be widened at runtime; enforced by `assertTransactionAllowed` (`src/lib/stellar/allowlist.ts`) immediately before signing every DeFi node in the executor; contract-creation and WASM-upload host functions are always rejected |
+| Plan correctness | Soroban nodes are rebuilt against fresh on-chain state before signing (`rebuildSorobanNode` in `src/lib/orchestrator/executor.ts`); the classic close is re-audited, re-batched, and rebuilt from fresh state each phase (`buildClassicTransaction`); the graph is validated for cycles and missing dependencies when built |
+
+### Mitigations by adversary
+
+| Adversary | Concrete mitigation in this codebase |
+| --------- | ------------------------------------ |
+| Malicious dApp / token contract | The standalone revoke is held to an exact `approve(0)` with no smuggled auth, source-account credentials only, no sub-invocations (`assertSafeRevokeInvocation`, `src/lib/soroban/revoke-guard.ts`, wired in `src/lib/soroban/revoke.ts`); the auto-drain of a discovered token is held to an exact `transfer` the same way (`assertSafeTransferInvocation`, `src/lib/soroban/transfer-guard.ts`); a fabricated `approve` event is caught by confirming the allowance against the token's on-chain `allowance()` read (`confirmAllowancesOnChain`, `allowanceAmountMismatch` in `src/lib/soroban/allowances.ts`) |
+| Compromised / hostile RPC or Horizon | Read data is re-verified rather than trusted: fresh re-audit and rebuild at submit time, re-simulation of Soroban footprints, and a fail-closed merge guard that refuses when positions cannot be confirmed closed (`src/lib/orchestrator/executor.ts`); transient 5xx reads retry with backoff while a 404 or 4xx is fatal (`withHorizonRetry`) |
+| Network MITM | A strict Content-Security-Policy (`src/lib/config/csp.ts`, applied per response in `src/middleware.ts`) restricts `connect-src` to a fixed upstream allow-list, sets `object-src 'none'`, `frame-ancestors 'none'`, and `form-action 'self'`; HTTPS is enforced by the TLS-terminating proxy (HSTS in `next.config.ts`) |
+| Malicious co-signer | Signatures are merged only if the partial envelope's transaction hash equals the canonical hash and each signature verifies against an expected signer key (`mergeSignatures`, `src/lib/multisig/partial-xdr.ts`); signatures are deduplicated by recovered key, not by attacker-chosen hint, so one captured signature cannot bloat the envelope to the XDR cap |
+| Hostile exchange / redirected funds | The mediator co-signs one envelope shape only: a native payment and an account-merge that must target the same destination, and that destination must equal the one committed in the flow token (`validateMediatorForwardEnvelope`, the closed `ValidationFailureCode` set in `src/lib/mediator/validator.ts`); a fully compromised server can still only send funds to the destination the user chose |
+| Supply-chain attacker | `pnpm-lock.yaml` is committed; no third-party analytics or telemetry SDKs are in the dependency graph; the CSP loads no external script hosts (`script-src` is `'self'` plus the inline hydration payload and the Stellar SDK WASM module only); `public/stellar.toml` (SEP-1) lets embedders verify the canonical origin |
+| Operator (self-host or reference) | The server never receives a user key and cannot build or submit on the user's behalf; the mediator's power is bounded by the validator and by per-flow ephemeral keys; API routes are rate limited per client IP (`createLimiter`, `src/server/rate-limit.ts`): the mediator co-signer and the Soroswap proxy at five requests per minute, the signing-relay routes at their own limits; the multisig relay requires a transaction already signed by an authorized on-chain signer before it will accept a request (`createPlan` in `src/server/signing-relay.ts`) |
+

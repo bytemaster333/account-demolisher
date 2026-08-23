@@ -92,7 +92,7 @@ You do **not** need to fund anything. There is no standing mediator account. For
 
 ## Content Security Policy
 
-The production CSP is defined in `next.config.ts`. If you add a new upstream the app needs to talk to, add its URL to `CONNECT_SRC_ENDPOINTS` in that file. The browser blocks any request to an endpoint not on the list.
+The production CSP is built in `src/lib/config/csp.ts` and applied per response in `src/middleware.ts` (`next.config.ts` sets only the static headers such as HSTS). If you add a new upstream the app needs to talk to, add its URL to `CONNECT_SRC_ENDPOINTS` in `csp.ts`. The browser blocks any request to an endpoint not on the list.
 
 ## Scaling note
 

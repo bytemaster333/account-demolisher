@@ -40,7 +40,7 @@ You could imagine closing the account by paying everything out and leaving the b
 The mediator's signing key is the only privileged secret the deployment uses, and even that is not stored as a ready-to-use key. See [Security](/docs/security) for the full picture. The short version:
 
 - The signing key for each flow is derived on demand from a server-only master secret. A different ephemeral key is used for every closure.
-- The validator at `src/lib/mediator/validator.ts` is the security boundary. It defines twelve distinct failure codes covering every way the envelope can deviate from the one accepted shape. The mediator must be the transaction source and the source of both operations; the first operation must be a native payment; the second must be an `ACCOUNT_MERGE`; both must target the same destination; the time bounds must be present and no more than one hour out; and fee-bump envelopes are rejected outright.
+- The validator at `src/lib/mediator/validator.ts` is the security boundary. It defines thirteen distinct failure codes covering every way the envelope can deviate from the one accepted shape. The mediator must be the transaction source and the source of both operations; the first operation must be a native payment; the second must be an `ACCOUNT_MERGE`; both must target the same destination; the time bounds must be present and no more than one hour out; and fee-bump envelopes are rejected outright.
 - The endpoint is rate limited to five requests per minute per IP.
 
 If the validator passes, the only thing the mediator key can do is what the envelope already spells out: send your funds to the destination you chose.
