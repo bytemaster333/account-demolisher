@@ -89,6 +89,9 @@ importers:
       '@types/react-dom':
         specifier: 19.2.3
         version: 19.2.3(@types/react@19.2.14)
+      '@walletconnect/sign-client':
+        specifier: 2.23.0
+        version: 2.23.0(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@6.0.6)(zod@4.4.3)
       eslint:
         specifier: 9.39.4
         version: 9.39.4(jiti@2.7.0)
