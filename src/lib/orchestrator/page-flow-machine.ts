@@ -1161,6 +1161,7 @@ export type FailureKind =
   | "network"
   | "not_mergeable"
   | "position_open"
+  | "reverted"
   | "signing"
   | "unknown";
 
@@ -1169,6 +1170,17 @@ export function classifyFailure(errOrMessage: unknown): FailureKind {
     .toLowerCase()
     .trim();
   if (m.includes("tx_bad_seq") || m.includes("bad_seq")) return "bad_seq";
+  // diverged-state stops are checked BEFORE the footprint bucket: a "positions
+  // still open" or "not mergeable" message whose protocol detail happens to
+  // mention "archived"/"restore" must rediscover, not retry it as a footprint race.
+  if (
+    m.includes("position(s) still open") ||
+    m.includes("still open") ||
+    m.includes("defi position")
+  )
+    return "position_open";
+  if (m.includes("account_merge blocked") || m.includes("not mergeable") || m.includes("mergeable"))
+    return "not_mergeable";
   if (
     m.includes("footprint") ||
     m.includes("restorepreamble") ||
@@ -1178,14 +1190,10 @@ export function classifyFailure(errOrMessage: unknown): FailureKind {
   ) {
     return "changed_footprint";
   }
-  if (
-    m.includes("position(s) still open") ||
-    m.includes("still open") ||
-    m.includes("defi position")
-  )
-    return "position_open";
-  if (m.includes("account_merge blocked") || m.includes("not mergeable") || m.includes("mergeable"))
-    return "not_mergeable";
+  // a genuine on-chain contract revert (not a footprint/seq race): the chain state
+  // likely diverged from the plan, so rediscover + rebuild rather than replay the
+  // identical tree, which would only revert again.
+  if (m.includes("failed on-chain")) return "reverted";
   if (m.includes("signing_failed") || m.includes("failed to sign") || m.includes("sign the"))
     return "signing";
   if (
@@ -1215,6 +1223,9 @@ export function isRetryableFailure(kind: FailureKind): boolean {
   switch (kind) {
     case "not_mergeable":
     case "position_open":
+    case "reverted":
+      // not a transient race: rediscover + rebuild from fresh state rather than
+      // replay the identical tree (which would reproduce the same failure)
       return false;
     case "bad_seq":
     case "changed_footprint":

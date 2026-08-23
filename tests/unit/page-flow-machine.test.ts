@@ -252,11 +252,19 @@ describe("failure taxonomy (typed recovery)", () => {
     expect(classifyFailure("Failed to sign envelope")).toBe("signing");
     expect(classifyFailure("Bad Gateway (502)")).toBe("network");
     expect(classifyFailure("something entirely unexpected")).toBe("unknown");
+    // a genuine on-chain contract revert is its own kind (rediscover, not replay)
+    expect(classifyFailure("submitSoroban: transaction ABC123 failed on-chain")).toBe("reverted");
+    // precedence: a diverged-state stop whose detail mentions "archived" must NOT
+    // be mis-bucketed as a (retryable) footprint race
+    expect(classifyFailure("account_merge blocked: DeFi position(s) still open (entry archived)")).toBe(
+      "position_open",
+    );
   });
 
   it("makes diverged-state failures rediscover and transient ones re-execute", () => {
     expect(isRetryableFailure("position_open")).toBe(false);
     expect(isRetryableFailure("not_mergeable")).toBe(false);
+    expect(isRetryableFailure("reverted")).toBe(false);
     for (const k of ["bad_seq", "changed_footprint", "network", "signing", "unknown"] as const) {
       expect(isRetryableFailure(k as FailureKind)).toBe(true);
     }
