@@ -43,6 +43,9 @@ export function ThemeProvider({ children }: { readonly children: React.ReactNode
   const [theme, setTheme] = useState<Theme | null>(null);
 
   useEffect(() => {
+    // resolve the client-only theme once, after hydration (see the null-initial
+    // note above). This is the documented "read a browser value on mount" case.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setTheme(readStoredTheme());
   }, []);
 
