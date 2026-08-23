@@ -82,14 +82,25 @@ function Navbar() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      if (useWalletStore.getState().publicKey !== null) return;
-      const stored = window.localStorage.getItem(NETWORK_STORAGE_KEY);
-      const net = resolveNetwork(stored === "mainnet" || stored === "testnet" ? stored : networkId);
-      const address = await restoreKitSession(net);
-      // bail if nothing to restore, or a connect happened while we awaited
-      if (cancelled || address === null || useWalletStore.getState().publicKey !== null) return;
-      setActiveConnector(new WalletKitConnector(net));
-      setConnected(address, "kit");
+      try {
+        if (useWalletStore.getState().publicKey !== null) return;
+        let stored: string | null = null;
+        try {
+          stored = window.localStorage.getItem(NETWORK_STORAGE_KEY);
+        } catch {
+          // storage unavailable; fall back to the store's network
+        }
+        const net = resolveNetwork(
+          stored === "mainnet" || stored === "testnet" ? stored : networkId,
+        );
+        const address = await restoreKitSession(net);
+        // bail if nothing to restore, or a connect happened while we awaited
+        if (cancelled || address === null || useWalletStore.getState().publicKey !== null) return;
+        setActiveConnector(new WalletKitConnector(net));
+        setConnected(address, "kit");
+      } catch {
+        // a wallet-kit restore failure must never break page load; stay disconnected
+      }
     })();
     return () => {
       cancelled = true;
@@ -528,7 +539,13 @@ function NetworkSwitcher() {
 
   // hydrate the saved choice on the client (store initialises from env for SSR)
   useEffect(() => {
-    const stored = window.localStorage.getItem(NETWORK_STORAGE_KEY);
+    let stored: string | null = null;
+    try {
+      // getItem THROWS (not just returns null) when storage is blocked
+      stored = window.localStorage.getItem(NETWORK_STORAGE_KEY);
+    } catch {
+      // storage unavailable; keep the SSR/env default
+    }
     if ((stored === "mainnet" || stored === "testnet") && stored !== networkId) {
       setNetwork(stored);
     }

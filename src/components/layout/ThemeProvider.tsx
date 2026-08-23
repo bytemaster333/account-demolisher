@@ -17,8 +17,16 @@ const STORAGE_KEY = "demolisher.theme";
 
 function readStoredTheme(): Theme {
   if (typeof window === "undefined") return "dark";
-  const stored = window.localStorage.getItem(STORAGE_KEY);
-  if (stored === "dark" || stored === "light") return stored;
+  try {
+    // localStorage access THROWS (not just returns null) when site data is blocked,
+    // in a sandboxed iframe, or with storage disabled. This runs in the render-time
+    // useState initializer of the app-wrapping provider, so an unguarded throw would
+    // white-screen the whole app. Default to "dark" instead.
+    const stored = window.localStorage.getItem(STORAGE_KEY);
+    if (stored === "dark" || stored === "light") return stored;
+  } catch {
+    // storage unavailable; fall through to the default
+  }
   return "dark";
 }
 
