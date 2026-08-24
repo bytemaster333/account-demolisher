@@ -723,6 +723,70 @@ function DemolishFlow(): React.JSX.Element {
   }, [form.destination, publicKey]);
   const useMediator = cex !== null;
 
+  // Existence check for the destination. ACCOUNT_MERGE (and, on the exchange path,
+  // the mediator's forward payment) fails if the destination account does not
+  // exist on-chain, and that failure only surfaces at the final, irreversible step
+  // AFTER the DeFi exits have already run. So verify up-front that the destination
+  // exists and block the close until it does, instead of failing late. Debounced,
+  // and keyed to the address so a stale in-flight result can't leak onto a newer
+  // one. A transient (non-404) read error does not hard-block (the merge would
+  // still fail loudly); only a confirmed "missing" (404) blocks.
+  const [destCheck, setDestCheck] = useState<{
+    addr: string;
+    state: "checking" | "exists" | "missing" | "error";
+  } | null>(null);
+  useEffect(() => {
+    const trimmed = form.destination.trim();
+    // invalid / self address: destinationGate owns the gate; leave destCheck as
+    // is (destExistsGate defers to destinationGate for these). Setting state
+    // synchronously in an effect body is a cascading-render smell, so every
+    // setDestCheck below runs inside the debounce timer / async resolution.
+    if (!G_ADDRESS.safeParse(trimmed).success || trimmed === publicKey) {
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      if (cancelled) return;
+      setDestCheck({ addr: trimmed, state: "checking" });
+      void getHorizon(network)
+        .loadAccount(trimmed)
+        .then(() => {
+          if (!cancelled) setDestCheck({ addr: trimmed, state: "exists" });
+        })
+        .catch((err: unknown) => {
+          if (cancelled) return;
+          const e = err as { response?: { status?: number }; name?: string; message?: string };
+          const notFound =
+            e?.response?.status === 404 ||
+            e?.name === "NotFoundError" ||
+            /404|not[_ ]?found|resource missing/i.test(e?.message ?? "");
+          setDestCheck({ addr: trimmed, state: notFound ? "missing" : "error" });
+        });
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [form.destination, publicKey, network]);
+
+  const destExistsGate = useMemo<{ ready: boolean; hint: string | null }>(() => {
+    const trimmed = form.destination.trim();
+    // defer to destinationGate until the address is well-formed and not self
+    if (!G_ADDRESS.safeParse(trimmed).success || trimmed === publicKey) {
+      return { ready: true, hint: null };
+    }
+    if (!destCheck || destCheck.addr !== trimmed || destCheck.state === "checking") {
+      return { ready: false, hint: "Checking the destination account…" };
+    }
+    if (destCheck.state === "missing") {
+      return {
+        ready: false,
+        hint: "This destination account doesn't exist on the network yet. A close merges into it, which needs an existing, funded account. Fund it first, or use a different address.",
+      };
+    }
+    return { ready: true, hint: null };
+  }, [form.destination, publicKey, destCheck]);
+
   // gate the Continue CTA on a required exchange memo (and a well-formed memo
   // value), so the requirement shows inline instead of bouncing the user back
   // after they press Continue. Reuses the exact checks onStart runs
@@ -1206,6 +1270,7 @@ function DemolishFlow(): React.JSX.Element {
                             publicKey !== null &&
                             hasConnector &&
                             destinationGate.ready &&
+                            destExistsGate.ready &&
                             canUseSigningRequest &&
                             memoGate.ready
                           }
@@ -1215,7 +1280,7 @@ function DemolishFlow(): React.JSX.Element {
                               : !canUseSigningRequest
                                 ? (bundleability.reason ??
                                   "This shared account's close can't be gathered into one signing request.")
-                                : (destinationGate.hint ?? memoGate.hint)
+                                : (destinationGate.hint ?? destExistsGate.hint ?? memoGate.hint)
                           }
                           onGeneratePlan={onStart}
                           audit={audit}
@@ -1239,12 +1304,13 @@ function DemolishFlow(): React.JSX.Element {
                             publicKey !== null &&
                             hasConnector &&
                             destinationGate.ready &&
+                            destExistsGate.ready &&
                             memoGate.ready
                           }
                           startHint={
                             publicKey === null || !hasConnector
                               ? "Connect a wallet to continue."
-                              : (destinationGate.hint ?? memoGate.hint)
+                              : (destinationGate.hint ?? destExistsGate.hint ?? memoGate.hint)
                           }
                           onGeneratePlan={onStart}
                           audit={audit}
