@@ -809,6 +809,30 @@ describe("executePlanTreeOnChain, Soroban nodes are rebuilt fresh before signing
     expect(node.status).toBe("confirmed");
   });
 
+  it("recovers from an on-chain footprint trap (time-dependent write under-declared) by re-simulating and retrying (A3b)", async () => {
+    const rebuildSorobanNode = vi.fn(async () => {});
+    const deps = makeDeps({ rebuildSorobanNode });
+    // the tx simulated clean but trapped on-chain writing a key outside its
+    // declared footprint (e.g. Blend emission accrual, a time-dependent write):
+    // the decoded reason carries that signal, so a rebuild re-simulates the full
+    // write-set and the retry lands. Distinct from a bare revert (below), which is
+    // NOT retried.
+    (deps.submitSoroban as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(
+        new Error(
+          'submitSoroban: transaction HASH failed on-chain: {"value":"scecExceededLimit"} trying to access contract data key outside of the footprint',
+        ),
+      )
+      .mockResolvedValueOnce({ txHash: "OK3", ledger: 11 });
+    const { tree, node } = makeSorobanNodeTree();
+
+    await executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
+
+    expect(rebuildSorobanNode).toHaveBeenCalledTimes(2);
+    expect(deps.submitSoroban).toHaveBeenCalledTimes(2);
+    expect(node.status).toBe("confirmed");
+  });
+
   it("gives up after MAX attempts on a persistent recoverable failure (bounded)", async () => {
     const rebuildSorobanNode = vi.fn(async () => {});
     const deps = makeDeps({ rebuildSorobanNode });

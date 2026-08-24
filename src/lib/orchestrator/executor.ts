@@ -163,7 +163,16 @@ function sorobanRecoverableKind(err: unknown): "resequence" | "footprint" | null
     msg.includes("entryarchived") ||
     msg.includes("entry_archived") ||
     msg.includes("archived") ||
-    msg.includes("entry_expired")
+    msg.includes("entry_expired") ||
+    // an on-chain trap from the simulated footprint under-declaring a
+    // time-dependent contract write (e.g. Blend's emission-data accrual): the tx
+    // simulated clean but the real write-set at execution was larger. A rebuild
+    // re-simulates against fresh state and re-derives the full footprint, so a
+    // bounded retry clears it. A genuinely doomed op instead fails the rebuild's
+    // re-simulation and surfaces its real error rather than looping.
+    msg.includes("scecexceededlimit") ||
+    msg.includes("exceededlimit") ||
+    msg.includes("exceeded_limit")
   ) {
     return "footprint";
   }

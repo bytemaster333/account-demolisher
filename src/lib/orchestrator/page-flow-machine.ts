@@ -5,6 +5,7 @@ import { TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
+import { describeSorobanFailure } from "@/lib/soroban/diagnostics";
 import { generatePlan } from "@/lib/plan/generator";
 import { simulateNode, SimulationFailedError } from "@/lib/plan/simulator";
 import {
@@ -789,7 +790,15 @@ const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ input }) 
     // out of its queryable set, so polling forever is not safe either.)
     const result = await rpc.pollTransaction(send.hash, { attempts: 60 });
     if (result.status === "FAILED") {
-      throw new Error(`submitSoroban: transaction ${send.hash} failed on-chain`);
+      // include the on-chain failure reason (from the diagnostic events) rather
+      // than a bare "failed on-chain": it surfaces the real cause to the user AND
+      // lets the executor classify a recoverable footprint/resource trap (the
+      // simulated footprint under-declaring a time-dependent contract write) for a
+      // rebuild-and-retry, instead of treating every trap as a terminal revert.
+      const reason = describeSorobanFailure(result.diagnosticEventsXdr);
+      throw new Error(
+        `submitSoroban: transaction ${send.hash} failed on-chain${reason ? `: ${reason}` : ""}`,
+      );
     }
     if (result.status !== "SUCCESS") {
       // status is NOT_FOUND: poll ceiling reached, tx may still confirm shortly
