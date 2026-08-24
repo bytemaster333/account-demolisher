@@ -10,7 +10,6 @@
 // with no Soroswap route simply can't be quoted and is left in place.
 import {
   Asset,
-  BASE_FEE,
   Contract,
   TransactionBuilder,
   nativeToScVal,
@@ -29,7 +28,7 @@ import {
 import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { address as scvAddress, i128 as scvI128, vec as scvVec } from "@/lib/soroban/scval";
-import { assembleSubmittable } from "@/lib/soroban/simulate";
+import { assembleSubmittable, SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
 import type { AssetIdentifier } from "@/lib/types/account";
 
 const FIVE_MINUTES_SECONDS = 300;
@@ -90,7 +89,7 @@ export async function buildSwapToXLM(
 
   const contract = new Contract(routerId);
   const tx = new TransactionBuilder(deps.sourceAccount, {
-    fee: BASE_FEE,
+    fee: SOROBAN_INCLUSION_FEE,
     networkPassphrase: args.network.passphrase,
   })
     .addOperation(contract.call("swap_exact_tokens_for_tokens", ...callArgs))

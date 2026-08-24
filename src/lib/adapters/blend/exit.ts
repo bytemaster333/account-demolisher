@@ -1,7 +1,6 @@
 // blend exit sequencer. produces an ordered, unsigned list of exit steps for one pool
 import {
   Asset,
-  BASE_FEE,
   Contract,
   nativeToScVal,
   TransactionBuilder,
@@ -14,7 +13,7 @@ import { RequestType } from "@blend-capital/blend-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { getRpc } from "@/lib/soroban/rpc-client";
-import { assembleSubmittable } from "@/lib/soroban/simulate";
+import { assembleSubmittable, SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
 import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
 import { isAllowedContract } from "@/lib/config/contracts";
 import type { AssetIdentifier } from "@/lib/types/account";
@@ -244,7 +243,7 @@ async function buildSubmitRequestTx(
   ]);
 
   const tx = new TransactionBuilder(sourceAccount, {
-    fee: BASE_FEE,
+    fee: SOROBAN_INCLUSION_FEE,
     networkPassphrase: network.passphrase,
   })
     .addOperation(
@@ -284,7 +283,7 @@ async function buildClaimTx(
   const idScVals = reserveTokenIds.map((n) => nativeToScVal(n, { type: "u32" }));
 
   const tx = new TransactionBuilder(sourceAccount, {
-    fee: BASE_FEE,
+    fee: SOROBAN_INCLUSION_FEE,
     networkPassphrase: network.passphrase,
   })
     .addOperation(
@@ -328,7 +327,7 @@ async function buildBackstopQueueWithdrawalTx(
   const contract = new Contract(backstopId);
 
   const tx = new TransactionBuilder(sourceAccount, {
-    fee: BASE_FEE,
+    fee: SOROBAN_INCLUSION_FEE,
     networkPassphrase: network.passphrase,
   })
     .addOperation(

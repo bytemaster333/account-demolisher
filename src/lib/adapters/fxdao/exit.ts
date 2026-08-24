@@ -1,7 +1,6 @@
 // fxdao vault exit builder
 
 import {
-  BASE_FEE,
   Contract,
   TransactionBuilder,
   nativeToScVal,
@@ -14,7 +13,7 @@ import {
 import { getAllowlistForNetwork, isAllowedContract } from "@/lib/config/contracts";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { address as scvAddress } from "@/lib/soroban/scval";
-import { assembleSubmittable } from "@/lib/soroban/simulate";
+import { assembleSubmittable, SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
 import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
 
 import { getFxDAOVaultsContractId } from "./contracts";
@@ -163,7 +162,7 @@ function buildPayDebtTx(
   ];
 
   return new TransactionBuilder(sourceAccount, {
-    fee: BASE_FEE,
+    fee: SOROBAN_INCLUSION_FEE,
     networkPassphrase: network.passphrase,
   })
     .addOperation(contract.call("pay_debt", ...callArgs))

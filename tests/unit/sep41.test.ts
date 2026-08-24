@@ -17,6 +17,7 @@ const simulateRead = vi.fn();
 vi.mock("@/lib/soroban/simulate", () => ({
   assembleSubmittable: async (_s: unknown, tx: unknown) => tx,
   simulateRead: (...a: unknown[]) => simulateRead(...a),
+  SOROBAN_INCLUSION_FEE: "100000",
 }));
 
 import {
@@ -131,6 +132,9 @@ describe("sep41 builders decode to the correct ABI", () => {
     expect(Address.fromScVal(args[0]!).toString()).toBe(USER);
     expect(Address.fromScVal(args[1]!).toString()).toBe(SPENDER);
     expect(scValToNative(args[2]!)).toBe(900n);
+    // a submitted soroban tx must bid an inclusion fee above the mainnet clearing
+    // rate (~200 stroops) or it drops from the fee lane. guard the raised floor.
+    expect(Number(tx.fee)).toBeGreaterThanOrEqual(100000);
   });
 
   it("buildApprove builds approve(from, spender, amount, expiration_ledger)", async () => {

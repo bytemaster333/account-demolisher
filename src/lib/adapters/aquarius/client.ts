@@ -1,6 +1,5 @@
 // aquarius router client. hand-rolled contract.call against the router id
 import {
-  BASE_FEE,
   Contract,
   TransactionBuilder,
   nativeToScVal,
@@ -17,7 +16,7 @@ import {
 } from "@/lib/config/contracts";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { address as scvAddress, vec as scvVec } from "@/lib/soroban/scval";
-import { assembleSubmittable } from "@/lib/soroban/simulate";
+import { assembleSubmittable, SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
 import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
 
 // five-minute timeout
@@ -211,7 +210,7 @@ async function buildAndAssemble(
 ): Promise<Transaction> {
   const contract = new Contract(contractId);
   const tx = new TransactionBuilder(sourceAccount, {
-    fee: BASE_FEE,
+    fee: SOROBAN_INCLUSION_FEE,
     networkPassphrase: network.passphrase,
   })
     .addOperation(contract.call(fnName, ...callArgs))

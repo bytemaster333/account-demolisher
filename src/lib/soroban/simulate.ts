@@ -12,6 +12,15 @@ import {
 } from "@stellar/stellar-sdk";
 import type { NetworkConfig } from "@/lib/config/networks";
 
+// Inclusion fee (stroops) for SUBMITTED Soroban transactions. The SDK's BASE_FEE
+// (100) is below mainnet's Soroban fee-lane clearing rate (observed p50..p99 = 200
+// via getFeeStats), so a tx bidding the minimum loses the fee auction, sits PENDING,
+// and drops without ever being included in a ledger. We bid well above the clearing
+// rate so a DeFi-exit step lands reliably on mainnet; at ~0.01 XLM per step this is
+// negligible against the reserves an account close recovers, and a dropped exit would
+// strand the close. prepareTransaction adds the simulated resource fee on top of this.
+export const SOROBAN_INCLUSION_FEE = "100000";
+
 // success branch carries everything needed for read or assemble
 export interface SimulationSuccess {
   readonly ok: true;

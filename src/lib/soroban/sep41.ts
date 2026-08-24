@@ -1,7 +1,6 @@
 // sep-41 token contract callers
 
 import {
-  BASE_FEE,
   Contract,
   TransactionBuilder,
   xdr,
@@ -18,7 +17,7 @@ import {
   i128 as scvI128,
   u32 as scvU32,
 } from "./scval";
-import { assembleSubmittable, simulateRead } from "./simulate";
+import { assembleSubmittable, simulateRead, SOROBAN_INCLUSION_FEE } from "./simulate";
 
 const FIVE_MINUTES_SECONDS = 300;
 
@@ -197,7 +196,7 @@ async function buildInvoke(
 ): Promise<Transaction> {
   const contract = new Contract(contractId);
   const tx = new TransactionBuilder(sourceAccount, {
-    fee: BASE_FEE,
+    fee: SOROBAN_INCLUSION_FEE,
     networkPassphrase: network.passphrase,
   })
     .addOperation(contract.call(fnName, ...args))

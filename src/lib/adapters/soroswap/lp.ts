@@ -1,6 +1,5 @@
 // soroswap LP exit: direct remove_liquidity invocation against the mainnet SoroswapRouter
 import {
-  BASE_FEE,
   Contract,
   TransactionBuilder,
   rpc,
@@ -17,7 +16,7 @@ import {
 import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { address as scvAddress, i128 as scvI128 } from "@/lib/soroban/scval";
-import { assembleSubmittable } from "@/lib/soroban/simulate";
+import { assembleSubmittable, SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
 import type { AssetIdentifier } from "@/lib/types/account";
 import { Asset, nativeToScVal } from "@stellar/stellar-sdk";
 
@@ -108,7 +107,7 @@ export async function removeLiquidityByContractIds(
 
   const contract = new Contract(routerId);
   const tx = new TransactionBuilder(deps.sourceAccount, {
-    fee: BASE_FEE,
+    fee: SOROBAN_INCLUSION_FEE,
     networkPassphrase: args.network.passphrase,
   })
     .addOperation(contract.call("remove_liquidity", ...callArgs))
