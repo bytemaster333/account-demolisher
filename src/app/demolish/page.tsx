@@ -2996,8 +2996,11 @@ function PlanRow({
   const isFailed = node.status === "failed";
   // a step whose dry-run (preview simulation) passed — distinct from a step not
   // yet checked. In the plan/review this is the central output of the dry run, so
-  // it must read differently from a plain "pending" step.
-  const isSimulated = node.status === "simulated";
+  // it must read differently from a plain "pending" step. But during LIVE
+  // execution a not-yet-run step is still "simulated", and its accent-check badge
+  // reads as "done": there it must render as pending (waiting) so only a real
+  // "confirmed" step shows the green check.
+  const isSimulated = mode !== "live" && node.status === "simulated";
   const isPending = !isDone && !isRunning && !isSkipped && !isFailed && !isSimulated;
 
   // plan mode surfaces the network fee up-front so cost is visible before
