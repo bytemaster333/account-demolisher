@@ -761,7 +761,25 @@ const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ input }) 
     const signed = TransactionBuilder.fromXDR(signedXdr, input.network.passphrase) as Transaction;
     const send = await rpc.sendTransaction(signed);
     if (send.status !== "PENDING" && send.status !== "DUPLICATE") {
-      throw new Error(`submitSoroban: sendTransaction returned ${send.status}`);
+      // surface the rpc's rejection reason instead of just the bare status: on an
+      // ERROR the response carries the transaction result code and diagnostic
+      // events that say WHY it was rejected. dropping them left a submission
+      // failure indistinguishable from any other. keep the codes readable and the
+      // raw diagnostic xdr recoverable for offline decoding.
+      let detail: string = send.status;
+      try {
+        const code = send.errorResult?.result().switch().name;
+        if (code) detail += `; result ${code}`;
+      } catch {
+        /* errorResult absent or not decodable; keep the status */
+      }
+      try {
+        const diags = send.diagnosticEvents?.map((e) => e.toXDR("base64")) ?? [];
+        if (diags.length > 0) detail += `; diagnostics ${diags.join(" ")}`;
+      } catch {
+        /* diagnostics absent */
+      }
+      throw new Error(`submitSoroban: sendTransaction returned ${detail}`);
     }
     // bounded poll (~60s). the SDK short-circuits on a definitive status, so a
     // trailing NOT_FOUND means the poll ceiling was hit while the tx was still
