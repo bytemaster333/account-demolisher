@@ -33,7 +33,7 @@ Live at https://demolisher.app/
 Safety: a dry-run plan tree with real simulations, a typed last-four-character
 plus timed confirmation, high-value and scam-token warnings, and a hard-coded
 contract allow-list checked before every Soroban signature. See the
-[security overview](https://docs.demolisher.app/docs/security).
+[security overview](https://docs.demolisher.app/docs/developers/security/model).
 
 ## Requirements
 
@@ -127,9 +127,9 @@ factory), so it needs outbound network access.
 
 Full documentation is at <https://docs.demolisher.app>:
 
-- [How it works](https://docs.demolisher.app/docs/how-it-works): the audit, the plan graph, the simulator, and the executor.
-- [Security](https://docs.demolisher.app/docs/security): trust model, threat model, and the contract allow-list.
-- [Self host](https://docs.demolisher.app/docs/self-host): running it on your own infrastructure.
+- [How it works](https://docs.demolisher.app/docs/developers/concepts/closure-lifecycle): the audit, the plan graph, the simulator, and the executor.
+- [Security](https://docs.demolisher.app/docs/developers/security/model): trust model, threat model, and the contract allow-list.
+- [Self host](https://docs.demolisher.app/docs/developers/operations/self-hosting): running it on your own infrastructure.
 
 ## License
 

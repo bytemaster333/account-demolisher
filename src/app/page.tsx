@@ -2450,32 +2450,32 @@ export default function HomePage(): React.JSX.Element {
               <DocCard
                 title="Getting started"
                 body="Open the live app, run the demo flow, connect a real wallet, or paste a secret key."
-                href="https://docs.demolisher.app/docs/getting-started"
+                href="https://docs.demolisher.app/docs/users"
               />
               <DocCard
                 title="How it works"
                 body="The audit, the plan tree, the 9-phase classical batch, the simulator, the executor."
-                href="https://docs.demolisher.app/docs/how-it-works"
+                href="https://docs.demolisher.app/docs/developers/concepts/closure-lifecycle"
               />
               <DocCard
                 title="Destinations &amp; mediator"
                 body="Sending recovered XLM to a wallet, and how the mediator path reaches an exchange."
-                href="https://docs.demolisher.app/docs/destinations-and-mediator"
+                href="https://docs.demolisher.app/docs/users/send-to-an-exchange"
               />
               <DocCard
                 title="Security"
                 body="What the deployment can do, the contract allow-list, the safety gates, the CSP."
-                href="https://docs.demolisher.app/docs/security"
+                href="https://docs.demolisher.app/docs/developers/security/model"
               />
               <DocCard
                 title="Allowance viewer"
                 body="Audit and revoke SEP-41 token approvals on any address."
-                href="https://docs.demolisher.app/docs/allowance-viewer"
+                href="https://docs.demolisher.app/docs/users/revoke-token-allowances"
               />
               <DocCard
                 title="Self host"
                 body="Install, configure environment variables, run under your own domain."
-                href="https://docs.demolisher.app/docs/self-host"
+                href="https://docs.demolisher.app/docs/developers/operations/self-hosting"
               />
             </div>
 
