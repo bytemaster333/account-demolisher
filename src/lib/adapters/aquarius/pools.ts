@@ -129,8 +129,16 @@ async function getPoolShareBalanceImpl(args: {
 // mainnet aquarius backend base URL (verified_at 2026-05-15, source: docs.aqua.network)
 export const AQUARIUS_API_MAINNET_BASE_URL = "https://amm-api.aqua.network/api/external/v1";
 
-// testnet base URL for completeness
+// testnet aquarius backend base URL
 export const AQUARIUS_API_TESTNET_BASE_URL = "https://amm-api-testnet.aqua.network/api/external/v1";
+
+// pick the aquarius REST backend for the given network. Without this the provider
+// would default to the mainnet backend on every network, so a testnet close would
+// query the mainnet API (the on-chain event scan still finds testnet pools, so it
+// degrades rather than breaks, but the REST source was silently useless there).
+export function aquariusApiBaseUrlForNetwork(network: NetworkConfig): string {
+  return network.id === "testnet" ? AQUARIUS_API_TESTNET_BASE_URL : AQUARIUS_API_MAINNET_BASE_URL;
+}
 
 // one result entry from GET /pools/user/{key}/
 interface AquariusUserPoolApiEntry {
@@ -166,7 +174,7 @@ export class AquariusAPIPoolProvider implements AquariusPoolProvider {
   constructor(opts: AquariusAPIPoolProviderOptions) {
     this.server = opts.server;
     this.network = opts.network;
-    this.baseUrl = (opts.baseUrl ?? AQUARIUS_API_MAINNET_BASE_URL).replace(/\/+$/, "");
+    this.baseUrl = (opts.baseUrl ?? aquariusApiBaseUrlForNetwork(opts.network)).replace(/\/+$/, "");
     this.routerId = getAquariusRouterIdFromAllowlist(opts.network);
     // the browser's fetch must be invoked with `this === window`; stored on the
     // instance and called as `this.fetchImpl(...)` it would otherwise throw
