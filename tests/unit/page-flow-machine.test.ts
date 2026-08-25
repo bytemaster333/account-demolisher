@@ -256,9 +256,9 @@ describe("failure taxonomy (typed recovery)", () => {
     expect(classifyFailure("submitSoroban: transaction ABC123 failed on-chain")).toBe("reverted");
     // precedence: a diverged-state stop whose detail mentions "archived" must NOT
     // be mis-bucketed as a (retryable) footprint race
-    expect(classifyFailure("account_merge blocked: DeFi position(s) still open (entry archived)")).toBe(
-      "position_open",
-    );
+    expect(
+      classifyFailure("account_merge blocked: DeFi position(s) still open (entry archived)"),
+    ).toBe("position_open");
   });
 
   it("makes diverged-state failures rediscover and transient ones re-execute", () => {
