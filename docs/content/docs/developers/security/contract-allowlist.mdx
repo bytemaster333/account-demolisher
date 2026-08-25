@@ -1,0 +1,130 @@
+---
+title: Contract allow-list
+description: The compiled-in set of contracts the app will sign an invocation against, and how it is enforced.
+---
+
+Every Soroban transaction is checked against a network-specific allow-list of contract ids
+immediately before signing. A transaction invoking a contract that is not on the list is
+refused and the closure halts.
+
+The list is a compile-time constant in `src/lib/config/contracts.ts`. There is no
+environment variable, no fetch, and no runtime mutation path. **A position discovered on
+chain cannot extend it.** Only editing the source file changes it.
+
+## Contents
+
+| Network   | Entries | Breakdown                                               |
+| --------- | ------- | ------------------------------------------------------- |
+| mainnet   | **25**  | Soroswap 2, Blend 15, Aquarius 1, FxDAO 7               |
+| testnet   | **19**  | Soroswap 2, Blend 9, Aquarius 2, FxDAO 6                |
+| futurenet | **0**   | The allow-list is empty, so every invocation is refused |
+
+Blend's mainnet 15 is 4 pools plus 11 infrastructure contracts (two pool factories, two
+backstops, the emitter, BLND, USDC, the XLM contract, the Comet factory, the BLND/USDC LP,
+and the bootstrapper). Testnet's 9 is 1 pool plus 8 infrastructure contracts.
+
+## Entry shape
+
+```ts
+interface AllowedContract {
+  readonly id: string; // C... contract id
+  readonly name: string; // e.g. "SoroswapRouter", "BlendPool::FixedV2"
+  readonly protocol: string; // "soroswap" | "blend" | "aquarius" | "fxdao"
+  readonly verified_at: string; // ISO date the id was checked upstream
+  readonly source: string; // the upstream citation
+}
+```
+
+`verified_at` and `source` exist so every id is auditable against the protocol's own
+published deployment files rather than taken on trust.
+
+## When the check runs
+
+`assertTransactionAllowed` is called from exactly one place: inside the Soroban sign-and-
+submit path, **after** any node-specific guard and **immediately before** the connector
+signs.
+
+Running it at signing time rather than only at build time is deliberate defense in depth on
+top of each adapter's own build-time check.
+
+| Node kind                           | Allow-list checked                        |
+| ----------------------------------- | ----------------------------------------- |
+| `ConvertSorobanToXLM`               | Yes                                       |
+| All remaining DeFi nodes            | Yes                                       |
+| `TransferAsIs`                      | No                                        |
+| `RevokeAllowance`                   | No                                        |
+| `FinalClassicTx`, `MediatorForward` | Not applicable, they never take this path |
+
+### Why two kinds are exempt
+
+Both target the **user's own token contract**, chosen from the user's own scan rather than
+from the DeFi allow-list, so the protocol allow-list does not apply to them.
+
+They are not unguarded. Each is held to an exact call shape instead:
+
+- `TransferAsIs` is pinned to an exact `transfer(user, destination, amount)` by
+  `assertSafeTransferInvocation`.
+- `RevokeAllowance` is pinned to an exact zero-approval by `assertSafeRevokeInvocation`.
+
+The reasoning in source is explicit: a revoke's contract id and its simulation-supplied
+authorization tree are attacker-influenceable, so it must be guarded exactly like a
+transfer.
+
+`ConvertSorobanToXLM` is different because it invokes the allow-listed router, so the gate
+does apply.
+
+## What gets refused
+
+`inspectOperation` passes every classical operation and inspects every
+`invokeHostFunction`:
+
+| Host function                                        | Outcome                            |
+| ---------------------------------------------------- | ---------------------------------- |
+| `invokeContract` on an allow-listed `C...` address   | Allowed                            |
+| `invokeContract` on a non-allow-listed address       | Refused, naming the network's list |
+| `invokeContract` whose target is not a `C...` strkey | Refused                            |
+| `createContract`, `createContractV2`                 | Always refused                     |
+| `uploadContractWasm`                                 | Always refused                     |
+| An unknown discriminant                              | Refused                            |
+| An unparseable discriminant                          | Refused                            |
+
+Refusal reasons name the specific list, for example `Contract is not on TESTNET_ALLOWLIST.`
+On futurenet the reason states the list is empty.
+
+Fee-bump wrappers are unwrapped transparently, so a fee-bump cannot hide an invocation from
+the check.
+
+## The authorization-entry guard
+
+Operation-level inspection alone is not enough, because a Soroban authorization tree can
+authorize actions the top-level call does not name.
+
+`inspectAuthEntries` runs **first**, before the host-function switch, and walks every
+authorization entry's invocation tree recursively. It refuses when any node in the tree
+names a function matching `createContract` or `uploadContractWasm`, case-insensitively.
+
+An authorization entry that cannot be parsed is also refused, because an unparseable entry
+is suspicious and signing blind is worse than stopping.
+
+### A documented scope limit
+
+Sub-invocations to token contracts that are not on the allow-list are intentionally **not**
+flagged. They are a normal part of any swap or withdrawal: a real exit authorizes token
+transfers on the account owner's own token contracts, which are not protocol contracts.
+Hard-gating them would break legitimate closes.
+
+## The error
+
+A violation raises `AllowlistViolation`, carrying every violation rather than only the
+first, so the UI can display them all:
+
+```
+Allow-list violation: 2 contract invocation(s) blocked.
+  1. C...: Contract is not on MAINNET_ALLOWLIST.
+  2. <auth-entry>: A Soroban authorization entry authorizes contract creation or wasm upload.
+```
+
+A non-throwing variant returns the same list for display.
+
+This is a deliberate hard stop. If closing a position needs an unknown contract, the safe
+move is to escalate, not to sign blindly.

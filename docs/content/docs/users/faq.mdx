@@ -1,0 +1,103 @@
+---
+title: FAQ
+description: Short answers to the most common questions.
+icon: CircleHelp
+---
+
+## Is my secret key sent anywhere?
+
+No. With a wallet, the wallet holds your key and signs each transaction locally. With the
+secret-key option, the key stays in your browser's memory and builds a fresh keypair for
+each signing call. It is never written to disk, sent to a server, or copied to your
+clipboard.
+
+## What does it cost?
+
+The app is free and takes no cut. You pay Stellar network fees for the transactions it
+submits. The Review step shows the total before you sign.
+
+## Can I close an account that holds DeFi positions?
+
+Yes. The close unwinds Blend, Aquarius, Soroswap, and FxDAO positions before merging the
+account, and the plan shows each exit step first. Two cases need action from you: a Blend
+loan you cannot currently repay, and a Blend backstop deposit. See
+[Close an account that holds DeFi](/docs/users/close-with-defi).
+
+## Why is my account "not mergeable"?
+
+Two conditions stop a close outright: the `auth_immutable` flag is set, or the account is
+sponsoring entries for other accounts. Entries the account sponsors for itself are fine
+and are released during the close. See
+[Clear a blocked closure](/docs/users/clear-a-blocked-closure).
+
+## What happens to a Blend backstop deposit?
+
+Withdrawing one runs through a 17-day queue. The close starts that clock for you and then
+stops at the merge, because the account has to stay open to receive the withdrawal. Return
+on or after the unlock date to withdraw it and finish closing.
+
+## How many times do I have to sign?
+
+Once per transaction. Stellar cannot carry Soroban and classic operations in one signed
+transaction, so an account with DeFi signs once per unwind step plus once for the classic
+close. A bare account with no more than 100 classic operations is a single signature.
+
+## Why can't I send straight to an exchange?
+
+You can, and the app handles it. A plain account merge is not credited by most exchanges,
+so for a recognized exchange address the app routes the funds through a short-lived helper
+account that delivers them as a payment carrying your deposit memo. See
+[Send the funds to an exchange](/docs/users/send-to-an-exchange).
+
+## Why is the Soroswap step skipped on testnet?
+
+Soroswap has no on-chain pools on testnet, so the aggregator returns no path for a quote.
+The demo shows the skip with its reason per step. Mainnet is unaffected.
+
+## What happens if a step fails partway through?
+
+Your funds stay safe and the account stays open. Completed steps are already recorded on
+chain, and **Retry** continues from where it stopped. See
+[When a step fails](/docs/users/when-a-step-fails).
+
+## Can I close someone else's account?
+
+No. Transactions are signed by the wallet you connect. Without the account's signing key,
+or enough signatures to meet its threshold, nothing signs. For a multisig account you
+control, see [Close a shared account](/docs/users/close-a-shared-account).
+
+## Does it run on mainnet?
+
+Yes. The same code runs on mainnet and testnet. The network selector in the top navigation
+switches between them and your choice persists in your browser. A fresh visit to
+[demolisher.app](https://demolisher.app) starts on testnet.
+
+## Can I get my account back after closing it?
+
+No. Closing deletes the account from the ledger and it cannot be restored. Use
+**Save a receipt** on the success screen to keep a record, because a closed account cannot
+be looked up afterwards.
+
+## Do I need to unwind positions before I start?
+
+No. Connect the account and the plan comes back with the exit steps already in it. The two
+exceptions are a Blend loan you cannot cover and a Blend backstop deposit.
+
+## What if I hold a custom token nobody recognizes?
+
+It appears under **Standalone tokens** in the Warnings step, where you choose whether to
+sweep it. If it represents a position in a DeFi app the close does not support, unwind it
+in that app first, because moving the token as-is does not reclaim what it represents.
+
+## Where is the source?
+
+[github.com/bytemaster333/account-demolisher](https://github.com/bytemaster333/account-demolisher),
+Apache 2.0 licensed. You can run your own copy: see
+[Self-hosting](/docs/developers/operations/self-hosting).
+
+## How does this relate to stellar.expert/demolisher?
+
+That is the original Stellar account-closure tool by StellarExpert, covering the classic
+Stellar surface with raw secret-key entry as its signing path. Account Demolisher keeps
+that flow and extends it to Soroban DeFi positions, a multisig coordination flow, the
+allowance viewer, and modern wallet integration.

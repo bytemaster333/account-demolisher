@@ -1,0 +1,7 @@
+{
+  "title": "Developers",
+  "description": "Architecture, protocol, and reference",
+  "icon": "Code",
+  "root": true,
+  "pages": ["index", "concepts", "internals", "protocol", "security", "reference", "operations"]
+}

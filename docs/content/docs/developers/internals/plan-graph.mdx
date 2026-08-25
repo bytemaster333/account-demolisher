@@ -1,0 +1,152 @@
+---
+title: The plan graph
+description: The 13 node kinds, the dependency edges between them, how the graph is validated, and how it is ordered.
+---
+
+`generatePlan(audit, positions, allowances, destination, options)` in
+`src/lib/plan/generator.ts` emits a directed acyclic graph of nodes. It is a pure
+function: no network calls, and its only impurity is reading the clock to estimate a Blend
+backstop unlock date.
+
+A node is emitted only when the account needs it. Every node in a generated plan is a real
+step that runs on chain.
+
+## Node kinds
+
+Thirteen kinds, in declaration order.
+
+| Kind                   | What it does                                         | Soroban |
+| ---------------------- | ---------------------------------------------------- | ------- |
+| `RevokeAllowance`      | Sets a SEP-41 approval to zero                       | Yes     |
+| `RepayBlend`           | Repays a Blend liability                             | Yes     |
+| `PayFxDAODebt`         | Pays an FxDAO vault debt, returning its collateral   | Yes     |
+| `WithdrawBlend`        | Withdraws Blend collateral or supply                 | Yes     |
+| `WithdrawAquarius`     | Withdraws an Aquarius pool share                     | Yes     |
+| `WithdrawSoroswapLp`   | Withdraws a Soroswap LP position                     | Yes     |
+| `ClaimBlendEmissions`  | Claims BLND emissions for a pool                     | Yes     |
+| `ClaimAquariusRewards` | Claims Aquarius rewards for a pool                   | Yes     |
+| `ConvertSorobanToXLM`  | Swaps a leftover token to XLM via Soroswap           | Yes     |
+| `TransferAsIs`         | Sends a leftover token to the destination unchanged  | Yes     |
+| `BackstopQueue`        | Queues a Blend backstop withdrawal                   | Yes     |
+| `FinalClassicTx`       | The batched classic close, ending in `ACCOUNT_MERGE` | No      |
+| `MediatorForward`      | The exchange delivery hop                            | No      |
+
+`isSorobanNode` returns true for the first eleven and false for `FinalClassicTx` and
+`MediatorForward`.
+
+## Node status
+
+Seven values: `pending`, `simulated`, `signed`, `submitted`, `confirmed`, `failed`,
+`skipped`.
+
+## Dependency edges
+
+`dependencies` lists the ids a node waits on. A node runs once every dependency reaches
+`confirmed` or `skipped`.
+
+| Kind                   | Waits on                                                            |
+| ---------------------- | ------------------------------------------------------------------- |
+| `RevokeAllowance`      | Nothing                                                             |
+| `RepayBlend`           | Nothing                                                             |
+| `PayFxDAODebt`         | Nothing                                                             |
+| `WithdrawBlend`        | Every `RepayBlend` for the same pool                                |
+| `WithdrawAquarius`     | Nothing                                                             |
+| `WithdrawSoroswapLp`   | Nothing                                                             |
+| `ClaimBlendEmissions`  | Every `WithdrawBlend` for the same pool                             |
+| `ClaimAquariusRewards` | The `WithdrawAquarius` for the same pool index                      |
+| `ConvertSorobanToXLM`  | Nothing                                                             |
+| `TransferAsIs`         | Nothing                                                             |
+| `BackstopQueue`        | Nothing                                                             |
+| `FinalClassicTx`       | Every node that is not itself `FinalClassicTx` or `MediatorForward` |
+| `MediatorForward`      | `final-classic-tx`                                                  |
+
+The `FinalClassicTx` edge set is the important one: every Soroban node must complete before
+the merge, so the account is never closed with a position still open.
+
+## Node ids
+
+`FinalClassicTx` and `MediatorForward` use the literal ids `final-classic-tx` and
+`mediator-forward`. Every other id is built by lowercasing its parts and joining them with
+`:`.
+
+| Prefix                      | Parts                |
+| --------------------------- | -------------------- |
+| `revoke`                    | contract id, spender |
+| `blend-repay`               | pool id, asset       |
+| `fxdao-pay-debt`            | vault denomination   |
+| `blend-withdraw-collateral` | pool id, asset       |
+| `blend-withdraw-supply`     | pool id, asset       |
+| `aquarius-withdraw`         | pool index           |
+| `soroswap-withdraw`         | token A, token B     |
+| `blend-claim`               | pool id              |
+| `aquarius-claim`            | pool index           |
+| `convert-token`             | contract id          |
+| `drain-token`               | contract id          |
+| `backstop-queue`            | pool id              |
+
+## Entry guards
+
+Generating a mediator plan requires both pieces of mediator state, or the generator throws:
+
+- `useMediator: true` without `mediatorPublicKey`
+- `useMediator: true` without `flowToken`
+
+## Validation
+
+`buildPlanTree(nodes)` runs three checks in order, each throwing a plain `Error`:
+
+1. **Duplicate ids** — `buildPlanTree: duplicate node id "<id>"`
+2. **Missing dependency targets** — `buildPlanTree: node "<id>" depends on missing node id "<depId>"`
+3. **Cycles** — `buildPlanTree: cycle detected in plan dependencies: <a -> b -> a>`
+
+### Cycle detection
+
+`assertAcyclic` is an iterative depth-first search with three-colour marking and an
+explicit stack, so it does not recurse.
+
+Every node starts white. A node being visited is grey, a finished node is black. Reaching
+a grey node is a back edge, which is a cycle. The reported path is reconstructed from the
+current stack frame's path, sliced from the first appearance of the repeated node, so the
+message reads as the cycle itself rather than the whole traversal.
+
+Traversal follows the dependency direction, so the path reads in dependency order.
+
+## Ordering
+
+`topologicalOrder(tree)` is Kahn's algorithm.
+
+In-degree is a node's dependency count. Every zero-in-degree node seeds a FIFO queue;
+draining it appends each node to the order and decrements its children, enqueueing a child
+when it reaches zero.
+
+A short result means a cycle survived, and throws
+`topologicalOrder: cycle detected at runtime: produced N of M nodes`.
+
+The order is deterministic. Both the seed scan and the children lists preserve `Map`
+insertion order, which is the order `buildPlanTree` inserted the nodes, which is the order
+`generatePlan` pushed them.
+
+## The tree shape
+
+`PlanTree` has two fields: `rootNodes`, the nodes with no dependencies, and `allNodes`, a
+flat id-to-node index.
+
+## Metadata worth knowing
+
+Two metadata fields carry warnings in the source, both about memos:
+
+- `FinalClassicTxMetadata.memo` is the deposit memo for a direct merge to a memo-required
+  destination. It has to be re-applied during execute-time re-batching or the signed merge
+  drops it.
+- `MediatorForwardMetadata.memo` must be carried verbatim, because that forward is the only
+  hop that reaches the exchange. A dropped numeric or hash memo means the deposit is not
+  credited.
+
+`PayFxDAODebtMetadata` carries `collateral` alongside `debt` so the on-chain vault key,
+derived from both, can be reconstructed.
+
+## Next
+
+- [The classic batch](/docs/developers/internals/classic-batch) for what `FinalClassicTx` contains
+- [Simulation](/docs/developers/internals/simulation) for how nodes are grounded before signing
+- [Execution and recovery](/docs/developers/internals/execution) for how the order is walked

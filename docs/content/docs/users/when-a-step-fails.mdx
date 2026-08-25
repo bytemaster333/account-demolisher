@@ -1,0 +1,94 @@
+---
+title: When a step fails
+description: What happens when a closure stops partway through, and how to finish it.
+icon: RotateCcw
+---
+
+A closure that stops does not lose funds. The account stays open, its balance is untouched,
+and every step that already completed is recorded on Stellar.
+
+The header reads **Couldn't finish closing the account** and the plan shows exactly which
+step stopped.
+
+## What to do
+
+Select **Retry**. The closure continues from where it stopped rather than starting again,
+so completed steps are not repeated.
+
+If you would rather begin from a fresh reading of the account, select **Start over**.
+Nothing has been lost either way.
+
+## Read the reason
+
+Under the heading you get a plain-language summary, such as which step of how many could
+not complete and why.
+
+Below the plan, result-code chips show the outcome per operation: green for the ones that
+succeeded, red for the one that did not. A collapsed **raw error** section holds the exact
+error text.
+
+These are the phrases the app uses and what each one means:
+
+| What you see                                                    | What happened                                         |
+| --------------------------------------------------------------- | ----------------------------------------------------- |
+| the fee offered was below the network's minimum                 | The network got busier than the bid allowed for       |
+| the account's transaction number was out of date                | The account changed between building and submitting   |
+| the time window to submit it passed                             | The transaction took too long to reach the network    |
+| one of the steps was rejected, so nothing was applied           | A step failed, so the whole transaction was discarded |
+| there wasn't enough balance to cover it                         | The account no longer holds enough for that step      |
+| it would drop the account below its minimum reserve             | The step would leave less than Stellar requires       |
+| the destination can't hold that asset (no trustline)            | The destination has no trustline for that token       |
+| the account no longer holds the asset this step tried to send   | The balance moved between planning and submitting     |
+| the destination can't hold any more of that asset               | The destination's trustline is at its limit           |
+| the destination account doesn't exist                           | The destination is not funded on this network         |
+| the swap would have returned less than allowed, the price moved | The market moved past the slippage limit              |
+| the step was built incorrectly                                  | The operation was malformed                           |
+| the token's issuer no longer exists                             | The issuing account is gone                           |
+
+## What retries on its own
+
+Some failures never reach you, because the closure handles them while it runs:
+
+- **A fee that was too low** is retried with a higher bid.
+- **A price that moved** is retried after re-resolving paths and recomputing the minimums
+  against fresh state.
+- **A stale transaction number** corrects itself, because the closing transaction is
+  rebuilt from the account's current state on every attempt.
+- **A brief network read error** is retried with a short delay.
+
+Retries are bounded, so a genuinely stuck step surfaces to you instead of looping.
+
+Failures with a definite cause, such as a missing trustline, are not retried. Retrying
+would produce the same result, so the app reports the exact error instead.
+
+## What never happens
+
+**The account is not merged around an open position.** If a DeFi exit fails, the steps
+depending on it are skipped rather than worked around, and the merge does not run. Closing
+an account with a position still open would strand those funds, so the app refuses.
+
+**A step is not reported as done unless it confirmed on chain.** Each step waits for its
+receipt before the row ticks over.
+
+## If it stopped before the plan was built
+
+You see **Couldn't prepare this close** instead. This happens before anything is signed.
+
+If the message mentions the account not being found, check the network selector in the top
+right. An account funded on mainnet does not exist on testnet, and vice versa.
+
+Select **Try again**, or **Start over** to begin fresh.
+
+## If an exchange forward was interrupted
+
+When a close to an exchange stops after your account merged into the helper account but
+before the final delivery, the funds sit in the helper account.
+
+Next time you open the app with that account connected, a banner reads **An exchange
+forward was interrupted**. Select **Resume the forward** to sweep them on to your
+destination.
+
+## How it works underneath
+
+[Execution and recovery](/docs/developers/internals/execution) covers the retry rules, the
+guards that refuse a merge, and the exact bounds on each attempt.

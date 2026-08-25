@@ -2,6 +2,56 @@
 @import "fumadocs-ui/css/neutral.css";
 @import "fumadocs-ui/css/preset.css";
 
+/* Brand tokens. The accent values mirror the live app's own palette
+   (src/app/globals.css) so the docs and the product read as one surface.
+   Light is the bare :root block; dark is the .dark class fumadocs toggles. */
+:root {
+  --color-fd-background: #f8f9fa;
+  --color-fd-foreground: #15171a;
+  --color-fd-muted: #eef0f3;
+  --color-fd-muted-foreground: #4a505a;
+  --color-fd-popover: #ffffff;
+  --color-fd-popover-foreground: #15171a;
+  --color-fd-card: #ffffff;
+  --color-fd-card-foreground: #15171a;
+  --color-fd-border: #e2e6ea;
+  --color-fd-primary: #1f7a52;
+  --color-fd-primary-foreground: #ffffff;
+  --color-fd-secondary: #f4f6f8;
+  --color-fd-secondary-foreground: #15171a;
+  --color-fd-accent: #e9edf1;
+  --color-fd-accent-foreground: #15171a;
+  --color-fd-ring: #1f7a52;
+
+  --fd-layout-width: 1440px;
+}
+
+.dark {
+  --color-fd-background: #0c0d0f;
+  --color-fd-foreground: #eef0f2;
+  --color-fd-muted: #141618;
+  --color-fd-muted-foreground: #a4a9b0;
+  --color-fd-popover: #141618;
+  --color-fd-popover-foreground: #eef0f2;
+  --color-fd-card: #101113;
+  --color-fd-card-foreground: #eef0f2;
+  --color-fd-border: #282b2e;
+  --color-fd-primary: #46a479;
+  --color-fd-primary-foreground: #08140d;
+  --color-fd-secondary: #1a1d1f;
+  --color-fd-secondary-foreground: #eef0f2;
+  --color-fd-accent: #212528;
+  --color-fd-accent-foreground: #eef0f2;
+  --color-fd-ring: #46a479;
+}
+
+/* neutral.css tints the sidebar separately in dark mode; keep it on our surfaces */
+.dark #nd-sidebar {
+  --color-fd-muted: #141618;
+  --color-fd-secondary: #1a1d1f;
+  --color-fd-muted-foreground: #a4a9b0;
+}
+
 html {
   scrollbar-gutter: stable;
 }

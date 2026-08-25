@@ -1,0 +1,143 @@
+---
+title: The classic batch
+description: The nine operation phases of the final classic transaction, in order, and how they split across transactions.
+---
+
+`batchClassicDemolition(audit, options, paths)` in `src/lib/plan/classic-batcher.ts`
+turns an account audit into an ordered list of classic batches. It is a pure function with
+no network calls.
+
+The operation order is fixed. Each phase runs only after the phase it depends on, so a
+trustline is never removed before its balance is handled and the merge is always last.
+
+## The nine phases
+
+### 1. Withdraw liquidity pools
+
+One operation per pool-share trustline with a positive balance and two known reserves.
+
+Minimums matter here. The reserve amounts Horizon returns are the _whole pool's_, not your
+share. The expected payout for a reserve is `reserve * yourShares / totalShares`, and the
+slippage haircut applies to that figure. Applying it to the whole reserve would revert with
+`LIQUIDITY_POOL_WITHDRAW_UNDER_MINIMUM`. When `totalShares` is missing or zero the floor
+falls back to zero.
+
+### 2. Cancel offers
+
+One operation for every offer, unconditionally.
+
+### 3. Claim claimable balances
+
+One operation per balance you opted into.
+
+The opt-in list has a meaningful three-state behaviour: `undefined` means claim all, and
+an empty array means claim none.
+
+A balance whose `claimableNow` is explicitly `false` is always skipped, because the
+operation would fail on chain.
+
+### 4. Dispose of credit balances
+
+For each positive credit balance, in strict precedence:
+
+| Order | Operation                         | Condition                                                   |
+| ----- | --------------------------------- | ----------------------------------------------------------- |
+| 1     | `PATH_PAYMENT_STRICT_SEND` to XLM | A conversion path exists                                    |
+| 2     | Payment to the destination        | You consented, and the destination already trusts the asset |
+| 3     | Payment to the issuer             | You consented to return it                                  |
+| 4     | Nothing at all                    | No path and no consent                                      |
+
+The path payment sends to the account itself: it converts the balance in place rather than
+paying anyone. Its `destMin` carries the slippage haircut.
+
+Send-to-destination is offered only when the destination already trusts the asset, which is
+verified at preview time, so it cannot fail with `op_no_trust`.
+
+Case 4 emits no operation on purpose. The balance stays, its trustline is kept in phase 5,
+and that blocks the merge until you resolve it. The plan surfaces this rather than quietly
+forfeiting the funds.
+
+### 5. Remove trustlines
+
+Two loops, pool-share trustlines first, then credit trustlines.
+
+Removing a pool-share trustline needs the full liquidity-pool asset (both assets and the
+fee), not just the pool id. Horizon returns reserves in canonical order.
+
+A credit trustline is removed only when its balance is handled: zero, converted, or
+consented to a disposal. An un-routable, unconsented, non-zero line keeps its trustline,
+which is exactly what blocks the merge.
+
+### 6. Delete data entries
+
+One operation per data entry.
+
+### 7. Release sponsorships
+
+**This phase emits nothing.** Self-sponsored entries need no explicit revoke: removing,
+cancelling, or clearing them, or claiming their claimable balances, releases the
+sponsorship automatically and drops `num_sponsoring` so the merge passes.
+
+Sponsorships this account holds for _other_ accounts cannot be enumerated from its own
+Horizon record, so they are blocked upstream in `computeMergeability` rather than papered
+over with a wrong revoke operation.
+
+### 8. Clear signers and reset thresholds
+
+One operation per signer with a positive weight that is not the master key, because
+`setOptions` accepts one signer mutation per operation.
+
+A threshold reset is appended when the account is not already at low 0, medium 0, high 0,
+and master weight 1. The reset sets exactly those values.
+
+### 9. Merge
+
+Guarded first: a direct close whose destination equals the account being closed throws,
+because Stellar rejects a self-merge with `ACCOUNT_MERGE_MALFORMED`.
+
+The merge destination is the mediator's public key when the exchange path is in use, and
+your destination otherwise. The operation is always appended, so the operation list is
+never empty.
+
+## The mediator prepend
+
+When the exchange path is in use and the mediator is not already funded, a
+`create_account` operation funding the mediator with **2 XLM** is prepended to the first
+batch.
+
+## Splitting
+
+A Stellar transaction holds at most 100 operations (`MAX_OPS_PER_TX`). When the operation
+list exceeds that, it splits across several transactions.
+
+The merge always lands in the last transaction.
+
+## Fees and time bounds
+
+| Constant                | Value                             |
+| ----------------------- | --------------------------------- |
+| Base fee per operation  | 100 stroops (the network minimum) |
+| Fee ceiling             | 4,294,967,295 (max uint32)        |
+| Time bound              | 300 seconds                       |
+| Multisig signing window | 259,200 seconds (72 hours)        |
+
+The executor bids above the base fee when the network is congested and escalates on a
+too-low-fee rejection. See
+[Execution and recovery](/docs/developers/internals/execution).
+
+## Rebuilt at execution time
+
+The batches attached to the plan node are not what gets submitted. The executor re-audits,
+re-resolves credit paths, and re-batches before every classic phase, then builds only the
+first batch of the fresh result and repeats until one batch remains.
+
+It forwards the state that must survive that rebuild: whether the mediator is already
+funded, the claimable-balance opt-ins, both consent lists, the fallback address, the
+mediator public key, and the memo.
+
+The memo matters. A direct merge to a memo-required destination drops its memo if the
+re-batch does not re-apply it.
+
+Intermediate batches deliberately do not record an executed transaction hash, because that
+record is the resume signal, and setting it would let a retry skip a still-unrun merge
+while reporting success.

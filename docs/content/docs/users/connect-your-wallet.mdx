@@ -1,0 +1,80 @@
+---
+title: Connect your wallet
+description: Choose a signing method and the network you want to work on.
+icon: Wallet
+---
+
+The app needs to know which account you are closing and how you want to approve each
+transaction. You choose both on the first screen.
+
+## Pick the network first
+
+The network selector sits in the top right of every page and offers **TESTNET** and
+**MAINNET**. Your choice is remembered in your browser.
+
+A fresh visit starts on the network the deployment was built with. On
+[demolisher.app](https://demolisher.app) that is testnet, so you can look around before
+anything touches real funds.
+
+Switching to mainnet opens a confirmation dialog titled **Switch to Mainnet?**. Tick the
+acknowledgement, then select **Switch to Mainnet**. Switching back to testnet applies
+immediately with no dialog.
+
+<Callout type="warn">
+  Changing the network disconnects the wallet you have connected. A connected account belongs to one
+  network, so the app tears the session down rather than carrying it across. Connect again after the
+  switch.
+</Callout>
+
+## Choose how you sign
+
+### Connect a wallet
+
+Select **Connect wallet** to open the wallet picker. It lists Albedo, Freighter, Fordefi,
+Rabet, xBull, LOBSTR, Hana Wallet, Klever Wallet, OneKey Wallet, Bitget Wallet, and
+Cactus Link, plus Ledger for hardware signing.
+
+WalletConnect appears as well when the deployment sets a WalletConnect project id, which
+lets mobile wallets connect by QR code.
+
+Wallets you do not have installed stay in the list with an install link, so the picker
+always looks the same.
+
+Your wallet keeps your secret key. The app receives your public address, builds each
+transaction, and hands it to your wallet to sign. You approve every prompt in the wallet
+itself.
+
+### Use a hardware wallet
+
+Ledger is always in the picker and signs over WebUSB. Connect the device, unlock it, and
+open the Stellar app on it before you select Ledger.
+
+### Paste a secret key
+
+If you have no wallet installed, open **Advanced: paste a secret key** on the connect
+screen and enter a key starting with `S`.
+
+The key stays in your browser's memory. It is never written to disk, never sent to any
+server, and never copied to your clipboard. A fresh keypair is built for each signing
+call, so the key material lives for the length of one operation.
+
+<Callout type="warn">
+  A wallet is safer. Anyone who has your secret key controls the account and can move everything in
+  it. Only paste a key on a device you trust, with nobody able to see your screen.
+</Callout>
+
+### Create a demo account
+
+On testnet the connect screen also offers **Try it on a demo account**, which builds a
+funded practice account for you. See
+[Try it on testnet](/docs/users/try-it-on-testnet).
+
+## What the app can see
+
+Connecting shares your public address. That is enough to read your account from the
+network and build a plan. The app never receives your secret key on the wallet path, and
+never transmits it on the secret-key path.
+
+## Next
+
+Once you are connected, go to [Close an account](/docs/users/close-an-account).

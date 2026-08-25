@@ -1,0 +1,107 @@
+---
+title: Close a shared account
+description: Collect signatures from every signer on a multisig account and submit the close once the threshold is met.
+icon: Users
+---
+
+When no single key can meet the account's signing threshold, the close has to be signed by
+several people. The app detects this while reading the account and adds a **Signatures**
+step where you gather the rest.
+
+Everyone signs on their own device. No signer keys are shared, and no third-party
+signature service is involved.
+
+## Run it
+
+<Steps>
+
+<Step>
+
+### Start the close as normal
+
+Connect your key and work through Configure and Review. A **Shared account** bar appears
+at the top of the configure step showing how many signatures the account needs and how
+many your key provides.
+
+</Step>
+
+<Step>
+
+### Create the signing request
+
+At the bottom of Review, select **Create signing request**. This packages the exact close
+you just reviewed into one transaction and signs it with your key.
+
+Nothing is submitted. The account stays open until enough signers sign.
+
+</Step>
+
+<Step>
+
+### Share the link
+
+The Signatures step shows a link under **SEND TO THE OTHER SIGNERS**. Select **Copy link**
+and send it to your co-signers.
+
+Each of them opens it and signs from their own device. See
+[Sign a closure request](/docs/users/sign-a-closure-request) for what they see.
+
+</Step>
+
+<Step>
+
+### Watch signatures arrive
+
+The **Signing weight collected** bar updates the moment each signature lands. Below it,
+every signer on the account is listed with its weight and a **Signed** or **Pending**
+badge. Your own key is marked **You**.
+
+Updates stream live. If the connection drops, a **Live updates interrupted** notice
+appears with a **Refresh** button.
+
+</Step>
+
+<Step>
+
+### Close it
+
+Once the bar reaches the threshold, select **Continue to final confirmation**. That opens
+the same typed confirmation as any other close: type the last four characters of the
+destination, wait out the timer, and confirm.
+
+</Step>
+
+</Steps>
+
+## Signing several keys yourself
+
+If you hold more than one signer key, you do not need the link. Under **SIGN A KEY
+LOCALLY**, paste a key and select **Sign**. Repeat for each key you hold, and every
+signature moves the bar up.
+
+Those keys are used only in your browser to sign. They are never uploaded or stored.
+
+## What a shared close cannot do
+
+A signing request collects signatures on exactly **one** transaction, so the whole close
+has to fit in one transaction. Three situations do not fit, and the app tells you which
+one applies before you start:
+
+| Situation                                  | Why                                            | What to do                                           |
+| ------------------------------------------ | ---------------------------------------------- | ---------------------------------------------------- |
+| The destination is an exchange             | The exchange path runs as several transactions | Close to a self-custody address instead              |
+| The account holds Soroban DeFi positions   | Each position needs its own transaction        | Unwind them first, or close with all signers present |
+| The account has token allowances to revoke | Each revoke is its own transaction             | Revoke them first, or close with all signers present |
+
+An account whose classic close needs more than 100 operations also cannot be bundled into
+one request.
+
+## How long you have
+
+A signing request stays open for at most 72 hours, and less when the transaction's own
+time bounds expire sooner. After that it is swept away and you create a new one.
+
+## How it works underneath
+
+[The signing relay API](/docs/developers/protocol/signing-relay) covers the routes, the
+guards on publishing a request, and how signatures are verified and merged.

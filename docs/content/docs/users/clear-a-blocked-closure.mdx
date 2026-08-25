@@ -1,0 +1,112 @@
+---
+title: Clear a blocked closure
+description: What to do about anything the app asks you to fix or acknowledge before you can sign.
+icon: TriangleAlert
+---
+
+The app checks the account before it lets you sign, and stops for two different reasons.
+**Fix issues** means something needs an action from you. **Warnings** means something needs
+reading, not fixing.
+
+A few conditions stop a close entirely. Those are on this page too.
+
+## Things you have to fix
+
+### A balance that cannot be converted to XLM
+
+The close turns every non-XLM balance into XLM. When no market path exists for one, the
+account cannot close while it still holds it, and you get a **Fix issues** step.
+
+Choose per asset:
+
+- **Send to your destination.** Offered only when your destination already accepts that
+  token.
+- **Return to issuer.** Sends it back to the address that created it. This is permanent and
+  you almost certainly get nothing back.
+
+You can also sell or move the token in another app first, then select **Re-check and
+continue** to rebuild the plan.
+
+Until you choose something for each one, that balance keeps blocking the close.
+
+## Things you only have to read
+
+These appear in the **Warnings** step. None of them stop the close. Tick each box, then
+continue.
+
+### A token that looks suspicious
+
+Three checks run over the account's tokens and flag anything matching a known scam
+pattern:
+
+| Flag                  | What tripped it                                                               |
+| --------------------- | ----------------------------------------------------------------------------- |
+| **Impersonation**     | Uses a well-known asset's symbol but a different issuer than the official one |
+| **Look-alike**        | The symbol is one or two characters away from a well-known one                |
+| **Hidden characters** | The symbol contains characters outside A to Z and 0 to 9                      |
+| **Unrecognized**      | The token is not on the list of known ones                                    |
+
+The check is not proof. A real asset can trip it. It is flagged so you can confirm you
+recognize what you held before you continue.
+
+### The scan could not finish
+
+When a scan does not complete, the app says so rather than proceeding as though the
+account were fully understood. You see which one fell short: token permissions, DeFi
+positions, or the optional standalone-token scan.
+
+If you have used Blend, Aquarius, Soroswap, or FxDAO, check those apps before closing so
+nothing is left behind.
+
+### A large balance
+
+An account holding more than 1000 XLM gets its own acknowledgement. Check the amount and
+the destination once more before you continue.
+
+### Things handled for you
+
+Pending payments waiting for the account, and deposits the account locked for its own
+entries, are collected and released during the close. You keep the value and there is
+nothing to do.
+
+## Things that stop the close completely
+
+### This account can't be closed
+
+The account has the `auth_immutable` flag set. Stellar forbids merging an account with
+that flag, and the flag is permanent, so no tool can close it.
+
+Your funds are safe and the account works normally. You can keep using it, or move the
+funds out to another account yourself.
+
+### This account is paying deposits for other accounts
+
+The account is sponsoring entries that belong to other accounts. Stellar does not allow an
+account to close while it does that.
+
+The owner of those entries has to remove them, using another tool such as the Stellar
+Laboratory. Once they are gone, come back and try again.
+
+Entries the account sponsors for _itself_ are different. Those are released during the
+close automatically and do not block anything.
+
+### A Blend position you have to deal with first
+
+Two Blend cases need action before the account can close: a loan you cannot currently
+repay, and a backstop deposit with its 17-day queue. Both are covered in
+[Close an account that holds DeFi](/docs/users/close-with-defi).
+
+## Custom tokens that would be left behind
+
+A SEP-41 token held in its own contract does not block the close, and it stays on the
+deleted account unless you move it. The Warnings step lists these under **Standalone
+tokens** so you can tick the ones to sweep.
+
+An exchange destination cannot receive them at all. Move any you want to keep to a
+personal wallet first.
+
+## Still stuck
+
+- A step that failed during execution is covered in
+  [When a step fails](/docs/users/when-a-step-fails).
+- [FAQ](/docs/users/faq) has the short answers.

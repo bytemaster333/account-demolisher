@@ -1,0 +1,101 @@
+---
+title: Configuration
+description: Every environment variable the app reads, with its scope, default, validation, and effect.
+---
+
+Public variables (`NEXT_PUBLIC_*`) are inlined at **build time** by Next.js. Server-only
+variables are read at **runtime**.
+
+Copy `.env.example` to `.env.local` to start.
+
+## Public
+
+| Variable                               | Default                  | Effect                                                                                                                                                                                                  |
+| -------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NEXT_PUBLIC_STELLAR_NETWORK`          | `testnet`                | The starting network: `mainnet`, `testnet`, or `futurenet`. Only the default; the UI switches between testnet and mainnet at runtime                                                                    |
+| `NEXT_PUBLIC_DEPLOYMENT_MODE`          | `reference`              | `reference` runs the exchange mediator. `self-hosted` does not, so closes to a known exchange are refused in the UI, leaving direct merges                                                              |
+| `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | unset                    | When set, WalletConnect joins the wallet picker. When unset it is omitted entirely and the relay is never contacted                                                                                     |
+| `NEXT_PUBLIC_SITE_URL`                 | `https://demolisher.app` | Canonical origin for page metadata, the sitemap, and `robots.txt`. No trailing slash needed                                                                                                             |
+| `NEXT_PUBLIC_SLIPPAGE_BPS`             | `100` (1%)               | Slippage tolerance in basis points, applied to every market conversion in a close: the classic path-payment and LP-withdraw floors and the Soroban exit and swap floors. Integer in the range 10 to 500 |
+| `NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS`   | `0`                      | Absolute floor in stroops for a conversion's XLM output. A credit whose slippage-adjusted output lands at or below this is not sold, and is routed to issuer-return or send-to-destination instead      |
+
+### Validation
+
+The public schema is strict. An invalid enum value is a **hard error at startup**, not a
+silent fallback:
+
+```
+Invalid public environment configuration: <detail>
+```
+
+`NEXT_PUBLIC_SLIPPAGE_BPS` behaves differently: an out-of-range or malformed value falls
+back to the default rather than throwing.
+
+There is an asymmetry worth knowing. Network _resolution_ silently falls back to testnet for
+an unrecognized id, but the public env parser throws. So a typo in
+`NEXT_PUBLIC_STELLAR_NETWORK` fails the build rather than quietly running on testnet.
+
+## Server-only
+
+Never expose these to the client.
+
+| Variable                  | Default                        | Effect                                                                                                                                                                                    |
+| ------------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEDIATOR_SECRET`         | unset                          | A Stellar seed (`S...`) used only as an HMAC master to derive a fresh ephemeral mediator keypair per closure. It never signs directly and holds no funds. Needed only in `reference` mode |
+| `MEDIATOR_ALLOWED_ORIGIN` | unset                          | Comma-separated origins allowed to call `/api/mediator/sign` cross-origin. Unset means same-origin only, which is the safe default                                                        |
+| `TRUSTED_PROXY_HOPS`      | `1`                            | How many reverse-proxy hops sit in front of the app, used to read the real client IP from `X-Forwarded-For` for rate limiting. Set `0` when directly exposed                              |
+| `SOROSWAP_API_URL`        | `https://api.soroswap.finance` | The Soroswap aggregator base URL                                                                                                                                                          |
+| `SOROSWAP_API_KEY`        | unset                          | Bearer key for the aggregator, kept server-side. Needed for the aggregator conversion path                                                                                                |
+
+### Validation
+
+The server module imports `server-only`, so importing it from a client bundle is a build
+error.
+
+An empty string is treated as **unset** for every field, so you can leave a line blank in
+`.env.local` rather than deleting it.
+
+The schema validates exactly three variables:
+
+- `MEDIATOR_SECRET` must start with `S` and be exactly 56 characters, or be unset. A
+  stricter ed25519-seed check runs at first use.
+- `SOROSWAP_API_URL` must be a valid URL.
+- `SOROSWAP_API_KEY` is an optional string.
+
+A failure throws `Invalid server environment configuration: <detail>`.
+
+`MEDIATOR_ALLOWED_ORIGIN` and `TRUSTED_PROXY_HOPS` are read directly from the environment
+rather than through the schema, so a malformed value falls back to its default instead of
+being reported.
+
+## Build-time
+
+| Variable   | Effect                                                                                                |
+| ---------- | ----------------------------------------------------------------------------------------------------- |
+| `OUTPUT`   | `OUTPUT=export` switches Next.js to static export                                                     |
+| `NODE_ENV` | Set by Next. Selects the development or production CSP, and controls HSTS and mediator CORS behaviour |
+
+<Callout type="warn">
+  Static export drops every server route: the mediator, the signing relay, and the Soroswap proxy.
+  Rewrites do not run, and no per-request CSP is emitted, so the host has to supply security headers
+  itself. Use it only when you deliberately want a client-only build.
+</Callout>
+
+## Endpoints are not environment variables
+
+Horizon and Soroban RPC endpoints are pinned per network in
+`src/lib/config/networks.ts`. Editing that file is how you point the app at different
+providers.
+
+See [Networks and endpoints](/docs/developers/reference/networks).
+
+## Outbound DNS
+
+When the Soroswap conversion path is enabled, the outbound call is made by the server, not
+the browser, and the server resolves that host through the public resolvers 1.1.1.1 and
+8.8.8.8 to avoid category-based DNS blocking. Allow that if your egress is locked down.
+
+## Related
+
+[Self-hosting](/docs/developers/operations/self-hosting) walks through install, run, Docker,
+and deploying under your own domain.

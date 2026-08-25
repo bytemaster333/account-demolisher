@@ -1,57 +1,48 @@
 ---
 title: Account Demolisher
-description: An open-source tool for cleanly closing Stellar accounts, including the Soroban DeFi positions the account holds.
+description: Close a Stellar account completely, including the Soroban DeFi positions it holds, and send the recovered XLM where you choose.
 ---
 
-Account Demolisher closes a Stellar account from start to finish. It reads the account, builds a dependency-ordered plan for unwinding the subentries and Soroban DeFi positions it holds, simulates each Soroban step against the live network, and walks you through signing and submitting the closure. The recovered XLM goes to a destination wallet. When the destination is a centralized exchange, it is routed through a temporary mediator account so the last bit of base reserve is not left stranded.
+Account Demolisher closes a Stellar account from start to finish. It reads the account,
+unwinds everything attached to it, converts what is left to XLM, and merges the account
+to a destination you pick. Every transaction is signed on your own device.
 
-The project ships as a single web app. Every transaction is signed on your own device. No server ever holds your secret key.
+## Pick your path
+
+<Cards>
+  <Card
+    title="Users"
+    href="/docs/users"
+    description="Close an account, send the funds to a wallet or an exchange, revoke token allowances, and clear anything that blocks a close."
+  />
+  <Card
+    title="Developers"
+    href="/docs/developers"
+    description="Architecture, the plan graph, the mediator and relay protocols, the security model, configuration, and self-hosting."
+  />
+</Cards>
 
 ## What it closes
 
-Classic Stellar subentries, handled inside one batched classical transaction (or a small number of batches if the account is large):
+Classic Stellar entries, handled inside one batched transaction (or a few, for a large account):
 
 - Open DEX offers
-- Trustlines, both regular credit trustlines and pool-share trustlines
+- Trustlines, both credit trustlines and pool-share trustlines
 - Data entries
 - Non-master signers and elevated thresholds
-- Sponsorships the account holds
+- Self-sponsored entries
 - Claimable balances the account can claim
 
-Soroban DeFi positions, each unwound in its own transaction before the classical close:
+Soroban DeFi positions, each unwound in its own transaction before the classic close:
 
-- Blend lending positions: repay borrows, withdraw collateral, withdraw supply, claim BLND emissions
-- Aquarius liquidity positions: withdraw shares, claim rewards
-- Soroswap liquidity positions: withdraw the LP position
-- FxDAO vaults: pay the debt, which closes the vault and reclaims its collateral in a single call
-- SEP-41 token allowances: revoke them by setting the approval to zero
-
-The credit balances these steps leave behind (for example an FxDAO stablecoin, or an asset released from a position) are converted to XLM inside the classical transaction. When no conversion path exists, the balance is never moved silently: with your per-asset consent it is either sent to the destination (offered only when the destination already trusts the asset) or returned to its issuer, and otherwise it is left in place, which keeps its trustline and blocks the merge until you resolve it.
-
-Standalone SEP-41 token balances, a custom token held in contract storage rather than as part of a DeFi position, are swept on a direct close. You select which tokens to move, and each selected token is either sent to your destination as-is or swapped to XLM through Soroswap, depending on the option you choose. An exchange destination cannot receive a raw contract token, so for an exchange close the preview flags these tokens for you to move first instead.
-
-## What it flags but does not close
-
-The preview names each of these with the exact reason:
-
-- **Blend backstop deposits.** A backstop withdrawal runs through a separate 17-day queue. On mainnet the plan queues the withdrawal for you and stops at the merge, because the account cannot be deleted while a backstop position is active or queued. You return on or after the unlock date, withdraw the backstop, and finish closing.
-- **Blend borrows you can no longer cover.** Repaying a Blend borrow needs the borrowed asset on hand. The demolisher repays the full liability but does not swap to acquire it, so if the account no longer holds enough of the borrowed token, the preview flags the shortfall and the repay (and therefore the merge) cannot complete until you top up or clear the position yourself.
-- **Accounts that cannot be merged at all.** If `AUTH_IMMUTABLE` is set, or the account is sponsoring entries for others, the closure stops at the audit with the exact reason. See [How it works](/docs/how-it-works).
-
-## Where to go next
-
-- [Getting started](/docs/getting-started). How to open the live app, run the demo account, connect a real wallet, and pick a network.
-- [How it works](/docs/how-it-works). The audit, the plan graph, the simulator, and the executor.
-- [The demo account](/docs/demo-account). What the one-click testnet account sets up, step by step.
-- [Destinations and the mediator](/docs/destinations-and-mediator). Sending the recovered XLM to a wallet or to a centralized exchange.
-- [Allowance viewer](/docs/allowance-viewer). Auditing and revoking SEP-41 token approvals on any account.
-- [Multisig](/docs/multisig). Coordinating a closure across several signers.
-- [Security](/docs/security). What the app signs, what it never signs, and the threat model.
-- [Self host](/docs/self-host). Running the app on your own infrastructure.
-- [FAQ](/docs/faq). Short answers to the most common questions.
+- Blend: repay borrows, withdraw collateral and supply, claim emissions
+- Aquarius: withdraw pool shares, claim rewards
+- Soroswap: withdraw the LP position
+- FxDAO: pay the vault debt, which returns the collateral in the same call
+- SEP-41 token allowances: set the approval to zero
 
 ## Links
 
-- Live app: <a href="https://demolisher.app">demolisher.app</a>
-- Source: <a href="https://github.com/bytemaster333/account-demolisher">github.com/bytemaster333/account-demolisher</a>
+- Live app: [demolisher.app](https://demolisher.app)
+- Source: [github.com/bytemaster333/account-demolisher](https://github.com/bytemaster333/account-demolisher)
 - License: Apache 2.0

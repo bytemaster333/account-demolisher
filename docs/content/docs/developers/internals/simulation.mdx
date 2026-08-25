@@ -1,0 +1,97 @@
+---
+title: Simulation
+description: What is simulated before you sign, what is extracted from the result, and what is validated in memory instead.
+---
+
+Every plan node is run through `simulateNode` in `src/lib/plan/simulator.ts` before the
+Review step shows it. Soroban nodes go to the network. Classic nodes are validated in
+memory.
+
+## Soroban nodes
+
+Each of the eleven Soroban node kinds carries a built transaction, and that transaction is
+sent to the RPC's `simulateTransaction`.
+
+A node without a built transaction throws before any RPC call:
+
+```
+simulateNode: Soroban node "<id>" (<kind>) has no built transaction;
+attach metadata.transaction before simulating
+```
+
+On success the outcome records exactly six things, which are then baked into the envelope:
+
+| Field                     | Use                                     |
+| ------------------------- | --------------------------------------- |
+| `retval`                  | The simulated return value              |
+| `minResourceFee`          | The resource fee the node has to pay    |
+| `transactionData`         | The ledger footprint                    |
+| `latestLedger`            | The ledger the simulation ran against   |
+| `auth`                    | The authorization entries               |
+| `restorePreambleRequired` | Whether the RPC reported archived state |
+
+A failed simulation raises `SimulationFailedError`, carrying the node id and the upstream
+error text:
+
+```
+simulateNode: <kind> node "<id>" simulation failed: <error>
+```
+
+### Archived state
+
+`restorePreambleRequired` records whether the RPC returned a restore preamble. Nothing
+builds, prepends, or submits a restore-footprint transaction in response.
+
+An exit against archived state therefore fails cleanly and surfaces in the preview rather
+than being restored and retried automatically.
+
+## The classic close
+
+`FinalClassicTx` is **not** sent to the RPC. No network call is made on this path at all.
+
+Instead every batch is actually built in memory against a synthetic source account with
+sequence zero. That is enough for structural validation: `buildClassicTransaction` throws
+on an empty or malformed operation set, and on a total fee above the uint32 ceiling. A
+doomed classic close therefore surfaces at preview time instead of hiding behind an empty
+envelope.
+
+A node with zero batches throws:
+
+```
+simulateNode: FinalClassicTx "<id>" has zero batches; cannot validate
+```
+
+Every batch is validated, but only the **first** batch's envelope, operation count, and fee
+are reported. The executor rebuilds against live account state anyway, so the preview
+figure is the first batch's, not the whole close's.
+
+A returned fee-bump transaction is rejected outright.
+
+## The mediator forward
+
+`MediatorForward` is neither simulated nor built here. Its envelope cannot be reproduced
+client-side, because it is built and signed server-side against the mediator's live
+sequence number at submit time, and that needs the flow token.
+
+Only its metadata is validated. Missing `mediatorPublicKey`, `ultimateDestination`, or
+`flowToken` raises `SimulationFailedError` with the upstream code
+`malformed-mediator-forward`.
+
+The reported shape is fixed rather than estimated: exactly 2 operations (one payment, one
+account merge) and a fee of 200 stroops. Its `xdr` is deliberately empty.
+
+## What the preview does with the outcome
+
+A node that simulates cleanly moves to the `simulated` status, which the Review step draws
+as a passed dry run.
+
+A node that cannot be simulated is marked failed or skipped, and the close is held until
+you resolve it or accept the gap. It is never carried silently into execution.
+
+## Re-simulation at execution time
+
+The preview simulation is not the one that gets signed. Before signing, the executor
+rebuilds each Soroban node against fresh on-chain state and re-simulates it, so a footprint
+that went stale between review and execution is recomputed rather than reused.
+
+See [Execution and recovery](/docs/developers/internals/execution).

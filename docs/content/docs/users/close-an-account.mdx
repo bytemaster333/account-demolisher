@@ -1,0 +1,169 @@
+---
+title: Close an account
+description: The full walkthrough, from entering a destination to the closed-account receipt.
+icon: Trash2
+---
+
+Closing an account clears everything attached to it, converts what is left to XLM, sends
+the whole balance to an address you choose, and deletes the account from the ledger. The
+released reserve is part of what you receive.
+
+This cannot be undone. The app puts several deliberate checks in front of the final
+confirmation for that reason.
+
+## Before you start
+
+- Connect the account you want to close. See
+  [Connect your wallet](/docs/users/connect-your-wallet).
+- Have the destination address ready. It must already exist and be funded on the network,
+  because a close merges into it.
+- Sending to an exchange? Read
+  [Send the funds to an exchange](/docs/users/send-to-an-exchange) first, because the
+  deposit memo matters.
+
+## The steps
+
+Four steps always appear: **Connect**, **Configure**, **Review**, **Close**. Three more
+are inserted only when they apply.
+
+<Steps>
+
+<Step>
+
+### Configure
+
+Select where the funds go.
+
+**Destination address.** Paste the `G` address that receives everything. The app checks
+the format, refuses your own account (Stellar rejects a self-merge), and confirms the
+destination exists on the network. If it does not exist yet, fund it first.
+
+**Memo.** Optional for a personal wallet, and attached directly to the closing
+transaction when you set one. Required by most exchanges.
+
+**Payments waiting to be collected.** If the account has claimable balances, they appear
+here, pre-ticked, and are collected into your balance before the close. Untick any you
+want to leave behind, but note that unticked ones are lost when the account closes.
+
+Select **Continue, preview the plan**.
+
+</Step>
+
+<Step>
+
+### Fix issues, only if something blocks the close
+
+This step appears when a balance cannot be converted to XLM and therefore blocks the
+merge. You decide what happens to each one, then select **Re-check and continue**.
+
+See [Clear a blocked closure](/docs/users/clear-a-blocked-closure).
+
+</Step>
+
+<Step>
+
+### Warnings, only if there is something to read
+
+This step appears when there is something to acknowledge rather than fix: a suspicious
+looking token, an incomplete scan, a balance over 1000 XLM, or items the close handles
+for you automatically.
+
+Nothing here stops the close. Tick each box, then select **Continue to review**.
+
+</Step>
+
+<Step>
+
+### Review
+
+The app has now read your account, built the plan, and simulated every Soroban step
+against the live network. Nothing has been signed.
+
+You see three figures at the top:
+
+| Figure                   | Meaning                                                                         |
+| ------------------------ | ------------------------------------------------------------------------------- |
+| **Destination receives** | What arrives after network fees                                                 |
+| **Network fees**         | What the network charges to process the steps. It is not paid to the app        |
+| **Reserve released**     | The XLM Stellar had locked in the account, already included in the amount above |
+
+Below that is the plan itself, grouped into phases and listed in the order it runs. Each
+step carries a plain-language label and a short explanation. A green check on a step means
+its dry run passed.
+
+The last groups, **Close the account** and **Deliver to destination**, carry an
+**Irreversible** badge.
+
+Check the destination address shown under **SENDING EVERYTHING TO**, then select
+**Continue to final confirmation**.
+
+</Step>
+
+<Step>
+
+### Confirm
+
+A dialog asks you to type the **last four characters** of the destination address. They
+are underlined in the address above the input.
+
+A four-second timer runs at the same time. The confirm button stays locked until both the
+timer finishes and the characters match. This catches a wrong paste and a hijacked
+clipboard.
+
+Select **Close account**.
+
+</Step>
+
+<Step>
+
+### Close
+
+Each transaction is signed in your wallet and submitted in order. Approve each prompt as
+it appears.
+
+You sign once per transaction, not once for the whole plan, because Stellar cannot carry
+Soroban and classic operations in one signed transaction. An account with no DeFi and no
+more than 100 classic operations is a single signature.
+
+<Callout type="warn">
+  Keep the tab open until it finishes. Leaving partway through can stop the close with some steps
+  done and the account still open.
+</Callout>
+
+</Step>
+
+</Steps>
+
+## When it finishes
+
+The heading reads **Account closed** and shows the amount sent and the destination. You
+get:
+
+- A **PROOF** link to the merge transaction on a block explorer.
+- **Save a receipt**, which copies a text record of the closure and a link for every
+  transaction it ran.
+
+Save the receipt. A closed account cannot be looked up afterwards, so this is your record.
+
+## What it costs
+
+The app is free and takes no cut. You pay Stellar network fees for the transactions it
+submits.
+
+Every operation costs at least the network's base fee of 100 stroops. The closing
+transaction bids above that when the network is busy, and raises the bid if a submission
+comes back rejected for a fee that was too low. Each Soroban step also pays a resource fee
+worked out from its simulation.
+
+The Review step shows the total before you sign anything.
+
+## If a step fails
+
+Your funds stay safe and the account stays open. See
+[When a step fails](/docs/users/when-a-step-fails).
+
+## How it works underneath
+
+- [The closure lifecycle](/docs/developers/concepts/closure-lifecycle)
+- [The classic batch](/docs/developers/internals/classic-batch)
+- [Execution and recovery](/docs/developers/internals/execution)

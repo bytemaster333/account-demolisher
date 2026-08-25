@@ -1,0 +1,12 @@
+{
+  "title": "How it works",
+  "icon": "Cog",
+  "pages": [
+    "account-audit",
+    "position-discovery",
+    "plan-graph",
+    "classic-batch",
+    "simulation",
+    "execution"
+  ]
+}

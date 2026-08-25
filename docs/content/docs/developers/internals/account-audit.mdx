@@ -1,0 +1,102 @@
+---
+title: Account audit
+description: What is read from Horizon, how the merge verdict is computed, and which conditions block a close.
+---
+
+`auditAccount(publicKey, network)` in `src/lib/stellar/account-audit.ts` produces the
+read-only snapshot every later stage works from. It is uncached: every call re-reads
+Horizon.
+
+## What it reads
+
+Four Horizon calls. Offers, claimable balances, and pool shares are fetched concurrently.
+
+| Call                                                 | Pagination                                |
+| ---------------------------------------------------- | ----------------------------------------- |
+| `loadAccount(publicKey)`                             | Single call                               |
+| `offers().forAccount(publicKey).limit(200)`          | Loops until a page returns fewer than 200 |
+| `claimableBalances().claimant(publicKey).limit(200)` | Same 200-per-page loop                    |
+| `liquidityPools().liquidityPoolId(poolId)`           | One per pool-share trustline, in parallel |
+
+From the account record it parses balances, signers, thresholds, flags, data entries,
+sequence, subentry count, home domain, and the three sponsorship counters
+(`num_sponsoring`, `num_sponsored`, `sponsor`).
+
+Loading pool details is fail-closed: if any pool read rejects, the audit throws a single
+error naming every failed pool id rather than continuing with a partial picture.
+
+## Two details worth knowing
+
+**The master key is identified by key equality with the account id**, not by being the
+first ed25519 signer. `masterWeight` is the weight of the signer whose key equals the
+account id, or `0` when no such signer exists.
+
+**A claimable balance with no sponsor becomes an empty string** rather than being
+dropped, and the entry's `predicate` field carries the whole `claimants` array.
+
+## Account not found
+
+A Horizon 404 raises `AccountNotFoundError` with the message
+`Stellar account not found on this network: <publicKey>`. Any other error re-throws
+unchanged, so a 500 is never mistaken for a missing account.
+
+## The merge verdict
+
+`computeMergeability(flags, sponsorship)` runs at audit time and again at execute time
+against a fresh re-audit. It returns one of three outcomes, in this order:
+
+1. `flags.authImmutable === true` → not mergeable, reason `AUTH_IMMUTABLE`.
+2. `numSponsoring - coverable > 0` → not mergeable, reason `IS_SPONSOR`, with a detail
+   string naming the count of entries sponsored for other accounts.
+3. Otherwise → mergeable.
+
+The reason union also declares `MISSING_ACCOUNT`, which no code path produces.
+
+## Coverable sponsorships
+
+The `IS_SPONSOR` check subtracts sponsorships the account holds for _itself_, because the
+close releases those on its way through. `computeCoverableSponsorships` sums:
+
+- balances whose sponsor is the account itself
+- offers whose sponsor is the account itself
+- signers whose sponsor is the account itself
+- claimable balances whose sponsor is the account itself **and** which are claimable now
+- every data entry, unconditionally
+
+The data-entry term is unconditional because Horizon's account record carries no
+per-data-entry sponsor field. The close deletes every data entry anyway, and the call site
+clamps the total with `Math.min(coverable, num_sponsoring)`, which absorbs any overcount.
+
+This is why an account whose only sponsorships are its own self-claimable balances closes
+normally: they are claimed during the close, so the sponsoring count reaches zero before
+the merge.
+
+## Multisig detection
+
+`computeRequiresMultisig` is `masterWeight === 0 || masterWeight < high`.
+
+Both `account_merge` and the `set_options` that clears signers and resets thresholds are
+high-threshold operations, so the high threshold is the one that matters.
+
+## What blocks the UI
+
+The flow is suppressed entirely when either hard block applies:
+
+| Block                 | Condition                   | Continue path |
+| --------------------- | --------------------------- | ------------- |
+| Auth immutable        | `flags.authImmutable`       | None          |
+| Sponsoring for others | `numSponsoring > coverable` | None          |
+
+A third condition, an un-routable credit balance, does not block the flow but does gate
+the close behind a resolution step. A positive credit balance is un-routable when no
+conversion path exists for it and you have not chosen a disposal for it. See
+[The classic batch](/docs/developers/internals/classic-batch).
+
+## Execute-time re-checks
+
+The audit is not trusted across time. Before each classic phase the executor re-audits and
+re-runs `computeMergeability`, throwing
+`account_merge blocked: <reason>` when the verdict changed.
+
+[Execution and recovery](/docs/developers/internals/execution) covers the rest of the
+merge guard.

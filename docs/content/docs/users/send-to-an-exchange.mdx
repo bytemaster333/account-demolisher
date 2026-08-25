@@ -1,0 +1,120 @@
+---
+title: Send the funds to an exchange
+description: Close an account straight into an exchange deposit address, with the memo the exchange needs to credit you.
+icon: Landmark
+---
+
+You can send a closed account's balance directly to an exchange deposit address. The app
+handles the part that normally makes this fail.
+
+## Why this needs special handling
+
+Closing an account on Stellar uses `ACCOUNT_MERGE`. Most exchanges credit _payments_, not
+merges, and a payment is what carries your deposit memo. Merge straight into an exchange
+and the lumens land on the ledger at the exchange's wallet, but nothing tells the exchange
+the deposit is yours.
+
+When the destination is an exchange the app recognizes, it routes the close through a
+short-lived helper account instead. Your account merges into the helper, and the helper
+sends the exchange a normal XLM payment carrying your memo, then removes itself.
+
+From the exchange's side this is an ordinary memo-bearing deposit.
+
+## Do this
+
+<Steps>
+
+<Step>
+
+### Get your deposit address and memo from the exchange
+
+Copy both. Exchanges share one deposit address across all customers, so the memo is the
+only thing that tells them the deposit is yours.
+
+</Step>
+
+<Step>
+
+### Paste the address into the destination field
+
+If the app recognizes it, an **Exchange detected** notice names the exchange and tells you
+which memo type it needs.
+
+</Step>
+
+<Step>
+
+### Set the memo type and value
+
+Pick the type the exchange asked for and paste the value. The app refuses to start when
+the memo is missing, the wrong type, or malformed for its type, and it names the exchange
+in the refusal.
+
+</Step>
+
+<Step>
+
+### Continue as normal
+
+The rest is the standard flow in [Close an account](/docs/users/close-an-account). The
+plan gains a final step, **Deliver to destination**, which is the helper account forwarding
+your funds. That step needs no signature from you.
+
+</Step>
+
+</Steps>
+
+## Exchanges the app recognizes
+
+Twelve deposit addresses are built in. All twelve require a memo.
+
+| Exchange          | Memo type |
+| ----------------- | --------- |
+| Kraken            | Text      |
+| Binance           | ID        |
+| Binance Deposits  | ID        |
+| Bitfinex          | Text      |
+| Bitstamp          | ID        |
+| KuCoin            | Text      |
+| Upbit             | Text      |
+| CEX.IO            | Text      |
+| Crypto.com        | Text      |
+| Robinhood         | Text      |
+| Coinbase Deposits | Text      |
+| Blockchain.com    | Text      |
+
+Kraken publishes a 1 XLM minimum deposit and Binance a 0.1 XLM minimum. Check your
+exchange's own deposit page for its current terms before you close.
+
+## Sending to an exchange that is not listed
+
+You can still use the address. The close runs as a direct merge, so the exchange most
+likely will not credit it.
+
+Withdraw to a wallet you control and move the funds to the exchange yourself. That gets
+you a normal payment the exchange can credit.
+
+If you run an exchange and want closes to reach your deposit addresses, see
+[Exchange integration](/docs/developers/protocol/exchange-integration).
+
+## Things worth knowing
+
+**Custom tokens cannot go to an exchange.** An exchange deposit address cannot receive a
+raw Soroban token. If the account holds standalone tokens, the app tells you to move them
+to a personal wallet first, or they stay behind on the closed account.
+
+**A shared account cannot close to an exchange in one signing request.** The exchange path
+runs as several transactions, which cannot be bundled into the single transaction a
+multisig signing request collects signatures on. Close to a self-custody address instead.
+See [Close a shared account](/docs/users/close-a-shared-account).
+
+**If the forward is interrupted.** If the final delivery does not complete, the next time
+you open the app with that account connected a banner reads **An exchange forward was
+interrupted**, with a **Resume the forward** button that sweeps the funds on to your
+destination.
+
+## How it works underneath
+
+[The mediator forward protocol](/docs/developers/protocol/mediator) covers the helper
+account, how its signing key is derived per closure, and the exact envelope the server
+will co-sign.

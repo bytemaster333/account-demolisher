@@ -1,0 +1,64 @@
+---
+title: Sign a closure request
+description: Someone sent you a link asking you to co-sign an account closure. Here is how to review it and sign safely.
+icon: PenLine
+---
+
+You received a link like `https://demolisher.app/sign?id=...`. It asks you to add your
+signature to a transaction that permanently closes a Stellar account.
+
+Read the page before you sign. It shows you exactly what the transaction does.
+
+## What you see
+
+The page opens on **Review, then sign**.
+
+**What you're signing.** The account being closed, and a decoded list of every operation
+in the transaction, one line each. Operations that destroy something are marked in red.
+You never sign opaque base64 here.
+
+**Progress.** A **Signing weight collected** bar, then every signer on the account with
+its weight and a **Signed** or **Pending** badge. This updates live as other people sign.
+
+## Check these before signing
+
+<Callout type="warn">
+  Signing helps permanently close the account. Confirm all three of these first.
+</Callout>
+
+1. **The account being closed is the one you expect.** It is shown in full near the top.
+2. **The operation list matches what you agreed to.** Look at the destination address on
+   the merge operation in particular.
+3. **The network badge is right.** It sits beside the **What you're signing** heading.
+
+## Sign
+
+Two ways, both entirely local:
+
+- **Connect wallet and sign.** Opens your wallet, which shows its own confirmation.
+- **Paste your secret key.** Your key is used only in this browser to sign and is never
+  uploaded or shared.
+
+When your signature is accepted you see **Your signature is in**, telling you either that
+the close now has enough signatures or that it still needs more signers.
+
+## Things the page refuses to do
+
+The app re-computes the transaction's hash from the link id and compares them before
+anything renders. That means a link cannot show you one transaction and have you sign
+another.
+
+| Message                                    | What it means                                                                                                                             |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| **This request can't be opened**           | The link is missing its id, the transaction does not match the link, or the request could not be loaded. Ask the sender for a fresh link. |
+| **This request can't be verified**         | The transaction is not a single account close on this network. Do not sign it.                                                            |
+| **This key isn't a signer on the account** | The key you signed with is not authorized on that account, so the signature does not count. Sign with one of the keys listed on the page. |
+
+## After you sign
+
+Nothing else is required from you. The person who started the close submits it once enough
+signatures arrive. Your signature alone does not close the account unless your weight
+meets the threshold on its own.
+
+Your signature cannot be reused elsewhere. A Stellar signature covers one transaction on
+one network, so it cannot be replayed against a different close or a different network.

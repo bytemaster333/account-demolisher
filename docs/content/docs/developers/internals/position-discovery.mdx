@@ -1,0 +1,133 @@
+---
+title: Position discovery
+description: How each protocol's positions are found and how the exit transactions are built.
+---
+
+Discovery runs client-side against the live network, in parallel, one probe per protocol.
+There is no server-side positions proxy and no positions API key.
+
+`DirectContractProvider` in `src/lib/adapters/positions/direct.ts` coordinates it.
+
+## Blend
+
+**Discovery** reads the pool contracts directly through the Blend SDK, across a frozen
+registry of known pools. It finds supply, collateral, and borrow positions, plus BLND
+emissions.
+
+An unmapped reserve index is a hard failure, never treated as an empty position.
+
+**Exit sequence** (`src/lib/adapters/blend/exit.ts`) builds steps in this order:
+
+1. `acquire_repay_asset` markers, one per liability the account cannot cover
+2. `repay`, one per liability
+3. `withdraw_collateral`, per collateral entry
+4. `withdraw_supply`, per supply entry
+5. `claim_emissions`, when there are reserve token ids to claim
+6. `backstop_queue_withdrawal`, when backstop shares are present
+
+Repay and withdraw amounts are submitted as `I128_MAX` so the pool drains the full
+liability even if interest accrued between planning and execution. There is no
+partial-amount path.
+
+The builder refuses outright when the pool is not on the network's allow-list.
+
+### Repay needs the borrowed asset on hand
+
+Blend has no built-in swap and the app does not acquire the token for you.
+`blendRepayShortfallWarnings` maps each audited balance to its contract id, sums what the
+account holds, and flags a shortfall on the first liability where the amount owed exceeds
+the amount held.
+
+It returns exactly one warning regardless of how many liabilities are short, because the
+action you take is the same either way.
+
+### The backstop
+
+A backstop deposit lives in a separate contract from the lending pool, and withdrawing one
+runs through a 17-day queue (`BACKSTOP_QUEUE_DURATION_SECONDS`, 1,468,800 seconds).
+
+A close can start that withdrawal but cannot finish it in one session, so an active or
+queued backstop blocks the final merge. The account has to survive to receive the
+withdrawal.
+
+A `BackstopQueue` node is emitted only when there are un-queued shares. A deposit already
+fully queued has nothing new to submit but still blocks the merge through the
+execute-time re-probe.
+
+The unlock date shown in the plan is an estimate. The real timer starts on chain at submit.
+
+A failed backstop read is never treated as "no backstop position"; it surfaces as an error
+naming the pool.
+
+## Aquarius
+
+Aquarius is discovered by **two providers whose results are unioned**, not by a fallback
+that only runs when the first fails.
+
+Both `AquariusAPIPoolProvider` (REST) and `AquariusEventScanPoolProvider` (on-chain event
+scan) run under `Promise.allSettled`. A pool that either source finds is reported.
+Discovery throws only when both reject.
+
+The reason is stated in the source: the REST backend is attacker-influenceable, and a
+well-formed but empty or partial response could hide a held LP position. A catch-only
+fallback never triggers in that case, because nothing threw.
+
+**The event scan** pages `getEvents` filtered to the router contract, decoding `deposit`
+and `withdraw` events. It looks back 120,960 ledgers, about seven days at five seconds per
+ledger. On a retention error it re-clamps the start ledger to the reported floor plus a
+60-ledger margin and retries, up to three times.
+
+An empty page does not end the scan. The loop ends on a stalled or absent cursor, or at
+100 pages.
+
+A failure while probing a pool the user has demonstrably interacted with is re-thrown
+rather than swallowed, so discovery reports incompleteness instead of hiding it.
+
+**Share balances** are read on chain for both providers: `share_id` from the router, then
+SEP-41 `balance` on that share token. Zero-balance pools are dropped.
+
+## Soroswap
+
+Discovery is entirely on chain. It walks the factory's pair list and checks your LP token
+balance against each pair.
+
+Exits withdraw the LP position; a separate path swaps a leftover token to XLM through the
+aggregator.
+
+The aggregator itself is reached through the server-side proxy at `/api/soroswap`, which
+keeps the upstream API key off the client.
+
+## FxDAO
+
+Discovery probes `get_vault` per known denomination from a compiled-in contract registry.
+
+The exit is a single `pay_debt` call, which closes the vault and returns its collateral in
+the same call. There is no separate redeem step.
+
+The plan node carries the vault's collateral alongside its debt, because the on-chain
+`vault_key.index` that `pay_debt` validates is derived from both.
+
+## Common properties
+
+Every exit builder ends the same way:
+
+- Fee set to `SOROBAN_INCLUSION_FEE`
+- A 300-second timeout
+- Assembled through simulation
+- A returned fee-bump transaction is rejected
+- `assertTransactionAllowed` runs against the network allow-list before the transaction is
+  returned
+
+See [Contract allow-list](/docs/developers/security/contract-allowlist).
+
+## Unsupported protocols
+
+The close unwinds Blend, Aquarius, Soroswap, and FxDAO. A balance from a contract outside
+that set produces a manual-close notice telling you to unwind it in its own app first,
+because moving the token as-is does not reclaim what it represents.
+
+## When a probe fails
+
+A per-protocol failure becomes a discovery warning rather than a silent gap, and the
+preview surfaces it before you sign. See
+[Account audit](/docs/developers/internals/account-audit).

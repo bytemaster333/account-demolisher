@@ -1,0 +1,161 @@
+---
+title: Self-hosting
+description: Install, configure, run, and deploy Account Demolisher under your own domain.
+---
+
+The app is a standard Next.js 16 application. Clone it, set a few environment variables, and
+run it.
+
+## Requirements
+
+- **Node.js 22** (pinned in `.nvmrc`, `engines` requires `>=22`)
+- **pnpm 10** (pinned at `pnpm@10.30.0`, `engines` requires `>=10`)
+
+## Install and run
+
+```bash
+git clone https://github.com/bytemaster333/account-demolisher.git
+cd account-demolisher
+pnpm install
+cp .env.example .env.local
+pnpm dev
+```
+
+The dev server runs at `http://localhost:3000`.
+
+For production:
+
+```bash
+pnpm build
+pnpm start
+```
+
+The production server binds to port 3000. Override with `PORT`.
+
+## Configure
+
+Every variable, with its default and validation, is in
+[Configuration](/docs/developers/reference/configuration).
+
+The minimum for a working deployment is nothing at all: it starts on testnet in reference
+mode. Two decisions matter:
+
+- **To support exchange closes**, set `MEDIATOR_SECRET` and keep
+  `NEXT_PUBLIC_DEPLOYMENT_MODE=reference`.
+- **To skip them**, set `NEXT_PUBLIC_DEPLOYMENT_MODE=self-hosted`. Closes to a recognized
+  exchange are then refused in the UI, leaving direct merges.
+
+## The mediator key
+
+You need `MEDIATOR_SECRET` only for the exchange path.
+
+1. Generate a fresh Stellar keypair. The Stellar Laboratory's account creator works.
+2. Set `MEDIATOR_SECRET` to that seed in `.env.local`.
+3. Restart. The seed loads once and is memoized.
+
+**You do not fund anything.** There is no standing mediator account. Each closure derives a
+fresh throwaway keypair from the seed, and that ephemeral account is created and funded with
+2 XLM on the fly by the closing account itself.
+
+The seed is only ever an HMAC master. It never signs a transaction directly and never holds
+a balance. Use a dedicated key per deployment.
+
+See [Mediator forward protocol](/docs/developers/protocol/mediator).
+
+## Docker
+
+```bash
+docker compose up --build          # http://localhost:3000
+```
+
+or:
+
+```bash
+docker build -t account-demolisher .
+docker run -p 3000:3000 -e MEDIATOR_SECRET=S... account-demolisher
+```
+
+The image builds on `node:22-slim`, **pinned by digest** so the base cannot drift under the
+tag, and runs as a non-root user. It ships production-only dependencies, not the build
+stage's devDependencies. Port 3000 is exposed.
+
+Public `NEXT_PUBLIC_*` config is baked at build time and defaults to testnet. Server-only
+secrets are supplied at runtime.
+
+The bundled compose file publishes the app directly with no reverse proxy, so it sets
+`TRUSTED_PROXY_HOPS=0`: with nothing in front, `X-Forwarded-For` is fully client-controlled
+and must be ignored so the rate limiter keys on the real connection.
+
+## Behind a reverse proxy
+
+Any TLS-terminating proxy works. A minimal Caddy site block:
+
+```
+yourdomain.example {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:3000
+}
+```
+
+Set `TRUSTED_PROXY_HOPS` to the number of proxies you control so rate limiting keys on the
+real client IP rather than the proxy's.
+
+## Content Security Policy
+
+The CSP is built in `src/lib/config/csp.ts` and applied per response in `src/proxy.ts`,
+which is Next 16's renamed middleware convention. `next.config.ts` sets only the static
+headers such as HSTS.
+
+To add an upstream the app needs to reach, add its URL to `CONNECT_SRC_ENDPOINTS`. The
+browser blocks anything not on the list.
+
+See [Security model](/docs/developers/security/model).
+
+## Your own SEP-1 declaration
+
+`public/stellar.toml` carries the reference deployment's organization details and canonical
+URL. Replace them with your own and set `NEXT_PUBLIC_SITE_URL` to your origin.
+
+The app ships a rewrite serving the file at the canonical `/.well-known/stellar.toml` path,
+so both paths resolve without extra proxy rules.
+
+See [SEP support](/docs/developers/protocol/sep-support).
+
+## Running more than one instance
+
+The multisig signing relay keeps its state in process memory. That fits a single instance.
+
+Behind a load balancer, instances do not share signing requests, and a co-signer routed to a
+different instance does not see the request. Run a single instance, or add sticky sessions
+keyed on the request id, if you use the multisig flow.
+
+See [Signing relay API](/docs/developers/protocol/signing-relay).
+
+## Choosing your RPC
+
+Horizon and Soroban RPC endpoints are pinned in `src/lib/config/networks.ts`, not set by
+environment variables. The mainnet Soroban RPC default is a third-party gateway; review it
+or point it at an endpoint you operate.
+
+See [Networks and endpoints](/docs/developers/reference/networks).
+
+## Static export
+
+A build-time `OUTPUT=export` switch emits a fully static site.
+
+<Callout type="warn">
+  Static export drops every server route: the mediator, the signing relay, and the Soroswap proxy.
+  Rewrites do not run and no per-request CSP is emitted, so the host has to supply security headers
+  itself. Use it only when you deliberately want a client-only build.
+</Callout>
+
+## The docs site
+
+This documentation is a separate Next.js app in `docs/`, tracked in the same repository. It
+runs on port 3020:
+
+```bash
+cd docs
+pnpm install
+pnpm dev
+```

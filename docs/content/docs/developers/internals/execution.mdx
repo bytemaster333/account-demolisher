@@ -1,0 +1,171 @@
+---
+title: Execution and recovery
+description: The topological walk, every retry path with its exact bounds, and the guards that refuse a merge.
+---
+
+`executePlanTreeOnChain` in `src/lib/orchestrator/executor.ts` walks the plan in
+topological order and submits each node. Every recovery rule lives where the failure
+actually happens; there is no single retry classifier module.
+
+## The walk
+
+Nodes run in the order `topologicalOrder` produced. For each node the executor:
+
+1. Rebuilds it against fresh state
+2. Runs any guard, then the allow-list check
+3. Hands the unsigned envelope to the connector for signing
+4. Submits it and waits for the receipt
+
+A node whose dependency did not reach `confirmed` or `skipped` is itself skipped. Failed
+dependencies cascade rather than being worked around.
+
+## Constants
+
+| Constant                | Value                           |
+| ----------------------- | ------------------------------- |
+| `DEFAULT_FEE_BASE`      | 100 stroops per operation       |
+| `MAX_PER_OP_FEE`        | 1,000,000 stroops per operation |
+| `MAX_MERGE_ATTEMPTS`    | 3                               |
+| `MAX_CLOSE_PHASES`      | 30                              |
+| `MAX_SOROBAN_ATTEMPTS`  | 3                               |
+| `SOROBAN_INCLUSION_FEE` | 100,000 stroops                 |
+| `MAX_OPS_PER_TX`        | 100                             |
+
+## Classic submission failures
+
+The classifier matches substrings against the JSON-serialized `result_codes` Horizon
+returned. Matching is case-sensitive and checked in this order:
+
+| Result code           | Kind         | What the retry does                                       |
+| --------------------- | ------------ | --------------------------------------------------------- |
+| `tx_insufficient_fee` | `fee`        | Triples the per-operation bid, capped at `MAX_PER_OP_FEE` |
+| `tx_bad_seq`          | `resequence` | Reloads the account so the rebuild is in sequence         |
+| `op_under_dest_min`   | `reprice`    | Re-resolves paths and recomputes minimums                 |
+| `op_too_few_offers`   | `reprice`    | Same                                                      |
+| `op_over_source_max`  | `reprice`    | Same                                                      |
+| `tx_too_late`         | `reprice`    | Same                                                      |
+| anything else         | terminal     | Rethrown at once, never retried                           |
+
+Three attempts at most, with **no delay between them**. `op_no_issuer` is deliberately
+terminal, and the test suite pins that behaviour.
+
+### The starting fee
+
+`surgeFeeBase` reads Horizon's fee statistics and starts at the p90 of `max_fee`, clamped
+to the range 100 to 1,000,000 stroops per operation. Any failure reading the statistics
+falls back to 100.
+
+That figure is per operation. The SDK multiplies by operation count, and `computeFee`
+throws when the total would exceed the uint32 ceiling.
+
+## Soroban submission failures
+
+Matching here is lowercased.
+
+| Matched substring                                              | Kind         |
+| -------------------------------------------------------------- | ------------ |
+| `tx_bad_seq`, `txbadseq`, `bad_seq`                            | `resequence` |
+| `footprint`, `restorepreamble`, `restore_preamble`             | `footprint`  |
+| `entryarchived`, `entry_archived`, `archived`, `entry_expired` | `footprint`  |
+| `scecexceededlimit`, `exceededlimit`, `exceeded_limit`         | `footprint`  |
+| anything else                                                  | terminal     |
+
+Three attempts at most, no delay, and **no fee escalation** on this path.
+
+The node is rebuilt before every attempt, including the first, which gives it a fresh
+sequence number and a re-simulated footprint. Without a rebuild callback nothing is
+retried at all, because resubmitting an identical stale transaction only reproduces the
+rejection.
+
+The `scecExceededLimit` family counts as recoverable on purpose: it is an on-chain trap
+from a simulated footprint under-declaring a time-dependent contract write, such as Blend
+emission accrual. The transaction simulated clean but the real write set was larger, and a
+rebuild re-derives the full footprint.
+
+A genuine contract revert is not classified as recoverable. The rebuild's re-simulation
+fails fast and surfaces the real error instead of looping.
+
+## Horizon reads
+
+`withHorizonRetry` wraps the account reads during merge preparation. Three attempts, with
+300 ms then 600 ms of backoff.
+
+Two cases are never retried and rethrow immediately: `AccountNotFoundError`, because a
+merged or missing account is a real terminal answer, and any deterministic response status
+below 500.
+
+## The close loop
+
+The classic close is a bounded convergence loop of at most **30 phases**. Each phase
+submits exactly one batch and then re-audits.
+
+The loop ends when the fresh batch list has length one, which is the batch carrying the
+merge. Exhausting the budget throws rather than reporting the last intermediate receipt as
+success:
+
+```
+executing: node "<id>" did not converge within 30 phases
+```
+
+Thirty is comfortable: a close needs `ceil(totalOps / 100) + 1` phases, and Stellar's
+classic subentry ceiling bounds that well below the limit.
+
+## The merge guard
+
+Every phase, before a batch is built or signed, runs this sequence:
+
+1. Re-audit the account through `withHorizonRetry`
+2. Re-resolve credit paths
+3. Re-check mergeability
+4. Re-probe Soroban positions
+5. Check for un-routable credits
+6. Re-batch, then guard against an empty batch list
+
+### Fail-closed on open positions
+
+The re-probe counts open positions across Blend, backstop, Aquarius, Soroswap, and FxDAO.
+Any open position refuses the merge:
+
+```
+account_merge blocked: N Soroban DeFi position(s) still open (...).
+Close them before merging, or the funds will be stranded on the deleted account.
+```
+
+A queued backstop still blocks, because the 17-day lock means the account has to survive to
+receive the withdrawal.
+
+### Fail-closed on an unreadable probe
+
+Any recorded probe error also refuses the merge:
+
+```
+account_merge blocked: could not confirm your DeFi positions are all closed (...).
+This is a safety stop so an unreadable position isn't merged around and stranded.
+```
+
+This is the important one. Discovery uses `Promise.allSettled`, so a rate-limited or
+timed-out protocol probe returns an **empty array and records the failure**. Treating
+"zero open" as safe would merge around a position nobody could read. The guard fails closed
+instead.
+
+### Un-routable credits
+
+A credit balance with no XLM path and no disposal consent refuses the merge, naming the
+asset codes.
+
+## Mediator funding is idempotent
+
+Before the loop, the mediator account is probed once. A transient probe failure defaults to
+"not funded", because a redundant funding operation is caught by the outer retry, whereas
+skipping a needed one is not.
+
+Once a batch containing the funding operation confirms, the flag flips and later re-batches
+omit it.
+
+## What is never reported as success
+
+- A node without a receipt throws rather than reporting completion.
+- Horizon accepting a transaction but returning no hash throws, rather than fabricating a
+  sentinel hash.
+- Intermediate classic batches do not record an executed hash, so a retry cannot skip a
+  still-unrun merge while reporting success.

@@ -1,0 +1,172 @@
+---
+title: Mediator forward protocol
+description: Per-flow key derivation, the flow token, and the single envelope shape the server will co-sign.
+---
+
+Stellar's `ACCOUNT_MERGE` is not credited as a deposit by most exchanges, and the memo an
+exchange needs to attribute a deposit rides on the transaction. For a memo-required
+exchange the close routes through an ephemeral **mediator** account: the user's account
+merges into the mediator, then a separate two-operation forward carries the memo to the
+exchange.
+
+The server co-signs that forward, and only that exact shape.
+
+## The endpoint
+
+One route: `/api/mediator/sign`. It runs on the Node.js runtime because key derivation and
+the validator pull in `node:crypto` and the Stellar SDK.
+
+| Method                           | Behaviour                            | Rate limit       |
+| -------------------------------- | ------------------------------------ | ---------------- |
+| `GET`                            | Mint a flow                          | None             |
+| `POST`                           | Co-sign a forward envelope           | 5 per 60s per IP |
+| `OPTIONS`                        | Preflight, 204                       |                  |
+| `PUT`, `PATCH`, `DELETE`, `HEAD` | 405 with `allow: POST, GET, OPTIONS` |                  |
+
+## 1. Mint a flow
+
+```http
+GET /api/mediator/sign?destination=G...
+```
+
+A missing or invalid destination returns **400** with code `INVALID_DESTINATION`.
+
+Success returns **200** with exactly two fields, and no `ok` field:
+
+```json
+{ "flowToken": "<token>", "mediatorPublicKey": "G..." }
+```
+
+An unconfigured or malformed master seed returns **500** with code
+`MEDIATOR_NOT_CONFIGURED`. The underlying configuration detail is deliberately scrubbed
+from the response.
+
+Each `GET` mints a fresh, independent flow.
+
+## 2. Fund and merge into the mediator
+
+Plan generation refuses to build a mediator plan without both the mediator public key and
+the flow token. Without the token the forward could never be co-signed, which would strand
+the funds in the mediator account.
+
+The first classic batch is led by a `create_account` funding the mediator with 2 XLM, and
+the final merge targets the mediator instead of the destination. See
+[The classic batch](/docs/developers/internals/classic-batch).
+
+## 3. Co-sign the forward
+
+```http
+POST /api/mediator/sign
+Content-Type: application/json
+
+{ "envelopeXdr": "...", "flowToken": "...", "network": "..." }
+```
+
+The request body is capped at 16,384 bytes. The server resolves the flow from the token,
+re-derives that flow's signing key, validates the envelope, and only then signs.
+
+## Key derivation
+
+`MEDIATOR_SECRET` is a Stellar seed used **purely as an HMAC master key, never as a signing
+key**. It holds no balance and signs nothing directly.
+
+The master is the 32-byte raw ed25519 seed, memoized after first load. Two
+domain-separation labels keep the two uses apart:
+
+| Purpose               | HMAC-SHA-256 message                                    |
+| --------------------- | ------------------------------------------------------- |
+| Per-flow keypair seed | `mediator-flow-key:<nonceHex>`                          |
+| Flow token MAC        | `mediator-flow-token:<nonceHex>.<expiry>.<destination>` |
+
+The 32-byte digest becomes the flow's keypair directly. Derivation is deterministic and
+stateless: the same nonce and master always produce the same keypair, so no per-flow seed
+is ever stored, and the scheme survives across server instances.
+
+### Seed validation
+
+Two layers. The environment schema requires an `S` prefix and exactly 56 characters, and
+treats an empty string as unset, so the app runs without a mediator configured. The
+stricter ed25519-seed check runs at first use, throwing a specific message for an unset
+versus a malformed seed.
+
+### The flow token
+
+Four dot-separated parts:
+
+```
+<nonceHex>.<expiryMillis>.<destination>.<macHex>
+```
+
+The nonce is 16 random bytes rendered as 32 hex characters. The MAC is 64 hex characters.
+The token lives for **15 minutes**.
+
+Verification returns null on every rejection rather than throwing, and checks in order:
+the token is a string, it has four parts, the nonce matches `^[0-9a-f]{32}$`, the
+destination is a valid public key, the expiry is finite and in the future, the MAC lengths
+match, and the MACs are equal under a constant-time comparison.
+
+The destination is committed **into the token**, which is what stops a leaked token from
+redirecting a flow's funds.
+
+## The accepted envelope
+
+Exactly one shape is signable:
+
+```
+op0: PAYMENT       native XLM, sourced by the mediator, to destination D
+op1: ACCOUNT_MERGE sourced by the mediator, to destination D  (the same D)
+```
+
+Binding both operations to one destination is the core of the design. Without it a
+tampered envelope could pay the balance to one address and merge the reserve to another.
+
+## Validation failure codes
+
+Thirteen codes, surfaced verbatim in 400 responses. The first failure short-circuits, so
+the order matters.
+
+| #   | Code                                | Triggering condition                                                            |
+| --- | ----------------------------------- | ------------------------------------------------------------------------------- |
+| 1   | `MALFORMED_XDR`                     | The envelope does not parse                                                     |
+| 2   | `FEE_BUMP_NOT_ALLOWED`              | The envelope is a fee-bump                                                      |
+| 3   | `FORWARD_TX_SOURCE_NOT_MEDIATOR`    | The transaction source is not the mediator                                      |
+| 4   | `WRONG_OPERATION_COUNT`             | The operation count is not exactly 2                                            |
+| 5   | `FORWARD_OP0_NOT_PAYMENT`           | Operation 0 is not a payment                                                    |
+| 6   | `FORWARD_OP0_ASSET_NOT_NATIVE`      | The payment asset is not native XLM                                             |
+| 7   | `FORWARD_OP0_SOURCE_NOT_MEDIATOR`   | Operation 0 has a source that is not the mediator                               |
+| 8   | `FORWARD_OP1_NOT_ACCOUNT_MERGE`     | Operation 1 is not an account merge                                             |
+| 9   | `FORWARD_OP1_SOURCE_NOT_MEDIATOR`   | Operation 1 has a source that is not the mediator                               |
+| 10  | `FORWARD_DESTINATION_MISMATCH`      | The two operations target different destinations                                |
+| 11  | `FORWARD_DESTINATION_NOT_COMMITTED` | The destination differs from the one in the flow token                          |
+| 12  | `MISSING_TIME_BOUNDS`               | Time bounds absent, or `maxTime` absent, empty, zero, or not a positive integer |
+| 13  | `TIME_BOUNDS_EXCESSIVE`             | `maxTime` is more than 3600 seconds in the future                               |
+
+An operation source that is simply omitted inherits the transaction source and is accepted;
+only a source that is present and _different_ is rejected.
+
+`MISSING_TIME_BOUNDS` is emitted from two places with two different reason strings, so
+there are 13 codes across 14 rejection sites.
+
+Check order: parse, fee-bump, transaction source, operation count, op0 type, op0 asset, op0
+source, op1 type, op1 source, destination match, destination committed, time bounds
+present, time bounds horizon. Note that all destination binding is verified before time
+bounds.
+
+## What a compromised server can do
+
+If the validator passes, the derived key can do exactly what the envelope already spells
+out: send the funds to the destination committed in the flow token. That destination is the
+one chosen before the flow was minted.
+
+A fully compromised server still cannot redirect funds elsewhere.
+
+## Interrupted forwards
+
+When a close merges into the mediator but the forward does not complete, a recovery record
+lets the app offer a **Resume the forward** action on the next visit with that account
+connected.
+
+## Related
+
+- [Exchange integration](/docs/developers/protocol/exchange-integration) for the registry and memo rules
+- [Security model](/docs/developers/security/model) for where this sits in the trust boundaries

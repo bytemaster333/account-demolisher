@@ -1,0 +1,123 @@
+---
+title: Wallet integration
+description: For wallet developers. The signing surface the app uses, how a wallet gets listed, and what is required of it.
+---
+
+The app never sees a secret key. It builds an unsigned transaction, hands it to the
+connected wallet, and receives a signed envelope back.
+
+That handoff goes through
+[Stellar Wallets Kit](https://github.com/Creit-Tech/Stellar-Wallets-Kit)
+(`@creit.tech/stellar-wallets-kit`, pinned at 2.3.0), wired in `src/lib/wallet/kit.ts`.
+
+## What the app calls
+
+The app's own `Connector` abstraction wraps three kit calls and nothing else:
+
+| Call              | Used for                              |
+| ----------------- | ------------------------------------- |
+| `getAddress`      | Reading the connected public key      |
+| `signTransaction` | Every classic and Soroban transaction |
+| `signAuthEntry`   | Soroban authorization entries         |
+
+`signTransaction` receives the transaction XDR plus the network passphrase and the address,
+and returns `{ signedTxXdr, signerAddress }`. When a wallet omits `signerAddress`, the app
+defaults it to the connected address.
+
+Underlying wallet errors are deliberately allowed to propagate rather than being swallowed,
+so the orchestrator can fall back.
+
+The requirement on a wallet is therefore exactly the SEP-43 signing surface: return the
+address, sign a transaction XDR against a given network passphrase, and sign an auth entry.
+Nothing app-specific is needed.
+
+## How a wallet gets listed
+
+The module list is assembled in `buildModules`:
+
+```ts
+const modules = [...defaultModules(), new LedgerModule()];
+// plus WalletConnect when NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID is set
+```
+
+`defaultModules()` in the pinned version returns eleven wallets, in this order:
+
+| #   | Wallet        | Product id     |
+| --- | ------------- | -------------- |
+| 1   | Albedo        | `albedo`       |
+| 2   | Freighter     | `freighter`    |
+| 3   | Fordefi       | `fordefi`      |
+| 4   | Rabet         | `rabet`        |
+| 5   | xBull         | `xbull`        |
+| 6   | LOBSTR        | `lobstr`       |
+| 7   | Hana Wallet   | `hana`         |
+| 8   | Klever Wallet | `klever`       |
+| 9   | OneKey Wallet | `onekey`       |
+| 10  | Bitget Wallet | `BitgetWallet` |
+| 11  | Cactus Link   | `cactuslink`   |
+
+A wallet that ships a module in the kit's defaults appears automatically once the app moves
+to a kit version including it. **There is nothing to register on the app's side.**
+
+Two modules are added on top:
+
+- **Ledger** is added unconditionally, over WebUSB. It needs a browser `Buffer` global,
+  which the app polyfills additively without overwriting an existing one.
+- **WalletConnect** is added only when `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` is set.
+
+That makes the picker 12 entries without WalletConnect configured, and 13 with it.
+
+Trezor ships in the package but is not in `defaultModules()` and is not added here, so it
+does not appear.
+
+Wallets that are not installed stay in the list with an install link rather than being
+hidden, so the list is predictable.
+
+## WalletConnect specifics
+
+The module is constructed lazily, on first use, never during passive session restore.
+Constructing it eagerly opens a relay socket, and the app avoids contacting the relay before
+someone chooses to connect.
+
+Chain mapping covers the public and test networks. Futurenet has no WalletConnect namespace,
+so the entry stays in the picker and its `getAddress` rejects with an accurate unsupported
+message rather than silently connecting to the wrong chain.
+
+Before the picker opens, the app polls the module's availability every 100 ms for up to
+2500 ms. WalletConnect only reports itself available once its client finishes initializing,
+and the kit samples availability once when the picker renders. Opening too early makes the
+kit treat a click as "not installed". On timeout it falls through rather than hanging.
+
+## Adding a wallet in a self-hosted build
+
+An operator running their own copy can add a custom module to `buildModules`, so a wallet
+not yet in the kit's defaults can still be listed by whoever runs the deployment.
+
+## Auth-entry signing on the non-wallet paths
+
+Two connectors deliberately refuse `signAuthEntry` rather than signing incorrectly:
+
+- The **secret-key** connector refuses, because SEP-43 requires signing the SHA-256 hash of
+  a network-bound preimage, and signing raw entry bytes would not produce a valid
+  network-bound Soroban auth signature.
+- The **multi-signer** connector refuses, because per-signer auth-entry signing is not part
+  of the closure flow (source-account authorization is carried by the envelope signatures)
+  and doing it correctly for multisig is non-trivial.
+
+## Session lifetime
+
+The active connector lives in module scope, not in the persisted store, because a
+pasted-seed connector holds the seed and must never be serialized.
+
+That state survives client-side navigation, so a connection made on `/demolish` stays usable
+on `/allowances`. It is intentionally lost on a hard reload, and only a wallet-kit connection
+can be rebuilt afterwards.
+
+Disconnecting tears down the module-scope connector, the store, the connector itself, and
+the kit's own session. A store-only disconnect would leave the extension still authorizing
+the site, and a later connect could silently reuse the stale session.
+
+## Related
+
+[SEP support](/docs/developers/protocol/sep-support) for the full list of proposals this
+implements.

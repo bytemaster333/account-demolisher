@@ -1,0 +1,143 @@
+---
+title: Exchange integration
+description: For exchange operators. What a close delivers to your deposit address, how the registry works, and how to add an entry.
+---
+
+Account Demolisher is a non-custodial closer that people run in their own browser. It is not
+a service you call, and it holds no keys. Nothing about it needs you to integrate before
+someone can close an account into your deposit address.
+
+There is exactly one thing that determines whether those closes are creditable at your
+exchange: whether your hot-wallet address is in the compiled-in registry.
+
+## Why a plain merge is not enough
+
+`ACCOUNT_MERGE` moves an account's whole balance, including its base reserve, to a
+destination. Exchanges credit _payments_ carrying a deposit memo, not merges, so a merge
+lands on the ledger at your hot wallet with nothing attributing it to a customer.
+
+## What a registry-listed address receives
+
+When the destination is in the registry, the close routes through an ephemeral mediator
+account:
+
+1. The closing account funds a fresh mediator with 2 XLM and merges into it.
+2. The server co-signs a two-operation forward from that mediator: a native `PAYMENT` to
+   your deposit address carrying the memo, then an `ACCOUNT_MERGE` sending the remainder to
+   the **same** address.
+3. The mediator account is removed in that same transaction.
+
+**From your side this is a standard native XLM payment with a memo.** You do not need to run
+a SEP anchor, expose an API, or change how your deposit addresses work.
+
+[The mediator forward protocol](/docs/developers/protocol/mediator) has the cryptographic
+detail.
+
+## The registry
+
+`src/lib/safety/cex-registry.ts`. Each entry is a `CexInfo`:
+
+```ts
+export interface CexInfo {
+  readonly address: string; // G... hot-wallet account id
+  readonly name: string; // human-readable name shown in the UI
+  readonly requiresMemo: boolean;
+  readonly memoType?: CexMemoType; // "text" | "id" | "hash" | "return"
+  readonly minimumDeposit?: string;
+  readonly verifiedAt: string; // ISO date the address and policy were checked
+  readonly source: string; // citation for both
+}
+```
+
+Twelve entries, every one requiring a memo, every one verified against the stellar.expert
+exchange directory plus the exchange's own published deposit documentation.
+
+| Exchange          | Memo type | Published minimum |
+| ----------------- | --------- | ----------------- |
+| Kraken            | `text`    | 1 XLM             |
+| Binance           | `id`      | 0.1 XLM           |
+| Binance Deposits  | `id`      |                   |
+| Bitfinex          | `text`    |                   |
+| Bitstamp          | `id`      |                   |
+| KuCoin            | `text`    |                   |
+| Upbit             | `text`    |                   |
+| CEX.IO            | `text`    |                   |
+| Crypto.com        | `text`    |                   |
+| Robinhood         | `text`    |                   |
+| Coinbase Deposits | `text`    |                   |
+| Blockchain.com    | `text`    |                   |
+
+`minimumDeposit` is recorded for provenance. No code path reads it, so it documents the
+published terms rather than gating a close.
+
+## Adding or correcting an entry
+
+The registry is source code, not runtime configuration. A pasted or discovered address can
+never add itself, which is the same posture the contract allow-list takes.
+
+1. Append a `CexInfo` to `KNOWN_CEXES` with your hot-wallet `address`, `name`,
+   `requiresMemo`, the `memoType` your deposits need, and a `source` citing where the
+   address and policy were verified.
+2. `lookupCex(address)` then returns your entry, closes to it route through the mediator,
+   and the memo gate starts enforcing your policy.
+
+Keep `verifiedAt` and `source` accurate. They exist so the address is auditable, and a wrong
+hot-wallet address here sends funds to the wrong place.
+
+## Memo enforcement
+
+`requireMemoEnforcement(destination, memo)` gates the close before it starts. Checks run in
+this order:
+
+| #   | Condition                              | Outcome                                        |
+| --- | -------------------------------------- | ---------------------------------------------- |
+| 1   | The destination is not in the registry | Allowed, never gated                           |
+| 2   | The entry does not require a memo      | Allowed                                        |
+| 3   | No memo supplied                       | Refused, naming the exchange and required type |
+| 4   | The memo type differs from the entry's | Refused                                        |
+| 5   | The memo value is empty after trimming | Refused                                        |
+| 6   | The value is malformed for its type    | Refused with the format error                  |
+
+Format rules, from `validateMemoFormat`:
+
+| Type             | Rule                                                                                                                     |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `id`             | Digits only, parsing to a `uint64` in range. `0` and `18446744073709551615` both pass. Surrounding whitespace is trimmed |
+| `text`           | At most **28 bytes**, counted as UTF-8, not characters. Fourteen `é` characters pass at 28 bytes; fifteen do not         |
+| `hash`, `return` | Exactly 32 bytes, as 64 hex characters or 43 base64 characters plus `=`                                                  |
+
+Because check 4 rejects any type mismatch and all twelve entries declare a `memoType`, the
+`hash` and `return` branches are unreachable through the enforcement path with the current
+registry.
+
+The memo's _content_ cannot be checked against your books from a browser, so only the type
+and shape are validated. The person closing the account is responsible for the value.
+
+`validateMemoFormat` is also used by the general pre-flight, so a malformed memo cannot
+reach the SDK's memo constructors and throw mid-close on any destination, registry-listed or
+not.
+
+## Closes to an address that is not listed
+
+They still work. The close runs as a direct `ACCOUNT_MERGE` to your address, which most
+exchanges do not credit, and the app warns the person closing to follow your own deposit
+instructions.
+
+That is why registry membership is what matters for creditability.
+
+## Two limits worth knowing
+
+**Raw Soroban tokens cannot be delivered to you.** An exchange deposit address cannot
+receive a contract token, so the app flags those for the user to move to a personal wallet
+first rather than sweeping them.
+
+**A multisig account cannot close to an exchange in one signing request.** The mediator path
+is several transactions, and a signing request collects signatures on exactly one. Those
+users are directed to a self-custody destination.
+
+## Running your own instance
+
+Exchanges that want to operate the closer under their own domain with their own mediator key
+can self-host it. The key is per-deployment and derives throwaway per-flow keys, so you
+generate a seed and fund nothing. See
+[Self-hosting](/docs/developers/operations/self-hosting).

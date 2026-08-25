@@ -1,0 +1,24 @@
+{
+  "title": "Users",
+  "description": "Close an account, step by step",
+  "icon": "User",
+  "root": true,
+  "pages": [
+    "index",
+    "---Get started---",
+    "try-it-on-testnet",
+    "connect-your-wallet",
+    "close-an-account",
+    "---Choose where the funds go---",
+    "send-to-an-exchange",
+    "---Specific situations---",
+    "close-with-defi",
+    "close-a-shared-account",
+    "sign-a-closure-request",
+    "revoke-token-allowances",
+    "---When something stops you---",
+    "clear-a-blocked-closure",
+    "when-a-step-fails",
+    "faq"
+  ]
+}

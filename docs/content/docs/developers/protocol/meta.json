@@ -1,0 +1,12 @@
+{
+  "title": "Protocol",
+  "icon": "Network",
+  "pages": [
+    "mediator",
+    "signing-relay",
+    "allowances",
+    "exchange-integration",
+    "wallet-integration",
+    "sep-support"
+  ]
+}

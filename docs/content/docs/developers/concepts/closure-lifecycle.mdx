@@ -1,0 +1,88 @@
+---
+title: Closure lifecycle
+description: The four stages a closure moves through, and what each one guarantees.
+---
+
+A closure is a sequence of ordinary Stellar transactions. The app's job is to assemble the
+right ones in the right order, ground them in real network state before you sign, and
+recover cleanly when that state shifts underneath.
+
+Four stages: **audit**, **plan**, **simulate**, **execute**.
+
+## 1. Audit
+
+Horizon is read for the full account state, Soroban RPC for active SEP-41 allowances, and
+the four supported protocols for open positions. The result is one read-only snapshot
+everything downstream works from.
+
+The audit also computes a merge verdict. Two conditions block a close outright: the
+`auth_immutable` flag, and sponsorships the account holds for _other_ accounts. Entries the
+account sponsors for itself are counted separately, because they are released during the
+close.
+
+Where discovery cannot see everything, the preview says so rather than proceeding as if
+the account were fully understood.
+
+[Account audit](/docs/developers/internals/account-audit) ·
+[Position discovery](/docs/developers/internals/position-discovery)
+
+## 2. Plan
+
+The audit, the discovered positions, and the discovered allowances feed a pure generator
+that emits a directed acyclic graph. There are 13 node kinds, and a node is emitted only
+when the account actually needs it.
+
+Each node carries its dependencies as explicit edges. A Blend withdraw waits for that
+pool's repay. A rewards claim waits for its withdraw. The classic close waits for every
+Soroban node, so a merge never runs while a position is open.
+
+The graph is validated when built: duplicate ids, missing dependency targets, and cycles
+are all rejected.
+
+[The plan graph](/docs/developers/internals/plan-graph) ·
+[The classic batch](/docs/developers/internals/classic-batch)
+
+## 3. Simulate
+
+Every Soroban node is run through the RPC's `simulateTransaction`. The returned resource
+fee, authorization entries, and ledger footprint are baked into the envelope.
+
+The classic transaction is not RPC-simulated. It is built locally and its operation count
+and fee floor are surfaced, because the real envelope is rebuilt from fresh state at
+submit time anyway.
+
+A node that cannot be simulated is marked failed or skipped in the preview rather than
+being carried silently into execution.
+
+[Simulation](/docs/developers/internals/simulation)
+
+## 4. Execute
+
+Execution walks the graph in topological order using Kahn's algorithm, so the order is
+stable and deterministic.
+
+For each node the executor rebuilds it against current state, hands the unsigned envelope
+to the connector for signing, checks it against the contract allow-list immediately before
+signing every Soroban node, submits it, and waits for the receipt before marking the row
+confirmed.
+
+You sign once per transaction, not once for the plan, because Stellar cannot bundle
+Soroban and classic operations into one signed envelope.
+
+[Execution and recovery](/docs/developers/internals/execution)
+
+## What holds across the stages
+
+**The merge never runs early.** Before the classic close the executor re-audits, re-checks
+mergeability, re-probes for open Soroban positions, and refuses when the probe recorded any
+error at all. It fails closed rather than assuming a failed read means no position.
+
+**Failed dependencies cascade.** A node whose dependency did not confirm is skipped rather
+than worked around.
+
+**Nothing is reported done until it confirmed.** A node's executed record is what marks it
+complete, and intermediate classic batches deliberately do not set it, so a retry cannot
+skip an unrun merge while reporting success.
+
+**Reads are re-verified.** Allowances derived from events are confirmed against the token's
+own on-chain `allowance()` before they are acted on.

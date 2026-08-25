@@ -1,0 +1,76 @@
+---
+title: Overview
+description: What Account Demolisher does for you, what it closes, and where to start.
+icon: Home
+---
+
+Account Demolisher closes a Stellar account and sends everything it holds to an address
+you choose. Closing an account releases the XLM that Stellar keeps locked in it, which is
+the part a plain "send all my funds" transfer leaves behind.
+
+You keep control the whole way. The app never sees your secret key, it shows you every
+step before you sign, and nothing is submitted until you confirm.
+
+## Start here
+
+<Cards>
+  <Card
+    title="Try it on testnet"
+    href="/docs/users/try-it-on-testnet"
+    description="Create a free practice account and close it end to end. No real money."
+  />
+  <Card
+    title="Close an account"
+    href="/docs/users/close-an-account"
+    description="The full walkthrough, from connecting a wallet to the closed-account receipt."
+  />
+</Cards>
+
+## What gets cleaned up
+
+Closing an account means clearing everything attached to it first. The app does that for
+you in one reviewed plan:
+
+| Attached to your account                         | What happens                            |
+| ------------------------------------------------ | --------------------------------------- |
+| Tokens other than XLM                            | Swapped to XLM, then sent with the rest |
+| Open buy and sell offers                         | Cancelled                               |
+| Trustlines                                       | Emptied, then removed                   |
+| Saved data entries                               | Deleted                                 |
+| Extra signers and raised thresholds              | Cleared and reset                       |
+| Pending payments set aside for you               | Collected into your balance             |
+| Deposits your account locked for its own entries | Released back to you                    |
+| Blend, Aquarius, Soroswap, and FxDAO positions   | Withdrawn or repaid before the close    |
+| Token spending permissions                       | Set to zero                             |
+
+## Where the funds can go
+
+Any Stellar address that already exists on the network. Two cases behave differently:
+
+- **A wallet you control.** The account merges straight into it.
+  See [Close an account](/docs/users/close-an-account).
+- **An exchange deposit address.** Exchanges credit payments, not account merges, so the
+  app routes the funds through a short-lived helper account that carries your deposit memo.
+  See [Send the funds to an exchange](/docs/users/send-to-an-exchange).
+
+## Other things you can do here
+
+<Cards>
+  <Card
+    title="Revoke token allowances"
+    href="/docs/users/revoke-token-allowances"
+    description="Review and cancel standing approvals on any address, without closing anything."
+  />
+  <Card
+    title="Close a shared account"
+    href="/docs/users/close-a-shared-account"
+    description="Collect signatures from every signer on a multisig account."
+  />
+</Cards>
+
+## If something stops you
+
+- [Clear a blocked closure](/docs/users/clear-a-blocked-closure) covers everything the app
+  asks you to resolve or read before you sign.
+- [When a step fails](/docs/users/when-a-step-fails) covers a closure that stops partway.
+- [FAQ](/docs/users/faq) has the short answers.

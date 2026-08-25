@@ -1,0 +1,92 @@
+---
+title: Failure reference
+description: The failure taxonomy, which kinds are retryable, and every typed error the codebase raises.
+---
+
+There is no central error-code enum. Failures are classified at the flow level by
+`FailureKind`, and individual subsystems raise their own typed errors.
+
+## The failure taxonomy
+
+`classifyFailure` lowercases the message and matches in this **exact order**. Order is
+load-bearing.
+
+| #   | Matched substrings                                                                                    | Kind                | Retryable |
+| --- | ----------------------------------------------------------------------------------------------------- | ------------------- | --------- |
+| 1   | `tx_bad_seq`, `bad_seq`                                                                               | `bad_seq`           | Yes       |
+| 2   | `position(s) still open`, `still open`, `defi position`                                               | `position_open`     | **No**    |
+| 3   | `account_merge blocked`, `not mergeable`, `mergeable`                                                 | `not_mergeable`     | **No**    |
+| 4   | `footprint`, `restorepreamble`, `restore`, `archived`, `entry_expired`                                | `changed_footprint` | Yes       |
+| 5   | `failed on-chain`                                                                                     | `reverted`          | **No**    |
+| 6   | `signing_failed`, `failed to sign`, `sign the`                                                        | `signing`           | Yes       |
+| 7   | `timed out`, `timeout`, `network`, `fetch`, `502`, `503`, `504`, `bad gateway`, `service unavailable` | `network`           | Yes       |
+| 8   | anything else                                                                                         | `unknown`           | Yes       |
+
+Diverged-state stops are checked **before** the footprint bucket on purpose. A "positions
+still open" or "not mergeable" message whose protocol detail happens to mention `archived`
+or `restore` must trigger rediscovery, not be retried as a footprint race.
+
+The three non-retryable kinds are the ones where retrying cannot help: the account is not
+mergeable, a position is still open, or the contract reverted.
+
+## Typed errors
+
+| Error                      | Raised by                           | Carries                                                          |
+| -------------------------- | ----------------------------------- | ---------------------------------------------------------------- |
+| `AllowlistViolation`       | The signing-time contract gate      | `violations`, a list of every blocked invocation with its reason |
+| `UnsafeRevokeError`        | The revoke guard                    | A reason, prefixed `Refusing to sign revoke:`                    |
+| `UnsafeTransferError`      | The token-transfer guard            | A reason, prefixed `Refusing to sign token transfer:`            |
+| `SimulationError`          | Soroban simulation                  | `errorCode`, `diagnostic` events                                 |
+| `SimulationFailedError`    | Plan simulation                     | `nodeId`, `upstreamError`                                        |
+| `AccountNotFoundError`     | The account audit, on a Horizon 404 | `publicKey`                                                      |
+| `SlippageGuardTripped`     | The slippage guard                  | `expected`, `minimumAccepted`, `actual`, `slippageBps`           |
+| `AquariusBudgetError`      | Aquarius chained swaps              | `hops`, `limit` (4, the Soroban budget cap)                      |
+| `SoroswapProxyError`       | The Soroswap proxy client           | `code`, `status`, `op`                                           |
+| `FxDAOClientNotConfigured` | The FxDAO client                    | A message                                                        |
+| `BodyTooLargeError`        | Server body reading                 | `limit` (16,384 bytes)                                           |
+
+## Reading an unknown error
+
+`errorMessage(err, fallback)` resolves a message in this order: an `Error` with a non-empty
+message, a non-empty string, a non-null object with a string `message` property, then the
+fallback.
+
+The third case exists for a specific reason. The Soroban RPC client in the Stellar SDK
+rejects with a plain `{ code, message }` object rather than an `Error`, so a bare
+`instanceof Error` check silently discards the real message, such as
+`startLedger must be within the ledger range: 3517481 - 3638440`, and `String(err)` renders
+the useless `[object Object]`.
+
+## Submission-level classification
+
+Two narrower classifiers run inside the executor, separate from `FailureKind`:
+
+- **Classic rejections** map Horizon result codes to `fee`, `resequence`, `reprice`, or
+  terminal.
+- **Soroban rejections** map messages to `resequence`, `footprint`, or terminal.
+
+Both are documented with their exact matched strings in
+[Execution and recovery](/docs/developers/internals/execution).
+
+## Guard messages that stop a merge
+
+These are plain errors thrown by the merge guard, and all three are non-retryable:
+
+```
+account_merge blocked: <reason>[: <detail>]
+
+account_merge blocked: N Soroban DeFi position(s) still open (...).
+Close them before merging, or the funds will be stranded on the deleted account.
+
+account_merge blocked: could not confirm your DeFi positions are all closed (...).
+This is a safety stop so an unreadable position isn't merged around and stranded.
+```
+
+## Slippage bounds
+
+| Constant               | Value  |
+| ---------------------- | ------ |
+| `DEFAULT_SLIPPAGE_BPS` | 100    |
+| `MIN_SLIPPAGE_BPS`     | 10     |
+| `MAX_SLIPPAGE_BPS`     | 500    |
+| `BPS_DENOMINATOR`      | 10,000 |

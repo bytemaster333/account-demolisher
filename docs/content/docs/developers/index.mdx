@@ -1,0 +1,151 @@
+---
+title: Overview
+description: How Account Demolisher is built, what runs where, and where to find the detail.
+icon: Home
+---
+
+Account Demolisher is a Next.js application that closes Stellar accounts. It runs almost
+entirely in the browser: discovery, plan generation, simulation, the allow-list check, the
+safety gates, and signing all happen client-side.
+
+The server exists for three narrow jobs, none of which involve your key.
+
+## What runs where
+
+| Runs in the browser                 | Runs on the server                           |
+| ----------------------------------- | -------------------------------------------- |
+| Reading the account from Horizon    | Co-signing the mediator forward              |
+| Discovering DeFi positions on chain | Holding a multisig signing request in memory |
+| Generating and validating the plan  | Proxying the Soroswap aggregator             |
+| Simulating every Soroban node       |                                              |
+| Enforcing the contract allow-list   |                                              |
+| Signing and submitting transactions |                                              |
+
+Position discovery has no server-side proxy and needs no API key. Blend, Soroswap, and
+FxDAO are read directly from their contracts. Aquarius is the one protocol read through a
+REST API, and its on-chain event scan runs alongside as a second source.
+
+## Start here
+
+<Cards>
+  <Card
+    title="Architecture"
+    href="/docs/developers/concepts/architecture"
+    description="The module map, the request flow, and the trust boundaries."
+  />
+  <Card
+    title="Closure lifecycle"
+    href="/docs/developers/concepts/closure-lifecycle"
+    description="Audit, plan, simulate, execute, and what each stage guarantees."
+  />
+</Cards>
+
+## How it works
+
+<Cards>
+  <Card
+    title="Account audit"
+    href="/docs/developers/internals/account-audit"
+    description="What is read from Horizon and how the merge verdict is computed."
+  />
+  <Card
+    title="Position discovery"
+    href="/docs/developers/internals/position-discovery"
+    description="Per-protocol discovery and exit construction."
+  />
+  <Card
+    title="The plan graph"
+    href="/docs/developers/internals/plan-graph"
+    description="Node kinds, dependency edges, validation, and ordering."
+  />
+  <Card
+    title="The classic batch"
+    href="/docs/developers/internals/classic-batch"
+    description="The nine operation phases and how they split across transactions."
+  />
+  <Card
+    title="Simulation"
+    href="/docs/developers/internals/simulation"
+    description="What is simulated, what is baked into the envelope, and what is not."
+  />
+  <Card
+    title="Execution and recovery"
+    href="/docs/developers/internals/execution"
+    description="The topological walk, retry rules, and the merge guard."
+  />
+</Cards>
+
+## Protocol
+
+<Cards>
+  <Card
+    title="Mediator forward"
+    href="/docs/developers/protocol/mediator"
+    description="Per-flow key derivation and the single envelope shape the server co-signs."
+  />
+  <Card
+    title="Signing relay API"
+    href="/docs/developers/protocol/signing-relay"
+    description="Routes, guards, and signature merging for multisig closes."
+  />
+  <Card
+    title="SEP-41 allowances"
+    href="/docs/developers/protocol/allowances"
+    description="The event scan, on-chain confirmation, and the revoke call."
+  />
+  <Card
+    title="Exchange integration"
+    href="/docs/developers/protocol/exchange-integration"
+    description="For exchange operators: the registry, memos, and what you receive."
+  />
+  <Card
+    title="Wallet integration"
+    href="/docs/developers/protocol/wallet-integration"
+    description="For wallet developers: the SEP-43 surface the app uses."
+  />
+  <Card
+    title="SEP support"
+    href="/docs/developers/protocol/sep-support"
+    description="Which Stellar Ecosystem Proposals this implements."
+  />
+</Cards>
+
+## Security and reference
+
+<Cards>
+  <Card
+    title="Security model"
+    href="/docs/developers/security/model"
+    description="Assets, adversaries, trust boundaries, and the code that defends each."
+  />
+  <Card
+    title="Contract allow-list"
+    href="/docs/developers/security/contract-allowlist"
+    description="The compiled-in contract set and how it is enforced."
+  />
+  <Card
+    title="Configuration"
+    href="/docs/developers/reference/configuration"
+    description="Every environment variable, its default, and its effect."
+  />
+  <Card
+    title="Networks"
+    href="/docs/developers/reference/networks"
+    description="Horizon, RPC, passphrase, and friendbot per network."
+  />
+  <Card
+    title="Failure reference"
+    href="/docs/developers/reference/failures"
+    description="The failure taxonomy and the error types raised across the codebase."
+  />
+  <Card
+    title="Self-hosting"
+    href="/docs/developers/operations/self-hosting"
+    description="Install, configure, run, and deploy under your own domain."
+  />
+</Cards>
+
+## Source
+
+[github.com/bytemaster333/account-demolisher](https://github.com/bytemaster333/account-demolisher),
+Apache 2.0.
