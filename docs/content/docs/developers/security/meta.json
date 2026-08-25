@@ -1,1 +1,1 @@
-{ "title": "Security", "icon": "Shield", "pages": ["model", "contract-allowlist"] }
+{ "title": "Security", "icon": "Shield", "pages": ["model", "contract-allowlist", "audit"] }

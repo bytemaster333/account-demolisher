@@ -1,0 +1,60 @@
+---
+title: Security audit and remediation
+description: The audit scope, the completed hardening and its code references, and the dependency posture that gates every release.
+---
+
+This page is the published record of Account Demolisher's security audit and the remediation
+of its findings. It stays current as the audit proceeds. Before it operates on mainnet, the app
+requires you to acknowledge the tool's independent-audit status, a deliberate safety gate
+(`src/components/layout/MainnetConfirm.tsx`).
+
+## Audit scope
+
+The independent audit covers five areas:
+
+- Mediator key handling: the `MEDIATOR_SECRET` HMAC master and the per-flow ephemeral keys.
+- The merge-envelope validator: the single forward shape the mediator co-signs.
+- Plan-generation correctness: the plan tree, cycle detection, and the anti-stranding ordering.
+- Transaction and signature handling: fees, time bounds, sequence handling, and multisig signature merging.
+- An SDK supply-chain review of the dependency graph.
+
+## External audit status
+
+The independent audit runs through Audit Bank and is a release blocker for the mainnet launch.
+Each finding it delivers is listed here with its severity and its resolution: fixed with a code
+reference, or formally accepted with a rationale. No high or critical finding stays open at launch.
+
+Ahead of that audit, the team ran its own multi-agent security review across the same five areas
+and remediated every finding it raised. Those fixes are merged into `main`, and the codebase is at
+its maximum ready state for the external audit to build on.
+
+## Remediation completed
+
+The following defensive changes ship in `main` as part of the mainnet-readiness work:
+
+- **Authorization-entry guard.** The sign-time allow-list inspects each Soroban operation's
+  authorization entries and refuses any that authorize contract creation or wasm upload, closing a
+  gap the operation-level check alone leaves open (`src/lib/stellar/allowlist.ts`).
+- **Dependency audit as a release gate.** Continuous integration fails on any high or critical
+  advisory in the production dependency tree (`pnpm audit --prod --audit-level high`) rather than
+  only reporting it.
+- **Two high advisories patched.** The transitive `ip-address` and `nanoid` high-severity advisories
+  are resolved by pinning patched versions through `pnpm.overrides`, not suppressed. The installed
+  versions are `ip-address` 10.5.0 and `nanoid` 3.3.18.
+- **Mainnet allow-list provenance.** Every mainnet contract entry cites a real upstream source,
+  verified against the protocols' own published deployment files, and a source-level test asserts the
+  list stays complete and correctly enforced (`tests/unit/allowlist-mainnet.test.ts`).
+
+## Dependency posture
+
+Runtime dependencies are pinned by a committed `pnpm-lock.yaml`, and known-vulnerable transitive
+packages are pinned to patched versions through `pnpm.overrides`. The release gate blocks on any
+high or critical advisory, and the production tree carries none.
+
+Two advisories below that threshold are formally accepted and recorded in
+`pnpm.auditConfig.ignoreGhsas`, each because it is not reachable in this app:
+
+- `GHSA-w5hq-g745-h8pq` (uuid, moderate): affects the `v3`/`v5`/`v6` buffer-writing paths, which the app does not use.
+- `GHSA-848j-6mx2-7j84` (elliptic, low): an ECDSA edge case, where signing here is ed25519 through the Stellar SDK rather than elliptic-curve ECDSA.
+
+Each acceptance is revisited when the external audit runs.
