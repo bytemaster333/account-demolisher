@@ -8,10 +8,13 @@ const PublicEnvSchema = z.object({
   NEXT_PUBLIC_DEPLOYMENT_MODE: z.enum(["reference", "self-hosted"]).default("reference"),
   // WalletConnect/Reown project id (a public client-side identifier). When unset,
   // the WalletConnect wallet is simply left out of the picker; no placeholder.
+  // optional: an empty string (a GitHub Actions secret that is not set injects
+  // "", not undefined) or a whitespace-only value means "not configured" and
+  // disables WalletConnect, rather than failing the build. A .min(1) here would
+  // run on "" before the transform could map it to undefined, so it is omitted.
   NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: z
     .string()
     .trim()
-    .min(1)
     .optional()
     .transform((v) => (v === undefined || v === "" ? undefined : v)),
 });
