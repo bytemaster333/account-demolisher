@@ -38,8 +38,8 @@ pnpm-debug.log*
 .env*.bak*
 *.bak
 
-# internal tranche/working notes (the .md twin is already covered by *.md below)
-m2-tranche.txt
+# internal tranche/working notes (the .md twins are already covered by *.md below)
+*tranche*.txt
 
 # vercel
 .vercel/
@@ -56,9 +56,8 @@ playwright-report/
 playwright/.cache/
 blob-report/
 
-# research / planning (the docs/ site IS tracked — it's the published user
-# documentation; its build artifacts are ignored by docs/.gitignore. ARCHITECTURE.md
-# and SECURITY.md stay internal via the *.md rule below.)
+# research / planning (the docs/ site IS tracked: it's the published user
+# documentation; its build artifacts are ignored by docs/.gitignore)
 researches/
 plan.md
 completion.md
@@ -81,12 +80,14 @@ scripts/qa/
 # os
 Thumbs.db
 
-# all markdown by default except the repo readme
+# all markdown by default except the repo readme and the two public policy
+# documents (the disclosure policy and the architecture overview)
 *.md
 !README.md
+!SECURITY.md
+!ARCHITECTURE.md
 
 # internal working files (owner rule: internal artifacts live in resources/ and are never committed)
 resources/
 .claude/
-m3_tranche_formatted.txt
 tranche*.md
