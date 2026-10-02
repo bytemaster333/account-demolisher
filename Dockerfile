@@ -33,6 +33,10 @@ RUN pnpm build
 FROM base AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+# pnpm 11+ verifies node_modules against the lockfile before `pnpm start` and
+# reinstalls when it can't confirm a match. this stage ships no lockfile, only the
+# finished prod node_modules, so that check would try a full install at startup.
+ENV pnpm_config_verify_deps_before_run=false
 # non-root runtime
 RUN useradd --system --uid 1001 --create-home appuser
 # ship prod-only node_modules, not the build stage's devDependencies
