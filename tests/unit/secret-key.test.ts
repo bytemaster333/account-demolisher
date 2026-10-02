@@ -90,6 +90,18 @@ describe("SecretKeyConnector signing", () => {
     expect(tx.signatures).toHaveLength(0);
   });
 
+  it("refuses to sign for a different network than the transaction was built for", async () => {
+    // the clone is re-parsed with the passphrase argument, so a mismatch would
+    // silently produce a mainnet signature over a testnet-built transaction
+    const kp = Keypair.random();
+    const connector = new SecretKeyConnector(kp.secret());
+    const tx = sampleTx(kp.publicKey()).build();
+
+    await expect(connector.signTransaction(tx, Networks.PUBLIC)).rejects.toThrow(
+      /different network/,
+    );
+  });
+
   it("refuses to sign a soroban auth-entry rather than signing raw bytes", async () => {
     // signing the raw base64 bytes would be a plain ed25519 signature, not a
     // valid network-bound SEP-43 Soroban auth signature. mirroring

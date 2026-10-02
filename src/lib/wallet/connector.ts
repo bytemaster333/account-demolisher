@@ -1,7 +1,10 @@
 // the in-house connector abstraction: the only signing surface anything
 import type { FeeBumpTransaction, Transaction } from "@stellar/stellar-sdk";
+import { LEDGER_ID, type LedgerModule } from "@creit.tech/stellar-wallets-kit/modules/ledger";
 
 import { ensureWalletConnectReady, getKit, type KitHandle } from "@/lib/wallet/kit";
+import { toLedgerSigningError } from "@/lib/wallet/ledger-errors";
+import { verifySignedEnvelope } from "@/lib/wallet/signed-envelope";
 import type { NetworkConfig } from "@/lib/config/networks";
 
 export type ConnectorKind = "kit" | "secret";
@@ -56,21 +59,34 @@ export class WalletKitConnector implements Connector {
     return address;
   }
 
-  // sep-43 sign. maps the kit's { signedTxXdr, signerAddress } to our
-  // { signedXdr, signerPublicKey } shape so callers don't import kit types
+  // sep-43 sign. the returned envelope is checked against the transaction we
+  // built (same hash, valid signature by the connected key) before it is handed
+  // back, because every pre-sign guard ran on `tx`, not on the wallet's bytes.
+  // signerPublicKey is the key whose signature verified, never the wallet's echo.
   async signTransaction(
     tx: Transaction | FeeBumpTransaction,
     networkPassphrase: string,
   ): Promise<{ signedXdr: string; signerPublicKey: string }> {
     const address = await this.getPublicKey();
-    const { signedTxXdr, signerAddress } = await this.kit.signTransaction(tx.toXdr(), {
+    const isLedger = this.kit.selectedModule.productId === LEDGER_ID;
+    // without nonBlindTx the ledger module signs tx.hash() (INS_SIGN_HASH): the
+    // device shows 32 opaque bytes instead of the operations and the merge
+    // destination, and its stellar app refuses that unless hash signing was
+    // switched on. the kit spreads opts into the module unchanged.
+    const opts: NonNullable<Parameters<LedgerModule["signTransaction"]>[1]> = {
       networkPassphrase,
       address,
-    });
-    return {
-      signedXdr: signedTxXdr,
-      signerPublicKey: signerAddress ?? address,
+      ...(isLedger ? { nonBlindTx: true } : {}),
     };
+    let signedTxXdr: unknown;
+    try {
+      ({ signedTxXdr } = await this.kit.signTransaction(tx.toXdr(), opts));
+    } catch (e) {
+      // a device refusal (too large, rejected, ...) gets an actionable message.
+      // there is deliberately no retry as a hash signature.
+      throw (isLedger ? toLedgerSigningError(e) : null) ?? e;
+    }
+    return verifySignedEnvelope(tx, signedTxXdr, networkPassphrase, address);
   }
 
   // sep-43 soroban auth-entry sign. let underlying wallet errors propagate
