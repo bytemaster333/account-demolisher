@@ -38,7 +38,7 @@ function pathsReturning(destAmount: string | null): void {
 
 // resolveCreditPaths now drops a value-destroying path so the asset falls through
 // to the issuer/destination disposal instead of being sold for ~nothing.
-describe("resolveCreditPaths — value-destroying-sell floor", () => {
+describe("resolveCreditPaths: value-destroying-sell floor", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     delete process.env.NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS;

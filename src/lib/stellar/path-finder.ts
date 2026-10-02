@@ -61,9 +61,9 @@ export async function findPathToXLM(
 }
 
 // resolve a best XLM-conversion path for every positive credit balance the
-// account holds, keyed by pathKey(asset). Assets with no market path — OR whose
+// account holds, keyed by pathKey(asset). Assets with no market path, or whose
 // best path is value-destroying (its slippage-adjusted output nets ≤ the absolute
-// floor, e.g. an illiquid asset routing its whole balance to dust) — are absent
+// floor, e.g. an illiquid asset routing its whole balance to dust), are absent
 // from the map, so the caller treats them as un-routable and disposes of them via
 // issuer-return / send-to-destination instead of selling them for a pittance. A
 // network error propagates rather than being silently treated as "no path".

@@ -113,7 +113,7 @@ describe("applySlippageMin", () => {
   });
 });
 
-describe("resolveConfiguredSlippageBps — single configurable policy", () => {
+describe("resolveConfiguredSlippageBps single configurable policy", () => {
   const KEY = "NEXT_PUBLIC_SLIPPAGE_BPS";
   const orig = process.env[KEY];
   afterEach(() => {

@@ -12,7 +12,7 @@ import type { AccountAudit, AuditBalance, ClaimableBalanceEntry } from "@/lib/ty
 // The high-value safety gate: an account over the threshold must add a required
 // acknowledgement, and the acknowledge step can't continue until it's ticked.
 // These lock in that the gate FIRES at the threshold and that it gates proceeding.
-describe("high-value gate — trigger", () => {
+describe("high-value gate: trigger", () => {
   it("fires strictly above the threshold, not at or below it", () => {
     expect(isHighValueTotalXlm(String(HIGH_VALUE_THRESHOLD_XLM + 1))).toBe(true);
     expect(isHighValueTotalXlm("50000.5")).toBe(true);
@@ -28,7 +28,7 @@ describe("high-value gate — trigger", () => {
   });
 });
 
-describe("high-value gate — required acknowledgement blocks proceeding", () => {
+describe("high-value gate: required acknowledgement blocks proceeding", () => {
   const noFlags = {
     hasScam: false,
     hasDiscovery: false,

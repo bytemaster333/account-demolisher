@@ -41,7 +41,7 @@ function tx(op: xdr.Operation) {
     .build();
 }
 
-describe("assertTransactionAllowed — sign-time allow-list gate fires", () => {
+describe("assertTransactionAllowed: sign-time allow-list gate fires", () => {
   it("passes a classical-only transaction (no contract invocations)", () => {
     const t = tx(Operation.payment({ destination: SOURCE, asset: Asset.native(), amount: "1" }));
     expect(() => assertTransactionAllowed(t, TESTNET)).not.toThrow();

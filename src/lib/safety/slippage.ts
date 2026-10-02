@@ -63,7 +63,7 @@ export function resolveMinMarketOutStroops(): bigint {
 
 // True when a market sell yielding `expectedOutStroops` XLM is worth executing:
 // its slippage-adjusted minimum output must exceed the absolute floor. A sell
-// that nets nothing (or ≤ the configured floor) is value-destroying — refuse it.
+// that nets nothing (or ≤ the configured floor) is value-destroying, so refuse it.
 export function isMarketSellAcceptable(
   expectedOutStroops: bigint,
   bps: number,
