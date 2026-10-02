@@ -23,6 +23,18 @@ export function DemoStepList({
   // when embedded inside another card, drop the own border/background
   readonly bare?: boolean;
 }): React.JSX.Element {
+  // one short sentence for screen readers: the step being worked on, or the
+  // latest failure. announcing the whole list on every change would be noise.
+  const failed = [...rows].reverse().find((r) => r.status === "failed");
+  const active = rows.find((r) => r.status === "active");
+  const announcement =
+    failed !== undefined
+      ? `${failed.label}: failed.`
+      : active !== undefined
+        ? `${active.label}: in progress.`
+        : rows.length > 0 && rows.every((r) => r.status !== "pending")
+          ? "All steps finished."
+          : "";
   return (
     <div
       style={{
@@ -36,6 +48,22 @@ export function DemoStepList({
       }}
       data-testid="demo-step-list"
     >
+      <span
+        aria-live="polite"
+        data-testid="demo-step-live"
+        style={{
+          position: "absolute",
+          width: 1,
+          height: 1,
+          margin: -1,
+          overflow: "hidden",
+          clip: "rect(0, 0, 0, 0)",
+          whiteSpace: "nowrap",
+          border: 0,
+        }}
+      >
+        {announcement}
+      </span>
       {rows.map((row, i) => (
         <Row key={row.id} row={row} isLast={i === rows.length - 1} />
       ))}
@@ -259,6 +287,7 @@ function StatusIndicator({ status }: { readonly status: DemoStepRowStatus }) {
   if (status === "active") {
     return (
       <span
+        role="img"
         aria-label="In progress"
         style={{
           ...baseStyle,
@@ -272,6 +301,7 @@ function StatusIndicator({ status }: { readonly status: DemoStepRowStatus }) {
   if (status === "done") {
     return (
       <span
+        role="img"
         aria-label="Done"
         style={{
           ...baseStyle,
@@ -299,6 +329,7 @@ function StatusIndicator({ status }: { readonly status: DemoStepRowStatus }) {
   if (status === "failed") {
     return (
       <span
+        role="img"
         aria-label="Failed"
         style={{
           ...baseStyle,
@@ -325,6 +356,7 @@ function StatusIndicator({ status }: { readonly status: DemoStepRowStatus }) {
   if (status === "skipped") {
     return (
       <span
+        role="img"
         aria-label="Skipped"
         style={{
           ...baseStyle,
@@ -352,6 +384,7 @@ function StatusIndicator({ status }: { readonly status: DemoStepRowStatus }) {
   // pending
   return (
     <span
+      role="img"
       aria-label="Pending"
       style={{
         ...baseStyle,

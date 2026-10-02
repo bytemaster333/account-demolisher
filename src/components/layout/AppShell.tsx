@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Select } from "@/components/ui";
+import { describeConnectError } from "@/components/wallet/connect-error";
 import { MainnetConfirm } from "./MainnetConfirm";
 import { useTheme } from "./ThemeProvider";
 import { resolveNetwork, type NetworkConfig, type StellarNetwork } from "@/lib/config/networks";
@@ -64,10 +65,8 @@ function Navbar() {
       const { publicKey: address } = await connector.connect();
       setActiveConnector(connector);
       setConnected(address, "kit");
-    } catch {
-      setConnectError(
-        "Couldn't connect to your wallet. Make sure the wallet extension is installed and unlocked, then try again.",
-      );
+    } catch (e: unknown) {
+      setConnectError(describeConnectError(e));
     } finally {
       setConnecting(false);
     }

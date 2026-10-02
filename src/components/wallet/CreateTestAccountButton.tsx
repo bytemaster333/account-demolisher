@@ -3,11 +3,12 @@
 // testnet-only convenience: spin up a throwaway account preloaded with everything
 // the demolisher can clean up. Shown as a secondary path, not the primary one.
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 import { Badge, Button, Card, CopyableAddress } from "@/components/ui";
 import { DemoStepList, type DemoStepRow } from "@/components/wallet/DemoStepList";
 import type { NetworkConfig } from "@/lib/config/networks";
+import { errorMessage } from "@/lib/errors";
 import { explorerTxUrl } from "@/lib/explorer";
 import {
   DEMO_STEPS,
@@ -47,6 +48,9 @@ export function CreateTestAccountButton({
   const [results, setResults] = useState<ReadonlyMap<DemoStepId, DemoStepResult>>(new Map());
   const [ready, setReady] = useState<ReadyAccount | null>(null);
   const [fatal, setFatal] = useState<string | null>(null);
+  // each run gets an id; leaving with Back bumps it so a run still in flight
+  // (setup can't be cancelled midway) can't pull the screen back afterwards
+  const runIdRef = useRef(0);
 
   const rows = useMemo<readonly DemoStepRow[]>(
     () =>
@@ -77,6 +81,8 @@ export function CreateTestAccountButton({
   );
 
   const onRun = useCallback(async () => {
+    const runId = ++runIdRef.current;
+    const current = () => runIdRef.current === runId;
     setPhase("running");
     onActiveChange?.(true);
     setFatal(null);
@@ -87,9 +93,10 @@ export function CreateTestAccountButton({
       const result = await runDemoSetup({
         network,
         onStart: (id) => {
-          setActiveId(id);
+          if (current()) setActiveId(id);
         },
         onFinish: (r) => {
+          if (!current()) return;
           setResults((prev) => {
             const next = new Map(prev);
             next.set(r.id, r);
@@ -97,15 +104,28 @@ export function CreateTestAccountButton({
           });
         },
       });
+      if (!current()) return;
       setActiveId(null);
       setReady(result);
       setPhase("done");
     } catch (e) {
+      if (!current()) return;
       setActiveId(null);
-      setFatal(e instanceof Error ? e.message : String(e));
+      setFatal(errorMessage(e, "Demo setup failed."));
       setPhase("failed");
     }
   }, [network, onActiveChange]);
+
+  // hand the screen back to the connect options (wallet, secret key)
+  const onBack = useCallback(() => {
+    runIdRef.current++;
+    setActiveId(null);
+    setResults(new Map());
+    setFatal(null);
+    setReady(null);
+    setPhase("idle");
+    onActiveChange?.(false);
+  }, [onActiveChange]);
 
   const onContinue = useCallback(() => {
     if (ready === null) return;
@@ -180,9 +200,17 @@ export function CreateTestAccountButton({
         ) : null}
 
         {phase === "failed" ? (
-          <FailurePanel error={fatal ?? "Unknown failure"} onRetry={onRun} />
+          <FailurePanel error={fatal ?? "Unknown failure"} onRetry={onRun} onBack={onBack} />
         ) : null}
       </Card>
+
+      {phase === "running" ? (
+        <div>
+          <Button variant="ghost" size="sm" onClick={onBack} data-testid="create-test-account-back">
+            Back to other ways to connect
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -423,9 +451,11 @@ function SummaryLine({
 function FailurePanel({
   error,
   onRetry,
+  onBack,
 }: {
   readonly error: string;
   readonly onRetry: () => void;
+  readonly onBack: () => void;
 }) {
   return (
     <div
@@ -456,9 +486,17 @@ function FailurePanel({
           {error}
         </div>
       </details>
-      <div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
         <Button variant="danger" size="sm" onClick={onRetry}>
           Try again
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={onBack}
+          data-testid="create-test-account-back"
+        >
+          Back to other ways to connect
         </Button>
       </div>
     </div>
