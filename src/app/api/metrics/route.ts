@@ -98,10 +98,7 @@ function tokenMatches(provided: string, expected: string): boolean {
 }
 
 export async function GET(request: Request): Promise<Response> {
-  // read the token directly from the environment rather than through
-  // getServerEnv(): that validates the WHOLE server-env schema (incl.
-  // MEDIATOR_SECRET), so an unrelated misconfigured var must not take the
-  // metrics reader down with it. Recording never touches this path at all.
+  // only the admin read needs this token; recording never touches it
   const expected = process.env.METRICS_ADMIN_TOKEN;
   if (!expected || expected.length < 16) {
     return json({ ok: false, reason: "Metrics reads are not configured." }, 503);
