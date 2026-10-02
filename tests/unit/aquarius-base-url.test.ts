@@ -40,8 +40,8 @@ describe("Aquarius REST base URL is network-correct (regression: testnet must no
   it("maps each network to its own backend", () => {
     expect(aquariusApiBaseUrlForNetwork(TESTNET)).toBe(AQUARIUS_API_TESTNET_BASE_URL);
     expect(aquariusApiBaseUrlForNetwork(MAINNET)).toBe(AQUARIUS_API_MAINNET_BASE_URL);
-    // no dedicated futurenet backend: fall back to mainnet (the event scan covers it)
-    expect(aquariusApiBaseUrlForNetwork(FUTURENET)).toBe(AQUARIUS_API_MAINNET_BASE_URL);
+    // no aquarius backend on futurenet: refuse instead of querying mainnet's
+    expect(() => aquariusApiBaseUrlForNetwork(FUTURENET)).toThrow(/futurenet/);
   });
 
   it("queries the testnet backend when built for testnet with no baseUrl override", async () => {

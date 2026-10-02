@@ -6,8 +6,15 @@ export function address(s: string): xdr.ScVal {
   return nativeToScVal(s, { type: "address" });
 }
 
+// nativeToScVal range-checks i128/u128 since stellar-sdk 17 and throws instead
+// of wrapping (scval.test.ts pins that), so an out-of-range computed amount
+// fails the build rather than encoding a wrong-signed or zero argument
 export function i128(n: bigint): xdr.ScVal {
   return nativeToScVal(n, { type: "i128" });
+}
+
+export function u128(n: bigint): xdr.ScVal {
+  return nativeToScVal(n, { type: "u128" });
 }
 
 export function u32(n: number): xdr.ScVal {
@@ -41,6 +48,24 @@ export function fromScValI128(v: xdr.ScVal): bigint {
     throw new TypeError(`scValToNative for scvI128 returned non-bigint: ${typeof n}`);
   }
   return n;
+}
+
+export function fromScValU128(v: xdr.ScVal): bigint {
+  if (v.type !== "scvU128") {
+    throw new TypeError(`Expected scvU128 ScVal, got ${v.type}`);
+  }
+  const n = scValToNative(v);
+  if (typeof n !== "bigint") {
+    throw new TypeError(`scValToNative for scvU128 returned non-bigint: ${typeof n}`);
+  }
+  return n;
+}
+
+export function fromScValI32(v: xdr.ScVal): number {
+  if (v.type !== "scvI32") {
+    throw new TypeError(`Expected scvI32 ScVal, got ${v.type}`);
+  }
+  return v.i32;
 }
 
 export function fromScValU32(v: xdr.ScVal): number {
