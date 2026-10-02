@@ -7,7 +7,21 @@ export interface MergeOptions {
   readonly expectedSigners?: readonly string[];
 }
 
-// merges novel signatures from partialXdrs into canonicalXdr; returns the
+// the XDR envelope holds at most 20 decorated signatures
+export const MAX_ENVELOPE_SIGNATURES = 20;
+
+export class TooManySignaturesError extends Error {
+  constructor() {
+    super(
+      `A transaction envelope can carry at most ${MAX_ENVELOPE_SIGNATURES} signatures, and this one already has that many.`,
+    );
+    this.name = "TooManySignaturesError";
+  }
+}
+
+// merges novel signatures from partialXdrs into canonicalXdr and returns the
+// merged envelope. throws when a partial is for a different transaction, carries
+// a signature from an unknown key, or would push the envelope past 20 signatures.
 export function mergeSignatures(
   canonicalXdr: string,
   partialXdrs: readonly string[],
@@ -79,6 +93,9 @@ export function mergeSignatures(
       }
 
       if (presentKeys.has(signingKey)) continue;
+      if (canonical.signatures.length >= MAX_ENVELOPE_SIGNATURES) {
+        throw new TooManySignaturesError();
+      }
       // store with the canonical hint for the recovered key, so a forged hint
       // can never occupy a parallel slot for a signer that already signed.
       const kp = Keypair.fromPublicKey(signingKey);
@@ -93,6 +110,33 @@ export function mergeSignatures(
   }
 
   return canonical.toXdr();
+}
+
+// rebuild an envelope with exactly one verified signature per expected signer,
+// in signer order, dropping junk, duplicates and signatures from other keys.
+// used on publish so a padded envelope can't wedge later co-signers.
+export function canonicalizeSignatures(
+  envelopeXdr: string,
+  networkPassphrase: string,
+  expectedSigners: readonly string[],
+): string {
+  const tx = TransactionBuilder.fromXdr(envelopeXdr, networkPassphrase);
+  if (!isClassicTransaction(tx)) {
+    throw new Error("canonicalizeSignatures: fee-bump envelopes are not supported here.");
+  }
+  const hash = tx.hash();
+  const original = [...tx.signatures];
+  tx.signatures.length = 0;
+  for (const key of new Set(expectedSigners)) {
+    const kp = Keypair.fromPublicKey(key);
+    const sig = original.find((ds) => kp.verify(hash, ds.signature.toBytes()));
+    if (sig === undefined) continue;
+    if (tx.signatures.length >= MAX_ENVELOPE_SIGNATURES) throw new TooManySignaturesError();
+    tx.signatures.push(
+      new xdr.DecoratedSignature({ hint: kp.signatureHint(), signature: sig.signature.toBytes() }),
+    );
+  }
+  return tx.toXdr();
 }
 
 function isClassicTransaction(
