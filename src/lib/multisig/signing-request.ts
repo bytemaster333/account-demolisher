@@ -1,17 +1,24 @@
-// A shared (multisig) account can't be closed step-by-step the way a single
-// owner's is: every required signer must sign the SAME fixed transaction once.
-// So the whole close, cleanup + merge, has to be ONE classic transaction.
+// a shared (multisig) account can't be closed step by step the way a single
+// owner's is: every required signer must sign the same fixed transaction once,
+// so the whole close (cleanup plus merge) has to be one classic transaction.
 //
-// This module turns a reviewed close into that single bundled transaction and
-// packages it as a portable "signing request": the transaction XDR and nothing
-// else, no secret material. Signatures live INSIDE the transaction (merged with
-// mergeSignatures) and the request travels by link/paste, never uploaded to any
-// server. It also provides the local inspection + signature accounting the
-// initiator and co-signers need so no one ever blind-signs.
+// this module turns a reviewed close into that bundled transaction, and gives the
+// initiator and co-signers a plain-language inspection of it plus local signature
+// accounting so nobody signs blind. the envelope (no secret material) is shared
+// through the /api/plan relay, which stores it in memory and hands it to
+// co-signers by link; signatures live inside the envelope and are merged with
+// mergeSignatures.
 
-import { Keypair, TransactionBuilder, type Horizon, type Transaction } from "@stellar/stellar-sdk";
+import {
+  Keypair,
+  SignerKey,
+  TransactionBuilder,
+  type Horizon,
+  type Transaction,
+} from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
+import { CLOSE_MARKER_NAME } from "@/lib/metrics/close-marker";
 import { mergeSignatures } from "@/lib/multisig/partial-xdr";
 import { batchClassicDemolition } from "@/lib/plan/classic-batcher";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
@@ -39,14 +46,19 @@ export interface BundleabilityResult {
   readonly reason?: string;
 }
 
+const POOL_SHARE_REASON =
+  "This account holds a liquidity pool share, which must be withdrawn in its own transaction first. Withdraw it, or close with all signers present.";
+
 // can this close be expressed as ONE signable classic transaction? Soroban
-// positions and allowance revocations each need their own transaction, and the
-// exchange-mediator flow is multi-step, so none of those can be bundled into a
-// single signing request; those accounts must be closed with all signers present.
+// positions and allowance revocations each need their own transaction, the
+// exchange-mediator flow is multi-step, and a classic pool share is withdrawn in
+// its own leading batch, so none of those can be bundled into a single signing
+// request; those accounts must be closed with all signers present.
 export function assessBundleability(input: {
   readonly hasSorobanPositions: boolean;
   readonly hasSelectedAllowances: boolean;
   readonly useMediator: boolean;
+  readonly hasClassicPoolShares?: boolean;
 }): BundleabilityResult {
   if (input.useMediator) {
     return {
@@ -69,6 +81,9 @@ export function assessBundleability(input: {
         "Revoking token allowances needs a separate transaction per allowance, which can't be part of a single signing request. Revoke them first, or close with all signers present.",
     };
   }
+  if (input.hasClassicPoolShares === true) {
+    return { ok: false, reason: POOL_SHARE_REASON };
+  }
   return { ok: true };
 }
 
@@ -85,10 +100,21 @@ export function requiredSigners(audit: AccountAudit): readonly RequiredSigner[] 
     .map((s) => ({ key: s.key, weight: s.weight }));
 }
 
-// accountMerge and the setOptions cleanup are high-threshold operations, so the
-// weight that must be collected is the account's high threshold (min 1).
+// the weight a bundled close needs. stellar thresholds are independent bytes, so
+// med or low can exceed high. the bundle always holds high ops (merge, signer
+// cleanup) and medium ops (the close marker, trustline and offer cleanup), and
+// core checks the low threshold at the transaction level, so the bundle needs
+// the largest of the three (at least 1).
+export function thresholdForClose(t: {
+  readonly low: number;
+  readonly medium: number;
+  readonly high: number;
+}): number {
+  return Math.max(1, t.low, t.medium, t.high);
+}
+
 export function closeThreshold(audit: AccountAudit): number {
-  return Math.max(1, audit.thresholds.high);
+  return thresholdForClose(audit.thresholds);
 }
 
 // build the single bundled closure transaction for a multisig account. Throws if
@@ -118,11 +144,23 @@ export function buildCloseTransaction(params: {
   };
 
   const batches = batchClassicDemolition(audit, batchOptions, undefined);
-  if (batches.length !== 1) {
+  if (batches.length === 0) {
     throw new Error(
-      `buildCloseTransaction: closure needs ${batches.length} transactions, but a shared ` +
-        `signing request requires exactly one bundled transaction ` +
-        `(${batches.length > 1 ? "too many operations for one transaction" : "no operations produced"}).`,
+      "buildCloseTransaction: the close produced no operations, so there is nothing to sign.",
+    );
+  }
+  if (batches.length > 1) {
+    const first = batches[0]!;
+    const withdrawsFirst =
+      first.operations.length > 0 &&
+      first.operations.every((op) => op.kind === "liquidity_pool_withdraw");
+    if (withdrawsFirst) {
+      throw new Error(`buildCloseTransaction: ${POOL_SHARE_REASON}`);
+    }
+    const opCount = batches.reduce((n, b) => n + b.operations.length, 0);
+    throw new Error(
+      `buildCloseTransaction: this close needs ${opCount} operations, more than fit in one ` +
+        `transaction, so it can't be a single signing request. Close with all signers present.`,
     );
   }
 
@@ -138,16 +176,40 @@ export function buildCloseTransaction(params: {
 }
 
 // ── envelope inspection (never blind-sign) ───────────────────────────────────
-// A signer is being asked to authorize permanently closing an account and moving
-// its funds. Showing only opaque base64 XDR is blind signing: an accountMerge to
-// an attacker's destination looks identical to a benign closure. We decode the
-// transaction and surface, in plain language, what it actually does.
+// a signer is being asked to permanently close an account and move its funds.
+// opaque base64 is blind signing: a merge to an attacker looks the same as a
+// benign close. so the transaction is decoded and every operation and
+// transaction-level fact (fee, memo, time bounds, preconditions) is surfaced.
+//
+// "expected" steps are exactly the shapes the close builder emits: offer cancels
+// (amount 0 on an existing offer id), claimable-balance claims, credit payments
+// back to the issuer or to the merge destination, trustline removals, data entry
+// deletes, the close marker pair, signer removals, the threshold reset and the
+// merge itself. anything else is flagged danger and marked unexpected, because in
+// a real request it can only come from a tampered or malicious initiator.
 
 export interface OperationSummary {
   readonly type: string;
   readonly detail?: string;
   readonly destination?: string;
   readonly danger?: boolean;
+  // the close builder never emits this operation shape
+  readonly unexpected?: boolean;
+}
+
+export interface CloseMemo {
+  readonly type: "none" | "id" | "text" | "hash" | "return";
+  // text memos are decoded as utf-8 (hex when not valid utf-8); hash and return
+  // memos are hex; id memos are the decimal id
+  readonly value: string;
+}
+
+export interface ClosePreconditions {
+  readonly ledgerBounds?: { readonly minLedger: number; readonly maxLedger: number };
+  readonly minAccountSequence?: string;
+  readonly minAccountSequenceAge?: string;
+  readonly minAccountSequenceLedgerGap?: number;
+  readonly extraSigners?: readonly string[];
 }
 
 export interface CloseInspection {
@@ -155,8 +217,27 @@ export interface CloseInspection {
   readonly operations: readonly OperationSummary[];
   readonly mergeDestination: string | null;
   readonly timeBounds: { readonly minTime: number; readonly maxTime: number } | null;
+  // the maximum fee the transaction may charge, in stroops and in XLM
+  readonly feeStroops: string;
+  readonly feeXlm: string;
+  readonly memo: CloseMemo;
+  readonly sequence: string;
+  // V2 preconditions beyond time bounds; null when there are none
+  readonly preconditions: ClosePreconditions | null;
   // is this a well-formed account close (contains an account-merge)?
   readonly isClose: boolean;
+}
+
+interface AssetLike {
+  isNative(): boolean;
+  getCode(): string;
+  getIssuer(): string;
+}
+
+interface PoolAssetLike {
+  readonly assetA: AssetLike;
+  readonly assetB: AssetLike;
+  readonly fee: number;
 }
 
 // minimal structural view of a decoded operation, to read fields without `any`
@@ -165,23 +246,68 @@ interface RawOp {
   readonly source?: string;
   readonly destination?: string;
   readonly amount?: string;
+  readonly buyAmount?: string;
   readonly startingBalance?: string;
   readonly sendAmount?: string;
-  readonly asset?: { isNative(): boolean; getCode(): string };
-  readonly line?: { isNative(): boolean; getCode(): string };
-  readonly signer?: { readonly ed25519PublicKey?: string; readonly weight?: number };
+  readonly sendMax?: string;
+  readonly destAmount?: string;
+  readonly destMin?: string;
+  readonly limit?: string;
+  readonly price?: string;
+  readonly offerId?: string;
+  readonly name?: string;
+  readonly value?: Uint8Array;
+  readonly balanceId?: string;
+  readonly liquidityPoolId?: string;
+  readonly minAmountA?: string;
+  readonly minAmountB?: string;
+  readonly asset?: AssetLike;
+  readonly sendAsset?: AssetLike;
+  readonly destAsset?: AssetLike;
+  readonly selling?: AssetLike;
+  readonly buying?: AssetLike;
+  readonly line?: AssetLike | PoolAssetLike;
+  readonly claimants?: readonly { readonly destination: string }[];
+  readonly signer?: {
+    readonly ed25519PublicKey?: string;
+    readonly preAuthTx?: Uint8Array;
+    readonly sha256Hash?: Uint8Array;
+    readonly ed25519SignedPayload?: string;
+    readonly weight?: number;
+  };
   readonly masterWeight?: number;
   readonly lowThreshold?: number;
   readonly medThreshold?: number;
   readonly highThreshold?: number;
+  readonly setFlags?: number;
+  readonly clearFlags?: number;
+  readonly homeDomain?: string;
+  readonly inflationDest?: string;
 }
 
-function assetLabel(asset: { isNative(): boolean; getCode(): string }): string {
-  try {
-    return asset.isNative() ? "XLM" : asset.getCode();
-  } catch {
-    return "an asset";
+interface InspectContext {
+  readonly mergeDestination: string | null;
+}
+
+const UNEXPECTED =
+  "A close never includes this operation. Do not sign unless you know exactly why it is here.";
+
+function isPoolAsset(a: AssetLike | PoolAssetLike): a is PoolAssetLike {
+  return (a as PoolAssetLike).assetA !== undefined;
+}
+
+// short label for an asset in an expected step: "XLM" or "CODE (GABCDE…WXYZ)"
+function assetLabel(asset: AssetLike | PoolAssetLike): string {
+  if (isPoolAsset(asset)) {
+    return `the ${assetLabel(asset.assetA)} / ${assetLabel(asset.assetB)} pool share`;
   }
+  return asset.isNative() ? "XLM" : `${asset.getCode()} (${shortId(asset.getIssuer())})`;
+}
+
+// full label for an asset in a danger step: the whole issuer, since a short
+// prefix and suffix can be matched by a vanity key
+function fullAssetLabel(asset: AssetLike): string {
+  return asset.isNative() ? "XLM" : `${asset.getCode()} issued by ${asset.getIssuer()}`;
 }
 
 function humanizeOpType(type: string): string {
@@ -193,30 +319,117 @@ function shortId(key: string): string {
   return key.length > 12 ? `${key.slice(0, 6)}…${key.slice(-4)}` : key;
 }
 
-function describeSetOptions(op: RawOp): string {
-  const parts: string[] = [];
-  const signerKey = op.signer?.ed25519PublicKey;
-  if (typeof signerKey === "string") {
-    parts.push(
-      op.signer?.weight === 0
-        ? `removes signer ${shortId(signerKey)}`
-        : `sets signer ${shortId(signerKey)} to weight ${op.signer?.weight}`,
-    );
-  }
-  if (op.masterWeight !== undefined) parts.push(`master key weight to ${op.masterWeight}`);
-  if (
-    op.lowThreshold !== undefined ||
-    op.medThreshold !== undefined ||
-    op.highThreshold !== undefined
-  ) {
-    parts.push("adjusts signing thresholds");
-  }
-  if (parts.length === 0) return "Adjusts this account's options.";
+function isZeroAmount(amount: string | undefined): boolean {
+  return amount !== undefined && /^0+(\.0+)?$/.test(amount);
+}
+
+function toHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function sentence(parts: readonly string[]): string {
   const joined = parts.join("; ");
   return `${joined.charAt(0).toUpperCase()}${joined.slice(1)}.`;
 }
 
-function summarizeOp(op: RawOp): OperationSummary {
+function unexpectedOp(type: string, detail: string, destination?: string): OperationSummary {
+  return {
+    type,
+    detail: `${detail} ${UNEXPECTED}`,
+    danger: true,
+    unexpected: true,
+    ...(destination ? { destination } : {}),
+  };
+}
+
+function describeSetOptions(op: RawOp): OperationSummary {
+  const expected: string[] = [];
+  const unexpected: string[] = [];
+
+  const s = op.signer;
+  if (s !== undefined) {
+    const weight = s.weight ?? 0;
+    let label: string;
+    if (typeof s.ed25519PublicKey === "string") label = `signer ${s.ed25519PublicKey}`;
+    else if (s.preAuthTx !== undefined)
+      label = `pre-authorized transaction signer ${toHex(s.preAuthTx)}`;
+    else if (s.sha256Hash !== undefined) label = `hash signer ${toHex(s.sha256Hash)}`;
+    else if (typeof s.ed25519SignedPayload === "string")
+      label = `signed-payload signer ${s.ed25519SignedPayload}`;
+    else label = "an unknown signer";
+    if (weight === 0) expected.push(`removes ${label}`);
+    else unexpected.push(`adds or changes ${label} to weight ${weight}`);
+  }
+
+  const thresholdsTouched =
+    op.lowThreshold !== undefined ||
+    op.medThreshold !== undefined ||
+    op.highThreshold !== undefined;
+  if (thresholdsTouched) {
+    const allZero = [op.lowThreshold, op.medThreshold, op.highThreshold].every(
+      (t) => t === undefined || t === 0,
+    );
+    const text = `sets signing thresholds to low ${op.lowThreshold ?? "unchanged"}, medium ${op.medThreshold ?? "unchanged"}, high ${op.highThreshold ?? "unchanged"}`;
+    if (allZero) expected.push(text);
+    else unexpected.push(text);
+  }
+  if (op.masterWeight !== undefined) {
+    // the close's threshold reset sets the master weight to 1 so the merge can
+    // still be signed; 0 would lock the account
+    if (op.masterWeight === 1) expected.push("sets the master key weight to 1");
+    else unexpected.push(`sets the master key weight to ${op.masterWeight}`);
+  }
+  if (op.setFlags !== undefined) unexpected.push(`sets account flags ${op.setFlags}`);
+  if (op.clearFlags !== undefined) unexpected.push(`clears account flags ${op.clearFlags}`);
+  if (op.homeDomain !== undefined) unexpected.push(`sets the home domain to "${op.homeDomain}"`);
+  if (op.inflationDest !== undefined)
+    unexpected.push(`sets the inflation destination to ${op.inflationDest}`);
+
+  if (unexpected.length > 0) {
+    return unexpectedOp("Change account settings", sentence([...unexpected, ...expected]));
+  }
+  if (expected.length === 0) {
+    return unexpectedOp("Change account settings", "Changes no visible option.");
+  }
+  return { type: "Change account settings", detail: sentence(expected) };
+}
+
+function describeOffer(op: RawOp): OperationSummary {
+  const amount = op.type === "manageBuyOffer" ? op.buyAmount : op.amount;
+  const hasOfferId = op.offerId !== undefined && op.offerId !== "0";
+  const pair =
+    op.selling && op.buying
+      ? `selling ${fullAssetLabel(op.selling)} for ${fullAssetLabel(op.buying)}`
+      : "on an unknown asset pair";
+
+  // only a zero amount on an existing offer id removes an offer. a passive offer
+  // has no offer id and so can never be a cancel.
+  if (op.type !== "createPassiveSellOffer" && isZeroAmount(amount) && hasOfferId) {
+    if (op.type === "manageSellOffer") {
+      return {
+        type: "Cancel a DEX offer",
+        detail: `Removes open offer ${op.offerId} (${pair}) from the order book.`,
+      };
+    }
+    // the close builder cancels with manageSellOffer only
+    return unexpectedOp(
+      "Cancel a DEX buy offer",
+      `Removes open buy offer ${op.offerId} (${pair}).`,
+    );
+  }
+
+  const what =
+    op.type === "manageBuyOffer"
+      ? `buy ${amount ?? "an unknown amount"}`
+      : `sell ${amount ?? "an unknown amount"}`;
+  const offerRef = hasOfferId ? ` (updates offer ${op.offerId})` : "";
+  return unexpectedOp(
+    "Place a DEX offer",
+    `Places an offer to ${what}, ${pair}, at price ${op.price ?? "unknown"}${offerRef}. This trades the account's funds on the order book.`,
+  );
+}
+
+function summarizeOp(op: RawOp, ctx: InspectContext): OperationSummary {
   switch (op.type) {
     case "accountMerge":
       return {
@@ -226,55 +439,182 @@ function summarizeOp(op: RawOp): OperationSummary {
         danger: true,
         ...(op.destination ? { destination: op.destination } : {}),
       };
-    case "payment":
-      return {
-        type: "Send a payment",
-        detail:
-          op.amount && op.asset
-            ? `Sends ${op.amount} ${assetLabel(op.asset)} to the destination below.`
-            : "Moves funds to the destination below.",
-        danger: true,
-        ...(op.destination ? { destination: op.destination } : {}),
-      };
-    case "setOptions":
-      return { type: "Change account settings", detail: describeSetOptions(op) };
-    case "changeTrust":
-      return {
-        type: "Change a trustline",
-        ...(op.line ? { detail: `For ${assetLabel(op.line)}.` } : {}),
-      };
+
+    case "payment": {
+      const amountText =
+        op.amount && op.asset ? `${op.amount} ${fullAssetLabel(op.asset)}` : "funds";
+      const dest = op.destination;
+      if (op.asset && !op.asset.isNative() && dest !== undefined) {
+        if (dest === op.asset.getIssuer()) {
+          return {
+            type: "Return an asset to its issuer",
+            detail: `Returns ${op.amount ?? "the balance of"} ${assetLabel(op.asset)} to its issuer, which is how a trustline with no market is emptied before removal.`,
+            destination: dest,
+          };
+        }
+        if (ctx.mergeDestination !== null && dest === ctx.mergeDestination) {
+          return {
+            type: "Send an asset to the destination",
+            detail: `Sends ${op.amount ?? "the balance of"} ${assetLabel(op.asset)} to the same destination as the close.`,
+            destination: dest,
+          };
+        }
+      }
+      return unexpectedOp("Send a payment", `Sends ${amountText} to the address below.`, dest);
+    }
+
+    case "changeTrust": {
+      if (op.line === undefined) return unexpectedOp("Change a trustline", "Changes a trustline.");
+      if (isZeroAmount(op.limit)) {
+        return {
+          type: "Remove a trustline",
+          detail: `Removes the trustline for ${assetLabel(op.line)}.`,
+        };
+      }
+      const label = isPoolAsset(op.line) ? assetLabel(op.line) : fullAssetLabel(op.line);
+      return unexpectedOp(
+        "Add or change a trustline",
+        `Sets the trustline for ${label} to limit ${op.limit ?? "unknown"}, which lets the account receive it.`,
+      );
+    }
+
     case "manageSellOffer":
     case "manageBuyOffer":
-    case "createPassiveSellOffer": {
-      // amount 0 = cancelling an existing offer, a normal part of a close; a
-      // non-zero amount places/updates an offer, which moves value on the DEX
-      if (op.amount === undefined || Number.parseFloat(op.amount) === 0) {
-        return { type: "Cancel a DEX offer", detail: "Removes an open offer from the order book." };
-      }
+    case "createPassiveSellOffer":
+      return describeOffer(op);
+
+    case "claimClaimableBalance":
       return {
-        type: "Place a DEX offer",
-        detail: `Places or updates a DEX offer of ${op.amount}. This moves value on the order book.`,
-        danger: true,
+        type: "Claim a claimable balance",
+        detail: `Claims balance ${shortId(op.balanceId ?? "")} into this account before it closes.`,
       };
+
+    case "manageData": {
+      const name = op.name ?? "";
+      if (op.value === undefined) {
+        if (name === CLOSE_MARKER_NAME) {
+          return {
+            type: "Close marker",
+            detail: "Removes the Account Demolisher close marker set just before it.",
+          };
+        }
+        return { type: "Delete a data entry", detail: `Deletes data entry "${name}".` };
+      }
+      if (name === CLOSE_MARKER_NAME) {
+        return {
+          type: "Close marker",
+          detail:
+            "Marks this transaction as an Account Demolisher close. The entry is removed again in the next step.",
+        };
+      }
+      return unexpectedOp(
+        "Write a data entry",
+        `Writes data entry "${name}" with value ${toHex(op.value)}.`,
+      );
     }
+
+    case "setOptions":
+      return describeSetOptions(op);
+
+    case "liquidityPoolWithdraw":
+      return {
+        type: "Withdraw from a liquidity pool",
+        detail: `Withdraws ${op.amount ?? "the"} pool shares from pool ${shortId(op.liquidityPoolId ?? "")} into this account (minimums ${op.minAmountA ?? "?"} and ${op.minAmountB ?? "?"}).`,
+      };
+
+    case "pathPaymentStrictReceive":
+      return unexpectedOp(
+        "Path payment",
+        `Spends up to ${op.sendMax ?? "?"} ${op.sendAsset ? fullAssetLabel(op.sendAsset) : "of an asset"} so the address below receives exactly ${op.destAmount ?? "?"} ${op.destAsset ? fullAssetLabel(op.destAsset) : "of an asset"}.`,
+        op.destination,
+      );
+
+    case "pathPaymentStrictSend":
+      return unexpectedOp(
+        "Path payment",
+        `Spends ${op.sendAmount ?? "?"} ${op.sendAsset ? fullAssetLabel(op.sendAsset) : "of an asset"} so the address below receives at least ${op.destMin ?? "?"} ${op.destAsset ? fullAssetLabel(op.destAsset) : "of an asset"}.`,
+        op.destination,
+      );
+
+    case "createAccount":
+      return unexpectedOp(
+        "Create an account",
+        `Creates the account below and funds it with ${op.startingBalance ?? "?"} XLM.`,
+        op.destination,
+      );
+
+    case "createClaimableBalance": {
+      const claimants = (op.claimants ?? []).map((c) => c.destination);
+      return unexpectedOp(
+        "Create a claimable balance",
+        `Locks ${op.amount ?? "?"} ${op.asset ? fullAssetLabel(op.asset) : "of an asset"} into a claimable balance for ${claimants.length > 0 ? claimants.join(", ") : "no listed claimant"}.`,
+      );
+    }
+
     default: {
-      // Any other operation — createAccount, pathPaymentStrictSend/Receive,
-      // createClaimableBalance, clawback, or an unrecognized future type — can move
-      // value out of the account being closed. A co-signer must never blind-sign
-      // one, so flag it danger and surface any destination + amount rather than
-      // rendering a plain, safe-looking line (the SEC-04 defect).
       const amount = op.amount ?? op.startingBalance ?? op.sendAmount;
       const detail = amount
-        ? `This operation moves ${amount}${op.asset ? ` ${assetLabel(op.asset)}` : ""} or changes account state. Review it carefully before signing.`
-        : "This operation can move value or change account state. Review it carefully before signing.";
-      return {
-        type: humanizeOpType(op.type),
-        detail,
-        danger: true,
-        ...(op.destination ? { destination: op.destination } : {}),
-      };
+        ? `This operation moves ${amount}${op.asset ? ` ${fullAssetLabel(op.asset)}` : ""} or changes account state.`
+        : "This operation can move value or change account state.";
+      return unexpectedOp(humanizeOpType(op.type), detail, op.destination);
     }
   }
+}
+
+function describeMemo(tx: Transaction): CloseMemo {
+  const memo = tx.memo;
+  switch (memo.type) {
+    case "none":
+      return { type: "none", value: "" };
+    case "id":
+      return { type: "id", value: String(memo.value) };
+    case "text": {
+      const raw = memo.value as unknown;
+      if (typeof raw === "string") return { type: "text", value: raw };
+      const bytes = raw as Uint8Array;
+      try {
+        return { type: "text", value: new TextDecoder("utf-8", { fatal: true }).decode(bytes) };
+      } catch {
+        return { type: "text", value: `hex ${toHex(bytes)}` };
+      }
+    }
+    case "hash":
+    case "return":
+      return { type: memo.type, value: toHex(memo.value as Uint8Array) };
+    default:
+      return { type: "none", value: "" };
+  }
+}
+
+function describePreconditions(tx: Transaction): ClosePreconditions | null {
+  const out: {
+    ledgerBounds?: { minLedger: number; maxLedger: number };
+    minAccountSequence?: string;
+    minAccountSequenceAge?: string;
+    minAccountSequenceLedgerGap?: number;
+    extraSigners?: string[];
+  } = {};
+  const lb = tx.ledgerBounds;
+  if (lb !== undefined) out.ledgerBounds = { minLedger: lb.minLedger, maxLedger: lb.maxLedger };
+  if (tx.minAccountSequence !== undefined) out.minAccountSequence = tx.minAccountSequence;
+  const age = tx.minAccountSequenceAge;
+  if (age !== undefined && age !== null && String(age) !== "0") {
+    out.minAccountSequenceAge = String(age);
+  }
+  const gap = tx.minAccountSequenceLedgerGap;
+  if (gap !== undefined && gap !== 0) out.minAccountSequenceLedgerGap = gap;
+  const extra = tx.extraSigners;
+  if (extra !== undefined && extra.length > 0) {
+    out.extraSigners = extra.map((k) => SignerKey.encodeSignerKey(k));
+  }
+  return Object.keys(out).length === 0 ? null : out;
+}
+
+function stroopsToXlm(stroops: string): string {
+  const n = BigInt(stroops);
+  const whole = n / 10_000_000n;
+  const frac = (n % 10_000_000n).toString().padStart(7, "0");
+  return `${whole}.${frac}`;
 }
 
 // decode a signing request's transaction into a plain-language summary. Returns
@@ -286,32 +626,31 @@ export function inspectClose(xdrStr: string, passphrase: string): CloseInspectio
   } catch {
     return null;
   }
-  const candidate = tx as unknown as {
-    operations?: readonly RawOp[];
-    source?: string;
-    timeBounds?: { minTime?: string | number; maxTime?: string | number };
-  };
-  if (!Array.isArray(candidate.operations)) return null;
+  if (!Array.isArray((tx as { operations?: unknown }).operations)) return null;
 
-  const rawOps = candidate.operations;
-  const operations = rawOps.map(summarizeOp);
+  const rawOps = tx.operations as unknown as readonly RawOp[];
   const mergeOp = rawOps.find((o) => o.type === "accountMerge");
-  const tb = candidate.timeBounds;
-  const timeBounds =
-    tb && (tb.minTime !== undefined || tb.maxTime !== undefined)
-      ? { minTime: Number(tb.minTime ?? 0), maxTime: Number(tb.maxTime ?? 0) }
-      : null;
 
   // the account being closed is the accountMerge op's EFFECTIVE source
   // (op.source ?? tx.source), NOT blindly tx.source. The relay binds the signer
   // set to that account, so /sign must display and audit the same one.
-  const closingSource = mergeOp?.source ?? candidate.source;
+  const closingSource = mergeOp?.source ?? tx.source;
+  const ctx: InspectContext = { mergeDestination: mergeOp?.destination ?? null };
+
+  const tb = tx.timeBounds;
+  const timeBounds =
+    tb !== undefined ? { minTime: Number(tb.minTime), maxTime: Number(tb.maxTime) } : null;
 
   return {
-    source: typeof closingSource === "string" ? closingSource : "",
-    operations,
-    mergeDestination: mergeOp?.destination ?? null,
+    source: closingSource,
+    operations: rawOps.map((op) => summarizeOp(op, ctx)),
+    mergeDestination: ctx.mergeDestination,
     timeBounds,
+    feeStroops: tx.fee,
+    feeXlm: stroopsToXlm(tx.fee),
+    memo: describeMemo(tx),
+    sequence: tx.sequence,
+    preconditions: describePreconditions(tx),
     isClose: mergeOp !== undefined,
   };
 }
