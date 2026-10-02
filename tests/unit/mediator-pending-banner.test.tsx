@@ -149,8 +149,22 @@ describe("PendingForwardBanner", () => {
     await waitFor(() => expect(loadPendingForwards(user)).toEqual([]));
   });
 
-  it("does not raise an alarm for a close that stopped before the merge", async () => {
+  it("stays quiet about a recent close that has not merged yet", async () => {
     const record = await flowRecord();
+    fake.createAccount(record.mediatorPublicKey, 2n * XLM);
+    savePendingForward(record);
+    render(<PendingForwardBanner publicKey={user} />);
+    // the mediator's account is read only after its history said "no merge"
+    await waitFor(() =>
+      expect(fake.requests).toContain(`GET /accounts/${record.mediatorPublicKey}`),
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByRole("note")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("does not raise an alarm for a close that stopped before the merge", async () => {
+    const record = { ...(await flowRecord()), savedAt: Date.now() - 60 * 60 * 1000 };
     fake.createAccount(record.mediatorPublicKey, 2n * XLM); // funded, never merged into
     savePendingForward(record);
     render(<PendingForwardBanner publicKey={user} />);

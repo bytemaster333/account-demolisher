@@ -143,8 +143,14 @@ export function PendingForwardBanner({
   );
 }
 
+// a record is written when a close starts, well before its merge. Until it is
+// this old, "no merge yet" may just mean the close is still on its way there;
+// nothing has moved, so there is no reason to speak up early.
+const NOT_MERGED_QUIET_MS = 15 * 60 * 1000;
+
 type RowState =
   | { readonly kind: "checking" }
+  | { readonly kind: "quiet" }
   | { readonly kind: "check-failed"; readonly error: string }
   | PendingForwardStatus;
 
@@ -168,6 +174,10 @@ function PendingForwardRow({
         if (status.kind === "delivered") {
           onDelivered(record, status.txHash);
           removePendingForward(record);
+          return;
+        }
+        if (status.kind === "not-merged" && Date.now() - record.savedAt < NOT_MERGED_QUIET_MS) {
+          setState({ kind: "quiet" });
           return;
         }
         setState(status);
@@ -212,6 +222,7 @@ function PendingForwardRow({
   switch (state.kind) {
     // a delivered record is handed to the banner and removed, never kept as row state
     case "checking":
+    case "quiet":
     case "delivered":
       return null;
     case "check-failed":
