@@ -1,0 +1,5 @@
+# the docs site is its own pnpm project, separate from the app at the repo root.
+# no dependency build scripts run here (same as under pnpm 10, which ignored them).
+allowBuilds:
+  esbuild: false
+  sharp: false

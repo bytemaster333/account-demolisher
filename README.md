@@ -37,8 +37,8 @@ contract allow-list checked before every Soroban signature. See the
 
 ## Requirements
 
-- Node 22 (see `.nvmrc`)
-- pnpm 10
+- Node 24 (see `.nvmrc`)
+- pnpm 12
 
 ## Setup
 

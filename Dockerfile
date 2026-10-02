@@ -5,23 +5,23 @@
 # Public config (NEXT_PUBLIC_*) is build-time; defaults to testnet. Server-only
 # secrets (MEDIATOR_SECRET, SOROSWAP_API_KEY) are supplied at runtime.
 
-# base image pinned by digest (multi-arch index for node:22-slim, resolved
-# 2026-08-23) so the build is reproducible and the base can't drift under the tag.
-# Update the digest deliberately when bumping the base.
-FROM node:22-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS base
+# base image pinned by digest (multi-arch index for node:24-slim, node 24.21.0,
+# resolved 2026-10-02) so the build is reproducible and the base can't drift under
+# the tag. Update the digest deliberately when bumping the base.
+FROM node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS base
 ENV PNPM_HOME="/pnpm" PATH="/pnpm:$PATH"
 RUN corepack enable
 
 # full dependency set (incl. devDependencies) — used only to build
 FROM base AS deps
 WORKDIR /app
-COPY package.json pnpm-lock.yaml .npmrc ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
 # production-only dependency set — what actually ships in the runtime image
 FROM base AS prod-deps
 WORKDIR /app
-COPY package.json pnpm-lock.yaml .npmrc ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --prod --frozen-lockfile
 
 FROM base AS build

@@ -8,8 +8,8 @@ run it.
 
 ## Requirements
 
-- **Node.js 22** (pinned in `.nvmrc`, `engines` requires `>=22`)
-- **pnpm 10** (pinned at `pnpm@10.30.0`, `engines` requires `>=10`)
+- **Node.js 24** (pinned in `.nvmrc`, `engines` requires `>=24`)
+- **pnpm 12** (pinned at `pnpm@12.8.1`, `engines` requires `>=12`)
 
 ## Install and run
 
@@ -75,7 +75,7 @@ docker build -t account-demolisher .
 docker run -p 3000:3000 -e MEDIATOR_SECRET=S... account-demolisher
 ```
 
-The image builds on `node:22-slim`, **pinned by digest** so the base cannot drift under the
+The image builds on `node:24-slim`, **pinned by digest** so the base cannot drift under the
 tag, and runs as a non-root user. It ships production-only dependencies, not the build
 stage's devDependencies. Port 3000 is exposed.
 

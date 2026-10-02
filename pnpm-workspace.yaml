@@ -1,0 +1,37 @@
+# pnpm 11+ reads project settings only from this file (not from package.json's
+# "pnpm" field or from .npmrc).
+
+# lefthook installs the git hooks from its postinstall script. the rest are
+# denied explicitly, matching the pnpm 10 behavior where only lefthook ran.
+allowBuilds:
+  lefthook: true
+  "@reown/appkit": false
+  "@stellar/stellar-sdk": false
+  blake-hash: false
+  bufferutil: false
+  protobufjs: false
+  secp256k1: false
+  tiny-secp256k1: false
+  unrs-resolver: false
+  usb: false
+  utf-8-validate: false
+
+enablePrePostScripts: true
+
+overrides:
+  protobufjs: ^7.6.3
+  axios: ^1.18.0
+  form-data: ^4.0.6
+  ua-parser-js: ^2.0.10
+  postcss: ^8.5.18
+  "@babel/core": ^7.29.6
+  sharp: ^0.35.0
+  ws@7: ^7.5.11
+  ws@8: ^8.21.0
+  ip-address: ^10.2.2
+  nanoid@3: ^3.3.18
+
+audit:
+  ignore:
+    - GHSA-w5hq-g745-h8pq
+    - GHSA-848j-6mx2-7j84

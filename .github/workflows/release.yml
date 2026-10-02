@@ -25,13 +25,13 @@ jobs:
   build-and-attest:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
-          version: 10.30.0
+          version: 12.8.1
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
           cache: pnpm
@@ -44,6 +44,11 @@ jobs:
           pnpm typecheck
           pnpm lint
           pnpm test
+
+      # same release blocker as ci.yml: no high or critical advisory may ship in
+      # the production dependency tree of an attested artifact
+      - name: Dependency audit (high/critical gate)
+        run: pnpm audit --prod --audit-level high
 
       - name: Production build
         # NEXT_PUBLIC_* are inlined at build time, so the released artifact bakes
@@ -65,15 +70,15 @@ jobs:
         run: echo "name=account-demolisher-${{ github.event.release.tag_name || inputs.tag }}.tar.gz" >> "$GITHUB_OUTPUT"
 
       - name: Package the built app
-        run: tar -czf "${{ steps.meta.outputs.name }}" .next public package.json next.config.ts pnpm-lock.yaml .npmrc
+        run: tar -czf "${{ steps.meta.outputs.name }}" .next public package.json next.config.ts pnpm-lock.yaml pnpm-workspace.yaml
 
       - name: Attest build provenance (SLSA)
-        uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018 # v1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: ${{ steps.meta.outputs.name }}
 
       - name: Attach artifact to the release
         if: github.event_name == 'release'
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: ${{ steps.meta.outputs.name }}
