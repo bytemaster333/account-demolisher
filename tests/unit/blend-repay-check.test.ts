@@ -13,7 +13,10 @@ const ISSUER = Keypair.random().publicKey();
 const USDC_SAC = new Asset("USDC", ISSUER).contractId(Networks.TESTNET);
 const XLM_SAC = Asset.native().contractId(Networks.TESTNET);
 
-function auditWith(balances: readonly Partial<AuditBalance>[]): AccountAudit {
+function auditWith(
+  balances: readonly Partial<AuditBalance>[],
+  reserve: { subentryCount?: number; numSponsoring?: number; numSponsored?: number } = {},
+): AccountAudit {
   return {
     balances: balances.map((b) => ({
       amount: "0",
@@ -21,6 +24,12 @@ function auditWith(balances: readonly Partial<AuditBalance>[]): AccountAudit {
       sellingLiabilities: "0",
       ...b,
     })),
+    subentryCount: reserve.subentryCount ?? 0,
+    sponsorship: {
+      numSponsoring: reserve.numSponsoring ?? 0,
+      numSponsored: reserve.numSponsored ?? 0,
+      coverable: 0,
+    },
   } as unknown as AccountAudit;
 }
 
@@ -88,5 +97,49 @@ describe("blendRepayShortfallWarnings", () => {
 
   it("returns nothing when there are no Blend positions", () => {
     expect(blendRepayShortfallWarnings(auditWith([]), [], NETWORK)).toEqual([]);
+  });
+});
+
+// liabilities arrive in underlying units (discovery converts dTokens with the
+// reserve's dRate), so these compare debt against what can actually be spent
+describe("blendRepayShortfallWarnings counts what can really be repaid (M-27)", () => {
+  it("sums the same borrowed asset across pools before comparing", () => {
+    const audit = auditWith([
+      { asset: { kind: "credit", code: "USDC", issuer: ISSUER }, amount: "100" },
+    ]);
+    // 60 owed in each of two pools, 100 held: each loan alone fits, both do not
+    const positions = [
+      pool(new Map([[USDC_SAC, 60_0000000n]])),
+      pool(new Map([[USDC_SAC, 60_0000000n]])),
+    ];
+    expect(blendRepayShortfallWarnings(audit, positions, NETWORK)).toHaveLength(1);
+  });
+
+  it("does not count a balance locked in open offers", () => {
+    const audit = auditWith([
+      {
+        asset: { kind: "credit", code: "USDC", issuer: ISSUER },
+        amount: "100",
+        sellingLiabilities: "50",
+      },
+    ]);
+    expect(
+      blendRepayShortfallWarnings(audit, [pool(new Map([[USDC_SAC, 60_0000000n]]))], NETWORK),
+    ).toHaveLength(1);
+  });
+
+  it("does not count the XLM held back as the account's minimum reserve", () => {
+    // 11 XLM held, 2 subentries: 2 XLM is reserve and cannot repay a 10 XLM loan
+    const audit = auditWith([{ asset: { kind: "native" }, amount: "11" }], { subentryCount: 2 });
+    expect(
+      blendRepayShortfallWarnings(audit, [pool(new Map([[XLM_SAC, 10_0000000n]]))], NETWORK),
+    ).toHaveLength(1);
+  });
+
+  it("accepts an XLM loan that fits above the reserve and fee allowance", () => {
+    const audit = auditWith([{ asset: { kind: "native" }, amount: "20" }], { subentryCount: 2 });
+    expect(
+      blendRepayShortfallWarnings(audit, [pool(new Map([[XLM_SAC, 10_0000000n]]))], NETWORK),
+    ).toEqual([]);
   });
 });

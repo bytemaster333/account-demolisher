@@ -1,4 +1,6 @@
-// frozen snapshot of the blend mainnet pool registry
+// frozen snapshot of the blend pool registries and infrastructure contracts
+import type { NetworkConfig } from "@/lib/config/networks";
+
 // one entry in the blend pool registry
 export interface BlendPoolEntry {
   readonly pool_id: string;
@@ -13,7 +15,16 @@ const BLEND_UTILS_COMMIT = "b05242df30b6b6caf9d317646f754541824a5a8b";
 const BLEND_UTILS_SOURCE = `github.com/blend-capital/blend-utils@${BLEND_UTILS_COMMIT}/mainnet.contracts.json`;
 const VERIFIED_AT = "2026-05-15";
 
-// mainnet blend pools (v2). snapshotted from mainnet.contracts.json::ids.{FixedV2,YieldBloxV2}
+// pools missing from blend-utils that sit in the v1 backstop's on-chain reward
+// zone. read with BackstopConfig.load; each pool's metadata names the v1
+// backstop and runs the v1 lending pool wasm baf978f1 (same as Fixed and
+// YieldBlox). the v2 backstop's reward zone entry is live and empty, so it adds
+// no pools beyond blend-utils.
+const V1_REWARD_ZONE_SOURCE =
+  "stellar.expert/explorer/public/contract/CAO3AGAMZVRMHITL36EJ2VZQWKYRPWMQAPDQD5YEOF3GIF7T44U4JAL3 (v1 backstop RZ entry)";
+const V1_REWARD_ZONE_VERIFIED_AT = "2026-10-02";
+
+// mainnet pools: blend-utils mainnet.contracts.json plus the v1 reward zone
 export const BLEND_MAINNET_POOLS: readonly BlendPoolEntry[] = Object.freeze([
   Object.freeze({
     pool_id: "CAJJZSGMMM3PD7N33TAPHGBUGTB43OC73HVIK2L2G6BNGGGYOSSYBXBD",
@@ -31,7 +42,7 @@ export const BLEND_MAINNET_POOLS: readonly BlendPoolEntry[] = Object.freeze([
     verified_at: VERIFIED_AT,
     source: BLEND_UTILS_SOURCE,
   } satisfies BlendPoolEntry),
-  // legacy v1 pools, retained so allow-list covers them. PoolV1.load works against these IDs
+  // v1 pools: still hold deposits, and their backstop is the v1 backstop
   Object.freeze({
     pool_id: "CDVQVKOY2YSXS2IC7KN6MNASSHPAO7UN2UR2ON4OI2SKMFJNVAMDX6DP",
     name: "Fixed",
@@ -47,6 +58,30 @@ export const BLEND_MAINNET_POOLS: readonly BlendPoolEntry[] = Object.freeze([
     assets: Object.freeze([] as readonly string[]),
     verified_at: VERIFIED_AT,
     source: BLEND_UTILS_SOURCE,
+  } satisfies BlendPoolEntry),
+  Object.freeze({
+    pool_id: "CAQF5KNOFIGRI24NQRRGUPD46Q45MGMXZMRTQFXS25Y4NZVNPT34GM6S",
+    name: "ReflectorFusion",
+    version: "V1",
+    assets: Object.freeze([] as readonly string[]),
+    verified_at: V1_REWARD_ZONE_VERIFIED_AT,
+    source: V1_REWARD_ZONE_SOURCE,
+  } satisfies BlendPoolEntry),
+  Object.freeze({
+    pool_id: "CDE65QK2ROZ32V2LVLBOKYPX47TYMYO37Z6ASQTBRTBNK53C7C6QF4Y7",
+    name: "FxDAO",
+    version: "V1",
+    assets: Object.freeze([] as readonly string[]),
+    verified_at: V1_REWARD_ZONE_VERIFIED_AT,
+    source: V1_REWARD_ZONE_SOURCE,
+  } satisfies BlendPoolEntry),
+  Object.freeze({
+    pool_id: "CBVOPI6QC6OWVCOEZDCFELAGQNAOHUS4CWOKAVADKQZXVSWR2R5IAKO7",
+    name: "ClickPesa DebtFund Managed",
+    version: "V1",
+    assets: Object.freeze([] as readonly string[]),
+    verified_at: V1_REWARD_ZONE_VERIFIED_AT,
+    source: V1_REWARD_ZONE_SOURCE,
   } satisfies BlendPoolEntry),
 ]);
 
@@ -69,10 +104,8 @@ export const BLEND_TESTNET_POOLS: readonly BlendPoolEntry[] = Object.freeze([
   } satisfies BlendPoolEntry),
 ]);
 
-// resolved via env override
-export const TESTNET_POOLS = BLEND_TESTNET_POOLS;
-
 // infrastructure contracts the SDK invokes alongside each pool (factory, backstop,
+// emitter, BLND, comet)
 export interface BlendInfrastructureEntry {
   readonly id: string;
   readonly name: string;
@@ -212,3 +245,29 @@ export const BLEND_TESTNET_INFRASTRUCTURE: readonly BlendInfrastructureEntry[] =
 export const BLEND_MAINNET_POOL_IDS: readonly string[] = Object.freeze(
   BLEND_MAINNET_POOLS.map((p) => p.pool_id),
 );
+
+// only mainnet and testnet are supported deployment targets, so any other
+// network is refused instead of being scanned with another network's ids
+export function blendPoolIdsForNetwork(network: NetworkConfig): readonly string[] {
+  switch (network.id) {
+    case "mainnet":
+      return BLEND_MAINNET_POOL_IDS;
+    case "testnet":
+      return BLEND_TESTNET_POOL_IDS;
+    default:
+      throw new Error(`Blend has no supported pools on network "${network.id}"`);
+  }
+}
+
+export function blendInfrastructureForNetwork(
+  network: NetworkConfig,
+): readonly BlendInfrastructureEntry[] {
+  switch (network.id) {
+    case "mainnet":
+      return BLEND_MAINNET_INFRASTRUCTURE;
+    case "testnet":
+      return BLEND_TESTNET_INFRASTRUCTURE;
+    default:
+      throw new Error(`Blend has no supported deployment on network "${network.id}"`);
+  }
+}
