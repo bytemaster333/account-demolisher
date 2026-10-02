@@ -174,6 +174,7 @@ describe("CollectSignatures bundle hand-off", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
     const handed = onClose.mock.calls[0]![0] as string;
     expect(signerKeysOf(handed)).toEqual([initiator.publicKey(), a.publicKey()]);
+    expect(onClose.mock.calls[0]![1]).toBe(destination.slice(-4));
   });
 
   it("drops a signature from a key that is no longer a signer and refuses when the rest fall short", async () => {

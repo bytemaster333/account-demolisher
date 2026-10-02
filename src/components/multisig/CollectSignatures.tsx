@@ -52,8 +52,9 @@ export interface CollectSignaturesProps {
   readonly initialXdr: string;
   readonly destination: string;
   readonly connectedKey: string | null;
-  // hand the signed bundle up to be submitted through the shared Close step
-  readonly onClose: (signedXdr: string) => void;
+  // hand the signed bundle up to be submitted through the shared Close step,
+  // with the last-4 the initiator typed so the submit can be guarded like CONFIRM
+  readonly onClose: (signedXdr: string, typed: string) => void;
 }
 
 export function CollectSignatures({
@@ -240,27 +241,30 @@ export function CollectSignatures({
   // reload the account's current signers and thresholds, keep only the
   // signatures the network will use, and hand that bundle up. a signer removed
   // since publishing, or a raised threshold, is caught here instead of on chain.
-  const onConfirmClose = useCallback(async () => {
-    setShowConfirm(false);
-    setCloseError(null);
-    setCheckingSigners(true);
-    try {
-      const account = await getHorizon(network).loadAccount(audit.accountId);
-      const current = closeSignerSet(account);
-      const trimmed = trimToThreshold(xdr, network.passphrase, current.signers, current.required);
-      if (!trimmed.met) {
-        setCloseError(
-          `The account now needs ${current.required} signing weight, and the signatures collected from its current signers add up to ${trimmed.weight}. Collect more signatures before closing.`,
-        );
-        return;
+  const onConfirmClose = useCallback(
+    async (typed: string) => {
+      setShowConfirm(false);
+      setCloseError(null);
+      setCheckingSigners(true);
+      try {
+        const account = await getHorizon(network).loadAccount(audit.accountId);
+        const current = closeSignerSet(account);
+        const trimmed = trimToThreshold(xdr, network.passphrase, current.signers, current.required);
+        if (!trimmed.met) {
+          setCloseError(
+            `The account now needs ${current.required} signing weight, and the signatures collected from its current signers add up to ${trimmed.weight}. Collect more signatures before closing.`,
+          );
+          return;
+        }
+        onClose(trimmed.xdr, typed);
+      } catch (e: unknown) {
+        setCloseError(errorMessage(e, "Couldn't check the account's current signers."));
+      } finally {
+        setCheckingSigners(false);
       }
-      onClose(trimmed.xdr);
-    } catch (e: unknown) {
-      setCloseError(errorMessage(e, "Couldn't check the account's current signers."));
-    } finally {
-      setCheckingSigners(false);
-    }
-  }, [network, audit.accountId, xdr, onClose]);
+    },
+    [network, audit.accountId, xdr, onClose],
+  );
 
   if (initialError !== null) {
     return (
@@ -583,7 +587,7 @@ export function CollectSignatures({
           destination={destination}
           explorerUrl={explorerAccountUrl(network, destination)}
           onCancel={() => setShowConfirm(false)}
-          onConfirm={() => void onConfirmClose()}
+          onConfirm={(typed) => void onConfirmClose(typed)}
         />
       ) : null}
     </Card>
