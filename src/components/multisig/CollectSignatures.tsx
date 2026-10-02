@@ -1,17 +1,24 @@
 "use client";
 
-// The Signatures step of a shared-account close. The reviewed close has been
-// published to the relay (signed with the initiator's key). Here the initiator
-// shares a short link for remote signers AND/OR pastes a co-signer's key to sign
-// locally; each accepted signature arrives live over Server-Sent Events. When the
-// threshold is met the initiator confirms, and the fully-signed bundle is handed
-// UP (onClose) so the shared Close step submits it, exactly like any close. It
-// never auto-closes, and no secret ever leaves this browser.
+// the Signatures step of a shared-account close. the reviewed close has been
+// published to the relay, signed with the initiator's key. the initiator shares
+// a link for remote signers and/or pastes a co-signer's key to sign here; each
+// accepted signature arrives live over server-sent events. every relay envelope
+// must hash to the request id, and only its signatures are taken. once the
+// threshold is met the initiator confirms, the envelope is trimmed to the
+// signatures the network will use, and the bundle goes up (onClose) to the
+// shared Close step. it never auto-closes, and no secret leaves this browser.
 
-import { TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { TypedConfirmation } from "@/components/confirmations/TypedConfirmation";
+import {
+  closeSignerSet,
+  decodePinned,
+  EnvelopeMismatchError,
+  mergeRelayEnvelope,
+  trimToThreshold,
+} from "@/components/multisig/envelope";
 import {
   Badge,
   Button,
@@ -21,16 +28,18 @@ import {
   Progress,
   SectionLabel,
 } from "@/components/ui";
+import { SEED_INPUT_ATTRS } from "@/components/wallet/seed-input";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import { explorerAccountUrl } from "@/lib/explorer";
-import { fetchPlan, submitSignature, subscribePlan } from "@/lib/multisig/plan-client";
+import { fetchPlan, publishPlan, submitSignature, subscribePlan } from "@/lib/multisig/plan-client";
 import {
   closeThreshold,
   collectedWeight,
   requiredSigners,
   signedSigners,
 } from "@/lib/multisig/signing-request";
+import { getHorizon } from "@/lib/stellar/horizon-client";
 import type { AccountAudit } from "@/lib/types/account";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
 
@@ -43,7 +52,7 @@ export interface CollectSignaturesProps {
   readonly initialXdr: string;
   readonly destination: string;
   readonly connectedKey: string | null;
-  // hand the fully-signed bundle up to be submitted through the shared Close step
+  // hand the signed bundle up to be submitted through the shared Close step
   readonly onClose: (signedXdr: string) => void;
 }
 
@@ -58,15 +67,33 @@ export function CollectSignatures({
 }: CollectSignaturesProps): React.JSX.Element {
   const [xdr, setXdr] = useState(initialXdr);
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
   const [secret, setSecret] = useState("");
   const [secretError, setSecretError] = useState<string | null>(null);
   const [lastAdded, setLastAdded] = useState<string | null>(null);
   const [signingLocal, setSigningLocal] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [checkingSigners, setCheckingSigners] = useState(false);
+  const [closeError, setCloseError] = useState<string | null>(null);
+  // a relay frame that wasn't this transaction; the held envelope is kept
+  const [envelopeError, setEnvelopeError] = useState<string | null>(null);
   // the live feed died terminally (relay swept the plan, or server restarted);
   // bumping liveReloadKey tears down and re-opens the EventSource on refresh.
   const [liveInterrupted, setLiveInterrupted] = useState(false);
   const [liveReloadKey, setLiveReloadKey] = useState(0);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [republishing, setRepublishing] = useState(false);
+
+  // the request id is the hash of what the initiator reviewed and signed. if the
+  // two disagree nothing on this step can be trusted, so it refuses to run.
+  const initialError = useMemo(() => {
+    try {
+      decodePinned(initialXdr, network.passphrase, planId);
+      return null;
+    } catch (e: unknown) {
+      return errorMessage(e, "The signing request doesn't match the reviewed transaction.");
+    }
+  }, [initialXdr, network.passphrase, planId]);
 
   const required = useMemo(() => requiredSigners(audit), [audit]);
   const threshold = useMemo(() => closeThreshold(audit), [audit]);
@@ -84,14 +111,29 @@ export function CollectSignatures({
       ? `${window.location.origin}/sign?id=${planId}`
       : `/sign?id=${planId}`;
 
+  // take the signatures of a relay envelope, only when it is this transaction.
+  // throws EnvelopeMismatchError otherwise and leaves the held envelope alone.
+  const absorb = useCallback(
+    (incoming: string): void => {
+      decodePinned(incoming, network.passphrase, planId);
+      setXdr((held) => mergeRelayEnvelope(held, incoming, network.passphrase, planId));
+    },
+    [network.passphrase, planId],
+  );
+
   // live updates: every signature a co-signer adds on the relay arrives here at
   // once, so progress advances without polling.
   useEffect(() => {
+    if (initialError !== null) return;
     const unsubscribe = subscribePlan(
       planId,
       (plan) => {
-        setXdr(plan.xdr);
-        setLiveInterrupted(false);
+        try {
+          absorb(plan.xdr);
+          setLiveInterrupted(false);
+        } catch (e: unknown) {
+          setEnvelopeError(errorMessage(e, "The relay sent a transaction that doesn't match."));
+        }
       },
       ({ terminal }) => {
         // transient drops self-heal; only a terminal CLOSED means live updates
@@ -100,35 +142,69 @@ export function CollectSignatures({
       },
     );
     return unsubscribe;
-  }, [planId, liveReloadKey]);
+  }, [planId, liveReloadKey, absorb, initialError]);
 
   // manual re-sync after the live feed died: pull the latest envelope once and
-  // re-open the stream. If the plan is gone (404) fetchPlan throws and the
-  // interrupted notice stays, which is the honest state.
+  // re-open the stream. a failure (usually the relay lost the request after a
+  // restart or expiry) is shown, with a way to publish the held envelope again.
   const refreshLive = useCallback(async () => {
+    setRefreshError(null);
     try {
       const plan = await fetchPlan(planId);
-      setXdr(plan.xdr);
+      absorb(plan.xdr);
       setLiveInterrupted(false);
       setLiveReloadKey((k) => k + 1);
-    } catch {
-      // keep the interrupted notice; the user can retry or reload the page
+    } catch (e: unknown) {
+      setRefreshError(errorMessage(e, "Couldn't reach the signing request."));
     }
-  }, [planId]);
+  }, [planId, absorb]);
+
+  // the relay keys a request by its transaction hash, so publishing the held
+  // envelope again restores the same link with every signature collected so far
+  const republish = useCallback(async () => {
+    setRepublishing(true);
+    try {
+      const id = await publishPlan(network.id, xdr);
+      if (id !== planId) {
+        throw new EnvelopeMismatchError(
+          "The relay returned a different request id for this transaction.",
+        );
+      }
+      setRefreshError(null);
+      setLiveInterrupted(false);
+      setLiveReloadKey((k) => k + 1);
+    } catch (e: unknown) {
+      setRefreshError(errorMessage(e, "Couldn't publish the request again."));
+    } finally {
+      setRepublishing(false);
+    }
+  }, [network.id, xdr, planId]);
 
   // drop any pasted-but-unsubmitted secret key from state when this surface goes
   // away, so a seed never lingers in memory after the step unmounts
   useEffect(() => () => setSecret(""), []);
 
-  const onCopy = useCallback(() => {
-    void navigator.clipboard?.writeText(link);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1400);
+  const onCopy = useCallback(async () => {
+    setCopyError(null);
+    // navigator.clipboard is missing on plain-http origins
+    if (typeof navigator === "undefined" || navigator.clipboard === undefined) {
+      setCopyError("Copying isn't available here. Select the link and copy it manually.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1400);
+    } catch (e: unknown) {
+      setCopyError(
+        `Couldn't copy the link (${errorMessage(e, "clipboard refused")}). Select it and copy it manually.`,
+      );
+    }
   }, [link]);
 
   // sign locally with a pasted signer key, then publish the signature to the
   // relay so the merged envelope (and progress) stays canonical for everyone.
-  // Signs ONE key per submit; paste the next key to add another signer.
+  // signs one key per submit; paste the next key to add another signer.
   const onAddKey = useCallback(async () => {
     const seed = secret.trim();
     if (seed.length === 0) return;
@@ -147,24 +223,59 @@ export function CollectSignatures({
         setSecretError("That signer already signed.");
         return;
       }
-      const tx = TransactionBuilder.fromXdr(xdr, network.passphrase) as Transaction;
+      const tx = decodePinned(xdr, network.passphrase, planId);
       const { signedXdr } = await connector.signTransaction(tx, network.passphrase);
       const merged = await submitSignature(planId, signedXdr);
-      setXdr(merged.xdr);
+      // the relay's answer may predate a signature that already arrived live;
+      // absorb only adds, so nothing shown here is lost
+      absorb(merged.xdr);
       setLastAdded(pk);
     } catch (e: unknown) {
       setSecretError(errorMessage(e, "Couldn't add that signature."));
     } finally {
       setSigningLocal(false);
     }
-  }, [secret, xdr, network.passphrase, signerKeys, signed, planId]);
+  }, [secret, xdr, network.passphrase, signerKeys, signed, planId, absorb]);
 
-  // hand the fully-signed bundle up to the shared Close step (the machine submits
-  // it and shows the same executing -> succeeded status as a single-signer close).
-  const onConfirmClose = useCallback(() => {
+  // reload the account's current signers and thresholds, keep only the
+  // signatures the network will use, and hand that bundle up. a signer removed
+  // since publishing, or a raised threshold, is caught here instead of on chain.
+  const onConfirmClose = useCallback(async () => {
     setShowConfirm(false);
-    onClose(xdr);
-  }, [xdr, onClose]);
+    setCloseError(null);
+    setCheckingSigners(true);
+    try {
+      const account = await getHorizon(network).loadAccount(audit.accountId);
+      const current = closeSignerSet(account);
+      const trimmed = trimToThreshold(xdr, network.passphrase, current.signers, current.required);
+      if (!trimmed.met) {
+        setCloseError(
+          `The account now needs ${current.required} signing weight, and the signatures collected from its current signers add up to ${trimmed.weight}. Collect more signatures before closing.`,
+        );
+        return;
+      }
+      onClose(trimmed.xdr);
+    } catch (e: unknown) {
+      setCloseError(errorMessage(e, "Couldn't check the account's current signers."));
+    } finally {
+      setCheckingSigners(false);
+    }
+  }, [network, audit.accountId, xdr, onClose]);
+
+  if (initialError !== null) {
+    return (
+      <Card padding={24}>
+        <Notice
+          tone="danger"
+          role="alert"
+          title="This signing request can't be used"
+          data-testid="collect-envelope-error"
+        >
+          {initialError} Start the close again from the review step.
+        </Notice>
+      </Card>
+    );
+  }
 
   return (
     <Card padding={24} style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -178,6 +289,18 @@ export function CollectSignatures({
           close the account.
         </p>
       </div>
+
+      {envelopeError !== null ? (
+        <Notice
+          tone="danger"
+          role="alert"
+          title="Ignored an update from the relay"
+          data-testid="collect-envelope-error"
+        >
+          {envelopeError} The signatures shown here are the ones checked against your reviewed
+          transaction.
+        </Notice>
+      ) : null}
 
       {/* share link */}
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -199,10 +322,24 @@ export function CollectSignatures({
           >
             {link}
           </code>
-          <Button variant="primary" size="sm" onClick={onCopy} data-testid="collect-copy">
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => void onCopy()}
+            data-testid="collect-copy"
+          >
             {copied ? "Copied" : "Copy link"}
           </Button>
         </div>
+        {copyError !== null ? (
+          <p
+            role="alert"
+            data-testid="collect-copy-error"
+            style={{ margin: 0, fontSize: 12, color: "var(--danger)" }}
+          >
+            {copyError}
+          </p>
+        ) : null}
       </div>
 
       {/* progress */}
@@ -252,79 +389,109 @@ export function CollectSignatures({
         {liveInterrupted ? (
           <Notice tone="warning" role="status" title="Live updates interrupted">
             Signatures added by others may not be showing here. Refresh to pull the latest.
-            <span style={{ display: "inline-block", marginTop: 10 }}>
+            {refreshError !== null ? (
+              <span
+                data-testid="collect-refresh-error"
+                style={{ display: "block", marginTop: 8, color: "var(--danger)" }}
+              >
+                {refreshError} If the request expired on the server, publish it again: the link
+                stays the same and every signature collected here is kept.
+              </span>
+            ) : null}
+            <span style={{ display: "inline-flex", gap: 8, marginTop: 10 }}>
               <Button variant="secondary" size="sm" onClick={() => void refreshLive()}>
                 Refresh
               </Button>
+              {refreshError !== null ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  loading={republishing}
+                  onClick={() => void republish()}
+                  data-testid="collect-republish"
+                >
+                  Publish this request again
+                </Button>
+              ) : null}
             </span>
           </Notice>
         ) : null}
       </div>
 
-      {/* sign locally with a pasted key, one signer at a time */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <SectionLabel>SIGN A KEY LOCALLY</SectionLabel>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <input
-            type="password"
-            value={secret}
-            onChange={(e) => {
-              setSecret(e.currentTarget.value);
-              setSecretError(null);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void onAddKey();
-            }}
-            placeholder="Signer secret key (S…)"
-            aria-label="Signer secret key"
-            autoComplete="off"
-            spellCheck={false}
-            data-testid="collect-secret"
-            style={{
-              flex: 1,
-              minWidth: 220,
-              height: 40,
-              padding: "0 13px",
-              borderRadius: 9,
-              border: "1px solid var(--border-2)",
-              background: "var(--surface-2)",
-              color: "var(--fg)",
-              font: "500 13px/1 'Geist Mono', monospace",
-            }}
-          />
-          <Button
-            variant="secondary"
-            onClick={() => void onAddKey()}
-            loading={signingLocal}
-            disabled={signingLocal || secret.trim().length === 0}
-            data-testid="collect-sign-local"
-          >
-            Sign
-          </Button>
-        </div>
-        {secretError !== null ? (
-          <p role="alert" style={{ margin: 0, fontSize: 12, color: "var(--danger)" }}>
-            {secretError}
-          </p>
-        ) : lastAdded !== null ? (
-          <p
-            role="status"
-            style={{ margin: 0, fontSize: 12, color: "var(--success)", fontWeight: 600 }}
-          >
-            ✓ Signed as {lastAdded.slice(0, 8)}…{lastAdded.slice(-6)}. Paste the next key to add
-            another signer.
-          </p>
-        ) : null}
-        <p style={{ margin: 0, fontSize: 11.5, color: "var(--fg-3)", lineHeight: 1.5 }}>
-          Hold more than one key? Paste and sign each one; every signature moves the bar up. Keys
-          are used only in this browser to sign, and are never uploaded or stored.
+      {/* sign locally with a pasted key, one signer at a time, until enough
+          weight is in. past that point extra signatures would only be trimmed. */}
+      {thresholdMet ? (
+        <p
+          role="status"
+          style={{ margin: 0, fontSize: 12.5, color: "var(--fg-2)", lineHeight: 1.5 }}
+        >
+          Enough signatures collected. Signatures beyond the threshold aren&apos;t needed and are
+          left out of the close.
         </p>
-        {thresholdMet ? (
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <SectionLabel>SIGN A KEY LOCALLY</SectionLabel>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input
+              {...SEED_INPUT_ATTRS}
+              value={secret}
+              onChange={(e) => {
+                setSecret(e.currentTarget.value);
+                setSecretError(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void onAddKey();
+              }}
+              placeholder="Signer secret key (S…)"
+              aria-label="Signer secret key"
+              aria-invalid={secretError !== null}
+              aria-describedby={secretError !== null ? "collect-secret-error" : undefined}
+              data-testid="collect-secret"
+              style={{
+                flex: 1,
+                minWidth: 220,
+                height: 40,
+                padding: "0 13px",
+                borderRadius: 9,
+                border: "1px solid var(--border-2)",
+                background: "var(--surface-2)",
+                color: "var(--fg)",
+                font: "500 13px/1 'Geist Mono', monospace",
+              }}
+            />
+            <Button
+              variant="secondary"
+              onClick={() => void onAddKey()}
+              loading={signingLocal}
+              disabled={signingLocal || secret.trim().length === 0}
+              data-testid="collect-sign-local"
+            >
+              Sign
+            </Button>
+          </div>
+          {secretError !== null ? (
+            <p
+              id="collect-secret-error"
+              role="alert"
+              style={{ margin: 0, fontSize: 12, color: "var(--danger)" }}
+            >
+              {secretError}
+            </p>
+          ) : lastAdded !== null ? (
+            <p
+              role="status"
+              style={{ margin: 0, fontSize: 12, color: "var(--success)", fontWeight: 600 }}
+            >
+              ✓ Signed as {lastAdded.slice(0, 8)}…{lastAdded.slice(-6)}. Paste the next key to add
+              another signer.
+            </p>
+          ) : null}
           <p style={{ margin: 0, fontSize: 11.5, color: "var(--fg-3)", lineHeight: 1.5 }}>
-            Threshold reached; more signatures are optional.
+            Hold more than one key? Paste and sign each one; every signature moves the bar up. Keys
+            are used only in this browser to sign, and are never uploaded or stored.
           </p>
-        ) : null}
-      </div>
+        </div>
+      )}
 
       {/* once enough signatures are in, the close terminal matches the
           single-signer Review flow: the same danger notice + "Continue to final
@@ -368,6 +535,7 @@ export function CollectSignatures({
           <Button
             variant="danger"
             onClick={() => setShowConfirm(true)}
+            loading={checkingSigners}
             data-testid="collect-close"
             style={{ width: "100%" }}
             iconRight={
@@ -386,8 +554,17 @@ export function CollectSignatures({
               </svg>
             }
           >
-            Continue to final confirmation
+            {checkingSigners ? "Checking the account's signers…" : "Continue to final confirmation"}
           </Button>
+          {closeError !== null ? (
+            <p
+              role="alert"
+              data-testid="collect-close-error"
+              style={{ margin: 0, fontSize: 12.5, color: "var(--danger)", lineHeight: 1.5 }}
+            >
+              {closeError}
+            </p>
+          ) : null}
         </>
       ) : (
         <Button

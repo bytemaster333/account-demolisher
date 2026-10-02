@@ -1,17 +1,25 @@
 "use client";
 
-// Co-signer page for a shared-account close. Someone closing a multisig account
-// sends a short link (/sign?id=<hash>). This page fetches the transaction from
-// the relay, verifies its hash matches the id in the link (so a tampered server
-// can't swap in a different transaction), shows the co-signer exactly what they're
-// authorizing, and lets them sign with THEIR OWN wallet or key. The signature is
-// posted back to the relay so the person closing the account sees it instantly.
-// No secret ever leaves this browser; co-signers sign, they don't submit.
+// co-signer page for a shared-account close. the person closing a multisig
+// account sends a link (/sign?id=<hash>). this page fetches the transaction from
+// the relay and only accepts it if it hashes to the id in the link; every later
+// envelope from the relay (live frames, refreshes, sign responses) is checked
+// the same way, and only its signatures are taken, so the transaction shown and
+// signed here is always the one the link names. that holds against a relay or
+// proxy that rewrites the api; it can't hold against a server that also serves
+// altered page code. the co-signer signs with their own wallet or key, the
+// signature goes back to the relay, and no secret leaves this browser.
 
-import { TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
+import { NotFoundError, type Transaction } from "@stellar/stellar-sdk";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { AppShell } from "@/components/layout/AppShell";
+import {
+  closeSignerSet,
+  decodePinned,
+  mergeRelayEnvelope,
+  type CloseSignerSet,
+} from "@/components/multisig/envelope";
 import {
   Badge,
   Button,
@@ -23,24 +31,28 @@ import {
   Progress,
   Spinner,
 } from "@/components/ui";
+import { SEED_INPUT_ATTRS } from "@/components/wallet/seed-input";
 import { resolveNetwork, type NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
-import { explorerAccountUrl } from "@/lib/explorer";
+import { explorerAccountUrl, explorerTxUrl } from "@/lib/explorer";
 import { fetchPlan, submitSignature, subscribePlan } from "@/lib/multisig/plan-client";
 import { inspectClose, signedSigners, type CloseInspection } from "@/lib/multisig/signing-request";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { WalletKitConnector } from "@/lib/wallet/connector";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
 
-interface AccountFacts {
-  readonly signerKeys: readonly string[];
-  readonly threshold: number;
-}
-
 type Load =
   | { readonly kind: "loading" }
   | { readonly kind: "error"; readonly message: string }
-  | { readonly kind: "ready"; readonly network: NetworkConfig; readonly xdr: string };
+  | { readonly kind: "ready"; readonly network: NetworkConfig };
+
+// what horizon says about the account being closed
+type Facts =
+  | { readonly kind: "loading" }
+  | { readonly kind: "ready"; readonly set: CloseSignerSet }
+  // the account is gone; closedByThis is true when this very transaction did it
+  | { readonly kind: "gone"; readonly closedByThis: boolean }
+  | { readonly kind: "error"; readonly message: string };
 
 function idFromLocation(): string | null {
   if (typeof window === "undefined") return null;
@@ -52,14 +64,24 @@ function idFromLocation(): string | null {
   }
 }
 
+// every op of a close must act on the account being closed. the relay refuses
+// anything else at publish time; checking here too keeps the page honest on its own.
+function foreignSources(tx: Transaction, closing: string): readonly string[] {
+  const out = new Set<string>();
+  for (const op of tx.operations) {
+    const src = op.source ?? tx.source;
+    if (src !== closing) out.add(src);
+  }
+  return [...out];
+}
+
 export default function SignPage(): React.JSX.Element {
   const [planId, setPlanId] = useState<string | null>(null);
   const [load, setLoad] = useState<Load>({ kind: "loading" });
   const [xdr, setXdr] = useState<string | null>(null);
+  const [envelopeError, setEnvelopeError] = useState<string | null>(null);
 
-  const [facts, setFacts] = useState<AccountFacts | null>(null);
-  const [signerWeights, setSignerWeights] = useState<Map<string, number>>(new Map());
-  const [factsError, setFactsError] = useState<string | null>(null);
+  const [facts, setFacts] = useState<Facts>({ kind: "loading" });
 
   const [signing, setSigning] = useState(false);
   const [signError, setSignError] = useState<string | null>(null);
@@ -70,14 +92,14 @@ export default function SignPage(): React.JSX.Element {
   // bumping liveReloadKey tears down and re-creates the EventSource on refresh.
   const [liveInterrupted, setLiveInterrupted] = useState(false);
   const [liveReloadKey, setLiveReloadKey] = useState(0);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
 
   // drop any pasted-but-unsubmitted secret key when this page unmounts
   useEffect(() => () => setSecret(""), []);
 
   const network = load.kind === "ready" ? load.network : null;
 
-  // read the id and fetch the transaction; verify its hash matches the id so a
-  // tampered server can't substitute a different transaction.
+  // read the id and fetch the transaction; it must hash to the id in the link
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -91,10 +113,9 @@ export default function SignPage(): React.JSX.Element {
         const plan = await fetchPlan(id);
         if (cancelled) return;
         const net = resolveNetwork(plan.network);
-        const hash = Buffer.from(
-          (TransactionBuilder.fromXdr(plan.xdr, net.passphrase) as Transaction).hash(),
-        ).toString("hex");
-        if (hash !== id) {
+        try {
+          decodePinned(plan.xdr, net.passphrase, id);
+        } catch {
           setLoad({
             kind: "error",
             message: "This request couldn't be verified (its transaction doesn't match the link).",
@@ -102,7 +123,7 @@ export default function SignPage(): React.JSX.Element {
           return;
         }
         setXdr(plan.xdr);
-        setLoad({ kind: "ready", network: net, xdr: plan.xdr });
+        setLoad({ kind: "ready", network: net });
       } catch (e: unknown) {
         if (!cancelled)
           setLoad({
@@ -116,14 +137,31 @@ export default function SignPage(): React.JSX.Element {
     };
   }, []);
 
+  // take the signatures of a relay envelope, only when it is the linked
+  // transaction. throws otherwise and leaves the held envelope alone.
+  const absorb = useCallback(
+    (incoming: string): void => {
+      if (network === null || planId === null) return;
+      decodePinned(incoming, network.passphrase, planId);
+      setXdr((held) =>
+        held === null ? incoming : mergeRelayEnvelope(held, incoming, network.passphrase, planId),
+      );
+    },
+    [network, planId],
+  );
+
   // live progress: reflect signatures other co-signers add
   useEffect(() => {
     if (planId === null || load.kind !== "ready") return;
     const unsubscribe = subscribePlan(
       planId,
       (plan) => {
-        setXdr(plan.xdr);
-        setLiveInterrupted(false);
+        try {
+          absorb(plan.xdr);
+          setLiveInterrupted(false);
+        } catch (e: unknown) {
+          setEnvelopeError(errorMessage(e, "The relay sent a transaction that doesn't match."));
+        }
       },
       ({ terminal }) => {
         // transient drops self-heal (EventSource keeps CONNECTING); only a
@@ -132,61 +170,85 @@ export default function SignPage(): React.JSX.Element {
       },
     );
     return unsubscribe;
-  }, [planId, load.kind, liveReloadKey]);
+  }, [planId, load.kind, liveReloadKey, absorb]);
 
   // manual re-sync after the live feed died: pull the latest envelope once and
-  // re-open the stream. If the plan is gone (404) fetchPlan throws and the
-  // interrupted notice stays, which is the honest state.
+  // re-open the stream, or say why that failed
   const refreshLive = useCallback(async () => {
     if (planId === null) return;
+    setRefreshError(null);
     try {
       const plan = await fetchPlan(planId);
-      setXdr(plan.xdr);
+      absorb(plan.xdr);
       setLiveInterrupted(false);
       setLiveReloadKey((k) => k + 1);
-    } catch {
-      // keep the interrupted notice; the user can retry or reload the page
+    } catch (e: unknown) {
+      setRefreshError(errorMessage(e, "Couldn't reach the signing request."));
     }
-  }, [planId]);
+  }, [planId, absorb]);
 
   const inspection: CloseInspection | null = useMemo(
     () => (network && xdr ? inspectClose(xdr, network.passphrase) : null),
     [network, xdr],
   );
+  const closingSource = inspection?.source ?? "";
 
-  // load who must sign, weights, and threshold from the account being closed
+  const strayOpSources = useMemo(() => {
+    if (network === null || xdr === null || planId === null || closingSource === "") return [];
+    return foreignSources(decodePinned(xdr, network.passphrase, planId), closingSource);
+  }, [network, xdr, planId, closingSource]);
+
+  // load the signers, weights and thresholds of the account being closed. keyed
+  // on the account id so a new signature doesn't refetch it. when the account is
+  // gone, ask horizon whether this very transaction is what closed it.
   useEffect(() => {
-    if (network === null || inspection === null || inspection.source.length === 0) return;
+    if (network === null || closingSource.length === 0 || planId === null) return;
     let cancelled = false;
     void (async () => {
-      setFactsError(null);
+      setFacts({ kind: "loading" });
       try {
-        const acct = await getHorizon(network).loadAccount(inspection.source);
-        if (cancelled) return;
-        const signerKeys = acct.signers
-          .filter((s) => s.type === "ed25519_public_key" && s.weight > 0)
-          .map((s) => s.key);
-        setFacts({ signerKeys, threshold: Math.max(1, acct.thresholds.high_threshold) });
-        setSignerWeights(new Map(acct.signers.map((s) => [s.key, s.weight])));
+        const acct = await getHorizon(network).loadAccount(closingSource);
+        if (!cancelled) setFacts({ kind: "ready", set: closeSignerSet(acct) });
       } catch (e: unknown) {
-        if (!cancelled)
-          setFactsError(errorMessage(e, "Couldn't load this account from the network."));
+        if (!(e instanceof NotFoundError)) {
+          if (!cancelled)
+            setFacts({
+              kind: "error",
+              message: errorMessage(e, "Couldn't load this account from the network."),
+            });
+          return;
+        }
+        try {
+          const tx = await getHorizon(network).transactions().transaction(planId).call();
+          if (!cancelled) setFacts({ kind: "gone", closedByThis: tx.successful });
+        } catch (txErr: unknown) {
+          if (cancelled) return;
+          if (txErr instanceof NotFoundError) setFacts({ kind: "gone", closedByThis: false });
+          else
+            setFacts({
+              kind: "error",
+              message: errorMessage(txErr, "Couldn't check whether this close already landed."),
+            });
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [network, inspection]);
+  }, [network, closingSource, planId]);
 
+  const set = facts.kind === "ready" ? facts.set : null;
+  const signerKeys = useMemo(() => (set === null ? [] : set.signers.map((s) => s.key)), [set]);
   const signed = useMemo(
-    () => (network && xdr && facts ? signedSigners(xdr, network.passphrase, facts.signerKeys) : []),
-    [network, xdr, facts],
+    () => (network && xdr && set ? signedSigners(xdr, network.passphrase, signerKeys) : []),
+    [network, xdr, set, signerKeys],
   );
-  const weight = useMemo(
-    () => signed.reduce((sum, k) => sum + (signerWeights.get(k) ?? 0), 0),
-    [signed, signerWeights],
-  );
-  const thresholdMet = facts !== null && weight >= facts.threshold;
+  const weight = useMemo(() => {
+    if (set === null) return 0;
+    const byKey = new Map(set.signers.map((s) => [s.key, s.weight]));
+    return signed.reduce((sum, k) => sum + (byKey.get(k) ?? 0), 0);
+  }, [signed, set]);
+  const thresholdMet = set !== null && weight >= set.required;
 
   // sign with the co-signer's own connector, then post the signature to the relay
   const signWith = useCallback(
@@ -195,20 +257,22 @@ export default function SignPage(): React.JSX.Element {
       setSigning(true);
       setSignError(null);
       try {
-        const tx = TransactionBuilder.fromXdr(xdr, network.passphrase) as Transaction;
+        // re-check the hash right before signing, so nothing but the linked
+        // transaction is ever put in front of the signer
+        const tx = decodePinned(xdr, network.passphrase, planId);
         const { signedXdr, signerPublicKey } = await sign(tx);
-        // Reject a signature from a key that is NOT a signer on this account BEFORE
-        // posting it to the relay. Submitting a non-signer signature pollutes the
-        // plan and would otherwise flip the UI to "signed here" (unmounting the sign
-        // form) with no way to sign with the correct key.
-        if (facts !== null && !facts.signerKeys.includes(signerPublicKey)) {
+        // reject a signature from a key that is not a signer on this account
+        // before posting it, so the relay never sees it
+        if (set !== null && !signerKeys.includes(signerPublicKey)) {
           setSignError(
             `That key (${signerPublicKey.slice(0, 6)}…${signerPublicKey.slice(-4)}) is not a signer on this account. Nothing was submitted; connect a signer key and try again.`,
           );
           return;
         }
         const merged = await submitSignature(planId, signedXdr);
-        setXdr(merged.xdr);
+        // the relay's answer may predate a signature that already arrived live;
+        // absorb only adds, so nothing shown here is lost
+        absorb(merged.xdr);
         setLastSigner(signerPublicKey);
         setSignedHere(true);
       } catch (e: unknown) {
@@ -217,7 +281,7 @@ export default function SignPage(): React.JSX.Element {
         setSigning(false);
       }
     },
-    [network, xdr, planId, facts],
+    [network, xdr, planId, set, signerKeys, absorb],
   );
 
   const signWithWallet = useCallback(() => {
@@ -275,13 +339,15 @@ export default function SignPage(): React.JSX.Element {
     );
   }
 
-  if (inspection === null || !inspection.isClose) {
+  if (inspection === null || !inspection.isClose || strayOpSources.length > 0) {
     return (
       <AppShell>
         <PageContainer>
           <PageHeader kicker="Co-sign a close" title="This request can't be verified" />
           <Notice tone="danger" role="alert" title="Not a recognizable account close">
-            The transaction isn&apos;t a single account-close on {network?.id ?? "this network"}.
+            {strayOpSources.length > 0
+              ? `Some operations act on ${strayOpSources.length === 1 ? "another account" : "other accounts"} (${strayOpSources.join(", ")}), not only the account being closed.`
+              : `The transaction isn't a single account-close on ${network?.id ?? "this network"}.`}{" "}
             Don&apos;t sign it.
           </Notice>
         </PageContainer>
@@ -289,7 +355,8 @@ export default function SignPage(): React.JSX.Element {
     );
   }
 
-  const nonSigner = lastSigner !== null && facts !== null && !facts.signerKeys.includes(lastSigner);
+  const gone = facts.kind === "gone";
+  const showSignForm = !signedHere && !thresholdMet && !gone;
 
   return (
     <AppShell>
@@ -299,6 +366,19 @@ export default function SignPage(): React.JSX.Element {
           title="Review, then sign"
           subtitle="You're being asked to help permanently close the account below. Check every line, then add your signature with your own wallet or key."
         />
+
+        {envelopeError !== null ? (
+          <div style={{ marginBottom: 16 }}>
+            <Notice
+              tone="danger"
+              role="alert"
+              title="Ignored an update from the relay"
+              data-testid="sign-envelope-error"
+            >
+              {envelopeError} What you see here is still the transaction from your link.
+            </Notice>
+          </div>
+        ) : null}
 
         {/* what this transaction does, decoded, never blind base64 */}
         <Card padding={24} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -398,34 +478,56 @@ export default function SignPage(): React.JSX.Element {
         </Card>
 
         {/* progress */}
-        {factsError !== null ? (
+        {facts.kind === "gone" ? (
+          <div style={{ marginTop: 16 }} data-testid="sign-closed">
+            {facts.closedByThis ? (
+              <Notice tone="success" role="status" title="This account was already closed">
+                This account was already closed by this transaction, so no more signatures are
+                needed.{" "}
+                <a
+                  href={explorerTxUrl(network!, planId!)}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  style={{ color: "var(--accent)" }}
+                >
+                  View the transaction
+                </a>
+              </Notice>
+            ) : (
+              <Notice tone="warning" role="status" title="This account no longer exists">
+                The account no longer exists on {network?.id}, and it wasn&apos;t closed by this
+                transaction. This request can no longer be submitted, so there is nothing to sign.
+              </Notice>
+            )}
+          </div>
+        ) : facts.kind === "error" ? (
           <div style={{ marginTop: 16 }}>
             <Notice tone="warning" role="status" title="Couldn't confirm the signer list">
-              {factsError} You can still sign; your signature will count once the account is
-              reachable.
+              {facts.message} You can still sign. The relay only accepts signatures from the
+              account&apos;s signers, and the progress shows up again once the account can be read.
             </Notice>
           </div>
-        ) : facts !== null ? (
+        ) : facts.kind === "ready" ? (
           <Card
             padding={24}
             style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 14 }}
           >
             <Progress
               value={weight}
-              max={facts.threshold}
+              max={facts.set.required}
               tone="accent"
               label="Signing weight collected"
-              valueLabel={`${weight} of ${facts.threshold}`}
+              valueLabel={`${weight} of ${facts.set.required}`}
               data-testid="sign-progress"
             />
             <div
               style={{ border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden" }}
             >
-              {facts.signerKeys.map((key, i) => {
-                const has = signed.includes(key);
+              {facts.set.signers.map((s, i) => {
+                const has = signed.includes(s.key);
                 return (
                   <div
-                    key={key}
+                    key={s.key}
                     style={{
                       display: "flex",
                       alignItems: "center",
@@ -436,17 +538,15 @@ export default function SignPage(): React.JSX.Element {
                   >
                     <span style={{ flex: 1, minWidth: 0 }}>
                       <CopyableAddress
-                        value={key}
+                        value={s.key}
                         label="Signer"
                         full
                         size={12}
-                        href={explorerAccountUrl(network!, key)}
+                        href={explorerAccountUrl(network!, s.key)}
                       />
                     </span>
-                    <span style={{ fontSize: 11.5, color: "var(--fg-3)" }}>
-                      weight {signerWeights.get(key) ?? "-"}
-                    </span>
-                    {lastSigner === key ? <Badge tone="neutral">You</Badge> : null}
+                    <span style={{ fontSize: 11.5, color: "var(--fg-3)" }}>weight {s.weight}</span>
+                    {lastSigner === s.key ? <Badge tone="neutral">You</Badge> : null}
                     {has ? (
                       <Badge tone="success">Signed</Badge>
                     ) : (
@@ -459,6 +559,11 @@ export default function SignPage(): React.JSX.Element {
             {liveInterrupted ? (
               <Notice tone="warning" role="status" title="Live updates interrupted">
                 This list stopped updating on its own. New signatures from others may not be shown.
+                {refreshError !== null ? (
+                  <span style={{ display: "block", marginTop: 8, color: "var(--danger)" }}>
+                    {refreshError}
+                  </span>
+                ) : null}
                 <span style={{ display: "inline-block", marginTop: 10 }}>
                   <Button variant="secondary" size="sm" onClick={() => void refreshLive()}>
                     Refresh
@@ -482,17 +587,8 @@ export default function SignPage(): React.JSX.Element {
           </div>
         )}
 
-        {nonSigner ? (
-          <div style={{ marginTop: 16 }}>
-            <Notice tone="warning" role="alert" title="This key isn't a signer on the account">
-              The key you just signed with isn&apos;t authorized on this account, so its signature
-              won&apos;t count toward the threshold. Sign with one of the keys listed above.
-            </Notice>
-          </div>
-        ) : null}
-
-        {/* sign, or the confirmation once signed */}
-        {!signedHere ? (
+        {/* sign, or the confirmation once signed or once enough have signed */}
+        {showSignForm ? (
           <Card
             padding={24}
             style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 16 }}
@@ -530,7 +626,7 @@ export default function SignPage(): React.JSX.Element {
 
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <input
-                type="password"
+                {...SEED_INPUT_ATTRS}
                 value={secret}
                 onChange={(e) => setSecret(e.currentTarget.value)}
                 onKeyDown={(e) => {
@@ -538,8 +634,8 @@ export default function SignPage(): React.JSX.Element {
                 }}
                 placeholder="Paste your secret key (S…)"
                 aria-label="Your signer secret key"
-                autoComplete="off"
-                spellCheck={false}
+                aria-invalid={signError !== null}
+                aria-describedby={signError !== null ? "sign-error" : undefined}
                 data-testid="sign-secret"
                 style={{
                   flex: 1,
@@ -564,16 +660,24 @@ export default function SignPage(): React.JSX.Element {
               </Button>
             </div>
             {signError !== null ? (
-              <p role="alert" style={{ margin: 0, fontSize: 12.5, color: "var(--danger)" }}>
+              <p
+                id="sign-error"
+                role="alert"
+                style={{ margin: 0, fontSize: 12.5, color: "var(--danger)" }}
+              >
                 {signError}
               </p>
             ) : null}
           </Card>
-        ) : (
+        ) : gone ? null : (
           <div style={{ marginTop: 16 }}>
-            <Notice tone="success" role="status" title="Your signature is in">
+            <Notice
+              tone="success"
+              role="status"
+              title={signedHere ? "Your signature is in" : "Enough signatures collected"}
+            >
               {thresholdMet
-                ? "This close now has enough signatures. The person closing the account can see it and will submit it."
+                ? "This close has the signing weight it needs. The person closing the account can see it and will submit the close."
                 : "The person closing the account can now see your signature. It still needs more signers to reach the threshold."}
             </Notice>
           </div>
