@@ -1,6 +1,7 @@
 // walks the plan tree and attaches an unsigned transaction to every soroban
 
 import {
+  Account,
   Asset,
   scValToNative,
   type Horizon,
@@ -76,13 +77,8 @@ export async function hydratePlanTransactions(
 
   const failures: HydrationFailure[] = [];
 
-  // each builder reads + increments its own sequence copy, so caching is safe
-  let sourceAccount: Horizon.AccountResponse | null = null;
-  const getSourceAccount = async (): Promise<Horizon.AccountResponse> => {
-    if (sourceAccount !== null) return sourceAccount;
-    sourceAccount = await deps.fetchSourceAccount(userPublicKey);
-    return sourceAccount;
-  };
+  // one account read for the whole pass; every build gets its own copy of it
+  const getSourceAccount = sourceAccountCopies(() => deps.fetchSourceAccount(userPublicKey));
 
   for (const node of topologicalOrder(tree)) {
     if (nodeHasTransaction(node)) continue;
@@ -121,10 +117,32 @@ export async function rebuildSorobanNodeTransaction(
 ): Promise<void> {
   if (node.kind === "FinalClassicTx" || node.kind === "MediatorForward") return;
   clearTransaction(node);
-  // one fresh account read per rebuild: the builder increments its own sequence
-  // copy off the current on-chain value, so the resulting tx carries seq+1.
-  const sourceAccount = await deps.fetchSourceAccount(userPublicKey);
-  await hydrateNode(node, userPublicKey, deps, async () => sourceAccount);
+  await hydrateNode(
+    node,
+    userPublicKey,
+    deps,
+    sourceAccountCopies(() => deps.fetchSourceAccount(userPublicKey)),
+  );
+}
+
+// TransactionBuilder.build() increments the source account's sequence in place,
+// and the probe-then-build kinds below build twice. Sharing one AccountResponse
+// made the signed tx carry seq+2 (tx_bad_seq on every submit). So the account is
+// loaded once and every build gets a fresh copy pinned to the loaded sequence,
+// which makes each built tx carry exactly on-chain seq + 1.
+function sourceAccountCopies(
+  load: () => Promise<Horizon.AccountResponse>,
+): () => Promise<Horizon.AccountResponse> {
+  let account: Horizon.AccountResponse | null = null;
+  return async () => {
+    account ??= await load();
+    // builders only use the TransactionSource surface (accountId, sequenceNumber,
+    // incrementSequenceNumber), which Account provides
+    return new Account(
+      account.accountId(),
+      account.sequenceNumber(),
+    ) as unknown as Horizon.AccountResponse;
+  };
 }
 
 async function hydrateNode(
@@ -225,7 +243,6 @@ async function hydrateNode(
     }
 
     case "WithdrawAquarius": {
-      const sourceAccount = await getSourceAccount();
       if (node.metadata.tokens.length === 0) {
         throw new Error(
           `WithdrawAquarius: metadata.tokens is empty; cannot construct withdraw call without reserve token order`,
@@ -244,7 +261,7 @@ async function hydrateNode(
           poolIndex,
           shareAmount: node.metadata.shareAmount,
           minAmounts: node.metadata.tokens.map(() => 0n),
-          sourceAccount,
+          sourceAccount: await getSourceAccount(),
           network: deps.network,
         },
         { server: deps.rpc },
@@ -258,7 +275,7 @@ async function hydrateNode(
           poolIndex,
           shareAmount: node.metadata.shareAmount,
           minAmounts,
-          sourceAccount,
+          sourceAccount: await getSourceAccount(),
           network: deps.network,
         },
         { server: deps.rpc },
@@ -284,7 +301,6 @@ async function hydrateNode(
     }
 
     case "WithdrawSoroswapLp": {
-      const sourceAccount = await getSourceAccount();
       const fn = a.removeLiquidityByContractIds ?? removeLiquidityByContractIds;
       const deadline = Math.floor(Date.now() / 1000) + 300; // 5 min
       // First build+simulate with zero floors to read remove_liquidity's expected
@@ -302,7 +318,7 @@ async function hydrateNode(
           deadline,
           network: deps.network,
         },
-        { server: deps.rpc, sourceAccount },
+        { server: deps.rpc, sourceAccount: await getSourceAccount() },
       );
       const expected = await readExpectedAmounts(deps.rpc, probe, 2);
       const tx = await fn(
@@ -316,7 +332,7 @@ async function hydrateNode(
           deadline,
           network: deps.network,
         },
-        { server: deps.rpc, sourceAccount },
+        { server: deps.rpc, sourceAccount: await getSourceAccount() },
       );
       setTransaction(node, tx);
       return;
@@ -351,7 +367,6 @@ async function hydrateNode(
     }
 
     case "ConvertSorobanToXLM": {
-      const sourceAccount = await getSourceAccount();
       const fn = a.buildSwapToXLM ?? buildSwapToXLM;
       const deadline = Math.floor(Date.now() / 1000) + 300; // 5 min
       const amountIn = node.metadata.amount.toString();
@@ -369,7 +384,7 @@ async function hydrateNode(
           deadline,
           network: deps.network,
         },
-        { server: deps.rpc, sourceAccount },
+        { server: deps.rpc, sourceAccount: await getSourceAccount() },
       );
       const expected = await readExpectedAmounts(deps.rpc, probe, 2); // [amountIn, amountOut]
       const expectedOut = expected[1]!;
@@ -389,7 +404,7 @@ async function hydrateNode(
           deadline,
           network: deps.network,
         },
-        { server: deps.rpc, sourceAccount },
+        { server: deps.rpc, sourceAccount: await getSourceAccount() },
       );
       setTransaction(node, tx);
       return;

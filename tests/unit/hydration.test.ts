@@ -1,12 +1,20 @@
 import { describe, it, expect, vi } from "vitest";
+import {
+  Horizon,
+  Keypair,
+  SorobanDataBuilder,
+  StrKey,
+  nativeToScVal,
+  rpc as StellarRpc,
+} from "@stellar/stellar-sdk";
 
-import { hydratePlanTransactions } from "@/lib/plan/hydration";
+import { hydratePlanTransactions, rebuildSorobanNodeTransaction } from "@/lib/plan/hydration";
 import type { HydrationAdapterOverrides, HydrationDeps } from "@/lib/plan/hydration";
 import { buildPlanTree } from "@/lib/plan/tree";
 import type { PlanNode } from "@/lib/plan/tree";
 import { i128 as scvI128, vec as scvVec } from "@/lib/soroban/scval";
 import { applySlippageMin, DEFAULT_SLIPPAGE_BPS } from "@/lib/safety/slippage";
-import type { NetworkConfig } from "@/lib/config/networks";
+import { TESTNET, type NetworkConfig } from "@/lib/config/networks";
 
 // The Soroswap/Aquarius DeFi-exit hydration must NOT sign a withdraw that
 // accepts any (incl. near-zero) output. hydratePlanTransactions builds+simulates
@@ -19,8 +27,34 @@ const NETWORK = {
   passphrase: "Public Global Stellar Network ; September 2015",
 } as unknown as NetworkConfig;
 
-// a fake source account object; hydration only passes it through to adapters
-const SOURCE_ACCOUNT = { accountId: () => "GUSER" } as never;
+const USER = Keypair.random().publicKey();
+
+// a real horizon account record, so sequence handling is the library's own
+function accountAt(seq: bigint): Horizon.AccountResponse {
+  return new Horizon.AccountResponse({
+    id: USER,
+    paging_token: USER,
+    account_id: USER,
+    sequence: seq.toString(),
+    subentry_count: 0,
+    last_modified_ledger: 1,
+    last_modified_time: "2026-01-01T00:00:00Z",
+    thresholds: { low_threshold: 0, med_threshold: 0, high_threshold: 0 },
+    flags: {
+      auth_required: false,
+      auth_revocable: false,
+      auth_immutable: false,
+      auth_clawback_enabled: false,
+    },
+    balances: [],
+    signers: [{ key: USER, weight: 1, type: "ed25519_public_key" }],
+    data_attr: {},
+    num_sponsoring: 0,
+    num_sponsored: 0,
+  } as never);
+}
+
+const SOURCE_ACCOUNT = accountAt(100n);
 
 // build a simulateTransaction mock whose retval is an ScVal vec of the given
 // integer amounts, so readExpectedAmounts derives its floors from these.
@@ -80,7 +114,7 @@ describe("hydratePlanTransactions, WithdrawSoroswapLp slippage floor", () => {
       adapters: { removeLiquidityByContractIds },
     });
 
-    const { failures } = await hydratePlanTransactions(buildPlanTree([node]), "GUSER", deps);
+    const { failures } = await hydratePlanTransactions(buildPlanTree([node]), USER, deps);
 
     expect(failures).toEqual([]);
     // two builds: the zero-floor probe, then the real slippage-bounded build
@@ -123,7 +157,7 @@ describe("hydratePlanTransactions, WithdrawSoroswapLp slippage floor", () => {
     } as unknown as HydrationDeps["rpc"];
 
     const deps = baseDeps({ rpc, adapters: { removeLiquidityByContractIds } });
-    const { failures } = await hydratePlanTransactions(buildPlanTree([node]), "GUSER", deps);
+    const { failures } = await hydratePlanTransactions(buildPlanTree([node]), USER, deps);
 
     expect(failures.length).toBe(1);
     expect(failures[0]!.reason).toMatch(/slippage floor/);
@@ -160,7 +194,7 @@ describe("hydratePlanTransactions, WithdrawAquarius slippage floor", () => {
       adapters: { aquariusWithdraw },
     });
 
-    const { failures } = await hydratePlanTransactions(buildPlanTree([node]), "GUSER", deps);
+    const { failures } = await hydratePlanTransactions(buildPlanTree([node]), USER, deps);
 
     expect(failures).toEqual([]);
     expect(calls.length).toBe(2);
@@ -205,11 +239,7 @@ describe("hydratePlanTransactions, ConvertSorobanToXLM (Soroswap-router swap) fl
       adapters: { buildSwapToXLM },
     });
 
-    const { failures } = await hydratePlanTransactions(
-      buildPlanTree([convertNode()]),
-      "GUSER",
-      deps,
-    );
+    const { failures } = await hydratePlanTransactions(buildPlanTree([convertNode()]), USER, deps);
 
     expect(failures).toEqual([]);
     expect(calls.length).toBe(2);
@@ -228,13 +258,121 @@ describe("hydratePlanTransactions, ConvertSorobanToXLM (Soroswap-router swap) fl
       adapters: { buildSwapToXLM },
     });
 
-    const { failures } = await hydratePlanTransactions(
-      buildPlanTree([convertNode()]),
-      "GUSER",
-      deps,
-    );
+    const { failures } = await hydratePlanTransactions(buildPlanTree([convertNode()]), USER, deps);
 
     expect(failures.length).toBe(1);
     expect(failures[0]!.reason).toMatch(/zero XLM out/);
   });
+});
+
+// C-05: the two-pass builders (probe, then the real build) used to share one
+// AccountResponse. TransactionBuilder.build() bumps the source sequence in place,
+// so the signed tx carried seq+2 and every submit failed tx_bad_seq. These run
+// the real adapters against a real AccountResponse and a real rpc.Server; only
+// the raw json-rpc simulate call is answered locally.
+describe("hydration, two-pass builds sign at on-chain sequence + 1", () => {
+  const ONCHAIN_SEQ = 21407199335022592n;
+  const tokenA = StrKey.encodeContract(new Uint8Array(32).fill(7));
+  const tokenB = StrKey.encodeContract(new Uint8Array(32).fill(9));
+
+  function rpcAnswering(retval: ReturnType<typeof scvVec>): StellarRpc.Server {
+    const server = new StellarRpc.Server(TESTNET.rpc);
+    vi.spyOn(server, "_simulateTransaction").mockImplementation(async () => ({
+      id: "1",
+      latestLedger: 1,
+      minResourceFee: "100",
+      transactionData: new SorobanDataBuilder().build().toXdr("base64"),
+      results: [{ auth: [], xdr: retval.toXdr("base64") }],
+    }));
+    return server;
+  }
+
+  const cases: { name: string; node: () => PlanNode; retval: ReturnType<typeof scvVec> }[] = [
+    {
+      name: "WithdrawAquarius",
+      node: () => ({
+        id: "aq",
+        kind: "WithdrawAquarius",
+        dependencies: [],
+        description: "withdraw aquarius",
+        status: "pending",
+        metadata: {
+          kind: "WithdrawAquarius",
+          poolIndex: "ab".repeat(32),
+          shareAmount: 1_000_000n,
+          tokens: [tokenA, tokenB],
+        },
+      }),
+      retval: scvVec([
+        nativeToScVal(3_000_000n, { type: "u128" }),
+        nativeToScVal(7_000_000n, { type: "u128" }),
+      ]),
+    },
+    {
+      name: "WithdrawSoroswapLp",
+      node: () => ({
+        id: "lp",
+        kind: "WithdrawSoroswapLp",
+        dependencies: [],
+        description: "withdraw soroswap lp",
+        status: "pending",
+        metadata: {
+          kind: "WithdrawSoroswapLp",
+          tokenA,
+          tokenB,
+          shareBalance: 1_000_000n,
+        },
+      }),
+      retval: scvVec([scvI128(5_000_000n), scvI128(8_000_000n)]),
+    },
+    {
+      name: "ConvertSorobanToXLM",
+      node: () => ({
+        id: "cv",
+        kind: "ConvertSorobanToXLM",
+        dependencies: [],
+        description: "convert held token",
+        status: "pending",
+        metadata: {
+          kind: "ConvertSorobanToXLM",
+          asset: { kind: "contract", contractId: tokenA },
+          amount: 1_000_000n,
+        },
+      }),
+      retval: scvVec([scvI128(1_000_000n), scvI128(4_000_000n)]),
+    },
+  ];
+
+  function deps(retval: ReturnType<typeof scvVec>): HydrationDeps {
+    return {
+      rpc: rpcAnswering(retval),
+      horizon: {} as never,
+      network: TESTNET,
+      currentLedger: 100,
+      fetchSourceAccount: async () => accountAt(ONCHAIN_SEQ),
+    };
+  }
+
+  function signedSequence(node: PlanNode): string | undefined {
+    return (node.metadata as { transaction?: { sequence: string } }).transaction?.sequence;
+  }
+
+  for (const c of cases) {
+    it(`${c.name}: preview hydration builds the signed tx at seq + 1`, async () => {
+      const node = c.node();
+      const { failures } = await hydratePlanTransactions(
+        buildPlanTree([node]),
+        USER,
+        deps(c.retval),
+      );
+      expect(failures).toEqual([]);
+      expect(signedSequence(node)).toBe((ONCHAIN_SEQ + 1n).toString());
+    });
+
+    it(`${c.name}: execute-time rebuild signs at seq + 1`, async () => {
+      const node = c.node();
+      await rebuildSorobanNodeTransaction(node, USER, deps(c.retval));
+      expect(signedSequence(node)).toBe((ONCHAIN_SEQ + 1n).toString());
+    });
+  }
 });
