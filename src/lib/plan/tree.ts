@@ -385,6 +385,35 @@ export function topologicalOrder(tree: PlanTree): readonly PlanNode[] {
   return order;
 }
 
+// contract ids of the tokens the plan's soroban steps pay into or sweep out of
+// the account, in plan order. A balance of one of these that is still there at
+// the merge (and isn't a classic asset's SAC) would be deleted with the account,
+// so the merge guard re-reads them.
+export function planTokenContracts(tree: PlanTree): readonly string[] {
+  const out = new Set<string>();
+  for (const node of tree.allNodes.values()) {
+    switch (node.kind) {
+      case "WithdrawAquarius":
+        for (const token of node.metadata.tokens) out.add(token);
+        break;
+      case "WithdrawSoroswapLp":
+        out.add(node.metadata.tokenA);
+        out.add(node.metadata.tokenB);
+        break;
+      case "WithdrawBlend":
+        out.add(node.metadata.asset);
+        break;
+      case "TransferAsIs":
+      case "ConvertSorobanToXLM":
+        if (node.metadata.asset.kind === "contract") out.add(node.metadata.asset.contractId);
+        break;
+      default:
+        break;
+    }
+  }
+  return [...out];
+}
+
 // true for soroban-touching kinds; routes simulation in simulator.ts
 export function isSorobanNode(node: PlanNode): boolean {
   switch (node.kind) {

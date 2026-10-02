@@ -76,7 +76,8 @@ export interface ClaimableBalanceEntry {
   readonly asset: AssetIdentifier;
   readonly amount: string;
   readonly sponsor: string;
-  // encoded predicate. evaluated against ledger close time to decide claimability
+  // the raw Horizon claimants array; each entry carries its own predicate, which
+  // filterClaimableNow evaluates for this account
   readonly predicate: unknown;
   readonly claimants: readonly string[];
   // whether the auditing account can claim this balance right now (predicate

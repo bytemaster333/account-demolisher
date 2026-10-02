@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { buildPlanTree, isSorobanNode, topologicalOrder } from "@/lib/plan/tree";
+import {
+  buildPlanTree,
+  isSorobanNode,
+  planTokenContracts,
+  topologicalOrder,
+} from "@/lib/plan/tree";
 import type { PlanNode, PlanTree } from "@/lib/plan/tree";
 
 // buildPlanTree/topologicalOrder are the ordering backbone of the demolition
@@ -171,5 +176,56 @@ describe("isSorobanNode", () => {
     };
     expect(isSorobanNode(finalTx)).toBe(false);
     expect(isSorobanNode(forward)).toBe(false);
+  });
+});
+
+describe("planTokenContracts", () => {
+  it("lists every token the plan's exits pay out or its sweeps move, once each", () => {
+    const tree = buildPlanTree([
+      {
+        id: "aq",
+        kind: "WithdrawAquarius",
+        dependencies: [],
+        description: "aq",
+        status: "pending",
+        metadata: {
+          kind: "WithdrawAquarius",
+          poolIndex: "ab",
+          shareAmount: 1n,
+          tokens: ["CA", "CB"],
+        },
+      },
+      {
+        id: "lp",
+        kind: "WithdrawSoroswapLp",
+        dependencies: [],
+        description: "lp",
+        status: "pending",
+        metadata: { kind: "WithdrawSoroswapLp", tokenA: "CB", tokenB: "CC", shareBalance: 1n },
+      },
+      {
+        id: "bl",
+        kind: "WithdrawBlend",
+        dependencies: [],
+        description: "bl",
+        status: "pending",
+        metadata: { kind: "WithdrawBlend", poolId: "CP", asset: "CD", bucket: "supply" },
+      },
+      {
+        id: "sw",
+        kind: "TransferAsIs",
+        dependencies: ["aq", "lp", "bl"],
+        description: "sw",
+        status: "pending",
+        metadata: {
+          kind: "TransferAsIs",
+          asset: { kind: "contract", contractId: "CE" },
+          amount: 0n,
+          destination: "GDEST",
+        },
+      },
+      node("native-sweep"),
+    ]);
+    expect(planTokenContracts(tree)).toEqual(["CA", "CB", "CC", "CD", "CE"]);
   });
 });
