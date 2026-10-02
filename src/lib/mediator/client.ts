@@ -1,11 +1,20 @@
-// browser-side helper for the mediator co-signing endpoint. safe to import
-// from a client component; no server-only deps
+// browser-side helper for the mediator endpoints. safe to import from a client
+// component; no server-only deps
+
+import { StrKey } from "@stellar/stellar-sdk";
+
+import {
+  encodeMemoCommitment,
+  forwardMemoToSdk,
+  isMediatorNetworkId,
+} from "@/lib/mediator/forward-terms";
+import type { ClassicMemo } from "@/lib/types/plan";
 
 export type MediatorSignatureResult =
   { ok: true; signedXdr: string } | { ok: false; code: string; reason: string };
 
 export type MediatorFlowResult =
-  | { ok: true; flowToken: string; mediatorPublicKey: string }
+  | { ok: true; flowToken: string; mediatorPublicKey: string; expiresAt: number }
   | { ok: false; code: string; reason: string };
 
 export interface MediatorEndpointOptions {
@@ -13,7 +22,18 @@ export interface MediatorEndpointOptions {
   readonly signal?: AbortSignal;
 }
 
-const DEFAULT_ENDPOINT = "/api/mediator/sign";
+// what the forward out of the new mediator will have to look like. Both are
+// committed into the flow token, so they must be the exact values the forward
+// is later built with.
+export interface MediatorFlowTerms {
+  // "mainnet" | "testnet"
+  readonly network: string;
+  // the exchange deposit memo; null when the destination takes none
+  readonly memo: ClassicMemo | null;
+}
+
+const SIGN_ENDPOINT = "/api/mediator/sign";
+const REISSUE_ENDPOINT = "/api/mediator/reissue";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -28,32 +48,21 @@ async function readJson(response: Response): Promise<Record<string, unknown> | n
   }
 }
 
-// GET the endpoint to start a flow: returns a one-time flow token plus the
-// ephemeral mediator public key the plan should fund and merge into. Each call
-// mints a fresh, independent flow.
-export async function startMediatorFlow(
-  // the destination is committed into the flow token so the sign route can bind
-  // the co-signed forward to it (SEC-16)
-  destination: string,
-  options: MediatorEndpointOptions = {},
-): Promise<MediatorFlowResult> {
-  const endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
-  const url = `${endpoint}?destination=${encodeURIComponent(destination)}`;
-
-  let response: Response;
+async function send(url: string, init: RequestInit, signal?: AbortSignal) {
   try {
-    const init: RequestInit = { method: "GET", headers: { accept: "application/json" } };
-    if (options.signal !== undefined) init.signal = options.signal;
-    response = await fetch(url, init);
+    const response = await fetch(url, signal === undefined ? init : { ...init, signal });
+    return { response, body: await readJson(response) } as const;
   } catch (err) {
     return {
-      ok: false,
-      code: "NETWORK_ERROR",
-      reason: err instanceof Error ? err.message : "Failed to reach mediator endpoint.",
-    };
+      error: err instanceof Error ? err.message : "Failed to reach mediator endpoint.",
+    } as const;
   }
+}
 
-  const body = await readJson(response);
+function toFlowResult(
+  response: Response,
+  body: Record<string, unknown> | null,
+): MediatorFlowResult {
   if (body === null) {
     return {
       ok: false,
@@ -61,8 +70,25 @@ export async function startMediatorFlow(
       reason: "Mediator returned an unexpected response.",
     };
   }
-  if (typeof body.flowToken === "string" && typeof body.mediatorPublicKey === "string") {
-    return { ok: true, flowToken: body.flowToken, mediatorPublicKey: body.mediatorPublicKey };
+  if (
+    body.ok === true &&
+    typeof body.flowToken === "string" &&
+    typeof body.mediatorPublicKey === "string" &&
+    typeof body.expiresAt === "number"
+  ) {
+    if (!StrKey.isValidEd25519PublicKey(body.mediatorPublicKey)) {
+      return {
+        ok: false,
+        code: "INVALID_MEDIATOR",
+        reason: "Mediator returned a malformed mediator public key.",
+      };
+    }
+    return {
+      ok: true,
+      flowToken: body.flowToken,
+      mediatorPublicKey: body.mediatorPublicKey,
+      expiresAt: body.expiresAt,
+    };
   }
   if (typeof body.code === "string" && typeof body.reason === "string") {
     return { ok: false, code: body.code, reason: body.reason };
@@ -70,8 +96,96 @@ export async function startMediatorFlow(
   return {
     ok: false,
     code: "NETWORK_ERROR",
-    reason: `Mediator returned an unexpected status ${response.status}.`,
+    reason: `Mediator returned an unexpected status ${String(response.status)}.`,
   };
+}
+
+// token layout: v2.nonce.expiry.network.destination.memo.mac. the client can't
+// check the mac, but it can catch a server or cache answering for other terms.
+function tokenCommitsTo(
+  flowToken: string,
+  network: string,
+  destination: string,
+  memoXdr: string,
+): boolean {
+  const parts = flowToken.split(".");
+  return (
+    parts.length === 7 && parts[3] === network && parts[4] === destination && parts[5] === memoXdr
+  );
+}
+
+// GET the endpoint to start a flow: returns a flow token plus the ephemeral
+// mediator public key the plan should fund and merge into. Each call mints a
+// fresh, independent flow bound to `destination` and `terms`.
+export async function startMediatorFlow(
+  destination: string,
+  terms?: MediatorFlowTerms,
+  options: MediatorEndpointOptions = {},
+): Promise<MediatorFlowResult> {
+  // an exchange credits by memo, so a flow is never started without the caller
+  // stating the memo (or that there is none) and the network
+  if (terms === undefined) {
+    return {
+      ok: false,
+      code: "FLOW_TERMS_MISSING",
+      reason: "The network and deposit memo must be committed when the exchange flow starts.",
+    };
+  }
+  if (!isMediatorNetworkId(terms.network)) {
+    return {
+      ok: false,
+      code: "INVALID_NETWORK",
+      reason: `Exchange forwards run on mainnet or testnet, not "${terms.network}".`,
+    };
+  }
+  let memoXdr: string;
+  try {
+    memoXdr = encodeMemoCommitment(forwardMemoToSdk(terms.memo ?? undefined));
+  } catch (err) {
+    return {
+      ok: false,
+      code: "INVALID_MEMO",
+      reason: err instanceof Error ? err.message : "The deposit memo is malformed.",
+    };
+  }
+
+  const params = new URLSearchParams({ destination, network: terms.network, memo: memoXdr });
+  const res = await send(
+    `${options.endpoint ?? SIGN_ENDPOINT}?${params.toString()}`,
+    { method: "GET", headers: { accept: "application/json" }, cache: "no-store" },
+    options.signal,
+  );
+  if ("error" in res) return { ok: false, code: "NETWORK_ERROR", reason: res.error };
+  const result = toFlowResult(res.response, res.body);
+  if (result.ok && !tokenCommitsTo(result.flowToken, terms.network, destination, memoXdr)) {
+    return {
+      ok: false,
+      code: "FLOW_TERMS_MISMATCH",
+      reason: "Mediator returned a flow token for a different destination, network or memo.",
+    };
+  }
+  return result;
+}
+
+// renew a flow token that expired (or is about to) for the same mediator,
+// destination, network and memo. The server only renews tokens it issued, and
+// only while the mediator account exists.
+export async function reissueMediatorFlow(
+  flowToken: string,
+  options: MediatorEndpointOptions = {},
+): Promise<MediatorFlowResult> {
+  const res = await send(
+    options.endpoint ?? REISSUE_ENDPOINT,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ flowToken }),
+      cache: "no-store",
+    },
+    options.signal,
+  );
+  if ("error" in res) return { ok: false, code: "NETWORK_ERROR", reason: res.error };
+  return toFlowResult(res.response, res.body);
 }
 
 // posts the unsigned envelope + this flow's token to the route and returns the
@@ -79,32 +193,23 @@ export async function startMediatorFlow(
 export async function requestMediatorSignature(
   envelopeXdr: string,
   flowToken: string,
-  // the network the envelope was built on ("mainnet" | "testnet" | "futurenet").
-  // A single deployment serves both networks, so the route must validate/co-sign
-  // against the passphrase the client actually used, not a build-time default.
+  // the network the envelope was built on. The token is bound to one network
+  // and the route refuses to sign when this disagrees with it.
   network: string,
   options: MediatorEndpointOptions = {},
 ): Promise<MediatorSignatureResult> {
-  const endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
-
-  let response: Response;
-  try {
-    const init: RequestInit = {
+  const res = await send(
+    options.endpoint ?? SIGN_ENDPOINT,
+    {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ envelopeXdr, flowToken, network }),
-    };
-    if (options.signal !== undefined) init.signal = options.signal;
-    response = await fetch(endpoint, init);
-  } catch (err) {
-    return {
-      ok: false,
-      code: "NETWORK_ERROR",
-      reason: err instanceof Error ? err.message : "Failed to reach mediator endpoint.",
-    };
-  }
-
-  const body = await readJson(response);
+      cache: "no-store",
+    },
+    options.signal,
+  );
+  if ("error" in res) return { ok: false, code: "NETWORK_ERROR", reason: res.error };
+  const { response, body } = res;
   if (body === null) {
     return {
       ok: false,
@@ -121,6 +226,6 @@ export async function requestMediatorSignature(
   return {
     ok: false,
     code: "NETWORK_ERROR",
-    reason: `Mediator returned an unexpected status ${response.status}.`,
+    reason: `Mediator returned an unexpected status ${String(response.status)}.`,
   };
 }
