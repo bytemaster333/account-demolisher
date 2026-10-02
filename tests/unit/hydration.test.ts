@@ -207,61 +207,284 @@ describe("hydratePlanTransactions, WithdrawAquarius slippage floor", () => {
   });
 });
 
-describe("hydratePlanTransactions, ConvertSorobanToXLM (Soroswap-router swap) floor", () => {
-  const TOKEN = { kind: "contract" as const, contractId: "CHELDTOKEN" };
+const HELD_TOKEN = StrKey.encodeContract(new Uint8Array(32).fill(3));
 
-  function convertNode(): PlanNode {
-    return {
-      id: "cv1",
+// a router stand-in: each probe "tx" carries its amountIn, and simulating it
+// answers [amountIn, rate(amountIn)] the way swap_exact_tokens_for_tokens does
+function swapMarket(rate: (amountIn: bigint) => bigint): {
+  rpc: HydrationDeps["rpc"];
+  buildSwapToXLM: NonNullable<HydrationAdapterOverrides["buildSwapToXLM"]>;
+  calls: { amountIn: string; amountOutMin: string }[];
+} {
+  const calls: { amountIn: string; amountOutMin: string }[] = [];
+  const buildSwapToXLM = vi.fn(async (args: { amountIn: string; amountOutMin: string }) => {
+    calls.push({ amountIn: args.amountIn, amountOutMin: args.amountOutMin });
+    return { amountIn: BigInt(args.amountIn) };
+  }) as unknown as NonNullable<HydrationAdapterOverrides["buildSwapToXLM"]>;
+  const rpc = {
+    simulateTransaction: vi.fn(async (tx: { amountIn: bigint }) => ({
+      latestLedger: 1,
+      minResourceFee: "100",
+      transactionData: {},
+      result: { retval: scvVec([scvI128(tx.amountIn), scvI128(rate(tx.amountIn))]), auth: [] },
+    })),
+  } as unknown as HydrationDeps["rpc"];
+  return { rpc, buildSwapToXLM, calls };
+}
+
+function convertNode(over: { priceImpactAccepted?: boolean; deps?: string[] } = {}): PlanNode {
+  return {
+    id: "cv1",
+    kind: "ConvertSorobanToXLM",
+    dependencies: over.deps ?? [],
+    description: "convert held token to xlm",
+    status: "pending",
+    metadata: {
       kind: "ConvertSorobanToXLM",
-      dependencies: [],
-      description: "convert held token to xlm",
-      status: "pending",
-      metadata: {
-        kind: "ConvertSorobanToXLM",
-        asset: TOKEN,
-        amount: 1_000_000n,
-      },
-    };
-  }
+      asset: { kind: "contract", contractId: HELD_TOKEN },
+      amount: 1_000_000n,
+      ...(over.priceImpactAccepted ? { priceImpactAccepted: true } : {}),
+    },
+  };
+}
 
+describe("hydratePlanTransactions, ConvertSorobanToXLM (Soroswap-router swap) floor", () => {
   it("passes a positive slippage-derived amountOutMin, never 0", async () => {
-    // swap_exact_tokens_for_tokens returns [amountIn, amountOut]; index 1 is XLM out
-    const expectedOut = 4_000_000n;
-    const calls: { amountOutMin: string }[] = [];
-    const buildSwapToXLM = vi.fn(async (args: { amountOutMin: string }) => {
-      calls.push({ amountOutMin: args.amountOutMin });
-      return { fake: "tx" };
-    }) as unknown as NonNullable<HydrationAdapterOverrides["buildSwapToXLM"]>;
-
+    const market = swapMarket((x) => x * 4n);
     const deps = baseDeps({
-      rpc: rpcReturning([1_000_000n, expectedOut]),
-      adapters: { buildSwapToXLM },
+      rpc: market.rpc,
+      adapters: {
+        buildSwapToXLM: market.buildSwapToXLM,
+        readTokenBalance: async () => 1_000_000n,
+      },
     });
 
     const { failures } = await hydratePlanTransactions(buildPlanTree([convertNode()]), USER, deps);
 
     expect(failures).toEqual([]);
-    expect(calls.length).toBe(2);
-    expect(calls[0]).toEqual({ amountOutMin: "0" }); // zero-floor probe
-    const want = applySlippageMin(expectedOut.toString(), DEFAULT_SLIPPAGE_BPS);
-    expect(calls[1]).toEqual({ amountOutMin: want });
-    expect(BigInt(calls[1]!.amountOutMin)).toBeGreaterThan(0n);
+    // the full-size probe, the reference probe, then the signed swap
+    expect(market.calls.map((c) => c.amountOutMin)).toEqual([
+      "0",
+      "0",
+      applySlippageMin("4000000", DEFAULT_SLIPPAGE_BPS),
+    ]);
+    expect(BigInt(market.calls[2]!.amountOutMin)).toBeGreaterThan(0n);
   });
 
   it("refuses to build (value-destroying) when the router quotes zero XLM out", async () => {
-    const buildSwapToXLM = vi.fn(async () => ({ fake: "tx" })) as unknown as NonNullable<
-      HydrationAdapterOverrides["buildSwapToXLM"]
-    >;
+    const market = swapMarket(() => 0n);
     const deps = baseDeps({
-      rpc: rpcReturning([1_000_000n, 0n]), // expected XLM out = 0
-      adapters: { buildSwapToXLM },
+      rpc: market.rpc,
+      adapters: {
+        buildSwapToXLM: market.buildSwapToXLM,
+        readTokenBalance: async () => 1_000_000n,
+      },
     });
 
     const { failures } = await hydratePlanTransactions(buildPlanTree([convertNode()]), USER, deps);
 
     expect(failures.length).toBe(1);
     expect(failures[0]!.reason).toMatch(/zero XLM out/);
+  });
+});
+
+// M-19: the whole held balance goes through one pair; a thin pair can return a
+// fraction of its value, so the full-size rate is checked against a 1/1000 trade
+describe("hydratePlanTransactions, ConvertSorobanToXLM price-impact cap", () => {
+  // constant product pool, 1:1 spot with 1_000_000 of each side
+  const thinPool = (x: bigint): bigint => (x * 1_000_000n) / (1_000_000n + x);
+
+  it("refuses a swap far over the 2% cap and signs nothing", async () => {
+    const market = swapMarket(thinPool);
+    const node = convertNode();
+    const deps = baseDeps({
+      rpc: market.rpc,
+      adapters: {
+        buildSwapToXLM: market.buildSwapToXLM,
+        readTokenBalance: async () => 1_000_000n,
+      },
+    });
+
+    const { failures } = await hydratePlanTransactions(buildPlanTree([node]), USER, deps);
+
+    expect(failures).toHaveLength(1);
+    expect(failures[0]!.reason).toMatch(/price impact, over the 2\.00% cap/);
+    expect(market.calls.every((c) => c.amountOutMin === "0")).toBe(true);
+    expect((node.metadata as { transaction?: unknown }).transaction).toBeUndefined();
+  });
+
+  it("builds the swap after an explicit confirmation and records the quote", async () => {
+    const market = swapMarket(thinPool);
+    const node = convertNode({ priceImpactAccepted: true });
+    const deps = baseDeps({
+      rpc: market.rpc,
+      adapters: {
+        buildSwapToXLM: market.buildSwapToXLM,
+        readTokenBalance: async () => 1_000_000n,
+      },
+    });
+
+    const { failures } = await hydratePlanTransactions(buildPlanTree([node]), USER, deps);
+
+    expect(failures).toEqual([]);
+    const md = node.metadata as {
+      quote?: { expectedOut: bigint; minOut: bigint; priceImpactBps: number | null };
+    };
+    expect(md.quote?.expectedOut).toBe(500_000n);
+    expect(md.quote?.priceImpactBps).toBe(4995);
+  });
+
+  it("refuses a swap whose reference trade can't be priced", async () => {
+    // tiny reference trades round down to zero output
+    const market = swapMarket((x) => (x < 10_000n ? 0n : x));
+    const deps = baseDeps({
+      rpc: market.rpc,
+      adapters: {
+        buildSwapToXLM: market.buildSwapToXLM,
+        readTokenBalance: async () => 1_000_000n,
+      },
+    });
+
+    const { failures } = await hydratePlanTransactions(buildPlanTree([convertNode()]), USER, deps);
+
+    expect(failures[0]!.reason).toMatch(/can't price a reference trade/);
+  });
+});
+
+// M-24: sweeps run after the exits and move the balance that is there by then
+describe("hydratePlanTransactions, held-token sweeps use the live balance", () => {
+  function transferNode(deps: string[] = []): PlanNode {
+    return {
+      id: "drain",
+      kind: "TransferAsIs",
+      dependencies: deps,
+      description: "send held token",
+      status: "pending",
+      metadata: {
+        kind: "TransferAsIs",
+        asset: { kind: "contract", contractId: HELD_TOKEN },
+        amount: 500n,
+        destination: USER,
+      },
+    };
+  }
+
+  it("transfers the balance read at build time, not the discovered amount", async () => {
+    const amounts: bigint[] = [];
+    const buildTransfer = vi.fn(async (...args: unknown[]) => {
+      amounts.push(args[4] as bigint);
+      return { fake: "tx" };
+    }) as unknown as NonNullable<HydrationAdapterOverrides["buildTransfer"]>;
+    const node = transferNode();
+    const deps = baseDeps({ adapters: { buildTransfer, readTokenBalance: async () => 900n } });
+
+    await rebuildSorobanNodeTransaction(node, USER, deps);
+
+    expect(amounts).toEqual([900n]);
+    expect((node.metadata as { amount: bigint }).amount).toBe(900n);
+  });
+
+  it("fails a sweep with nothing to move", async () => {
+    const node = transferNode();
+    const deps = baseDeps({
+      adapters: {
+        buildTransfer: vi.fn() as never,
+        readTokenBalance: async () => 0n,
+      },
+    });
+    await expect(rebuildSorobanNodeTransaction(node, USER, deps)).rejects.toThrow(
+      /holds none of token/,
+    );
+  });
+});
+
+// H-18: preview simulates every step against today's state. A step that runs
+// after others (a collateral withdraw behind its repay) fails there for a reason
+// that its dependencies remove, so it is deferred, not failed.
+describe("hydratePlanTransactions, steps behind other steps are deferred", () => {
+  function blendNode(id: string, kind: "RepayBlend" | "WithdrawBlend", deps: string[]): PlanNode {
+    return kind === "RepayBlend"
+      ? {
+          id,
+          kind,
+          dependencies: deps,
+          description: id,
+          status: "pending",
+          metadata: { kind, poolId: "CPOOL", asset: "CASSET", amount: 10n },
+        }
+      : {
+          id,
+          kind,
+          dependencies: deps,
+          description: id,
+          status: "pending",
+          metadata: { kind, poolId: "CPOOL", asset: "CASSET", bucket: "collateral" },
+        };
+  }
+
+  it("keeps a dependent node pending with the reason, and fails a root node", async () => {
+    const buildExitSequence = vi.fn(async () => {
+      throw new Error("Error(Contract, #1205)");
+    }) as unknown as NonNullable<HydrationAdapterOverrides["buildExitSequence"]>;
+    const repay = blendNode("repay", "RepayBlend", []);
+    const withdraw = blendNode("withdraw", "WithdrawBlend", ["repay"]);
+    const deps = baseDeps({ adapters: { buildExitSequence } });
+
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([repay, withdraw]),
+      USER,
+      deps,
+    );
+
+    expect(failures).toEqual([
+      { nodeId: "repay", reason: "Error(Contract, #1205)", deferred: false },
+      { nodeId: "withdraw", reason: "Error(Contract, #1205)", deferred: true },
+    ]);
+    expect(repay.status).toBe("failed");
+    expect(withdraw.status).toBe("pending");
+    expect(withdraw.error).toBeUndefined();
+    expect(withdraw.deferred).toEqual({ after: ["repay"], reason: "Error(Contract, #1205)" });
+  });
+
+  it("clears the deferral once the step builds", async () => {
+    const steps = [{ kind: "withdraw_collateral", asset: "CASSET", transaction: { fake: "tx" } }];
+    const buildExitSequence = vi.fn(async () => steps) as unknown as NonNullable<
+      HydrationAdapterOverrides["buildExitSequence"]
+    >;
+    const withdraw = blendNode("withdraw", "WithdrawBlend", ["repay"]);
+    withdraw.deferred = { after: ["repay"], reason: "earlier failure" };
+
+    await rebuildSorobanNodeTransaction(
+      withdraw,
+      USER,
+      baseDeps({ adapters: { buildExitSequence } }),
+    );
+
+    expect(withdraw.deferred).toBeUndefined();
+    expect((withdraw.metadata as { transaction?: unknown }).transaction).toEqual({ fake: "tx" });
+  });
+});
+
+describe("hydratePlanTransactions, Blend emissions claim", () => {
+  it("refuses a claim with no reserve ids instead of guessing reserve 0", async () => {
+    const buildExitSequence = vi.fn() as unknown as NonNullable<
+      HydrationAdapterOverrides["buildExitSequence"]
+    >;
+    const node: PlanNode = {
+      id: "claim",
+      kind: "ClaimBlendEmissions",
+      dependencies: [],
+      description: "claim",
+      status: "pending",
+      metadata: { kind: "ClaimBlendEmissions", poolId: "CPOOL", reserveTokenIds: [] },
+    };
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([node]),
+      USER,
+      baseDeps({ adapters: { buildExitSequence } }),
+    );
+    expect(failures[0]!.reason).toMatch(/no reserve token ids/);
+    expect(buildExitSequence).not.toHaveBeenCalled();
   });
 });
 
@@ -350,6 +573,8 @@ describe("hydration, two-pass builds sign at on-chain sequence + 1", () => {
       network: TESTNET,
       currentLedger: 100,
       fetchSourceAccount: async () => accountAt(ONCHAIN_SEQ),
+      // the held-token swap reads the live balance first; answer it directly
+      adapters: { readTokenBalance: async () => 1_000_000n },
     };
   }
 

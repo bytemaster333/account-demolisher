@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { TransactionBuilder, type rpc, type Horizon } from "@stellar/stellar-sdk";
 
-import { simulateNode, SimulationFailedError } from "@/lib/plan/simulator";
+import { NodeNotBuiltError, simulateNode, SimulationFailedError } from "@/lib/plan/simulator";
 import type { SimulationDeps } from "@/lib/plan/simulator";
 import type { PlanNode } from "@/lib/plan/tree";
 import type { ClassicBatch } from "@/lib/types/plan";
@@ -72,6 +72,24 @@ describe("simulator: FinalClassicTx in-memory validation", () => {
       SimulationFailedError,
     );
   });
+
+  // L-19: a multi-batch close signs and pays for every batch, not just the first
+  it("totals ops and fees over every batch of a multi-batch close", async () => {
+    const out = await simulateNode(finalNode([batch(100), batch(40)]), baseDeps());
+    if (out.kind !== "classic") throw new Error("expected classic");
+    expect(out.operationCount).toBe(140);
+    expect(out.estimatedFee).toBe("14000");
+    expect(out.transactionCount).toBe(2);
+  });
+
+  it("prices the batches at the fee the caller says the executor will bid", async () => {
+    const out = await simulateNode(
+      finalNode([batch(100), batch(40)]),
+      baseDeps({ classicFeePerOp: 250 }),
+    );
+    if (out.kind !== "classic") throw new Error("expected classic");
+    expect(out.estimatedFee).toBe("35000");
+  });
 });
 
 describe("simulator: MediatorForward structural validation", () => {
@@ -124,6 +142,55 @@ describe("simulator: Soroban node routes to rpc simulate", () => {
     const out = await simulateNode(node, baseDeps({ simulateFn }));
     expect(out.kind).toBe("soroban");
     expect(simulateFn).toHaveBeenCalledTimes(1);
+  });
+
+  // L-19: every soroban builder bids a 100000-stroop inclusion fee on top of the
+  // resource fee; the outcome carries what the built tx authorizes
+  it("reports the built transaction's own fee as the maximum fee", async () => {
+    const node = {
+      id: "rev",
+      kind: "RevokeAllowance",
+      dependencies: [],
+      status: "pending",
+      description: "revoke",
+      metadata: {
+        kind: "RevokeAllowance",
+        contractId: "C",
+        spender: "S",
+        transaction: { fee: "112345" },
+      },
+    } as unknown as PlanNode;
+    const simulateFn = vi.fn(async () => ({
+      ok: true as const,
+      retval: null,
+      minResourceFee: "12345",
+      transactionData: {} as never,
+      auth: [],
+      latestLedger: 5,
+    }));
+    const out = await simulateNode(node, baseDeps({ simulateFn }));
+    if (out.kind !== "soroban") throw new Error("expected soroban");
+    expect(out.maxFee).toBe("112345");
+  });
+
+  it("says a deferred node is built later rather than broken", async () => {
+    const node = {
+      id: "withdraw",
+      kind: "WithdrawBlend",
+      dependencies: ["repay"],
+      status: "pending",
+      description: "withdraw",
+      deferred: { after: ["repay"], reason: "Error(Contract, #1205)" },
+      metadata: { kind: "WithdrawBlend", poolId: "P", asset: "A", bucket: "collateral" },
+    } as unknown as PlanNode;
+    const err = await simulateNode(node, baseDeps()).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NodeNotBuiltError);
+    expect((err as NodeNotBuiltError).deferred).toEqual({
+      after: ["repay"],
+      reason: "Error(Contract, #1205)",
+    });
+    // the preview caller keys on this phrase today
+    expect((err as Error).message).toMatch(/has no built transaction/);
   });
 
   it("throws SimulationFailedError on a Soroban simulation error", async () => {

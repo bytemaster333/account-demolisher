@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { Keypair } from "@stellar/stellar-sdk";
+import { Asset, Keypair, StrKey } from "@stellar/stellar-sdk";
+import { TESTNET } from "@/lib/config/networks";
 import { generatePlan } from "@/lib/plan/generator";
 import { topologicalOrder, type PlanTree } from "@/lib/plan/tree";
 import type { AccountAudit } from "@/lib/types/account";
@@ -350,6 +351,17 @@ describe("generatePlan, held-token disposition (transfer-as-is vs convert-to-XLM
     expect(tree.allNodes.has(id("drain-token", HELD))).toBe(false);
   });
 
+  it("marks a held-token conversion the user confirmed past the price-impact cap", () => {
+    const tree = generatePlan(makeAudit(), emptyPositions(), [], DEST, {
+      heldTokens: [{ contractId: HELD, balance: 500n }],
+      convertHeldTokensToXLM: true,
+      acceptedPriceImpactAssetKeys: [`contract:${HELD}`],
+    });
+    const node = tree.allNodes.get(id("convert-token", HELD));
+    if (node?.kind !== "ConvertSorobanToXLM") throw new Error("expected ConvertSorobanToXLM");
+    expect(node.metadata.priceImpactAccepted).toBe(true);
+  });
+
   it("never converts on a mediator (CEX) close — an exchange can't receive a raw token", () => {
     const tree = generatePlan(makeAudit(), emptyPositions(), [], DEST, {
       useMediator: true,
@@ -360,5 +372,206 @@ describe("generatePlan, held-token disposition (transfer-as-is vs convert-to-XLM
     });
     expect(tree.allNodes.has(id("convert-token", HELD))).toBe(false);
     expect(tree.allNodes.has(id("drain-token", HELD))).toBe(false);
+  });
+});
+
+const TOKEN_X = StrKey.encodeContract(Buffer.alloc(32, 1));
+const TOKEN_Y = StrKey.encodeContract(Buffer.alloc(32, 2));
+const TOKEN_Z = StrKey.encodeContract(Buffer.alloc(32, 3));
+const SHARED_INDEX = "ab".repeat(32);
+
+describe("H-17: Aquarius pools are keyed by tokens and index", () => {
+  it("plans both pools when two positions share a pool_index", () => {
+    const positions = emptyPositions({
+      aquarius: [
+        { poolIndex: SHARED_INDEX, shareBalance: 10n, tokens: [TOKEN_X, TOKEN_Y] },
+        { poolIndex: SHARED_INDEX, shareBalance: 20n, tokens: [TOKEN_X, TOKEN_Z] },
+      ],
+    });
+    const tree = generatePlan(makeAudit(), positions, [], DEST);
+    const withdraws = [...tree.allNodes.values()].filter((n) => n.kind === "WithdrawAquarius");
+    const claims = [...tree.allNodes.values()].filter((n) => n.kind === "ClaimAquariusRewards");
+    expect(withdraws).toHaveLength(2);
+    expect(claims).toHaveLength(2);
+    const claimTokens = claims.map((c) =>
+      c.metadata.kind === "ClaimAquariusRewards" ? c.metadata.tokens : [],
+    );
+    expect(claimTokens).toEqual([
+      [TOKEN_X, TOKEN_Y],
+      [TOKEN_X, TOKEN_Z],
+    ]);
+    const withdrawIdOfZ = id("aquarius-withdraw", TOKEN_X, TOKEN_Z, SHARED_INDEX);
+    expect(
+      dependsOn(tree, id("aquarius-claim", TOKEN_X, TOKEN_Z, SHARED_INDEX), withdrawIdOfZ),
+    ).toBe(true);
+  });
+});
+
+describe("M-23: repays run after the exits that can fund them", () => {
+  const OTHER_POOL = "CPOOLB" + "B".repeat(50);
+  const positions = emptyPositions({
+    blend: [
+      {
+        poolId: POOL_ID,
+        liabilities: new Map([[ASSET_A, 100n]]),
+        collateral: new Map([[ASSET_A, 200n]]),
+        supply: new Map(),
+        emissionReserveTokenIds: [],
+      },
+      {
+        poolId: OTHER_POOL,
+        liabilities: new Map(),
+        collateral: new Map(),
+        supply: new Map([[ASSET_B, 50n]]),
+        emissionReserveTokenIds: [],
+      },
+    ],
+    aquarius: [{ poolIndex: SHARED_INDEX, shareBalance: 10n, tokens: [TOKEN_X, TOKEN_Y] }],
+    soroswap: [{ pair: { tokenA: TOKEN_X, tokenB: TOKEN_Z }, shareBalance: 5n }],
+    fxdao: [{ denomination: DENOM, debt: 50n, collateral: 300n }],
+  });
+  const tree = generatePlan(makeAudit(), positions, [], DEST);
+  const funding = [
+    id("aquarius-withdraw", TOKEN_X, TOKEN_Y, SHARED_INDEX),
+    id("soroswap-withdraw", TOKEN_X, TOKEN_Z),
+    id("blend-withdraw-supply", OTHER_POOL, ASSET_B),
+  ];
+
+  it("makes Blend repays and FxDAO debt payments depend on LP and debt-free Blend exits", () => {
+    for (const repay of [id("blend-repay", POOL_ID, ASSET_A), id("fxdao-pay-debt", DENOM)]) {
+      for (const exit of funding) expect(dependsOn(tree, repay, exit)).toBe(true);
+    }
+    const order = topologicalOrder(tree);
+    for (const exit of funding) {
+      expect(indexOf(order, exit)).toBeLessThan(
+        indexOf(order, id("blend-repay", POOL_ID, ASSET_A)),
+      );
+    }
+  });
+
+  it("keeps a debt pool's own withdraw behind its repay, with no cycle", () => {
+    const withdrawId = id("blend-withdraw-collateral", POOL_ID, ASSET_A);
+    expect(dependsOn(tree, withdrawId, id("blend-repay", POOL_ID, ASSET_A))).toBe(true);
+    expect(dependsOn(tree, id("blend-repay", POOL_ID, ASSET_A), withdrawId)).toBe(false);
+  });
+});
+
+describe("M-24: held-token sweeps follow the exits and cover contract-token payouts", () => {
+  const positions = emptyPositions({
+    soroswap: [
+      {
+        pair: { tokenA: TOKEN_X, tokenB: Asset.native().contractId(TESTNET.passphrase) },
+        shareBalance: 5n,
+      },
+    ],
+  });
+
+  it("orders a held-token sweep after every exit", () => {
+    const tree = generatePlan(makeAudit(), positions, [], DEST, {
+      heldTokens: [{ contractId: TOKEN_Z, balance: 7n }],
+    });
+    expect(
+      dependsOn(
+        tree,
+        id("drain-token", TOKEN_Z),
+        id("soroswap-withdraw", TOKEN_X, positions.soroswap[0]!.pair.tokenB),
+      ),
+    ).toBe(true);
+  });
+
+  it("sweeps a contract token an exit pays out, but not a classic asset's SAC", () => {
+    const usdc = { kind: "credit" as const, code: "USDC", issuer: Keypair.random().publicKey() };
+    const usdcSac = new Asset(usdc.code, usdc.issuer).contractId(TESTNET.passphrase);
+    const withClassic = emptyPositions({
+      soroswap: [{ pair: { tokenA: TOKEN_X, tokenB: usdcSac }, shareBalance: 5n }],
+    });
+    const audit = makeAudit({
+      balances: [{ asset: usdc, amount: "0", buyingLiabilities: "0", sellingLiabilities: "0" }],
+    });
+    const tree = generatePlan(audit, withClassic, [], DEST, {
+      networkPassphrase: TESTNET.passphrase,
+    });
+    const sweep = tree.allNodes.get(id("drain-token", TOKEN_X));
+    if (sweep?.kind !== "TransferAsIs") throw new Error("expected a sweep of the payout token");
+    expect(sweep.metadata.amount).toBe(0n);
+    expect(sweep.dependencies).toContain(id("soroswap-withdraw", TOKEN_X, usdcSac));
+    expect(tree.allNodes.has(id("drain-token", usdcSac))).toBe(false);
+  });
+
+  it("plans no payout sweep on an exchange close", () => {
+    const tree = generatePlan(makeAudit(), positions, [], DEST, {
+      networkPassphrase: TESTNET.passphrase,
+      useMediator: true,
+      mediatorPublicKey: MED,
+      flowToken: "nonce.exp.mac",
+    });
+    expect(tree.allNodes.has(id("drain-token", TOKEN_X))).toBe(false);
+  });
+});
+
+describe("H-11: the plan records the reviewed claimable balances", () => {
+  const issuer = Keypair.random().publicKey();
+  const audit = makeAudit({
+    claimableBalances: [
+      {
+        id: "cbNative",
+        asset: { kind: "native" },
+        amount: "1",
+        sponsor: issuer,
+        predicate: {},
+        claimants: [ACC],
+        claimableNow: true,
+      },
+      {
+        id: "cbUntrusted",
+        asset: { kind: "credit", code: "SPAM", issuer },
+        amount: "1",
+        sponsor: issuer,
+        predicate: {},
+        claimants: [ACC],
+        claimableNow: true,
+      },
+      {
+        id: "cbLater",
+        asset: { kind: "native" },
+        amount: "1",
+        sponsor: issuer,
+        predicate: {},
+        claimants: [ACC],
+        claimableNow: false,
+      },
+    ],
+  });
+
+  function finalMetadata(tree: PlanTree) {
+    const node = tree.allNodes.get("final-classic-tx");
+    if (node?.kind !== "FinalClassicTx") throw new Error("expected FinalClassicTx");
+    return node.metadata;
+  }
+
+  it("freezes the balances it planned to claim when no selection was given", () => {
+    const tree = generatePlan(audit, emptyPositions(), [], DEST);
+    expect(finalMetadata(tree).claimableBalanceIds).toEqual(["cbNative"]);
+  });
+
+  it("keeps an explicit empty selection as claim-none", () => {
+    const tree = generatePlan(audit, emptyPositions(), [], DEST, {
+      selectedClaimableBalanceIds: [],
+    });
+    expect(finalMetadata(tree).claimableBalanceIds).toEqual([]);
+  });
+
+  it("records the reviewed reference quotes and price-impact confirmations", () => {
+    const key = `USDC:${issuer}`;
+    const reference = { sourceAmount: "0.1", destinationAmount: "0.4" };
+    const tree = generatePlan(audit, emptyPositions(), [], DEST, {
+      paths: new Map([
+        [key, { sourceAmount: "100", destinationAmount: "400", path: [], reference }],
+      ]),
+      acceptedPriceImpactAssetKeys: [key],
+    });
+    const md = finalMetadata(tree);
+    expect(md.reviewedReferenceQuotes).toEqual({ [key]: reference });
+    expect(md.acceptedPriceImpactAssetKeys).toEqual([key]);
   });
 });
