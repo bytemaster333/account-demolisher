@@ -2,9 +2,18 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type CSSProperties,
+} from "react";
 import { Select } from "@/components/ui";
 import { describeConnectError } from "@/components/wallet/connect-error";
+import { hasMainnetAck, recordMainnetAck, subscribeMainnetAck } from "./mainnet-ack";
 import { MainnetConfirm } from "./MainnetConfirm";
 import { useTheme } from "./ThemeProvider";
 import { resolveNetwork, type NetworkConfig, type StellarNetwork } from "@/lib/config/networks";
@@ -51,10 +60,8 @@ function Navbar() {
   const isDemolish = pathname?.startsWith("/demolish") ?? false;
   const isAllowances = pathname?.startsWith("/allowances") ?? false;
 
-  // Connect the wallet in place from the header (shares the connector app-wide so
-  // any page can sign). The top-right slot is the connect entry point on every
-  // page including the landing: click "Connect wallet" and the wallet picker
-  // opens right here, no navigation. Once connected it becomes the address chip.
+  // the header's connect button opens the wallet picker in place on every page
+  // and shares the connector app-wide; once connected it shows the address
   const [connecting, setConnecting] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
   const onConnect = useCallback(async () => {
@@ -72,12 +79,11 @@ function Navbar() {
     }
   }, [network, setConnected]);
 
-  // One-shot session restore after a hard refresh. The in-memory store is empty
-  // on reload, but the wallet-kit persists the selected wallet + address in
-  // localStorage, so re-hydrate the store and the signing connector silently (no
-  // modal, no wallet prompt). Only "kit" sessions restore; a pasted-seed session
-  // can't (its secret is gone by design). The stored network is read directly to
-  // match NetworkSwitcher's own hydration and avoid a mount-order race.
+  // one-shot session restore after a hard refresh: the store is empty but the
+  // wallet kit keeps its selection in localStorage, so rebuild the connector
+  // without a prompt. only kit sessions restore; a pasted seed is gone by
+  // design. the stored network is read here directly to avoid racing
+  // NetworkSwitcher's own hydration.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -553,7 +559,7 @@ function NetworkSwitcher() {
   useEffect(() => {
     let stored: string | null = null;
     try {
-      // getItem THROWS (not just returns null) when storage is blocked
+      // getItem throws (not just returns null) when storage is blocked
       stored = window.localStorage.getItem(NETWORK_STORAGE_KEY);
     } catch {
       // storage unavailable; keep the SSR/env default
@@ -567,6 +573,11 @@ function NetworkSwitcher() {
 
   // a mainnet selection is held here until the user confirms it in the dialog
   const [pendingMainnet, setPendingMainnet] = useState(false);
+  // being on mainnet at all, whether from the build default or a restored
+  // choice, needs this browser to have acknowledged the unaudited notice. the
+  // server snapshot says acknowledged so the dialog only renders on the client.
+  const acknowledged = useSyncExternalStore(subscribeMainnetAck, hasMainnetAck, () => true);
+  const startupGate = networkId === "mainnet" && !acknowledged && !pendingMainnet;
 
   const applySwitch = useCallback(
     (id: StellarNetwork): void => {
@@ -586,9 +597,8 @@ function NetworkSwitcher() {
 
   const onChange = (id: StellarNetwork): void => {
     if (id === networkId) return;
-    // Switching onto the live network is gated by a deliberate confirmation
-    // (mainnet actions move real funds and are irreversible); switching back to
-    // testnet — the safer network — applies immediately.
+    // switching onto mainnet (real funds, irreversible merges) needs a
+    // deliberate confirmation; switching back to testnet applies at once
     if (id === "mainnet") {
       setPendingMainnet(true);
       return;
@@ -629,10 +639,17 @@ function NetworkSwitcher() {
       {pendingMainnet ? (
         <MainnetConfirm
           onConfirm={() => {
+            recordMainnetAck();
             applySwitch("mainnet");
             setPendingMainnet(false);
           }}
           onCancel={() => setPendingMainnet(false)}
+        />
+      ) : startupGate ? (
+        <MainnetConfirm
+          mode="startup"
+          onConfirm={recordMainnetAck}
+          onCancel={() => applySwitch("testnet")}
         />
       ) : null}
     </>
@@ -725,8 +742,8 @@ function Footer() {
               </span>
             </div>
             <p style={{ margin: 0, fontSize: 13, lineHeight: 1.6, color: "var(--fg-3)" }}>
-              Close a Stellar account safely, and send everything to a destination you choose.
-              Signed entirely in your browser.
+              Close a Stellar account safely, and send everything to a destination you choose. Your
+              keys sign in your wallet or your browser and never reach a server.
             </p>
           </div>
 
@@ -761,12 +778,25 @@ function Footer() {
           }}
         >
           <span style={{ fontSize: 12.5, color: "var(--fg-3)" }}>
-            © {new Date().getFullYear()} Demolisher · Apache-2.0 licensed
+            © <FooterYear /> Demolisher · Apache-2.0 licensed
           </span>
         </div>
       </div>
     </footer>
   );
+}
+
+// the page is prerendered, so a build-time year can disagree with the
+// visitor's clock around new year. the server renders no year and the client
+// fills in its own after hydration.
+const noSubscription = (): (() => void) => () => {};
+function FooterYear(): React.JSX.Element {
+  const year = useSyncExternalStore(
+    noSubscription,
+    () => new Date().getFullYear(),
+    () => null,
+  );
+  return <>{year ?? ""}</>;
 }
 
 function FooterColumn({
