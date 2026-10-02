@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
 
 import { AllowanceList } from "@/components/allowance-viewer/AllowanceList";
+import { addressExplorerUrl, isActive } from "@/components/allowance-viewer/allowance-state";
 import { BulkRevokeBar } from "@/components/allowance-viewer/BulkRevokeBar";
 import { AppShell } from "@/components/layout/AppShell";
 import {
@@ -24,7 +25,6 @@ import {
 } from "@/components/ui";
 import { errorMessage } from "@/lib/errors";
 import { resolveNetwork, type NetworkConfig } from "@/lib/config/networks";
-import { explorerAccountUrl } from "@/lib/explorer";
 import {
   confirmAllowancesOnChain,
   enumerateAllowances,
@@ -43,6 +43,15 @@ const STELLAR_ADDRESS = z
   .refine((v) => StrKey.isValidEd25519PublicKey(v) || StrKey.isValidContract(v), {
     message: "Not a valid Stellar G... or C... address.",
   });
+
+// simulations need a G-address source, and the scanned address can be a
+// contract. the connected wallet wins, then a G target; otherwise there is none
+// and reads that need one are skipped.
+function simulationSourceFor(publicKey: string | null, target: string | null): string | null {
+  if (publicKey !== null && StrKey.isValidEd25519PublicKey(publicKey)) return publicKey;
+  if (target !== null && StrKey.isValidEd25519PublicKey(target)) return target;
+  return null;
+}
 
 export default function AllowancesPage(): React.JSX.Element {
   // connector is created lazily on demand. it's only used inside click handlers,
@@ -64,13 +73,11 @@ export default function AllowancesPage(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [showExpired, setShowExpired] = useState(false);
 
-  // resolve the live signing connector for the connected wallet. Prefer the
-  // app-wide active connector (set at connect time, survives client-side
-  // navigation). This is the ONLY way a pasted-seed connection can sign here,
-  // since its seed is never persisted. Fall back to reconstructing a
-  // WalletKitConnector for a "kit" connection whose live object was lost (the
-  // kit reads its own persisted selection). A "secret" connection with no live
-  // connector stays unsignable, so revoke is correctly gated off below.
+  // the live signing connector: the app-wide active one when present (the only
+  // way a pasted-seed session can sign here, since its seed is never persisted),
+  // otherwise a fresh WalletKitConnector for a kit session, which reads the
+  // kit's own persisted selection. a secret session without its connector
+  // can't sign, and revoke is gated off below.
   useEffect(() => {
     if (publicKey === null) {
       connectorRef.current = null;
@@ -111,18 +118,10 @@ export default function AllowancesPage(): React.JSX.Element {
         const list = await enumerateAllowances(rpc, target, ledger, undefined, {
           includeExpired: true,
         });
-        // Accuracy check: allowance amounts are event-derived, and a hostile token
-        // can emit a fabricated approve event. Confirm each against on-chain state
-        // via allowance(from, spender) when a valid G-address simulation source is
-        // available (the connected wallet, or a G-address target). Best-effort: a
-        // failed confirm shows "unconfirmed", never dropping the row. Skipped for a
-        // C-address target with no wallet (no valid simulation source).
-        const simSource =
-          publicKey !== null && StrKey.isValidEd25519PublicKey(publicKey)
-            ? publicKey
-            : StrKey.isValidEd25519PublicKey(target)
-              ? target
-              : null;
+        // event amounts can be fabricated by a hostile token, so each one is
+        // checked against the token's allowance() when there is a simulation
+        // source. a failed or skipped check leaves the row marked unconfirmed.
+        const simSource = simulationSourceFor(publicKey, target);
         const confirmed =
           simSource !== null
             ? await confirmAllowancesOnChain(rpc, target, list, network, simSource)
@@ -164,10 +163,8 @@ export default function AllowancesPage(): React.JSX.Element {
     setLoading(false);
   }, [networkId]);
 
-  // a single revoke removes only that row from the list, in place. A full
-  // re-enumerate here would reset every other row's state and interrupt the user
-  // mid-way through revoking the rest. The revoked row's optimistic "Revoked"
-  // state already confirmed inclusion before this fires, so dropping it is safe.
+  // a confirmed single revoke drops only that row, in place. a full re-scan
+  // would reset every other row and interrupt revoking the rest.
   const onSingleRevoked = useCallback((record: AllowanceRecord) => {
     setRecords((prev) =>
       prev === null
@@ -176,11 +173,11 @@ export default function AllowancesPage(): React.JSX.Element {
     );
   }, []);
 
-  // the bulk sweep revokes every active allowance at once; re-scan once at the
-  // end to confirm the now-empty (or expired-only) state.
+  // re-scan the address the sweep ran against, never the input box, which the
+  // user may have edited since
   const onBulkComplete = useCallback(() => {
-    void onLoad();
-  }, [onLoad]);
+    if (viewedAddress !== null) void onLoad(viewedAddress);
+  }, [onLoad, viewedAddress]);
 
   // revoke needs the connected wallet to own the viewed address (SEP-41 requires
   // source == from) AND a live connector that can actually sign here. A
@@ -199,8 +196,8 @@ export default function AllowancesPage(): React.JSX.Element {
   // disconnected, but the scanned address has at least one still-active allowance
   // that COULD be revoked with the owning wallet. Prompt to connect proactively,
   // rather than leaving the user to discover it from a disabled Revoke button.
-  const notConnectedWithRevocable =
-    !hasWallet && records !== null && records.some((r) => !r.expired);
+  const notConnectedWithRevocable = !hasWallet && records !== null && records.some(isActive);
+  const simulationSource = simulationSourceFor(publicKey, viewedAddress);
 
   return (
     <AppShell>
@@ -210,11 +207,12 @@ export default function AllowancesPage(): React.JSX.Element {
           title="Active token allowances"
           subtitle={
             <>
-              Every active{" "}
+              Active{" "}
               <InfoTip tip="SEP-41 is Stellar's standard for smart-contract (Soroban) tokens. An allowance is a standing approval that lets another address spend your tokens up to a limit, until it expires or you revoke it.">
                 SEP-41
               </InfoTip>{" "}
-              allowance on an account, so you can review and revoke the ones you no longer want.
+              allowances on an account, found from the last 7 days of on-chain events, so you can
+              review and revoke the ones you no longer want.
             </>
           }
         />
@@ -257,7 +255,7 @@ export default function AllowancesPage(): React.JSX.Element {
             <Checkbox
               checked={showExpired}
               onChange={setShowExpired}
-              label="Show expired allowances"
+              label="Show inactive allowances"
               data-testid="show-expired-toggle"
             />
             {hasWallet ? (
@@ -304,7 +302,7 @@ export default function AllowancesPage(): React.JSX.Element {
                     head={6}
                     tail={6}
                     size={12}
-                    href={explorerAccountUrl(network, viewedAddress!)}
+                    href={addressExplorerUrl(network, viewedAddress!)}
                   />
                   in read-only mode, which is fine for inspecting. Only the wallet that controls
                   this address can revoke its allowances, so to revoke, connect that wallet.
@@ -354,6 +352,7 @@ export default function AllowancesPage(): React.JSX.Element {
                 <AllowanceList
                   records={records}
                   userAddress={viewedAddress ?? ""}
+                  simulationSource={simulationSource}
                   network={network}
                   currentLedger={currentLedger ?? 0}
                   connectorRef={canRevoke ? connectorRef : null}
@@ -419,11 +418,11 @@ function ScanningCard(): React.JSX.Element {
           </span>
         </div>
       </div>
-      <div style={{ fontWeight: 600, fontSize: 15 }}>Looking up allowances on-chain…</div>
-      <div
-        aria-live="polite"
-        style={{ marginTop: 6, fontSize: 12.5, color: "var(--fg-3)", minHeight: 18 }}
-      >
+      <div role="status" style={{ fontWeight: 600, fontSize: 15 }}>
+        Looking up allowances on-chain…
+      </div>
+      {/* decorative rotating line; not a live region, it would chatter every 1.6s */}
+      <div style={{ marginTop: 6, fontSize: 12.5, color: "var(--fg-3)", minHeight: 18 }}>
         {SCAN_QUIPS[quip]}
       </div>
     </Card>
