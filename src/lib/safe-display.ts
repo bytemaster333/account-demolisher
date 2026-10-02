@@ -1,46 +1,41 @@
 // Neutralize characters that can visually reorder, hide, or spoof rendered text.
 //
-// On-chain strings the app displays back to the user — Soroban token symbols and
-// names (SEP-41 `symbol()` / `name()`), account home domains, memos, and asset
-// codes — are ATTACKER-CONTROLLED. React escapes HTML, but it does NOT strip
-// Unicode bidirectional overrides / isolates / zero-width characters, so a
-// crafted token name can visually reverse or hide the text around it (e.g.
-// spoofing a destination or an amount). Every such value is run through
-// `safeDisplay` at the render boundary.
+// Token symbols and names read from a SEP-41 contract (`symbol()` / `name()`) are
+// attacker-controlled. React escapes HTML, but it does not strip Unicode bidi
+// overrides, isolates or invisible characters, so a crafted symbol can reverse or
+// hide the text around it (e.g. spoofing an amount or a destination).
 //
-// Code-point ranges removed (kept as data, not embedded literals, so the source
-// itself carries none of these characters):
-//   0x0000–0x001F, 0x007F–0x009F  C0 / C1 control characters
-//   0x061C                        Arabic letter mark
-//   0x200B–0x200F                 zero-width space/joiner + LRM/RLM marks
-//   0x202A–0x202E                 bidi embeddings / overrides (LRE/RLE/PDF/LRO/RLO)
-//   0x2066–0x2069                 bidi isolates (LRI/RLI/FSI/PDI)
-//   0xFEFF                        zero-width no-break space / BOM
-const UNSAFE_RANGES: ReadonlyArray<readonly [number, number]> = [
-  [0x0000, 0x001f],
-  [0x007f, 0x009f],
-  [0x061c, 0x061c],
-  [0x200b, 0x200f],
-  [0x202a, 0x202e],
-  [0x2066, 0x2069],
-  [0xfeff, 0xfeff],
-];
-
-function isUnsafeCodePoint(cp: number): boolean {
-  for (const [lo, hi] of UNSAFE_RANGES) {
-    if (cp >= lo && cp <= hi) return true;
-  }
-  return false;
-}
+// Call sites: the allowance list (components/allowance-viewer/AllowanceList.tsx)
+// renders token symbols through safeDisplay, and the scam heuristics flag a held
+// token whose symbol or name contains any of these characters.
+//
+// Removed (matched by Unicode property, so the source itself carries none of the
+// characters):
+//   Cc                            C0 / C1 control characters
+//   Cf                            format characters: bidi marks, embeddings,
+//                                 overrides and isolates, zero-width space and
+//                                 joiners, soft hyphen, word joiner and the
+//                                 invisible operators, BOM, interlinear
+//                                 annotation, tag characters
+//   Zl, Zp                        line and paragraph separators
+//   Default_Ignorable_Code_Point  everything that renders as nothing, including
+//                                 variation selectors, the combining grapheme
+//                                 joiner and the Hangul fillers
+const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
 
 // Strip reordering/hiding characters from an attacker-controlled display string.
-// Iterates by code point (so astral characters survive intact) and drops only
-// the ranges above.
+// The u flag matches by code point, so astral characters survive intact.
 export function safeDisplay(value: string): string {
-  let out = "";
-  for (const ch of value) {
-    const cp = ch.codePointAt(0);
-    if (cp === undefined || !isUnsafeCodePoint(cp)) out += ch;
-  }
-  return out;
+  return value.replace(HIDDEN, "");
+}
+
+// true when safeDisplay would change the value
+export function hasHiddenCharacters(value: string): boolean {
+  return value.replace(HIDDEN, "") !== value;
+}
+
+// true for anything outside printable ASCII. a token symbol that needs a
+// "non-ASCII" badge: homoglyphs such as a Cyrillic "С" render like Latin letters.
+export function hasNonAscii(value: string): boolean {
+  return /[^\x20-\x7e]/.test(value);
 }

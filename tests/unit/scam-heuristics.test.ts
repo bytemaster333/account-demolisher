@@ -1,7 +1,10 @@
 import { describe, it, expect } from "vitest";
+import { Asset, Networks } from "@stellar/stellar-sdk";
+import { TESTNET_ALLOWLIST } from "@/lib/config/contracts";
 import {
   evaluateScamHeuristics,
   levenshtein,
+  runHeldTokenScamHeuristics,
   runScamHeuristics,
   TIER1_ASSETS,
   TIER1_MAINNET,
@@ -77,11 +80,9 @@ describe("evaluateScamHeuristics, clean tokens", () => {
     expect(evaluateScamHeuristics({})).toEqual([]);
   });
 
-  it("abstains on a null-issuer tier-1 symbol even with a differing seen issuer", () => {
-    // XLM and BLND have issuer:null in the reference list, so an exact match
-    // cannot be proven a collision, the module deliberately abstains.
-    expect(evaluateScamHeuristics({ symbol: "XLM", issuer: IMPOSTOR })).toEqual([]);
-    expect(evaluateScamHeuristics({ symbol: "BLND", issuer: IMPOSTOR })).toEqual([]);
+  it("abstains on a tier-1 symbol with no canonical issuer on that network", () => {
+    // BLND has no official testnet issuer, so a collision cannot be proven there
+    expect(evaluateScamHeuristics({ symbol: "BLND", issuer: IMPOSTOR }, "testnet")).toEqual([]);
   });
 
   it("does not treat a matching canonical issuer as a collision", () => {
@@ -153,7 +154,7 @@ describe("evaluateScamHeuristics, suspicious_character", () => {
     expect(flag(flags, "suspicious_character").severity).toBe("critical");
   });
 
-  it("flags any lowercase symbol because the class check is case-sensitive", () => {
+  it("does not flag a lowercase ASCII symbol as a suspicious character", () => {
     // lowercase ASCII is a valid (if unusual) Stellar asset code and must NOT
     // trip suspicious_character, case impersonation is caught by the lookalike
     // / collision checks instead.
@@ -170,11 +171,11 @@ describe("evaluateScamHeuristics, suspicious_character", () => {
     expect(ids(evaluateScamHeuristics({ symbol: "DOGE2" }))).not.toContain("suspicious_character");
   });
 
-  it("stacks with a collision when a homoglyph impersonates a tier-1 symbol", () => {
+  it("stacks a lookalike with a suspicious character when a homoglyph impersonates a tier-1 symbol", () => {
     // 'AQUА' with a cyrillic 'А' does not match the tier-1 map (different
     // codepoint) so it takes the lookalike path AND the suspicious char path.
     const flags = evaluateScamHeuristics({ symbol: "AQUА", issuer: IMPOSTOR });
-    expect(ids(flags)).toContain("suspicious_character");
+    expect(ids(flags)).toEqual(["lookalike_symbol", "suspicious_character"]);
   });
 });
 
@@ -273,8 +274,99 @@ describe("evaluateScamHeuristics, network gating", () => {
       "exact_symbol_collision",
     );
   });
+});
 
-  it("has no canonical issuers on futurenet, so nothing collides", () => {
-    expect(evaluateScamHeuristics({ symbol: "USDC", issuer: IMPOSTOR }, "futurenet")).toEqual([]);
+// a classic credit asset coded XLM is never native lumens, and BLND has a
+// canonical mainnet issuer (docs.blend.capital/mainnet-deployments)
+describe("evaluateScamHeuristics, XLM and BLND impersonation", () => {
+  it("flags any credit asset coded XLM, in any case, on every network", () => {
+    for (const network of ["mainnet", "testnet"] as const) {
+      for (const symbol of ["XLM", "xlm", "Xlm"]) {
+        const f = flag(
+          evaluateScamHeuristics({ symbol, issuer: IMPOSTOR }, network),
+          "exact_symbol_collision",
+        );
+        expect(f.severity).toBe("critical");
+      }
+    }
+  });
+
+  it("flags BLND from a non-canonical issuer on mainnet and clears the real one", () => {
+    const blnd = TIER1_MAINNET.find((a) => a.symbol === "BLND")!.issuer!;
+    expect(blnd).toBe("GDJEHTBE6ZHUXSWFI642DCGLUOECLHPF3KSXHPXTSTJ7E3JF6MQ5EZYY");
+    expect(evaluateScamHeuristics({ symbol: "BLND", issuer: blnd }, "mainnet")).toEqual([]);
+    expect(
+      flag(
+        evaluateScamHeuristics({ symbol: "BLND", issuer: IMPOSTOR }, "mainnet"),
+        "exact_symbol_collision",
+      ).severity,
+    ).toBe("critical");
+  });
+
+  it("derives the BLND token contract Blend publishes from the canonical issuer", () => {
+    const blnd = TIER1_MAINNET.find((a) => a.symbol === "BLND")!.issuer!;
+    expect(new Asset("BLND", blnd).contractId(Networks.PUBLIC)).toBe(
+      "CD25MNVTZDL4Y3XBCPCJXGXATV5WUHHOWMYFF4YBEGU5FCPGMYTVG5JY",
+    );
+  });
+});
+
+// held SEP-41 tokens carry a symbol and name chosen by whoever deployed them
+describe("evaluateScamHeuristics, SEP-41 tokens", () => {
+  const TESTNET_ALLOWED = TESTNET_ALLOWLIST[0]!.id;
+
+  it("flags a tier-1 symbol from a contract that is not the asset's own contract", () => {
+    const flags = evaluateScamHeuristics({ symbol: "USDC", contractId: UNKNOWN_CONTRACT });
+    expect(flag(flags, "exact_symbol_collision").severity).toBe("critical");
+    expect(ids(flags)).toContain("unknown_contract");
+  });
+
+  it("clears the canonical USDC asset contract", () => {
+    const sac = new Asset("USDC", USDC_ISSUER).contractId(Networks.PUBLIC);
+    expect(ids(evaluateScamHeuristics({ symbol: "USDC", contractId: sac }))).not.toContain(
+      "exact_symbol_collision",
+    );
+  });
+
+  it("flags an XLM symbol from anything but the native asset contract", () => {
+    const nativeSac = Asset.native().contractId(Networks.TESTNET);
+    expect(
+      ids(evaluateScamHeuristics({ symbol: "XLM", contractId: nativeSac }, "testnet")),
+    ).not.toContain("exact_symbol_collision");
+    expect(
+      ids(evaluateScamHeuristics({ symbol: "XLM", contractId: UNKNOWN_CONTRACT }, "testnet")),
+    ).toContain("exact_symbol_collision");
+  });
+
+  it("checks the contract allow-list of the given network", () => {
+    expect(ids(evaluateScamHeuristics({ contractId: TESTNET_ALLOWED }, "testnet"))).not.toContain(
+      "unknown_contract",
+    );
+    expect(ids(evaluateScamHeuristics({ contractId: TESTNET_ALLOWED }, "mainnet"))).toContain(
+      "unknown_contract",
+    );
+  });
+
+  it("flags a homoglyph symbol and a name with hidden characters", () => {
+    const rlo = String.fromCodePoint(0x202e);
+    const flags = evaluateScamHeuristics({
+      symbol: "USDС",
+      name: `USD Coin${rlo}`,
+      contractId: UNKNOWN_CONTRACT,
+    });
+    expect(ids(flags).filter((id) => id === "suspicious_character")).toHaveLength(2);
+    for (const f of flags) expect(f.message).not.toContain(rlo);
+  });
+
+  it("reports findings per held token", () => {
+    const findings = runHeldTokenScamHeuristics(
+      [
+        { contractId: UNKNOWN_CONTRACT, symbol: "USDC", name: "USD Coin" },
+        { contractId: TESTNET_ALLOWED, symbol: "SWAP" },
+      ],
+      "testnet",
+    );
+    expect(findings.every((f) => f.asset.kind === "contract")).toBe(true);
+    expect(findings.map((f) => f.flag.id)).toEqual(["exact_symbol_collision", "unknown_contract"]);
   });
 });

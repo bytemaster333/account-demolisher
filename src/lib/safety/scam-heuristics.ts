@@ -1,7 +1,9 @@
 // scam-token heuristics
 
+import { Asset } from "@stellar/stellar-sdk";
 import { isAllowedContract } from "@/lib/config/contracts";
-import type { StellarNetwork } from "@/lib/config/networks";
+import { NETWORKS, type StellarNetwork } from "@/lib/config/networks";
+import { hasHiddenCharacters, safeDisplay } from "@/lib/safe-display";
 import type { AssetIdentifier, AuditBalance } from "@/lib/types/account";
 
 export type ScamSeverity = "info" | "warning" | "critical";
@@ -33,25 +35,30 @@ export interface TokenSubject {
 // tier-1 reference list. frozen at compile time
 export interface Tier1Asset {
   readonly symbol: string;
-  // issuer g-address, or null for native / sac-only assets
+  // issuer g-address, or null when there is no canonical issuer to compare with
+  // (native lumens, or no official issuer on that network)
   readonly issuer: string | null;
+  // native lumens: never a classic credit asset, and its only contract is the
+  // native asset contract
+  readonly native?: true;
 }
 
 // Canonical issuers, per network. Every non-null address below was verified
 // against the issuer's official source (Circle's contract-address docs for
-// USDC/EURC; Aquarius's stellar.toml for AQUA). null = no canonical issuer we
-// can vouch for on that network, so the collision check abstains rather than
+// USDC/EURC; Aquarius's stellar.toml for AQUA; Blend's mainnet deployments page,
+// docs.blend.capital/mainnet-deployments, for BLND). null = no canonical issuer
+// we can vouch for on that network, so the collision check abstains rather than
 // compare against the wrong address (e.g. AQUA has no official testnet issuer).
 export const TIER1_MAINNET: readonly Tier1Asset[] = [
-  { symbol: "XLM", issuer: null },
+  { symbol: "XLM", issuer: null, native: true },
   { symbol: "USDC", issuer: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN" },
   { symbol: "EURC", issuer: "GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4ITNPP2" },
   { symbol: "AQUA", issuer: "GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA" },
-  { symbol: "BLND", issuer: null },
+  { symbol: "BLND", issuer: "GDJEHTBE6ZHUXSWFI642DCGLUOECLHPF3KSXHPXTSTJ7E3JF6MQ5EZYY" },
 ];
 
 export const TIER1_TESTNET: readonly Tier1Asset[] = [
-  { symbol: "XLM", issuer: null },
+  { symbol: "XLM", issuer: null, native: true },
   { symbol: "USDC", issuer: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5" },
   { symbol: "EURC", issuer: "GB3Q6QDZYTHWT7E5PVS3W7FUT5GVAFC5KSZFFLPU25GO7VTC3NM2ZTVO" },
   { symbol: "AQUA", issuer: null },
@@ -78,27 +85,20 @@ export function evaluateScamHeuristics(
   const tier1List = tier1For(network);
   const tier1BySymbol = new Map(tier1List.map((a) => [a.symbol.toUpperCase(), a]));
 
+  const contractId =
+    subject.contractId !== undefined && subject.contractId.length > 0 ? subject.contractId : null;
   const rawSymbol = (subject.symbol ?? "").trim();
+  const shown = safeDisplay(rawSymbol);
   if (rawSymbol.length > 0) {
     const symbolUpper = rawSymbol.toUpperCase();
     const tier1 = tier1BySymbol.get(symbolUpper);
 
     if (tier1 !== undefined) {
-      // exact symbol match: collision iff canonical issuer exists AND
-      // subject issuer differs. abstain if either side is null
-      const seenIssuer = subject.issuer ?? null;
-      if (tier1.issuer !== null && seenIssuer !== null && seenIssuer !== tier1.issuer) {
-        flags.push({
-          id: "exact_symbol_collision",
-          severity: "critical",
-          message: `Symbol "${rawSymbol}" matches a tier-1 asset but is issued by ${seenIssuer}, not the canonical issuer.`,
-          detail: {
-            symbol: rawSymbol,
-            seenIssuer,
-            canonicalIssuer: tier1.issuer,
-          },
-        });
-      }
+      const collision =
+        contractId !== null
+          ? contractCollision(shown, tier1, contractId, network)
+          : issuerCollision(shown, tier1, subject.issuer ?? null);
+      if (collision !== null) flags.push(collision);
     } else {
       // no exact tier-1 match, look for a lookalike
       const lookalike = nearestTier1Match(symbolUpper, tier1List);
@@ -106,9 +106,9 @@ export function evaluateScamHeuristics(
         flags.push({
           id: "lookalike_symbol",
           severity: lookalike.distance === 1 ? "warning" : "info",
-          message: `Symbol "${rawSymbol}" is suspiciously close to "${lookalike.tier1Symbol}" (edit distance ${lookalike.distance}).`,
+          message: `Symbol "${shown}" is suspiciously close to "${lookalike.tier1Symbol}" (edit distance ${lookalike.distance}).`,
           detail: {
-            symbol: rawSymbol,
+            symbol: shown,
             lookalikeOf: lookalike.tier1Symbol,
             distance: lookalike.distance,
           },
@@ -125,25 +125,85 @@ export function evaluateScamHeuristics(
       flags.push({
         id: "suspicious_character",
         severity: "critical",
-        message: `Symbol "${rawSymbol}" contains characters outside [A-Za-z0-9]. Legitimate SEP-1 issuers do not use homoglyphs or accents.`,
-        detail: { symbol: rawSymbol },
+        message: `Symbol "${shown}" contains characters outside [A-Za-z0-9]. Legitimate SEP-1 issuers do not use homoglyphs or accents.`,
+        detail: { symbol: shown },
       });
     }
   }
 
-  // soroban contract not on the allow-list
-  if (subject.contractId !== undefined && subject.contractId.length > 0) {
-    if (!isAllowedContract(subject.contractId)) {
-      flags.push({
-        id: "unknown_contract",
-        severity: "warning",
-        message: `Contract ${subject.contractId} is not on the verified allow-list.`,
-        detail: { contractId: subject.contractId },
-      });
-    }
+  // a sep-41 name is free text, so only hidden or reordering characters count
+  const name = subject.name ?? "";
+  if (hasHiddenCharacters(name)) {
+    flags.push({
+      id: "suspicious_character",
+      severity: "critical",
+      message: `Token name "${safeDisplay(name)}" contains hidden or text-reordering characters.`,
+      detail: { name: safeDisplay(name) },
+    });
+  }
+
+  // soroban contract not on this network's allow-list
+  if (contractId !== null && !isAllowedContract(contractId, NETWORKS[network])) {
+    flags.push({
+      id: "unknown_contract",
+      severity: "warning",
+      message: `Contract ${contractId} is not on the verified allow-list.`,
+      detail: { contractId },
+    });
   }
 
   return flags;
+}
+
+// classic trustline with a tier-1 code. a credit asset coded XLM is never native
+// lumens; any other tier-1 code collides when the canonical issuer is known and
+// differs. abstains when either issuer is unknown.
+function issuerCollision(
+  symbol: string,
+  tier1: Tier1Asset,
+  seenIssuer: string | null,
+): ScamFlag | null {
+  if (seenIssuer === null) return null;
+  if (tier1.native === true) {
+    return {
+      id: "exact_symbol_collision",
+      severity: "critical",
+      message: `"${symbol}" here is a credit asset issued by ${seenIssuer}. Real lumens (XLM) are native and have no issuer.`,
+      detail: { symbol: symbol, seenIssuer },
+    };
+  }
+  if (tier1.issuer === null || seenIssuer === tier1.issuer) return null;
+  return {
+    id: "exact_symbol_collision",
+    severity: "critical",
+    message: `Symbol "${symbol}" matches a tier-1 asset but is issued by ${seenIssuer}, not the canonical issuer.`,
+    detail: { symbol: symbol, seenIssuer, canonicalIssuer: tier1.issuer },
+  };
+}
+
+// sep-41 token with a tier-1 symbol. the real asset's only contract is its
+// stellar asset contract, derived from the canonical asset and the network, so
+// any other contract claiming the symbol is an impersonation. abstains when the
+// canonical issuer is unknown on this network.
+function contractCollision(
+  symbol: string,
+  tier1: Tier1Asset,
+  contractId: string,
+  network: StellarNetwork,
+): ScamFlag | null {
+  const passphrase = NETWORKS[network].passphrase;
+  let canonical: string;
+  if (tier1.native === true) canonical = Asset.native().contractId(passphrase);
+  else if (tier1.issuer !== null) {
+    canonical = new Asset(tier1.symbol, tier1.issuer).contractId(passphrase);
+  } else return null;
+  if (contractId === canonical) return null;
+  return {
+    id: "exact_symbol_collision",
+    severity: "critical",
+    message: `Token symbol "${symbol}" matches a tier-1 asset, but contract ${contractId} is not its canonical contract ${canonical}.`,
+    detail: { symbol: symbol, contractId, canonicalContract: canonical },
+  };
 }
 
 interface LookalikeMatch {
@@ -225,4 +285,38 @@ export function runScamHeuristics(
 export interface ScamFinding {
   readonly flag: ScamFlag;
   readonly asset: AssetIdentifier;
+}
+
+export interface HeldTokenSubject {
+  readonly contractId: string;
+  // read from the contract's symbol() / name(); attacker-controlled
+  readonly symbol?: string;
+  readonly name?: string;
+}
+
+// run scam heuristics across held SEP-41 tokens. their symbol and name come from
+// the token contract itself, so this is where lookalike, homoglyph and
+// impersonation checks actually matter
+export function runHeldTokenScamHeuristics(
+  tokens: readonly HeldTokenSubject[],
+  network: StellarNetwork = "mainnet",
+): readonly ScamFinding[] {
+  const findings: ScamFinding[] = [];
+  for (const token of tokens) {
+    const flags = evaluateScamHeuristics(
+      {
+        contractId: token.contractId,
+        ...(token.symbol !== undefined ? { symbol: token.symbol } : {}),
+        ...(token.name !== undefined ? { name: token.name } : {}),
+      },
+      network,
+    );
+    const asset: AssetIdentifier = {
+      kind: "contract",
+      contractId: token.contractId,
+      ...(token.symbol !== undefined ? { symbol: safeDisplay(token.symbol) } : {}),
+    };
+    for (const flag of flags) findings.push({ flag, asset });
+  }
+  return findings;
 }
