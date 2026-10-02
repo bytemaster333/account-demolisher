@@ -4,8 +4,17 @@
 
 import type { NetworkConfig } from "@/lib/config/networks";
 
+// stellar.expert serves only the public network and testnet, which are also the
+// only supported targets; any other id is a configuration error, not a link
 function slugFor(network: NetworkConfig): string {
-  return network.id === "mainnet" ? "public" : network.id;
+  switch (network.id) {
+    case "mainnet":
+      return "public";
+    case "testnet":
+      return "testnet";
+    default:
+      throw new Error(`stellar.expert has no explorer for network "${String(network.id)}"`);
+  }
 }
 
 export function explorerAccountUrl(network: NetworkConfig, publicKey: string): string {

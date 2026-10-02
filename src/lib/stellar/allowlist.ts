@@ -79,14 +79,10 @@ function inspectAuthEntries(ihf: Operation.InvokeHostFunction): AllowlistViolati
 
   const isForbidden = (name: string): boolean => /createContract|uploadContractWasm/i.test(name);
 
+  // an unreadable invocation throws out to the per-entry catch below, which
+  // refuses the entry; it must never count as "not forbidden"
   const walk = (invocation: xdr.SorobanAuthorizedInvocation): boolean => {
-    let fnName: string;
-    try {
-      fnName = invocation.function.type;
-    } catch {
-      return false;
-    }
-    if (isForbidden(fnName)) return true;
+    if (isForbidden(invocation.function.type)) return true;
     for (const sub of invocation.subInvocations) {
       if (walk(sub)) return true;
     }
@@ -183,6 +179,7 @@ function inspectOperation(
   }
 }
 
+// only mainnet and testnet are supported targets; any other id has no allow-list
 function networkAwareReason(network: NetworkConfig | undefined): string {
   if (network === undefined) return "Contract is not on MAINNET_ALLOWLIST.";
   switch (network.id) {
@@ -190,7 +187,7 @@ function networkAwareReason(network: NetworkConfig | undefined): string {
       return "Contract is not on MAINNET_ALLOWLIST.";
     case "testnet":
       return "Contract is not on TESTNET_ALLOWLIST.";
-    case "futurenet":
-      return "Contract is not on the (empty) FUTURENET allow-list.";
+    default:
+      return `No contract allow-list exists for network "${String(network.id)}".`;
   }
 }
