@@ -2,7 +2,12 @@
 import type { FeeBumpTransaction, Transaction } from "@stellar/stellar-sdk";
 import { LEDGER_ID, type LedgerModule } from "@creit.tech/stellar-wallets-kit/modules/ledger";
 
-import { ensureWalletConnectReady, getKit, type KitHandle } from "@/lib/wallet/kit";
+import {
+  getKit,
+  restoreKitSessionSnapshot,
+  snapshotKitSession,
+  type KitHandle,
+} from "@/lib/wallet/kit";
 import { toLedgerSigningError } from "@/lib/wallet/ledger-errors";
 import { verifySignedEnvelope } from "@/lib/wallet/signed-envelope";
 import type { NetworkConfig } from "@/lib/config/networks";
@@ -39,9 +44,6 @@ export class WalletKitConnector implements Connector {
 
   // opens the kit's authModal, returns the picked wallet's public key
   async connect(): Promise<{ publicKey: string }> {
-    // make sure a configured WalletConnect has finished its relay handshake so it
-    // renders as connectable in the picker (see ensureWalletConnectReady)
-    await ensureWalletConnectReady();
     const { address } = await this.kit.authModal();
     this.cachedAddress = address;
     return { publicKey: address };
@@ -104,5 +106,24 @@ export class WalletKitConnector implements Connector {
       signedXdr: signedAuthEntry,
       signerAddress: signerAddress ?? address,
     };
+  }
+}
+
+// sign with a wallet picked just for this one signature (a co-signer on /sign)
+// without it becoming the app's connected wallet. the kit persists whatever the
+// picker selects, so without this a later page load would restore the
+// co-signer's account as the connected one. the session that existed before is
+// put back afterwards, or the kit is disconnected if there was none, whether the
+// signature succeeded or not.
+export async function withScopedKitSession<T>(
+  network: NetworkConfig,
+  run: (connector: WalletKitConnector) => Promise<T>,
+): Promise<T> {
+  getKit(network);
+  const before = snapshotKitSession();
+  try {
+    return await run(new WalletKitConnector(network));
+  } finally {
+    await restoreKitSessionSnapshot(before);
   }
 }
