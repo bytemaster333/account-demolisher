@@ -104,31 +104,10 @@ function getWalletConnectModule(network: NetworkConfig): WalletConnectModule | n
   return wcModule;
 }
 
-// the zero-config wallets the picker offers. kit 2.5 to 2.7 added d'cent,
-// scopuly, metamask and ghostsig to defaultModules(); they stay out until they
-// are reviewed against the csp and the signing flows, so the picker is the same
-// eleven wallets it was on kit 2.3.
-const PICKER_WALLET_IDS: ReadonlySet<string> = new Set([
-  "albedo",
-  "freighter",
-  "fordefi",
-  "rabet",
-  "xbull",
-  "lobstr",
-  "hana",
-  "klever",
-  "onekey",
-  "BitgetWallet",
-  "cactuslink",
-]);
-
-// the wallet-picker module list: the 11 zero-config defaults plus Ledger
+// the wallet-picker module list: the 15 zero-config defaults plus Ledger
 // (hardware, WebUSB) and, when configured, WalletConnect (mobile via QR)
 function buildModules(network: NetworkConfig) {
-  const modules = [
-    ...defaultModules({ filterBy: (m) => PICKER_WALLET_IDS.has(m.productId) }),
-    new LedgerModule(),
-  ];
+  const modules = [...defaultModules(), new LedgerModule()];
   const wc = getWalletConnectModule(network);
   if (wc) modules.push(wc);
   return modules;

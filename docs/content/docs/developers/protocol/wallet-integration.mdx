@@ -8,7 +8,7 @@ connected wallet, and receives a signed envelope back.
 
 That handoff goes through
 [Stellar Wallets Kit](https://github.com/Creit-Tech/Stellar-Wallets-Kit)
-(`@creit.tech/stellar-wallets-kit`, pinned at 2.3.0), wired in `src/lib/wallet/kit.ts`.
+(`@creit.tech/stellar-wallets-kit`, pinned at 2.7.0), wired in `src/lib/wallet/kit.ts`.
 
 ## What the app calls
 
@@ -40,7 +40,7 @@ const modules = [...defaultModules(), new LedgerModule()];
 // plus WalletConnect when NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID is set
 ```
 
-`defaultModules()` in the pinned version returns eleven wallets, in this order:
+`defaultModules()` in the pinned version returns fifteen wallets, in this order:
 
 | #   | Wallet        | Product id     |
 | --- | ------------- | -------------- |
@@ -55,6 +55,10 @@ const modules = [...defaultModules(), new LedgerModule()];
 | 9   | OneKey Wallet | `onekey`       |
 | 10  | Bitget Wallet | `BitgetWallet` |
 | 11  | Cactus Link   | `cactuslink`   |
+| 12  | D'CENT Wallet | `dcent`        |
+| 13  | Scopuly       | `scopuly`      |
+| 14  | MetaMask      | `metamask`     |
+| 15  | GHOSTSIG      | `ghostsig`     |
 
 A wallet that ships a module in the kit's defaults appears automatically once the app moves
 to a kit version including it. **There is nothing to register on the app's side.**
@@ -65,7 +69,7 @@ Two modules are added on top:
   which the app polyfills additively without overwriting an existing one.
 - **WalletConnect** is added only when `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` is set.
 
-That makes the picker 12 entries without WalletConnect configured, and 13 with it.
+That makes the picker 16 entries without WalletConnect configured, and 17 with it.
 
 Trezor ships in the package but is not in `defaultModules()` and is not added here, so it
 does not appear.
