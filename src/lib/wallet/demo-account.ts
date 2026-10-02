@@ -1,32 +1,51 @@
-// one-click testnet/futurenet "showcase" account
+// one-click testnet "showcase" account. testnet only: every contract and asset
+// below is a testnet deployment, and the account is funded by friendbot.
 
 import {
   Address,
   Asset,
   Claimant,
   Contract,
+  FeeBumpTransaction,
   Horizon,
   Keypair,
   Operation,
   TransactionBuilder,
+  scValToNative,
   xdr,
+  type Transaction,
 } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import { explorerAccountUrl } from "@/lib/explorer";
 import { getRpc } from "@/lib/soroban/rpc-client";
-import { buildApprove } from "@/lib/soroban/sep41";
+import { address as scvAddress, i128 as scvI128, vec as scvVec } from "@/lib/soroban/scval";
+import { balance, buildApprove } from "@/lib/soroban/sep41";
+import { assembleSubmittable, simulateRead } from "@/lib/soroban/simulate";
+import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
 
 // circle testnet usdc: issuer published in https://testanchor.stellar.org/.well-known/stellar.toml
 const USDC_TESTNET_ISSUER = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
-// native xlm SAC on testnet: confirmed via the stellar laboratory
-const NATIVE_XLM_SAC_TESTNET = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
 // blend testnet pool TestnetV2: from BLEND_TESTNET_POOLS in src/lib/adapters/blend/pools.ts
 const BLEND_POOL_TESTNET = "CCEBVDYM32YNYCVNRXQKDFFPISJJCV557CDZEIRBEE4NCV4KHPQ44HGF";
 // soroswap testnet router: from TESTNET_SOROSWAP_ENTRIES in src/lib/config/contracts.ts
 const SOROSWAP_ROUTER_TESTNET = "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD";
+
+// the demo creates real testnet state, so it runs on testnet and nowhere else
+export function isDemoNetwork(network: NetworkConfig): boolean {
+  return network.id === "testnet";
+}
+
+// the native XLM SAC id is derived from the network passphrase
+function nativeSac(network: NetworkConfig): string {
+  return Asset.native().contractId(network.passphrase);
+}
+
+function usdcSac(network: NetworkConfig): string {
+  return new Asset("USDC", USDC_TESTNET_ISSUER).contractId(network.passphrase);
+}
 
 export type DemoStepId =
   | "keypair"
@@ -142,10 +161,9 @@ export interface RunDemoOptions {
 
 export async function runDemoSetup(opts: RunDemoOptions): Promise<DemoAccountResult> {
   const { network, onStart, onFinish } = opts;
-  if (network.friendbot === null) {
-    throw new Error(
-      `Demo account is only available on networks with a friendbot. Current network: ${network.id}.`,
-    );
+  const friendbot = network.friendbot;
+  if (!isDemoNetwork(network) || friendbot === null) {
+    throw new Error(`The practice account is available on testnet only, not on ${network.id}.`);
   }
 
   // step 1: keypair (cannot fail)
@@ -162,7 +180,7 @@ export async function runDemoSetup(opts: RunDemoOptions): Promise<DemoAccountRes
   // step 2: friendbot (fatal on failure)
   onStart("friendbot");
   try {
-    await friendbotFund(network.friendbot, publicKey);
+    await friendbotFund(friendbot, publicKey);
     onFinish({ id: "friendbot", status: "done", detail: "10,000 XLM credited" });
   } catch (e) {
     onFinish({ id: "friendbot", status: "failed", error: errorMessage(e) });
@@ -334,17 +352,17 @@ export async function runDemoSetup(opts: RunDemoOptions): Promise<DemoAccountRes
     onFinish({ id: "blend-supply", status: "skipped", error: errorMessage(e) });
   }
 
-  // step 10: soroswap aggregator swap XLM → USDC (best-effort, soroban + REST)
+  // step 10: soroswap router swap XLM → USDC (best-effort, soroban)
   onStart("soroswap-swap");
   let soroswapSwapSucceeded = false;
   try {
-    const hash = await soroswapSwap(network, secret, publicKey, "50.0000000");
+    const hash = await soroswapSwap(network, secret, publicKey, 500_000_000n);
     soroswapSwapSucceeded = true;
     onFinish({
       id: "soroswap-swap",
       status: "done",
       txHash: hash,
-      detail: "Routed 50 XLM through the Soroswap aggregator into USDC",
+      detail: "Swapped 50 XLM into USDC through the Soroswap router",
     });
   } catch (e) {
     onFinish({ id: "soroswap-swap", status: "skipped", error: errorMessage(e) });
@@ -482,7 +500,7 @@ async function approveSep41(
   const liveUntil = latest.sequence + 86_400;
   const tx = await buildApprove(
     server,
-    NATIVE_XLM_SAC_TESTNET,
+    nativeSac(network),
     publicKey,
     spender,
     100n,
@@ -490,25 +508,9 @@ async function approveSep41(
     network,
     account,
   );
+  assertDemoSorobanTx(tx, publicKey, network, { contractId: nativeSac(network), fn: "approve" });
   tx.sign(Keypair.fromSecret(secret));
-  const submitted = await server.sendTransaction(tx);
-  if (submitted.status === "ERROR") {
-    throw new Error(`sendTransaction rejected: ${submitted.errorResult?.toXdr("base64") ?? ""}`);
-  }
-  // sendTransaction only confirms queue acceptance
-  const hash = submitted.hash;
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    await delay(800);
-    const status = await server.getTransaction(hash);
-    if (status.status === "SUCCESS") return hash;
-    if (status.status === "FAILED") {
-      const resultXdr = status.resultXdr?.toXdr("base64") ?? "<no result>";
-      throw new Error(`approve tx failed on-chain: ${resultXdr}`);
-    }
-    // NOT_FOUND → still propagating; keep polling
-  }
-  throw new Error(`approve tx ${hash.slice(0, 8)}… stayed PENDING after 30s`);
+  return submitAndPollSoroban(server, tx, "sep41-allowance");
 }
 
 function delay(ms: number): Promise<void> {
@@ -550,7 +552,7 @@ async function blendSupplyXlm(
   const request = xdr.ScVal.scvMap([
     new xdr.ScMapEntry({
       key: xdr.ScVal.scvSymbol("address"),
-      val: new Address(NATIVE_XLM_SAC_TESTNET).toScVal(),
+      val: new Address(nativeSac(network)).toScVal(),
     }),
     new xdr.ScMapEntry({
       key: xdr.ScVal.scvSymbol("amount"),
@@ -585,70 +587,123 @@ async function blendSupplyXlm(
     .setTimeout(120)
     .build();
 
-  const { assembleSubmittable } = await import("@/lib/soroban/simulate");
   const prepared = await assembleSubmittable(server, tx);
-  if ("innerTransaction" in prepared) throw new Error("blend-supply: got FeeBumpTransaction");
-
+  assertDemoSorobanTx(prepared, publicKey, network, {
+    contractId: BLEND_POOL_TESTNET,
+    fn: "submit",
+  });
   prepared.sign(Keypair.fromSecret(secret));
   return submitAndPollSoroban(server, prepared, "blend-supply");
 }
 
-// XLM → USDC swap via the soroswap aggregator proxy
+// read-only call against the soroswap router (simulation only, nothing signed)
+async function routerRead(
+  network: NetworkConfig,
+  publicKey: string,
+  fn: string,
+  args: xdr.ScVal[],
+): Promise<unknown> {
+  const { retval } = await simulateRead(
+    getRpc(network),
+    SOROSWAP_ROUTER_TESTNET,
+    fn,
+    args,
+    publicKey,
+    network,
+  );
+  return scValToNative(retval);
+}
+
+// unix seconds the router compares against the ledger timestamp
+function routerDeadline(): xdr.ScVal {
+  const deadline = Math.floor(Date.now() / 1000) + 300;
+  return xdr.ScVal.scvU64(xdr.Uint64.fromString(String(deadline)));
+}
+
+// XLM → USDC swap_exact_tokens_for_tokens against the soroswap router, the same
+// allow-listed on-chain contract the close's own conversions go through
 async function soroswapSwap(
   network: NetworkConfig,
   secret: string,
   publicKey: string,
-  amountInXlm: string,
+  amountIn: bigint,
 ): Promise<string> {
-  const { soroswapClient } = await import("@/lib/adapters/soroswap/client");
-  if (network.id !== "testnet" && network.id !== "mainnet") {
-    throw new Error(`soroswap-swap unsupported on network "${network.id}"`);
+  const path = scvVec([scvAddress(nativeSac(network)), scvAddress(usdcSac(network))]);
+  const amounts = (await routerRead(network, publicKey, "router_get_amounts_out", [
+    scvI128(amountIn),
+    path,
+  ])) as bigint[];
+  const expectedOut = amounts[amounts.length - 1];
+  if (expectedOut === undefined || expectedOut <= 0n) {
+    throw new Error("Soroswap testnet has no XLM/USDC liquidity right now.");
   }
-  const usdcSacAddress = new Asset("USDC", USDC_TESTNET_ISSUER).contractId(network.passphrase);
-  const assetInAddress = Asset.native().contractId(network.passphrase);
-  const amountInStroops = BigInt(Math.round(Number(amountInXlm) * 1e7));
+  // 2% under the quote, so another trade in the same ledger can't revert it
+  const amountOutMin = (expectedOut * 98n) / 100n;
 
-  let quote;
-  try {
-    quote = await soroswapClient.quote({
-      assetIn: assetInAddress,
-      assetOut: usdcSacAddress,
-      amount: amountInStroops,
-      tradeType: "EXACT_IN",
-      protocols: ["soroswap", "phoenix", "aqua"],
-      maxHops: 2,
-      slippageBps: 200,
-      network: network.id,
-    });
-  } catch (e) {
-    // most common testnet failure: "No path found". soroswap testnet has zero
-    // pools at the moment, so the aggregator can't route any trade
-    if (e instanceof Error && /no path|UPSTREAM_ERROR/i.test(e.message)) {
-      throw new Error(
-        `Soroswap ${network.id} has no liquidity for this pair right now (no on-chain pools).`,
-      );
-    }
-    throw e;
-  }
-
-  const built = await soroswapClient.build({
-    quote,
-    from: publicKey,
-    to: publicKey,
-    network: network.id,
-  });
-
-  const tx = TransactionBuilder.fromXdr(built.xdr, network.passphrase);
-  if ("innerTransaction" in tx) {
-    throw new Error("soroswap-swap: aggregator returned a fee-bump transaction");
-  }
-  tx.sign(Keypair.fromSecret(secret));
-
+  const horizon = new Horizon.Server(network.horizon);
   const server = getRpc(network);
-  return submitAndPollSoroban(server, tx, "soroswap-swap");
+  const account = await horizon.loadAccount(publicKey);
+  const tx = new TransactionBuilder(account, {
+    fee: "1000",
+    networkPassphrase: network.passphrase,
+  })
+    .addOperation(
+      new Contract(SOROSWAP_ROUTER_TESTNET).call(
+        "swap_exact_tokens_for_tokens",
+        scvI128(amountIn),
+        scvI128(amountOutMin),
+        path,
+        scvAddress(publicKey),
+        routerDeadline(),
+      ),
+    )
+    .setTimeout(120)
+    .build();
+
+  const prepared = await assembleSubmittable(server, tx);
+  assertDemoSorobanTx(prepared, publicKey, network, {
+    contractId: SOROSWAP_ROUTER_TESTNET,
+    fn: "swap_exact_tokens_for_tokens",
+  });
+  prepared.sign(Keypair.fromSecret(secret));
+  return submitAndPollSoroban(server, prepared, "soroswap-swap");
 }
 
-// adds liquidity to the soroswap XLM/USDC pair directly against the testnet
+// amount of b worth amountA at the pool's current ratio: the uniswap-v2 quote the
+// router itself uses (router_quote), amountA * reserveB / reserveA
+export function quoteAgainstReserves(amountA: bigint, reserveA: bigint, reserveB: bigint): bigint {
+  if (amountA <= 0n || reserveA <= 0n || reserveB <= 0n) {
+    throw new RangeError("quoteAgainstReserves: amounts and reserves must be positive");
+  }
+  return (amountA * reserveB) / reserveA;
+}
+
+// sizes an add_liquidity deposit to the pool's current ratio. the router only
+// accepts a deposit within its minimums of that ratio, so fixed amounts fail
+// whenever the testnet price moves. starts from xlmWanted and scales down when
+// the USDC on hand can't match it; each minimum is 1% under its side.
+export function sizeLiquidityDeposit(
+  xlmWanted: bigint,
+  usdcAvailable: bigint,
+  reserveXlm: bigint,
+  reserveUsdc: bigint,
+): { xlm: bigint; usdc: bigint; xlmMin: bigint; usdcMin: bigint } {
+  if (usdcAvailable <= 0n) {
+    throw new Error("No USDC to pair with XLM for the liquidity deposit.");
+  }
+  let xlm = xlmWanted;
+  let usdc = quoteAgainstReserves(xlm, reserveXlm, reserveUsdc);
+  if (usdc > usdcAvailable) {
+    usdc = usdcAvailable;
+    xlm = quoteAgainstReserves(usdc, reserveUsdc, reserveXlm);
+  }
+  if (xlm <= 0n || usdc <= 0n) {
+    throw new Error("The deposit rounds to zero at the pool's current price.");
+  }
+  return { xlm, usdc, xlmMin: (xlm * 99n) / 100n, usdcMin: (usdc * 99n) / 100n };
+}
+
+// adds liquidity to the soroswap XLM/USDC pair, sized from the live reserves
 async function soroswapAddLiquidity(
   network: NetworkConfig,
   secret: string,
@@ -656,75 +711,142 @@ async function soroswapAddLiquidity(
 ): Promise<string> {
   const horizon = new Horizon.Server(network.horizon);
   const server = getRpc(network);
+  const xlmSac = nativeSac(network);
+  const usdcId = usdcSac(network);
+
+  // the router's library get_reserves returns the pair in the order asked for
+  const factory = (await routerRead(network, publicKey, "get_factory", [])) as string;
+  const [reserveXlm, reserveUsdc] = (await routerRead(network, publicKey, "get_reserves", [
+    scvAddress(factory),
+    scvAddress(xlmSac),
+    scvAddress(usdcId),
+  ])) as [bigint, bigint];
+  const usdcHeld = await balance(server, usdcId, publicKey, publicKey, network);
+  // 20 XLM, or less when the swapped USDC can't match it
+  const deposit = sizeLiquidityDeposit(200_000_000n, usdcHeld, reserveXlm, reserveUsdc);
+
   const account = await horizon.loadAccount(publicKey);
-
-  const xlmSac = Asset.native().contractId(network.passphrase);
-  const usdcSac = new Asset("USDC", USDC_TESTNET_ISSUER).contractId(network.passphrase);
-
-  // 20 XLM + 10 USDC desired, 1% minimums
-  const amountXlmDesired = 200_000_000n; // 20 XLM, 7 decimals
-  const amountUsdcDesired = 100_000_000n; // 10 USDC, 7 decimals
-  const amountXlmMin = 198_000_000n;
-  const amountUsdcMin = 99_000_000n;
-  const deadlineSec = BigInt(Math.floor(Date.now() / 1000) + 300);
-
-  const contract = new Contract(SOROSWAP_ROUTER_TESTNET);
   const tx = new TransactionBuilder(account, {
     fee: "1000",
     networkPassphrase: network.passphrase,
   })
     .addOperation(
-      contract.call(
+      new Contract(SOROSWAP_ROUTER_TESTNET).call(
         "add_liquidity",
-        new Address(xlmSac).toScVal(),
-        new Address(usdcSac).toScVal(),
-        xdr.ScVal.scvI128(bigintToInt128(amountXlmDesired)),
-        xdr.ScVal.scvI128(bigintToInt128(amountUsdcDesired)),
-        xdr.ScVal.scvI128(bigintToInt128(amountXlmMin)),
-        xdr.ScVal.scvI128(bigintToInt128(amountUsdcMin)),
-        new Address(publicKey).toScVal(),
-        xdr.ScVal.scvU64(xdr.Uint64.fromString(deadlineSec.toString())),
+        scvAddress(xlmSac),
+        scvAddress(usdcId),
+        scvI128(deposit.xlm),
+        scvI128(deposit.usdc),
+        scvI128(deposit.xlmMin),
+        scvI128(deposit.usdcMin),
+        scvAddress(publicKey),
+        routerDeadline(),
       ),
     )
     .setTimeout(120)
     .build();
 
-  const { assembleSubmittable } = await import("@/lib/soroban/simulate");
   const prepared = await assembleSubmittable(server, tx);
-  if ("innerTransaction" in prepared) throw new Error("soroswap-lp: got FeeBumpTransaction");
-
+  assertDemoSorobanTx(prepared, publicKey, network, {
+    contractId: SOROSWAP_ROUTER_TESTNET,
+    fn: "add_liquidity",
+  });
   prepared.sign(Keypair.fromSecret(secret));
   return submitAndPollSoroban(server, prepared, "soroswap-lp");
 }
 
-// build an xdr.Int128Parts from a positive bigint. soroswap router amounts are
-// always non-negative; this helper trades correctness-for-negatives for brevity
-function bigintToInt128(n: bigint): xdr.Int128Parts {
-  const mask = (1n << 64n) - 1n;
-  const lo = n & mask;
-  const hi = n >> 64n;
-  return new xdr.Int128Parts({
-    hi: xdr.Int64.fromString(hi.toString()),
-    lo: xdr.Uint64.fromString(lo.toString()),
-  });
+export interface ExpectedDemoCall {
+  readonly contractId: string;
+  readonly fn: string;
 }
 
-// shared sendTransaction + polling loop for soroban submissions
-async function submitAndPollSoroban(
-  server: Awaited<ReturnType<typeof getRpc>>,
-  tx: Parameters<typeof server.sendTransaction>[0],
+// checked before the demo key signs any soroban transaction: exactly one
+// invocation of the expected contract function, sourced from the demo account,
+// with every authorization coming from that account and rooted in that same
+// call. a protocol contract must also pass the allow-list; the one
+// non-protocol call (approve on the native XLM SAC) may authorize nothing nested
+// and must grant from the demo account.
+export function assertDemoSorobanTx(
+  tx: Transaction | FeeBumpTransaction,
+  publicKey: string,
+  network: NetworkConfig,
+  expected: ExpectedDemoCall,
+): asserts tx is Transaction {
+  const fail = (why: string): never => {
+    throw new Error(`Refusing to sign the demo ${expected.fn} transaction: ${why}.`);
+  };
+  if (tx instanceof FeeBumpTransaction) return fail("it is a fee-bump envelope");
+  if (tx.source !== publicKey) fail(`its source is ${tx.source}, not the demo account`);
+  if (tx.operations.length !== 1) fail(`it has ${tx.operations.length} operations`);
+  const op = tx.operations[0]!;
+  if (op.type !== "invokeHostFunction") return fail(`its operation is ${op.type}`);
+  if (op.source !== undefined && op.source !== publicKey) {
+    fail(`its operation runs as ${op.source}`);
+  }
+  const ihf = op as Operation.InvokeHostFunction;
+  if (ihf.func.type !== "hostFunctionTypeInvokeContract") {
+    return fail(`it runs ${ihf.func.type}`);
+  }
+  const call = ihf.func.invokeContract;
+  const isExpected = (c: xdr.InvokeContractArgs) =>
+    Address.fromScAddress(c.contractAddress).toString() === expected.contractId &&
+    c.functionName.toString() === expected.fn;
+  if (!isExpected(call)) fail("it calls a different contract or function");
+
+  const isNativeApprove = expected.contractId === nativeSac(network) && expected.fn === "approve";
+  (ihf.auth ?? []).forEach((entry, i) => {
+    if (entry.credentials.type !== "sorobanCredentialsSourceAccount") {
+      fail(`authorization ${i} is signed by another address`);
+    }
+    const root = entry.rootInvocation;
+    if (
+      root.function.type !== "sorobanAuthorizedFunctionTypeContractFn" ||
+      !isExpected(root.function.contractFn)
+    ) {
+      fail(`authorization ${i} is for a different call`);
+    }
+    if (isNativeApprove && root.subInvocations.length > 0) {
+      fail(`authorization ${i} authorizes nested calls`);
+    }
+  });
+
+  if (isNativeApprove) {
+    const from = call.args[0] === undefined ? undefined : scValToNative(call.args[0]);
+    if (from !== publicKey) fail("the allowance is not granted from the demo account");
+  } else {
+    assertTransactionAllowed(tx, network);
+  }
+}
+
+// how long and how often a demo submission is polled before it is reported as
+// not landed
+export interface PollOptions {
+  readonly timeoutMs: number;
+  readonly intervalMs: number;
+}
+
+const DEFAULT_POLL: PollOptions = { timeoutMs: 30_000, intervalMs: 800 };
+
+// send and wait for the result. only PENDING (queued) and DUPLICATE (already
+// queued) mean the network took the transaction; TRY_AGAIN_LATER and ERROR were
+// never queued, so polling for them would only wait out the timeout.
+export async function submitAndPollSoroban(
+  server: Pick<ReturnType<typeof getRpc>, "sendTransaction" | "getTransaction">,
+  tx: Transaction,
   stepLabel: string,
+  poll: PollOptions = DEFAULT_POLL,
 ): Promise<string> {
   const sent = await server.sendTransaction(tx);
-  if (sent.status === "ERROR") {
+  if (sent.status !== "PENDING" && sent.status !== "DUPLICATE") {
+    const detail = sent.errorResult ? `: ${sent.errorResult.toXdr("base64")}` : "";
     throw new Error(
-      `${stepLabel}: sendTransaction rejected: ${sent.errorResult?.toXdr("base64") ?? ""}`,
+      `${stepLabel}: the network did not accept the transaction (${sent.status})${detail}`,
     );
   }
   const hash = sent.hash;
-  const deadline = Date.now() + 30_000;
+  const deadline = Date.now() + poll.timeoutMs;
   while (Date.now() < deadline) {
-    await delay(800);
+    await delay(poll.intervalMs);
     const st = await server.getTransaction(hash);
     if (st.status === "SUCCESS") return hash;
     if (st.status === "FAILED") {
@@ -733,5 +855,9 @@ async function submitAndPollSoroban(
       );
     }
   }
-  throw new Error(`${stepLabel} tx ${hash.slice(0, 8)}… stayed PENDING after 30s`);
+  throw new Error(
+    `${stepLabel} tx ${hash.slice(0, 8)}… was accepted but not in a ledger after ${
+      poll.timeoutMs / 1000
+    }s`,
+  );
 }
