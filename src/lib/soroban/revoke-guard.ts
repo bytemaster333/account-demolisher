@@ -45,38 +45,34 @@ export function assertSafeRevokeInvocation(tx: Transaction, expected: ExpectedRe
 
   // 1) the invoked call itself must be exactly the intended approve(0)
   const func = ihf.func;
-  if (func.switch().name !== "hostFunctionTypeInvokeContract") {
-    throw new UnsafeRevokeError(
-      `host function is "${func.switch().name}", expected invokeContract`,
-    );
+  if (func.type !== "hostFunctionTypeInvokeContract") {
+    throw new UnsafeRevokeError(`host function is "${func.type}", expected invokeContract`);
   }
-  assertApproveCall(func.invokeContract(), expected, "invocation");
+  assertApproveCall(func.invokeContract, expected, "invocation");
 
   // 2) every auth entry must authorize ONLY that same approve. A hostile token
   //    that tries to move other balances must add either a sub-invocation or a
   //    separate entry targeting a different contract/function — both rejected here.
   const auth = ihf.auth ?? [];
   auth.forEach((entry, i) => {
-    const cred = entry.credentials().switch().name;
+    const cred = entry.credentials.type;
     if (cred !== "sorobanCredentialsSourceAccount") {
       throw new UnsafeRevokeError(
         `auth[${i}] uses "${cred}" credentials; a safe revoke is authorized only by the source account`,
       );
     }
-    const root = entry.rootInvocation();
-    const subs = root.subInvocations();
+    const root = entry.rootInvocation;
+    const subs = root.subInvocations;
     if (subs.length !== 0) {
       throw new UnsafeRevokeError(
         `auth[${i}] carries ${subs.length} sub-invocation(s); a safe revoke authorizes no nested calls`,
       );
     }
-    const rootFn = root.function();
-    if (rootFn.switch().name !== "sorobanAuthorizedFunctionTypeContractFn") {
-      throw new UnsafeRevokeError(
-        `auth[${i}] root is "${rootFn.switch().name}", expected a contract call`,
-      );
+    const rootFn = root.function;
+    if (rootFn.type !== "sorobanAuthorizedFunctionTypeContractFn") {
+      throw new UnsafeRevokeError(`auth[${i}] root is "${rootFn.type}", expected a contract call`);
     }
-    assertApproveCall(rootFn.contractFn(), expected, `auth[${i}]`);
+    assertApproveCall(rootFn.contractFn, expected, `auth[${i}]`);
   });
 }
 
@@ -85,17 +81,17 @@ function assertApproveCall(
   expected: ExpectedRevoke,
   where: string,
 ): void {
-  const addr = Address.fromScAddress(call.contractAddress()).toString();
+  const addr = Address.fromScAddress(call.contractAddress).toString();
   if (addr !== expected.contractId) {
     throw new UnsafeRevokeError(
       `${where} targets contract ${addr}, expected ${expected.contractId}`,
     );
   }
-  const fnName = Buffer.from(call.functionName()).toString();
+  const fnName = call.functionName.toString();
   if (fnName !== "approve") {
     throw new UnsafeRevokeError(`${where} calls "${fnName}", expected approve`);
   }
-  const args = call.args();
+  const args = call.args;
   if (args.length !== 4) {
     throw new UnsafeRevokeError(
       `${where} approve has ${args.length} args, expected 4 (from, spender, amount, ledger)`,

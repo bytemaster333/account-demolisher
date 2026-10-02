@@ -484,21 +484,21 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
 
 // decode router.get_pools return value
 function decodeBytesN32AddressMap(v: xdr.ScVal): Map<string, string> {
-  if (v.switch().name !== "scvMap") {
-    throw new TypeError(`Expected scvMap for router.get_pools return; got ${v.switch().name}`);
+  if (v.type !== "scvMap") {
+    throw new TypeError(`Expected scvMap for router.get_pools return; got ${v.type}`);
   }
-  const entries = v.map();
+  const entries = v.map;
   if (entries === null) {
     throw new TypeError("router.get_pools return: scvMap had null entries");
   }
   const out = new Map<string, string>();
   for (const entry of entries) {
-    const key = entry.key();
-    const val = entry.val();
-    if (key.switch().name !== "scvBytes") {
-      throw new TypeError(`router.get_pools key: expected scvBytes, got ${key.switch().name}`);
+    const key = entry.key;
+    const val = entry.val;
+    if (key.type !== "scvBytes") {
+      throw new TypeError(`router.get_pools key: expected scvBytes, got ${key.type}`);
     }
-    const keyBytes = key.bytes();
+    const keyBytes = key.bytes.toBytes();
     if (keyBytes.length !== 32) {
       throw new RangeError(
         `router.get_pools key: expected 32 bytes (BytesN<32>), got ${keyBytes.length}`,
@@ -535,8 +535,8 @@ function tryDecodeDepositOrWithdrawEvent(
   let tokens: string[];
   try {
     const tokensScVal = topics[1]!;
-    if (tokensScVal.switch().name !== "scvVec") return null;
-    const vecVal = tokensScVal.vec();
+    if (tokensScVal.type !== "scvVec") return null;
+    const vecVal = tokensScVal.vec;
     if (!vecVal) return null;
     tokens = vecVal.map((t) => fromScValAddress(t));
   } catch {
@@ -552,8 +552,8 @@ function tryDecodeDepositOrWithdrawEvent(
   if (userTopic !== userAddress) return null;
 
   const data = ev.value;
-  if (data.switch().name !== "scvVec") return null;
-  const arr = data.vec();
+  if (data.type !== "scvVec") return null;
+  const arr = data.vec;
   if (!arr || arr.length < 1) return null;
   let poolAddress: string;
   try {

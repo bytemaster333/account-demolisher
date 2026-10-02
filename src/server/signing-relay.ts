@@ -121,7 +121,7 @@ function isClassicTransaction(tx: Transaction | { innerTransaction?: unknown }):
 // to only wake SSE subscribers when a signature was actually added.
 function signatureCount(xdr: string, passphrase: string): number {
   try {
-    const tx = TransactionBuilder.fromXDR(xdr, passphrase) as Transaction;
+    const tx = TransactionBuilder.fromXdr(xdr, passphrase) as Transaction;
     return Array.isArray(tx.signatures) ? tx.signatures.length : -1;
   } catch {
     return -1;
@@ -141,7 +141,7 @@ function signersOf(tx: Transaction, signerKeys: readonly string[]): string[] {
     } catch {
       continue;
     }
-    if (tx.signatures.some((ds) => kp.verify(hash, Buffer.from(ds.signature())))) out.push(key);
+    if (tx.signatures.some((ds) => kp.verify(hash, ds.signature.toBytes()))) out.push(key);
   }
   return out;
 }
@@ -154,7 +154,7 @@ function signersOf(tx: Transaction, signerKeys: readonly string[]): string[] {
 function decodeClose(xdr: string, passphrase: string): { tx: Transaction; source: string } | null {
   let tx: Transaction;
   try {
-    tx = TransactionBuilder.fromXDR(xdr, passphrase) as Transaction;
+    tx = TransactionBuilder.fromXdr(xdr, passphrase) as Transaction;
   } catch {
     return null;
   }
@@ -360,7 +360,7 @@ export function __seedPlanForTests(
   createdAt: number = Date.now(),
 ): string {
   const passphrase = resolveNetwork(network).passphrase;
-  const tx = TransactionBuilder.fromXDR(xdr, passphrase) as Transaction;
+  const tx = TransactionBuilder.fromXdr(xdr, passphrase) as Transaction;
   const id = Buffer.from(tx.hash()).toString("hex");
   plans.set(id, {
     network,

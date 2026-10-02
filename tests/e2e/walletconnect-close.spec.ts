@@ -73,11 +73,11 @@ async function startHeadlessWcWallet(kp: Keypair) {
     const { topic, id, params } = event;
     const { request } = params;
     if (request.method === "stellar_signXDR") {
-      const tx = TransactionBuilder.fromXDR(request.params.xdr as string, PASSPHRASE);
+      const tx = TransactionBuilder.fromXdr(request.params.xdr as string, PASSPHRASE);
       tx.sign(kp);
       await wallet.respond({
         topic,
-        response: { id, jsonrpc: "2.0", result: { signedXDR: tx.toXDR() } },
+        response: { id, jsonrpc: "2.0", result: { signedXDR: tx.toXdr() } },
       });
       return;
     }

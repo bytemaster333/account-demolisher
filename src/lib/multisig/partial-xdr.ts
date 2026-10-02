@@ -21,7 +21,7 @@ export function mergeSignatures(
     throw new Error("mergeSignatures: networkPassphrase must be non-empty.");
   }
 
-  const canonical = TransactionBuilder.fromXDR(canonicalXdr, networkPassphrase);
+  const canonical = TransactionBuilder.fromXdr(canonicalXdr, networkPassphrase);
   if (!isClassicTransaction(canonical)) {
     throw new Error(
       "mergeSignatures: canonical envelope must be a classic Transaction; " +
@@ -55,7 +55,7 @@ export function mergeSignatures(
       throw new Error("mergeSignatures: every partialXdr must be a non-empty base64 string.");
     }
 
-    const partial = TransactionBuilder.fromXDR(partialXdr, networkPassphrase);
+    const partial = TransactionBuilder.fromXdr(partialXdr, networkPassphrase);
     if (!isClassicTransaction(partial)) {
       throw new Error(
         "mergeSignatures: partial envelope must be a classic Transaction (fee-bump rejected).",
@@ -85,14 +85,14 @@ export function mergeSignatures(
       canonical.signatures.push(
         new xdr.DecoratedSignature({
           hint: kp.signatureHint(),
-          signature: Buffer.from(decorated.signature()),
+          signature: decorated.signature.toBytes(),
         }),
       );
       presentKeys.add(signingKey);
     }
   }
 
-  return canonical.toXDR();
+  return canonical.toXdr();
 }
 
 function isClassicTransaction(
@@ -124,7 +124,7 @@ function collectCandidateSigners(
   // walk partials too as a safety net for hand-rolled envelopes
   for (const partial of partialXdrs) {
     try {
-      const tx = TransactionBuilder.fromXDR(partial, networkPassphrase);
+      const tx = TransactionBuilder.fromXdr(partial, networkPassphrase);
       if (!isClassicTransaction(tx)) continue;
       candidates.add(tx.source);
       for (const op of tx.operations) {
@@ -141,11 +141,11 @@ function collectCandidateSigners(
 // recover the public key that signed sig over txHash
 function recoverSigningKey(
   sig: xdr.DecoratedSignature,
-  txHash: Buffer,
+  txHash: Uint8Array,
   candidates: readonly string[],
 ): string | null {
-  const hint = Buffer.from(sig.hint());
-  const signature = Buffer.from(sig.signature());
+  const hint = Buffer.from(sig.hint.toBytes());
+  const signature = sig.signature.toBytes();
 
   // hint-narrowed first
   for (const key of candidates) {

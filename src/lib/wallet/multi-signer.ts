@@ -58,7 +58,7 @@ export class MultiSignerConnector implements Connector {
     tx: Transaction | FeeBumpTransaction,
     networkPassphrase: string,
   ): Promise<{ signedXdr: string; signerPublicKey: string }> {
-    const base = tx.toXDR();
+    const base = tx.toXdr();
     const partials: string[] = [];
     for (const member of this.#members) {
       const { signedXdr } = await member.connector.signTransaction(tx, networkPassphrase);

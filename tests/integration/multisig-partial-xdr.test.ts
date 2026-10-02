@@ -31,9 +31,9 @@ async function friendbotFund(pk: string): Promise<void> {
 
 // one signer signs the canonical tx ALONE and returns its partial envelope xdr
 function partialSign(canonicalXdr: string, signer: Keypair): string {
-  const tx = TransactionBuilder.fromXDR(canonicalXdr, TESTNET.passphrase) as Transaction;
+  const tx = TransactionBuilder.fromXdr(canonicalXdr, TESTNET.passphrase) as Transaction;
   tx.sign(signer);
-  return tx.toEnvelope().toXDR("base64");
+  return tx.toEnvelope().toXdr("base64");
 }
 
 describe("integration: 2-of-3 multisig close via partial-XDR merge (testnet)", () => {
@@ -86,7 +86,7 @@ describe("integration: 2-of-3 multisig close via partial-XDR merge (testnet)", (
     for (const batch of batches) {
       const source = await server.loadAccount(master.publicKey());
       const canonical = buildClassicTransaction(batch, source, TESTNET).transaction;
-      const canonicalXdr = canonical.toEnvelope().toXDR("base64");
+      const canonicalXdr = canonical.toEnvelope().toXdr("base64");
 
       // TWO of the three signers sign the SAME canonical tx, independently
       const partialMaster = partialSign(canonicalXdr, master);
@@ -101,7 +101,7 @@ describe("integration: 2-of-3 multisig close via partial-XDR merge (testnet)", (
           expectedSigners,
         },
       );
-      const merged = TransactionBuilder.fromXDR(mergedXdr, TESTNET.passphrase) as Transaction;
+      const merged = TransactionBuilder.fromXdr(mergedXdr, TESTNET.passphrase) as Transaction;
       // exactly the two collected signatures; the 2-of-3 threshold is met
       expect(merged.signatures.length).toBe(2);
       await server.submitTransaction(merged);

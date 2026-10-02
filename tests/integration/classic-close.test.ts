@@ -74,7 +74,7 @@ describe("integration: classic account close (testnet)", () => {
       const source = await server.loadAccount(kp.publicKey());
       const built = buildClassicTransaction(batch, source, TESTNET);
       const { signedXdr } = await connector.signTransaction(built.transaction, TESTNET.passphrase);
-      const signed = TransactionBuilder.fromXDR(signedXdr, TESTNET.passphrase) as Transaction;
+      const signed = TransactionBuilder.fromXdr(signedXdr, TESTNET.passphrase) as Transaction;
       await server.submitTransaction(signed);
     }
 

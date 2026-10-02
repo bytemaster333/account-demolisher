@@ -282,7 +282,7 @@ function summarizeOp(op: RawOp): OperationSummary {
 export function inspectClose(xdrStr: string, passphrase: string): CloseInspection | null {
   let tx: Transaction;
   try {
-    tx = TransactionBuilder.fromXDR(xdrStr, passphrase) as Transaction;
+    tx = TransactionBuilder.fromXdr(xdrStr, passphrase) as Transaction;
   } catch {
     return null;
   }
@@ -328,7 +328,7 @@ export function signedSigners(
 ): readonly string[] {
   let tx: Transaction;
   try {
-    tx = TransactionBuilder.fromXDR(xdrStr, passphrase) as Transaction;
+    tx = TransactionBuilder.fromXdr(xdrStr, passphrase) as Transaction;
   } catch {
     return [];
   }
@@ -345,7 +345,7 @@ export function signedSigners(
     // verify by signature, hint-agnostic, to match the relay's signer counting
     // (a wallet with an unusual hint would otherwise be counted here but not
     // there, or vice-versa). The hint is not authoritative; the signature is.
-    const signed = tx.signatures.some((ds) => kp.verify(hash, Buffer.from(ds.signature())));
+    const signed = tx.signatures.some((ds) => kp.verify(hash, ds.signature.toBytes()));
     if (signed) out.push(key);
   }
   return out;

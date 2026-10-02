@@ -63,11 +63,11 @@ function captureDeps(): { deps: AquariusClientDeps; captured: () => Transaction 
 
 function invokeCall(tx: Transaction): { contract: string; fn: string; args: readonly xdr.ScVal[] } {
   const op = tx.operations[0] as Operation.InvokeHostFunction;
-  const call = op.func.invokeContract();
+  const call = xdr.expectUnionVariant(op.func, "hostFunctionTypeInvokeContract").invokeContract;
   return {
-    contract: Address.fromScAddress(call.contractAddress()).toString(),
-    fn: Buffer.from(call.functionName()).toString(),
-    args: call.args(),
+    contract: Address.fromScAddress(call.contractAddress).toString(),
+    fn: call.functionName.toString(),
+    args: call.args,
   };
 }
 
@@ -122,14 +122,14 @@ describe("aquarius swapChained — budget-bounded swap", () => {
     expect(fn).toBe("swap_chained");
     // args: [user, chain(vec<map>), token_in, in_amount(u128), out_min(u128)]
     expect(Address.fromScVal(args[0]!).toString()).toBe(USER);
-    const chain = args[1]!.vec()!;
+    const chain = xdr.expectUnionVariant(args[1]!, "scvVec").vec!;
     expect(chain.length).toBe(1);
     // the hop's token_out decodes back to TOKEN_OUT
-    const hopMap = chain[0]!.map()!;
+    const hopMap = xdr.expectUnionVariant(chain[0]!, "scvMap").map!;
     const tokenOutEntry = hopMap.find(
-      (e) => Buffer.from(e.key().sym()).toString() === "token_out",
+      (e) => xdr.isUnionVariant(e.key, "scvSymbol") && e.key.sym.toString() === "token_out",
     )!;
-    expect(Address.fromScVal(tokenOutEntry.val()).toString()).toBe(TOKEN_OUT);
+    expect(Address.fromScVal(tokenOutEntry.val).toString()).toBe(TOKEN_OUT);
     expect(Address.fromScVal(args[2]!).toString()).toBe(TOKEN_IN);
     expect(scValToNative(args[3]!)).toBe(1_000_000n); // in_amount
     expect(scValToNative(args[4]!)).toBe(950_000n); // out_min (the budget floor)

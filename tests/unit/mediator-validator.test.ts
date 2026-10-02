@@ -43,7 +43,7 @@ function validForwardTx(): Transaction {
 
 describe("validateMediatorForwardEnvelope", () => {
   it("accepts a well-formed forward envelope", () => {
-    const res = validateMediatorForwardEnvelope(validForwardTx().toXDR(), NET, MED, cex);
+    const res = validateMediatorForwardEnvelope(validForwardTx().toXdr(), NET, MED, cex);
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.tx.operations).toHaveLength(2);
   });
@@ -57,7 +57,7 @@ describe("validateMediatorForwardEnvelope", () => {
 
   it("rejects fee-bump envelopes (FEE_BUMP_NOT_ALLOWED)", () => {
     const fb = TransactionBuilder.buildFeeBumpTransaction(mediator, "10000", validForwardTx(), NET);
-    expect(validateMediatorForwardEnvelope(fb.toXDR(), NET, MED, cex)).toMatchObject({
+    expect(validateMediatorForwardEnvelope(fb.toXdr(), NET, MED, cex)).toMatchObject({
       ok: false,
       code: "FEE_BUMP_NOT_ALLOWED",
     });
@@ -67,7 +67,7 @@ describe("validateMediatorForwardEnvelope", () => {
     const xdr = builder(MED)
       .addOperation(Operation.accountMerge({ destination: cex }))
       .build()
-      .toXDR();
+      .toXdr();
     expect(validateMediatorForwardEnvelope(xdr, NET, MED, cex)).toMatchObject({
       ok: false,
       code: "WRONG_OPERATION_COUNT",
@@ -81,7 +81,7 @@ describe("validateMediatorForwardEnvelope", () => {
       )
       .addOperation(Operation.accountMerge({ source: MED, destination: cex }))
       .build()
-      .toXDR();
+      .toXdr();
     expect(validateMediatorForwardEnvelope(xdr, NET, MED, cex)).toMatchObject({
       ok: false,
       code: "FORWARD_TX_SOURCE_NOT_MEDIATOR",
@@ -93,7 +93,7 @@ describe("validateMediatorForwardEnvelope", () => {
       .addOperation(Operation.accountMerge({ destination: cex }))
       .addOperation(Operation.accountMerge({ destination: cex }))
       .build()
-      .toXDR();
+      .toXdr();
     expect(validateMediatorForwardEnvelope(xdr, NET, MED, cex)).toMatchObject({
       ok: false,
       code: "FORWARD_OP0_NOT_PAYMENT",
@@ -107,7 +107,7 @@ describe("validateMediatorForwardEnvelope", () => {
       )
       .addOperation(Operation.accountMerge({ destination: cex }))
       .build()
-      .toXDR();
+      .toXdr();
     expect(validateMediatorForwardEnvelope(xdr, NET, MED, cex)).toMatchObject({
       ok: false,
       code: "FORWARD_OP0_ASSET_NOT_NATIVE",
@@ -119,7 +119,7 @@ describe("validateMediatorForwardEnvelope", () => {
       .addOperation(Operation.payment({ destination: cex, asset: Asset.native(), amount: "5" }))
       .addOperation(Operation.payment({ destination: cex, asset: Asset.native(), amount: "1" }))
       .build()
-      .toXDR();
+      .toXdr();
     expect(validateMediatorForwardEnvelope(xdr, NET, MED, cex)).toMatchObject({
       ok: false,
       code: "FORWARD_OP1_NOT_ACCOUNT_MERGE",
@@ -134,7 +134,7 @@ describe("validateMediatorForwardEnvelope", () => {
       )
       .addOperation(Operation.accountMerge({ destination: cex }))
       .build()
-      .toXDR();
+      .toXdr();
     expect(validateMediatorForwardEnvelope(xdr, NET, MED, cex)).toMatchObject({
       ok: false,
       code: "FORWARD_DESTINATION_MISMATCH",
@@ -145,7 +145,7 @@ describe("validateMediatorForwardEnvelope", () => {
     const otherDest = Keypair.random().publicKey();
     // a well-formed forward to `cex`, but the flow token was committed to otherDest
     expect(
-      validateMediatorForwardEnvelope(validForwardTx().toXDR(), NET, MED, otherDest),
+      validateMediatorForwardEnvelope(validForwardTx().toXdr(), NET, MED, otherDest),
     ).toMatchObject({ ok: false, code: "FORWARD_DESTINATION_NOT_COMMITTED" });
   });
 
@@ -158,7 +158,7 @@ describe("validateMediatorForwardEnvelope", () => {
       .addOperation(Operation.payment({ destination: cex, asset: Asset.native(), amount: "5" }))
       .addOperation(Operation.accountMerge({ destination: cex }))
       .build()
-      .toXDR();
+      .toXdr();
     expect(validateMediatorForwardEnvelope(xdr, NET, MED, cex)).toMatchObject({
       ok: false,
       code: "MISSING_TIME_BOUNDS",
@@ -170,7 +170,7 @@ describe("validateMediatorForwardEnvelope", () => {
       .addOperation(Operation.payment({ destination: cex, asset: Asset.native(), amount: "5" }))
       .addOperation(Operation.accountMerge({ destination: cex }))
       .build()
-      .toXDR();
+      .toXdr();
     expect(validateMediatorForwardEnvelope(xdr, NET, MED, cex)).toMatchObject({
       ok: false,
       code: "TIME_BOUNDS_EXCESSIVE",

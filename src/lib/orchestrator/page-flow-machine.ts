@@ -625,7 +625,7 @@ const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ input }) 
   const tree = input.tree;
 
   const submitClassic = async (signedXdr: string): Promise<ConfirmationReceipt> => {
-    const signed = TransactionBuilder.fromXDR(signedXdr, input.network.passphrase) as Transaction;
+    const signed = TransactionBuilder.fromXdr(signedXdr, input.network.passphrase) as Transaction;
     let res: { readonly hash?: string; readonly ledger?: number };
     try {
       res = (await horizon.submitTransaction(signed)) as {
@@ -759,7 +759,7 @@ const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ input }) 
     });
   };
   const submitSoroban = async (signedXdr: string): Promise<ConfirmationReceipt> => {
-    const signed = TransactionBuilder.fromXDR(signedXdr, input.network.passphrase) as Transaction;
+    const signed = TransactionBuilder.fromXdr(signedXdr, input.network.passphrase) as Transaction;
     const send = await rpc.sendTransaction(signed);
     if (send.status !== "PENDING" && send.status !== "DUPLICATE") {
       // surface the rpc's rejection reason instead of just the bare status: on an
@@ -769,13 +769,13 @@ const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ input }) 
       // raw diagnostic xdr recoverable for offline decoding.
       let detail: string = send.status;
       try {
-        const code = send.errorResult?.result().switch().name;
+        const code = send.errorResult?.result.type;
         if (code) detail += `; result ${code}`;
       } catch {
         /* errorResult absent or not decodable; keep the status */
       }
       try {
-        const diags = send.diagnosticEvents?.map((e) => e.toXDR("base64")) ?? [];
+        const diags = send.diagnosticEvents?.map((e) => e.toXdr("base64")) ?? [];
         if (diags.length > 0) detail += `; diagnostics ${diags.join(" ")}`;
       } catch {
         /* diagnostics absent */

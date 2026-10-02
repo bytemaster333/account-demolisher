@@ -53,11 +53,11 @@ function captureDeps(): { deps: SwapToXLMDeps; captured: () => Transaction } {
 
 function invokeCall(tx: Transaction): { contract: string; fn: string; args: readonly xdr.ScVal[] } {
   const op = tx.operations[0] as Operation.InvokeHostFunction;
-  const call = op.func.invokeContract();
+  const call = xdr.expectUnionVariant(op.func, "hostFunctionTypeInvokeContract").invokeContract;
   return {
-    contract: Address.fromScAddress(call.contractAddress()).toString(),
-    fn: Buffer.from(call.functionName()).toString(),
-    args: call.args(),
+    contract: Address.fromScAddress(call.contractAddress).toString(),
+    fn: call.functionName.toString(),
+    args: call.args,
   };
 }
 
@@ -81,7 +81,7 @@ describe("buildSwapToXLM", () => {
     expect(fromScValI128(args[0]!)).toBe(1_000_000n); // amount_in
     expect(fromScValI128(args[1]!)).toBe(950_000n); // amount_out_min (the floor)
     // path is a vec of exactly [tokenIn, XLM]
-    const path = args[2]!.vec()!;
+    const path = xdr.expectUnionVariant(args[2]!, "scvVec").vec!;
     expect(path.length).toBe(2);
     expect(fromScValAddress(path[0]!)).toBe(TOKEN_IN);
     expect(fromScValAddress(path[1]!)).toBe(XLM);

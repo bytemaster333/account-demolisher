@@ -143,7 +143,7 @@ async function simulateFinalClassicTx(
   const tx = firstTx!;
   return {
     kind: "classic",
-    xdr: tx.toEnvelope().toXDR("base64"), // the real built envelope, not ""
+    xdr: tx.toEnvelope().toXdr("base64"), // the real built envelope, not ""
     operationCount: tx.operations.length,
     estimatedFee: tx.fee, // real total fee from the built envelope
   };

@@ -53,11 +53,11 @@ export class SecretKeyConnector implements Connector {
     tx: Transaction | FeeBumpTransaction,
     networkPassphrase: string,
   ): Promise<{ signedXdr: string; signerPublicKey: string }> {
-    const cloned = TransactionBuilder.fromXDR(tx.toXDR(), networkPassphrase);
+    const cloned = TransactionBuilder.fromXdr(tx.toXdr(), networkPassphrase);
     const keypair = Keypair.fromSecret(this.#seed);
     cloned.sign(keypair);
     return {
-      signedXdr: cloned.toXDR(),
+      signedXdr: cloned.toXdr(),
       signerPublicKey: keypair.publicKey(),
     };
   }

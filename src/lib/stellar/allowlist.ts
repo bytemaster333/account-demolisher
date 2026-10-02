@@ -3,7 +3,9 @@
 import {
   Address,
   Operation,
+  xdr,
   type FeeBumpTransaction,
+  type OperationRecord,
   type Transaction,
 } from "@stellar/stellar-sdk";
 import { isAllowedContract } from "@/lib/config/contracts";
@@ -55,7 +57,7 @@ export function getViolations(
 }
 
 // flatten ops, transparently unwrapping a fee-bump wrapper
-function collectOperations(tx: Transaction | FeeBumpTransaction): readonly Operation[] {
+function collectOperations(tx: Transaction | FeeBumpTransaction): readonly OperationRecord[] {
   const maybeInner = (tx as FeeBumpTransaction).innerTransaction;
   if (maybeInner !== undefined && maybeInner !== null) {
     return maybeInner.operations;
@@ -77,26 +79,23 @@ function inspectAuthEntries(ihf: Operation.InvokeHostFunction): AllowlistViolati
 
   const isForbidden = (name: string): boolean => /createContract|uploadContractWasm/i.test(name);
 
-  const walk = (invocation: {
-    function: () => { switch: () => { name: string } };
-    subInvocations: () => readonly unknown[];
-  }): boolean => {
+  const walk = (invocation: xdr.SorobanAuthorizedInvocation): boolean => {
     let fnName: string;
     try {
-      fnName = invocation.function().switch().name;
+      fnName = invocation.function.type;
     } catch {
       return false;
     }
     if (isForbidden(fnName)) return true;
-    for (const sub of invocation.subInvocations()) {
-      if (walk(sub as typeof invocation)) return true;
+    for (const sub of invocation.subInvocations) {
+      if (walk(sub)) return true;
     }
     return false;
   };
 
   for (const entry of auth) {
     try {
-      if (walk(entry.rootInvocation() as unknown as Parameters<typeof walk>[0])) {
+      if (walk(entry.rootInvocation)) {
         return {
           contractId: "<auth-entry>",
           reason: "A Soroban authorization entry authorizes contract creation or wasm upload.",
@@ -115,7 +114,7 @@ function inspectAuthEntries(ihf: Operation.InvokeHostFunction): AllowlistViolati
 
 // returns null for classical ops or for allow-listed invocations
 function inspectOperation(
-  op: Operation,
+  op: OperationRecord,
   network: NetworkConfig | undefined,
 ): AllowlistViolationDetail | null {
   if (op.type !== "invokeHostFunction") return null;
@@ -127,7 +126,7 @@ function inspectOperation(
 
   let kind: string;
   try {
-    kind = func.switch().name;
+    kind = func.type;
   } catch {
     return {
       contractId: "<unparseable>",
@@ -138,8 +137,8 @@ function inspectOperation(
   switch (kind) {
     case "hostFunctionTypeInvokeContract": {
       try {
-        const args = func.invokeContract();
-        const scAddress = args.contractAddress();
+        const args = xdr.expectUnionVariant(func, "hostFunctionTypeInvokeContract").invokeContract;
+        const scAddress = args.contractAddress;
         const addrStrkey = Address.fromScAddress(scAddress).toString();
         if (!addrStrkey.startsWith("C")) {
           return {

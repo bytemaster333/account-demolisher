@@ -17,8 +17,8 @@ export function describeSorobanFailure(events: readonly xdr.DiagnosticEvent[] | 
     let topics: unknown[] = [];
     let data: unknown = null;
     try {
-      const body = ev.event().body().v0();
-      topics = body.topics().map((t) => {
+      const body = ev.event.body.v0;
+      topics = body.topics.map((t) => {
         try {
           return scValToNative(t);
         } catch {
@@ -26,7 +26,7 @@ export function describeSorobanFailure(events: readonly xdr.DiagnosticEvent[] | 
         }
       });
       try {
-        data = scValToNative(body.data());
+        data = scValToNative(body.data);
       } catch {
         /* data not scval-convertible; keep the topics */
       }

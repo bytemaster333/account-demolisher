@@ -147,7 +147,7 @@ async function resolvePairAddresses(
         new xdr.LedgerKeyContractData({
           contract: factoryScAddress,
           key: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(PAIR_INDEX_SYMBOL), xdr.ScVal.scvU32(i)]),
-          durability: xdr.ContractDataDurability.persistent(),
+          durability: xdr.ContractDataDurability.persistent,
         }),
       ),
     );
@@ -159,11 +159,15 @@ async function resolvePairAddresses(
   );
   for (const resp of batches) {
     for (const entry of resp.entries) {
-      const cd = entry.key.contractData();
-      const keyVec = cd.key().vec();
-      if (!keyVec || keyVec.length !== 2 || keyVec[1]!.switch().name !== "scvU32") continue;
-      const index = keyVec[1]!.u32();
-      byIndex.set(index, fromScValAddress(entry.val.contractData().val()));
+      const cd = xdr.expectUnionVariant(entry.key, "contractData").contractData;
+      const keyVec = xdr.expectUnionVariant(cd.key, "scvVec").vec;
+      const indexVal = keyVec?.[1];
+      if (!keyVec || keyVec.length !== 2 || indexVal?.type !== "scvU32") continue;
+      const index = indexVal.u32;
+      byIndex.set(
+        index,
+        fromScValAddress(xdr.expectUnionVariant(entry.val, "contractData").contractData.val),
+      );
     }
   }
 
@@ -197,7 +201,7 @@ async function filterPairsWithBalance(
       new xdr.LedgerKeyContractData({
         contract: new Address(pairId).toScAddress(),
         key: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(BALANCE_SYMBOL), userScVal]),
-        durability: xdr.ContractDataDurability.persistent(),
+        durability: xdr.ContractDataDurability.persistent,
       }),
     ),
   );
@@ -208,7 +212,11 @@ async function filterPairsWithBalance(
   );
   for (const resp of batches) {
     for (const entry of resp.entries) {
-      held.push(Address.fromScAddress(entry.key.contractData().contract()).toString());
+      held.push(
+        Address.fromScAddress(
+          xdr.expectUnionVariant(entry.key, "contractData").contractData.contract,
+        ).toString(),
+      );
     }
   }
   return held;

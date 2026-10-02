@@ -36,9 +36,9 @@ function buildClose(sourcePk: string, destination: string, seq = "1") {
 }
 
 function signedXdr(sourcePk: string, destination: string, ...kps: Keypair[]): string {
-  const tx = TransactionBuilder.fromXDR(buildClose(sourcePk, destination).toXDR(), NET);
+  const tx = TransactionBuilder.fromXdr(buildClose(sourcePk, destination).toXdr(), NET);
   for (const kp of kps) tx.sign(kp);
-  return tx.toXDR();
+  return tx.toXdr();
 }
 
 function auditWith(signers: AuditSigner[], high: number): AccountAudit {
@@ -53,7 +53,7 @@ describe("inspectClose", () => {
   it("decodes an account-close and flags it as a close", () => {
     const source = Keypair.random().publicKey();
     const dest = Keypair.random().publicKey();
-    const info = inspectClose(buildClose(source, dest).toXDR(), NET);
+    const info = inspectClose(buildClose(source, dest).toXdr(), NET);
     expect(info).not.toBeNull();
     expect(info?.isClose).toBe(true);
     expect(info?.source).toBe(source);
@@ -70,7 +70,7 @@ describe("inspectClose", () => {
     })
       .addOperation(Operation.payment({ destination: source, asset: Asset.native(), amount: "1" }))
       .build();
-    const info = inspectClose(tx.toXDR(), NET);
+    const info = inspectClose(tx.toXdr(), NET);
     expect(info?.isClose).toBe(false);
   });
 
@@ -91,7 +91,7 @@ describe("inspectClose — SEC-04: value-moving ops must be flagged for the co-s
       timebounds: { minTime: 0, maxTime: 0 },
     });
     for (const op of ops) b.addOperation(op);
-    return b.build().toXDR();
+    return b.build().toXdr();
   }
 
   it("flags a pathPaymentStrictSend to an attacker as danger, with its destination", () => {

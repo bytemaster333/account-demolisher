@@ -36,10 +36,10 @@ function invokeArgs(tx: { operations: readonly Operation[] }): {
   args: readonly xdr.ScVal[];
 } {
   const op = tx.operations[0] as Operation.InvokeHostFunction;
-  const call = op.func.invokeContract();
+  const call = xdr.expectUnionVariant(op.func, "hostFunctionTypeInvokeContract").invokeContract;
   return {
-    fn: Buffer.from(call.functionName()).toString(),
-    args: call.args(),
+    fn: call.functionName.toString(),
+    args: call.args,
   };
 }
 

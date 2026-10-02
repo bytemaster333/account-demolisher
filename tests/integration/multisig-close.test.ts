@@ -81,7 +81,7 @@ describe("integration: multisig account close (testnet)", () => {
       const source = await server.loadAccount(master.publicKey());
       const built = buildClassicTransaction(batch, source, TESTNET);
       const { signedXdr } = await connector.signTransaction(built.transaction, TESTNET.passphrase);
-      const signed = TransactionBuilder.fromXDR(signedXdr, TESTNET.passphrase) as Transaction;
+      const signed = TransactionBuilder.fromXdr(signedXdr, TESTNET.passphrase) as Transaction;
       // both signatures are attached, the high threshold of 2 is met
       expect(signed.signatures.length).toBeGreaterThanOrEqual(2);
       await server.submitTransaction(signed);

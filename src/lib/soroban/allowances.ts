@@ -116,8 +116,8 @@ export async function enumerateAllowances(
   let startLedger = Math.max(1, currentLedger - scanWindowLedgers);
 
   // rpc-level filter for sep-41 approve events
-  const approveSymbolXdr = xdr.ScVal.scvSymbol("approve").toXDR("base64");
-  const fromAddressXdr = new Address(userAddress).toScVal().toXDR("base64");
+  const approveSymbolXdr = xdr.ScVal.scvSymbol("approve").toXdr("base64");
+  const fromAddressXdr = new Address(userAddress).toScVal().toXdr("base64");
   const eventFilter3: rpc.Api.EventFilter = {
     type: "contract",
     topics: [[approveSymbolXdr, fromAddressXdr, "*"]],
@@ -275,11 +275,11 @@ function tryDecodeApproveEvent(
 }
 
 function tryDecodeApproveData(v: xdr.ScVal): { amount: bigint; live_until_ledger: number } | null {
-  const kind = v.switch().name;
+  const kind = v.type;
 
   // primary path: tuple-as-vec (sep-41 reference encoding)
   if (kind === "scvVec") {
-    const arr = v.vec();
+    const arr = v.vec;
     if (!arr || arr.length !== 2) return null;
     try {
       return {
@@ -293,18 +293,18 @@ function tryDecodeApproveData(v: xdr.ScVal): { amount: bigint; live_until_ledger
 
   // fallback: some tokens emit a struct (scvMap) with the same keys
   if (kind === "scvMap") {
-    const entries = v.map();
+    const entries = v.map;
     if (!entries) return null;
     let amount: bigint | undefined;
     let liveUntilLedger: number | undefined;
     for (const entry of entries) {
-      const key = entry.key();
-      if (key.switch().name !== "scvSymbol") continue;
-      const k = key.sym().toString();
+      const key = entry.key;
+      if (key.type !== "scvSymbol") continue;
+      const k = key.sym.toString();
       try {
-        if (k === "amount") amount = fromScValI128(entry.val());
+        if (k === "amount") amount = fromScValI128(entry.val);
         else if (k === "live_until_ledger" || k === "expiration_ledger") {
-          liveUntilLedger = fromScValU32(entry.val());
+          liveUntilLedger = fromScValU32(entry.val);
         }
       } catch {
         return null;

@@ -47,38 +47,36 @@ export function assertSafeTransferInvocation(tx: Transaction, expected: Expected
 
   // 1) the invoked call itself must be exactly the intended transfer
   const func = ihf.func;
-  if (func.switch().name !== "hostFunctionTypeInvokeContract") {
-    throw new UnsafeTransferError(
-      `host function is "${func.switch().name}", expected invokeContract`,
-    );
+  if (func.type !== "hostFunctionTypeInvokeContract") {
+    throw new UnsafeTransferError(`host function is "${func.type}", expected invokeContract`);
   }
-  assertTransferCall(func.invokeContract(), expected, "invocation");
+  assertTransferCall(func.invokeContract, expected, "invocation");
 
   // 2) every auth entry must authorize ONLY that same transfer. A hostile token
   //    that tries to move other balances must add either a sub-invocation or a
   //    separate entry targeting a different contract/function — both rejected here.
   const auth = ihf.auth ?? [];
   auth.forEach((entry, i) => {
-    const cred = entry.credentials().switch().name;
+    const cred = entry.credentials.type;
     if (cred !== "sorobanCredentialsSourceAccount") {
       throw new UnsafeTransferError(
         `auth[${i}] uses "${cred}" credentials; a safe drain is authorized only by the source account`,
       );
     }
-    const root = entry.rootInvocation();
-    const subs = root.subInvocations();
+    const root = entry.rootInvocation;
+    const subs = root.subInvocations;
     if (subs.length !== 0) {
       throw new UnsafeTransferError(
         `auth[${i}] carries ${subs.length} sub-invocation(s); a safe drain authorizes no nested calls`,
       );
     }
-    const rootFn = root.function();
-    if (rootFn.switch().name !== "sorobanAuthorizedFunctionTypeContractFn") {
+    const rootFn = root.function;
+    if (rootFn.type !== "sorobanAuthorizedFunctionTypeContractFn") {
       throw new UnsafeTransferError(
-        `auth[${i}] root is "${rootFn.switch().name}", expected a contract call`,
+        `auth[${i}] root is "${rootFn.type}", expected a contract call`,
       );
     }
-    assertTransferCall(rootFn.contractFn(), expected, `auth[${i}]`);
+    assertTransferCall(rootFn.contractFn, expected, `auth[${i}]`);
   });
 }
 
@@ -87,17 +85,17 @@ function assertTransferCall(
   expected: ExpectedTransfer,
   where: string,
 ): void {
-  const addr = Address.fromScAddress(call.contractAddress()).toString();
+  const addr = Address.fromScAddress(call.contractAddress).toString();
   if (addr !== expected.contractId) {
     throw new UnsafeTransferError(
       `${where} targets contract ${addr}, expected ${expected.contractId}`,
     );
   }
-  const fnName = Buffer.from(call.functionName()).toString();
+  const fnName = call.functionName.toString();
   if (fnName !== "transfer") {
     throw new UnsafeTransferError(`${where} calls "${fnName}", expected transfer`);
   }
-  const args = call.args();
+  const args = call.args;
   if (args.length !== 3) {
     throw new UnsafeTransferError(
       `${where} transfer has ${args.length} args, expected 3 (from, to, amount)`,

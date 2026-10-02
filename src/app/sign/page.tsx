@@ -92,7 +92,7 @@ export default function SignPage(): React.JSX.Element {
         if (cancelled) return;
         const net = resolveNetwork(plan.network);
         const hash = Buffer.from(
-          (TransactionBuilder.fromXDR(plan.xdr, net.passphrase) as Transaction).hash(),
+          (TransactionBuilder.fromXdr(plan.xdr, net.passphrase) as Transaction).hash(),
         ).toString("hex");
         if (hash !== id) {
           setLoad({
@@ -195,7 +195,7 @@ export default function SignPage(): React.JSX.Element {
       setSigning(true);
       setSignError(null);
       try {
-        const tx = TransactionBuilder.fromXDR(xdr, network.passphrase) as Transaction;
+        const tx = TransactionBuilder.fromXdr(xdr, network.passphrase) as Transaction;
         const { signedXdr, signerPublicKey } = await sign(tx);
         // Reject a signature from a key that is NOT a signer on this account BEFORE
         // posting it to the relay. Submitting a non-signer signature pollutes the

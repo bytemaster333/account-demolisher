@@ -72,10 +72,10 @@ describe("SecretKeyConnector signing", () => {
     const { signedXdr, signerPublicKey } = await connector.signTransaction(tx, NET);
     expect(signerPublicKey).toBe(kp.publicKey());
 
-    const signed = TransactionBuilder.fromXDR(signedXdr, NET);
+    const signed = TransactionBuilder.fromXdr(signedXdr, NET);
     expect(signed.signatures).toHaveLength(1);
     // the signature is a real ed25519 signature over the tx hash by this keypair
-    const sig = signed.signatures[0]!.signature();
+    const sig = signed.signatures[0]!.signature.toBytes();
     expect(kp.verify(signed.hash(), sig)).toBe(true);
   });
 

@@ -44,11 +44,11 @@ describe("MultiSignerConnector", () => {
     const { signedXdr, signerPublicKey } = await conn.signTransaction(tx, NET);
     expect(signerPublicKey).toBe(account.publicKey());
 
-    const signed = TransactionBuilder.fromXDR(signedXdr, NET);
+    const signed = TransactionBuilder.fromXdr(signedXdr, NET);
     expect(signed.signatures).toHaveLength(2);
     const hash = signed.hash();
     for (const kp of [account, cosigner]) {
-      const present = signed.signatures.some((s) => kp.verify(hash, Buffer.from(s.signature())));
+      const present = signed.signatures.some((s) => kp.verify(hash, s.signature.toBytes()));
       expect(present).toBe(true);
     }
     // the original tx is not mutated

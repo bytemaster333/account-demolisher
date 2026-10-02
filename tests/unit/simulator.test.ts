@@ -51,7 +51,7 @@ describe("simulator: FinalClassicTx in-memory validation", () => {
     expect(out.operationCount).toBe(3);
     // the xdr is a real built envelope, not "" — and it decodes back to 3 ops
     expect(out.xdr.length).toBeGreaterThan(0);
-    const tx = TransactionBuilder.fromXDR(out.xdr, TESTNET.passphrase);
+    const tx = TransactionBuilder.fromXdr(out.xdr, TESTNET.passphrase);
     expect("operations" in tx ? tx.operations.length : 0).toBe(3);
     // real total fee = feeBase(100) * 3 ops
     expect(out.estimatedFee).toBe("300");

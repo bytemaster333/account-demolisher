@@ -91,11 +91,11 @@ function fail(error: string): SimulationResult {
 // pull the invoked contract fn name + first-arg account off a built read-only tx
 function invoked(tx: Transaction): { fn: string; account: string } {
   const op = tx.operations[0] as Operation.InvokeHostFunction;
-  const call = op.func.invokeContract();
-  const args = call.args();
+  const call = xdr.expectUnionVariant(op.func, "hostFunctionTypeInvokeContract").invokeContract;
+  const args = call.args;
   const first = args[0];
   return {
-    fn: Buffer.from(call.functionName()).toString(),
+    fn: call.functionName.toString(),
     account: first ? String(scValToNative(first)) : "",
   };
 }
@@ -136,14 +136,14 @@ describe("optionalVaultKeyScVal encoding (VaultKey struct shape)", () => {
     const v = optionalVaultKeyScVal(vk);
 
     // Some(...) is a two-element tagged vec; the payload is the struct map.
-    const vec = v.vec();
+    const vec = xdr.expectUnionVariant(v, "scvVec").vec;
     expect(vec).not.toBeNull();
     expect(vec!.length).toBe(2);
     expect(scValToNative(vec![0]!)).toBe("Some");
 
-    const mapEntries = vec![1]!.map();
+    const mapEntries = xdr.expectUnionVariant(vec![1]!, "scvMap").map;
     expect(mapEntries).not.toBeNull();
-    const keys = mapEntries!.map((e) => scValToNative(e.key()) as string).sort();
+    const keys = mapEntries!.map((e) => scValToNative(e.key) as string).sort();
     // REGRESSION: the old encoder omitted "denomination"; the host requires all
     // three fields or pay_debt fails to deserialize the prev_key arg.
     expect(keys).toEqual(["account", "denomination", "index"]);

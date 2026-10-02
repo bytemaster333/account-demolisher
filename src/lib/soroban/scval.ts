@@ -26,15 +26,15 @@ export function vec(values: xdr.ScVal[]): xdr.ScVal {
 }
 
 export function fromScValAddress(v: xdr.ScVal): string {
-  if (v.switch().name !== "scvAddress") {
-    throw new TypeError(`Expected scvAddress ScVal, got ${v.switch().name}`);
+  if (v.type !== "scvAddress") {
+    throw new TypeError(`Expected scvAddress ScVal, got ${v.type}`);
   }
   return Address.fromScVal(v).toString();
 }
 
 export function fromScValI128(v: xdr.ScVal): bigint {
-  if (v.switch().name !== "scvI128") {
-    throw new TypeError(`Expected scvI128 ScVal, got ${v.switch().name}`);
+  if (v.type !== "scvI128") {
+    throw new TypeError(`Expected scvI128 ScVal, got ${v.type}`);
   }
   const n = scValToNative(v);
   if (typeof n !== "bigint") {
@@ -44,8 +44,8 @@ export function fromScValI128(v: xdr.ScVal): bigint {
 }
 
 export function fromScValU32(v: xdr.ScVal): number {
-  if (v.switch().name !== "scvU32") {
-    throw new TypeError(`Expected scvU32 ScVal, got ${v.switch().name}`);
+  if (v.type !== "scvU32") {
+    throw new TypeError(`Expected scvU32 ScVal, got ${v.type}`);
   }
   const n = scValToNative(v);
   if (typeof n !== "number") {
@@ -55,8 +55,8 @@ export function fromScValU32(v: xdr.ScVal): number {
 }
 
 export function fromScValSymbol(v: xdr.ScVal): string {
-  if (v.switch().name !== "scvSymbol") {
-    throw new TypeError(`Expected scvSymbol ScVal, got ${v.switch().name}`);
+  if (v.type !== "scvSymbol") {
+    throw new TypeError(`Expected scvSymbol ScVal, got ${v.type}`);
   }
   const n = scValToNative(v);
   if (typeof n !== "string") {
@@ -67,7 +67,7 @@ export function fromScValSymbol(v: xdr.ScVal): string {
 
 // sep-41 name()/symbol() return ScVal string. accepts both for completeness
 export function fromScValString(v: xdr.ScVal): string {
-  const kind = v.switch().name;
+  const kind = v.type;
   if (kind !== "scvString" && kind !== "scvSymbol") {
     throw new TypeError(`Expected scvString or scvSymbol ScVal, got ${kind}`);
   }

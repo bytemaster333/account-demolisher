@@ -5,7 +5,7 @@ import type { Connector } from "@/lib/wallet/connector";
 
 // submitRevoke reaches for getRpc / getHorizon / buildRevoke through
 // module-level imports and reconstructs the signed tx via
-// TransactionBuilder.fromXDR, so we stub those seams to drive sendTransaction's
+// TransactionBuilder.fromXdr, so we stub those seams to drive sendTransaction's
 // status and observe the enqueue guard without touching the network.
 
 const sendTransaction = vi.fn();
@@ -29,7 +29,7 @@ vi.mock("@/lib/soroban/revoke-guard", () => ({
   assertSafeRevokeInvocation: vi.fn(),
 }));
 vi.mock("@stellar/stellar-sdk", () => ({
-  TransactionBuilder: { fromXDR: () => ({}) },
+  TransactionBuilder: { fromXdr: () => ({}) },
 }));
 
 import { submitRevoke } from "@/lib/soroban/revoke";
@@ -79,10 +79,16 @@ describe("submitRevoke enqueue guard", () => {
   });
 
   it("throws on ERROR and preserves the result-code detail", async () => {
+    const { xdr } =
+      await vi.importActual<typeof import("@stellar/stellar-sdk")>("@stellar/stellar-sdk");
     sendTransaction.mockResolvedValue({
       status: "ERROR",
       hash: "HASH_ERR",
-      errorResult: { result: () => ({ switch: () => ({ name: "txBadSeq" }) }) },
+      errorResult: new xdr.TransactionResult({
+        feeCharged: 100n,
+        result: xdr.TransactionResultResult.txBadSeq(),
+        ext: xdr.TransactionResultExt.v0(),
+      }),
     });
     await expect(submitRevoke(NETWORK, connector(), RECORD, USER)).rejects.toThrow(
       /did not enqueue.*txBadSeq/,

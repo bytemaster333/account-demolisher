@@ -28,7 +28,7 @@ const I128_MIN = -170141183460469231731687303715884105728n;
 describe("address / fromScValAddress", () => {
   it("encodes an account (G...) address as scvAddress", () => {
     const v = address(ACCOUNT);
-    expect(v.switch().name).toBe("scvAddress");
+    expect(v.type).toBe("scvAddress");
   });
 
   it("round-trips an account address", () => {
@@ -37,7 +37,7 @@ describe("address / fromScValAddress", () => {
 
   it("round-trips a contract (C...) address", () => {
     const v = address(CONTRACT);
-    expect(v.switch().name).toBe("scvAddress");
+    expect(v.type).toBe("scvAddress");
     expect(fromScValAddress(v)).toBe(CONTRACT);
   });
 
@@ -53,7 +53,7 @@ describe("address / fromScValAddress", () => {
 
 describe("i128 / fromScValI128", () => {
   it("encodes as scvI128", () => {
-    expect(i128(1n).switch().name).toBe("scvI128");
+    expect(i128(1n).type).toBe("scvI128");
   });
 
   it("round-trips a small positive value", () => {
@@ -62,7 +62,7 @@ describe("i128 / fromScValI128", () => {
 
   it("round-trips zero", () => {
     const v = i128(0n);
-    expect(v.switch().name).toBe("scvI128");
+    expect(v.type).toBe("scvI128");
     expect(fromScValI128(v)).toBe(0n);
   });
 
@@ -97,7 +97,7 @@ describe("i128 / fromScValI128", () => {
 describe("u32 / fromScValU32", () => {
   it("encodes as scvU32 and round-trips", () => {
     const v = u32(7);
-    expect(v.switch().name).toBe("scvU32");
+    expect(v.type).toBe("scvU32");
     expect(fromScValU32(v)).toBe(7);
   });
 
@@ -130,7 +130,7 @@ describe("u32 / fromScValU32", () => {
 describe("symbol / fromScValSymbol", () => {
   it("encodes as scvSymbol and round-trips", () => {
     const v = symbol("transfer");
-    expect(v.switch().name).toBe("scvSymbol");
+    expect(v.type).toBe("scvSymbol");
     expect(fromScValSymbol(v)).toBe("transfer");
   });
 
@@ -147,8 +147,8 @@ describe("vec", () => {
   it("wraps its members in an scvVec preserving order and contents", () => {
     const members = [u32(1), symbol("approve"), i128(-9n)];
     const v = vec(members);
-    expect(v.switch().name).toBe("scvVec");
-    const inner = v.vec();
+    expect(v.type).toBe("scvVec");
+    const inner = xdr.expectUnionVariant(v, "scvVec").vec;
     expect(inner).not.toBeNull();
     expect(inner!).toHaveLength(3);
     expect(fromScValU32(inner![0]!)).toBe(1);
@@ -158,15 +158,15 @@ describe("vec", () => {
 
   it("wraps an empty member list", () => {
     const v = vec([]);
-    expect(v.switch().name).toBe("scvVec");
-    expect(v.vec()!).toHaveLength(0);
+    expect(v.type).toBe("scvVec");
+    expect(xdr.expectUnionVariant(v, "scvVec").vec!).toHaveLength(0);
   });
 });
 
 describe("fromScValString", () => {
   it("decodes an scvString", () => {
     const v = xdr.ScVal.scvString("Wrapped Bitcoin");
-    expect(v.switch().name).toBe("scvString");
+    expect(v.type).toBe("scvString");
     expect(fromScValString(v)).toBe("Wrapped Bitcoin");
   });
 

@@ -50,7 +50,7 @@ async function submitAs(kp: Keypair, build: (b: TransactionBuilder) => void): Pr
 // production-shaped classic submit, mirroring page-flow-machine's executeActor:
 // a missing hash is treated as a failure rather than a fabricated success.
 async function submitClassic(signedXdr: string): Promise<ConfirmationReceipt> {
-  const signed = TransactionBuilder.fromXDR(signedXdr, TESTNET.passphrase) as Transaction;
+  const signed = TransactionBuilder.fromXdr(signedXdr, TESTNET.passphrase) as Transaction;
   let res: { readonly hash?: string; readonly ledger?: number };
   try {
     res = (await server.submitTransaction(signed)) as {
@@ -82,9 +82,9 @@ describe("integration: two-phase liquidity-pool close (testnet, SEC-13)", () => 
 
     const usdc = new Asset("USDC", issuer.publicKey());
     const lp = new LiquidityPoolAsset(Asset.native(), usdc, LiquidityPoolFeeV18);
-    const poolId = getLiquidityPoolId("constant_product", lp.getLiquidityPoolParameters()).toString(
-      "hex",
-    );
+    const poolId = Buffer.from(
+      getLiquidityPoolId("constant_product", lp.getLiquidityPoolParameters()),
+    ).toString("hex");
 
     // seed the pool-holding account:
     // 1. trust USDC, 2. receive EXACTLY the deposit amount (so no USDC remains at

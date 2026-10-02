@@ -63,7 +63,7 @@ export class WalletKitConnector implements Connector {
     networkPassphrase: string,
   ): Promise<{ signedXdr: string; signerPublicKey: string }> {
     const address = await this.getPublicKey();
-    const { signedTxXdr, signerAddress } = await this.kit.signTransaction(tx.toXDR(), {
+    const { signedTxXdr, signerAddress } = await this.kit.signTransaction(tx.toXdr(), {
       networkPassphrase,
       address,
     });

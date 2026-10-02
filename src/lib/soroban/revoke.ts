@@ -127,7 +127,7 @@ async function submitRevokeImpl(
   });
 
   const signed = await connector.signTransaction(tx, network.passphrase);
-  const reconstructed = TransactionBuilder.fromXDR(
+  const reconstructed = TransactionBuilder.fromXdr(
     signed.signedXdr,
     network.passphrase,
   ) as Transaction;
@@ -141,7 +141,7 @@ async function submitRevokeImpl(
   if (send.status !== "PENDING" && send.status !== "DUPLICATE") {
     const detail =
       send.status === "ERROR" && send.errorResult
-        ? ` (${send.errorResult.result().switch().name})`
+        ? ` (${send.errorResult.result.type})`
         : ` (status: ${send.status})`;
     throw new Error(`RPC did not enqueue the revoke${detail}.`);
   }

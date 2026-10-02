@@ -147,7 +147,7 @@ export function CollectSignatures({
         setSecretError("That signer already signed.");
         return;
       }
-      const tx = TransactionBuilder.fromXDR(xdr, network.passphrase) as Transaction;
+      const tx = TransactionBuilder.fromXdr(xdr, network.passphrase) as Transaction;
       const { signedXdr } = await connector.signTransaction(tx, network.passphrase);
       const merged = await submitSignature(planId, signedXdr);
       setXdr(merged.xdr);

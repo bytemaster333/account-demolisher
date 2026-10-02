@@ -493,7 +493,7 @@ async function approveSep41(
   tx.sign(Keypair.fromSecret(secret));
   const submitted = await server.sendTransaction(tx);
   if (submitted.status === "ERROR") {
-    throw new Error(`sendTransaction rejected: ${submitted.errorResult?.toXDR("base64") ?? ""}`);
+    throw new Error(`sendTransaction rejected: ${submitted.errorResult?.toXdr("base64") ?? ""}`);
   }
   // sendTransaction only confirms queue acceptance
   const hash = submitted.hash;
@@ -503,7 +503,7 @@ async function approveSep41(
     const status = await server.getTransaction(hash);
     if (status.status === "SUCCESS") return hash;
     if (status.status === "FAILED") {
-      const resultXdr = status.resultXdr?.toXDR("base64") ?? "<no result>";
+      const resultXdr = status.resultXdr?.toXdr("base64") ?? "<no result>";
       throw new Error(`approve tx failed on-chain: ${resultXdr}`);
     }
     // NOT_FOUND → still propagating; keep polling
@@ -638,7 +638,7 @@ async function soroswapSwap(
     network: network.id,
   });
 
-  const tx = TransactionBuilder.fromXDR(built.xdr, network.passphrase);
+  const tx = TransactionBuilder.fromXdr(built.xdr, network.passphrase);
   if ("innerTransaction" in tx) {
     throw new Error("soroswap-swap: aggregator returned a fee-bump transaction");
   }
@@ -718,7 +718,7 @@ async function submitAndPollSoroban(
   const sent = await server.sendTransaction(tx);
   if (sent.status === "ERROR") {
     throw new Error(
-      `${stepLabel}: sendTransaction rejected: ${sent.errorResult?.toXDR("base64") ?? ""}`,
+      `${stepLabel}: sendTransaction rejected: ${sent.errorResult?.toXdr("base64") ?? ""}`,
     );
   }
   const hash = sent.hash;
@@ -729,7 +729,7 @@ async function submitAndPollSoroban(
     if (st.status === "SUCCESS") return hash;
     if (st.status === "FAILED") {
       throw new Error(
-        `${stepLabel} failed on-chain: ${st.resultXdr?.toXDR("base64") ?? "<no result>"}`,
+        `${stepLabel} failed on-chain: ${st.resultXdr?.toXdr("base64") ?? "<no result>"}`,
       );
     }
   }

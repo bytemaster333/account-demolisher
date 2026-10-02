@@ -56,7 +56,7 @@ export function buildClassicTransaction(
   builder.setTimeout(timeoutSeconds);
 
   const tx = builder.build();
-  const envelopeXdr = tx.toEnvelope().toXDR("base64");
+  const envelopeXdr = tx.toEnvelope().toXdr("base64");
   return {
     transaction: tx,
     xdr: envelopeXdr,

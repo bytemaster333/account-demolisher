@@ -29,9 +29,9 @@ function buildClose(sourcePk: string, destination: string, seq = "1") {
 }
 
 function signPartial(sourcePk: string, destination: string, kp: Keypair): string {
-  const tx = TransactionBuilder.fromXDR(buildClose(sourcePk, destination).toXDR(), NET);
+  const tx = TransactionBuilder.fromXdr(buildClose(sourcePk, destination).toXdr(), NET);
   tx.sign(kp);
-  return tx.toXDR();
+  return tx.toXdr();
 }
 
 afterEach(() => __resetRelayForTests());
@@ -54,11 +54,11 @@ describe("signing-relay addSignature", () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
 
-    const tx = TransactionBuilder.fromXDR(res.plan.xdr, NET);
+    const tx = TransactionBuilder.fromXdr(res.plan.xdr, NET);
     expect(tx.signatures).toHaveLength(2);
     const hash = tx.hash();
     for (const kp of [a, b]) {
-      expect(tx.signatures.some((s) => kp.verify(hash, Buffer.from(s.signature())))).toBe(true);
+      expect(tx.signatures.some((s) => kp.verify(hash, s.signature.toBytes()))).toBe(true);
     }
   });
 
@@ -129,7 +129,7 @@ describe("signing-relay subscribe", () => {
 
     addSignature(id, signPartial(source, dest, b));
     expect(seen).toHaveLength(1);
-    const tx = TransactionBuilder.fromXDR(seen[0]!, NET);
+    const tx = TransactionBuilder.fromXdr(seen[0]!, NET);
     expect(tx.signatures).toHaveLength(2);
 
     unsub?.();
@@ -171,7 +171,7 @@ describe("signing-relay expiry", () => {
       .addOperation(Operation.accountMerge({ destination: dest }))
       .build();
     tx.sign(a);
-    const id = __seedPlanForTests("testnet", tx.toXDR(), [a.publicKey()]);
+    const id = __seedPlanForTests("testnet", tx.toXdr(), [a.publicKey()]);
     expect(getPlan(id)).toBeNull();
   });
 
@@ -187,7 +187,7 @@ describe("signing-relay expiry", () => {
       .addOperation(Operation.accountMerge({ destination: dest }))
       .build();
     tx.sign(a);
-    const id = __seedPlanForTests("testnet", tx.toXDR(), [a.publicKey()]);
+    const id = __seedPlanForTests("testnet", tx.toXdr(), [a.publicKey()]);
     expect(getPlan(id)).not.toBeNull();
   });
 });

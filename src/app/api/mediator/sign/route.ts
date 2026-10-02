@@ -173,7 +173,7 @@ export async function POST(request: Request): Promise<Response> {
   try {
     const tx = result.tx;
     tx.sign(flow.keypair);
-    const signedXdr = tx.toEnvelope().toXDR("base64");
+    const signedXdr = tx.toEnvelope().toXdr("base64");
     return jsonResponse({ ok: true, signedXdr }, 200, cors);
   } catch {
     return jsonResponse(

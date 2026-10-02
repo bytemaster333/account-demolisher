@@ -68,28 +68,28 @@ export function decodeAllowance(v: xdr.ScVal): { amount: bigint; live_until_ledg
   // i128 amount, with no expiry ledger. Tolerate that shape rather than throwing:
   // report the amount and 0 for live_until_ledger, which callers read as "expiry
   // unknown from this call" (event enumeration is the source of truth for expiry).
-  if (v.switch().name === "scvI128") {
+  if (v.type === "scvI128") {
     return { amount: fromScValI128(v), live_until_ledger: 0 };
   }
-  if (v.switch().name !== "scvMap") {
-    throw new TypeError(`Expected scvMap or scvI128 for allowance return, got ${v.switch().name}`);
+  if (v.type !== "scvMap") {
+    throw new TypeError(`Expected scvMap or scvI128 for allowance return, got ${v.type}`);
   }
-  const entries = v.map();
+  const entries = v.map;
   if (entries === null) {
     throw new TypeError("allowance return: scvMap had null entries");
   }
   let amount: bigint | undefined;
   let liveUntilLedger: number | undefined;
   for (const entry of entries) {
-    const key = entry.key();
-    if (key.switch().name !== "scvSymbol") continue;
-    const k = key.sym().toString();
-    if (k === "amount") amount = fromScValI128(entry.val());
-    else if (k === "live_until_ledger") liveUntilLedger = fromScValU32(entry.val());
+    const key = entry.key;
+    if (key.type !== "scvSymbol") continue;
+    const k = key.sym.toString();
+    if (k === "amount") amount = fromScValI128(entry.val);
+    else if (k === "live_until_ledger") liveUntilLedger = fromScValU32(entry.val);
   }
   if (amount === undefined || liveUntilLedger === undefined) {
     throw new TypeError(
-      `allowance return missing required keys; got ${entries.map((e) => e.key().switch().name).join(",")}`,
+      `allowance return missing required keys; got ${entries.map((e) => e.key.type).join(",")}`,
     );
   }
   return { amount, live_until_ledger: liveUntilLedger };

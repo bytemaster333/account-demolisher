@@ -105,8 +105,8 @@ export async function scanTokensCreditedTo(
   let startLedger = Math.max(1, currentLedger - scanWindowLedgers);
 
   // sep-41 transfer topics: [symbol("transfer"), address(from), address(to)]
-  const transferSymbolXdr = xdr.ScVal.scvSymbol("transfer").toXDR("base64");
-  const toAddressXdr = new Address(toAddress).toScVal().toXDR("base64");
+  const transferSymbolXdr = xdr.ScVal.scvSymbol("transfer").toXdr("base64");
+  const toAddressXdr = new Address(toAddress).toScVal().toXdr("base64");
   const filter: rpc.Api.EventFilter = {
     type: "contract",
     topics: [[transferSymbolXdr, "*", toAddressXdr]],

@@ -41,7 +41,7 @@ export function validateMediatorForwardEnvelope(
 ): ValidationResult {
   let parsed: Transaction | FeeBumpTransaction;
   try {
-    parsed = TransactionBuilder.fromXDR(envelopeXdr, networkPassphrase);
+    parsed = TransactionBuilder.fromXdr(envelopeXdr, networkPassphrase);
   } catch (err) {
     return {
       ok: false,

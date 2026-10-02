@@ -66,7 +66,7 @@ function addressAuth(inv: xdr.SorobanAuthorizedInvocation): xdr.SorobanAuthoriza
     credentials: xdr.SorobanCredentials.sorobanCredentialsAddress(
       new xdr.SorobanAddressCredentials({
         address: new Address(USER).toScAddress(),
-        nonce: new xdr.Int64(1),
+        nonce: 1n,
         signatureExpirationLedger: 2000,
         signature: xdr.ScVal.scvVoid(),
       }),

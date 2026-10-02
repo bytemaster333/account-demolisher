@@ -85,7 +85,7 @@ export async function submitMediatorForward(
   builder.addOperation(Operation.accountMerge({ destination: fallback }));
   builder.setTimeout(FIVE_MINUTES);
   const unsignedTx = builder.build();
-  const unsignedXdr = unsignedTx.toEnvelope().toXDR("base64");
+  const unsignedXdr = unsignedTx.toEnvelope().toXdr("base64");
 
   const result = await requestMediatorSignature(unsignedXdr, input.flowToken, input.network.id);
   if (!result.ok) {
@@ -96,7 +96,7 @@ export async function submitMediatorForward(
   }
 
   try {
-    const signed = TransactionBuilder.fromXDR(result.signedXdr, input.network.passphrase);
+    const signed = TransactionBuilder.fromXdr(result.signedXdr, input.network.passphrase);
     const submission = (await server.submitTransaction(signed as Transaction)) as {
       readonly hash?: string;
     };
