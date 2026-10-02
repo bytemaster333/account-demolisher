@@ -5,11 +5,9 @@
 #
 #   https://demolisher.app/.well-known/stellar.toml
 #
-# The reference deployment serves this file under `.well-known/`. Next.js
-# auto-publishes anything under `public/` at the matching path, but the SEP-1
-# canonical location is `/.well-known/stellar.toml` — operators should add a
-# rewrite (a `next.config.ts` `rewrites()` entry, or an equivalent rule at the
-# reverse proxy) so that both paths resolve here.
+# next.config.ts rewrites /.well-known/stellar.toml to this file and serves it
+# with the CORS and content-type headers SEP-1 requires, so both paths resolve
+# here with no extra proxy rule.
 #
 # The values below are the reference deployment's real operator details.
 # Embedders that self-host (CEXes, wallets) MUST replace them with their own
@@ -22,10 +20,6 @@
 VERSION = "1.0.0"
 NETWORK_PASSPHRASE = "Public Global Stellar Network ; September 2015"
 
-# The canonical URL that this TOML attests to. The reference deployment is
-# `demolisher.app`. Embedders replace with their own canonical URL.
-WEB_AUTH_ENDPOINT = "https://demolisher.app"
-
 # ---------------------------------------------------------------------------
 # Documentation
 # ---------------------------------------------------------------------------
@@ -33,7 +27,7 @@ WEB_AUTH_ENDPOINT = "https://demolisher.app"
 [DOCUMENTATION]
 ORG_NAME = "Account Demolisher"
 ORG_URL = "https://demolisher.app"
-ORG_LOGO = "https://demolisher.app/icon.svg"
+ORG_LOGO = "https://demolisher.app/logo.png"
 ORG_DESCRIPTION = """
 Account Demolisher is an open-source (Apache-2.0) Stellar account-closure
 tool. It drains and merges Stellar accounts cleanly across both classic
@@ -45,9 +39,6 @@ own per-deployment mediator key.
 ORG_OFFICIAL_EMAIL = "salihtorunr@gmail.com"
 ORG_SUPPORT_EMAIL = "salihtorunr@gmail.com"
 ORG_GITHUB = "bytemaster333/account-demolisher"
-ORG_KEYBASE = ""
-ORG_TWITTER = ""
-ORG_LICENSING_AUTHORITY = "n/a — Apache-2.0 open source software"
 
 # ---------------------------------------------------------------------------
 # Principals (people responsible)
@@ -56,32 +47,28 @@ ORG_LICENSING_AUTHORITY = "n/a — Apache-2.0 open source software"
 [[PRINCIPALS]]
 name = "Salih Toruner"
 email = "salihtorunr@gmail.com"
-keybase = ""
-twitter = ""
 github = "bytemaster333"
-id_photo_hash = ""
-verification_photo_hash = ""
 
 # ---------------------------------------------------------------------------
-# Signing keys — intentionally omitted
+# Signing keys and SEP-10: intentionally omitted
 # ---------------------------------------------------------------------------
 #
-# Account Demolisher has NO stable signing account to declare here. The exchange
-# mediator co-signs its 2-op forward with a PER-FLOW EPHEMERAL key: every close
-# derives a fresh throwaway keypair (from a server-held HMAC master), so there is
-# no single, long-lived account a SEP-1 SIGNING_KEY / SIGNERS block could name.
-# All user-side signing happens client-side (wallet or pasted key) and is never
-# transmitted to the server. Declaring a fixed SIGNING_KEY would be misleading,
-# so it is omitted by design rather than filled with a placeholder.
+# Account Demolisher has NO stable signing account to declare here, and it runs
+# no SEP-10 web authentication, so there is no SIGNING_KEY and no
+# WEB_AUTH_ENDPOINT. The exchange mediator co-signs its 2-op forward with a
+# PER-FLOW EPHEMERAL key: every close derives a fresh throwaway keypair (from a
+# server-held HMAC master), so there is no single, long-lived account a SEP-1
+# SIGNING_KEY / SIGNERS block could name. All user-side signing happens
+# client-side (wallet or pasted key) and is never transmitted to the server.
 
 # ---------------------------------------------------------------------------
-# Currencies — none. The demolisher does not issue assets.
+# Currencies: none. The demolisher does not issue assets.
 # ---------------------------------------------------------------------------
 
 # (no [[CURRENCIES]] entries)
 
 # ---------------------------------------------------------------------------
-# Validators — none. The demolisher does not run validation nodes.
+# Validators: none. The demolisher does not run validation nodes.
 # ---------------------------------------------------------------------------
 
 # (no [[VALIDATORS]] entries)
