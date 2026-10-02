@@ -1,14 +1,6 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 
-// Importing the demolish page pulls in the wallet stack, whose kit wrapper eagerly
-// evaluates @creit.tech/stellar-wallets-kit (a CJS/ESM-incompatible module in the
-// node test env). Stub the leaf kit wrapper so the page module imports cleanly;
-// nodeFeeStroops (the unit under test) does not touch it.
-vi.mock("@/lib/wallet/kit", () => ({
-  getKit: vi.fn(),
-}));
-
-import { nodeFeeStroops } from "@/app/demolish/page";
+import { nodeFeeStroops } from "@/app/demolish/_lib/fees";
 import type { PlanNode } from "@/lib/plan/tree";
 
 // minimal PlanNode carrying only the fields nodeFeeStroops reads (id/kind/status
