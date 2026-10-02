@@ -73,7 +73,7 @@ describe("MetricsStore", () => {
     expect(snap.closes.recent).toHaveLength(2);
   });
 
-  it("is idempotent on tx hash — a duplicate close is not double counted", async () => {
+  it("is idempotent on tx hash, a duplicate close is not double counted", async () => {
     const store = new MetricsStore(dir);
     expect((await store.recordClose(close("c".repeat(64), "mainnet", "7"))).added).toBe(true);
     expect((await store.recordClose(close("c".repeat(64), "mainnet", "7"))).added).toBe(false);

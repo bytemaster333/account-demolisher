@@ -2,16 +2,16 @@
 // route so the payload shape and validation live in exactly one place.
 //
 // Three event kinds, all AGGREGATE and free of personal data:
-//   visit  — a page was loaded (optional network; no cookie, no IP stored)
-//   funnel — a usage milestone was reached (wallet connected, discovery done, …)
-//   close  — a successful account close, identified ONLY by its public on-chain
-//            transaction hash. The server checks that hash against Horizon and
-//            counts it only when it is a successful merge carrying the on-chain
-//            close marker (close-marker.ts), so made-up hashes and unrelated
-//            merges are refused. The marker is public, so copies of it can be
-//            counted too, within per-network daily caps.
+//   visit:  a page was loaded (optional network; no cookie, no IP stored)
+//   funnel: a usage milestone was reached (wallet connected, discovery done, …)
+//   close:  a successful account close, identified ONLY by its public on-chain
+//           transaction hash. The server checks that hash against Horizon and
+//           counts it only when it is a successful merge carrying the on-chain
+//           close marker (close-marker.ts), so made-up hashes and unrelated
+//           merges are refused. The marker is public, so copies of it can be
+//           counted too, within per-network daily caps.
 //
-// No addresses, wallet identifiers, or amounts are ever sent from the client —
+// No addresses, wallet identifiers, or amounts are ever sent from the client;
 // a close carries just its tx hash, and every derived detail (reclaimed XLM, op
 // breakdown, ledger) is read back from the public ledger server-side.
 
@@ -23,7 +23,7 @@ export type MetricNetwork = (typeof METRIC_NETWORKS)[number];
 export const METRIC_PAGES = ["landing", "demolish", "allowances", "sign"] as const;
 export type MetricPage = (typeof METRIC_PAGES)[number];
 
-// usage milestones, in flow order. close completion is NOT here — it is the
+// usage milestones, in flow order. close completion is NOT here: it is the
 // verifiable `close` event, counted only after on-chain verification.
 export const FUNNEL_STEPS = [
   "wallet_connected",

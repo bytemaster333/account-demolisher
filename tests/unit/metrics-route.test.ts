@@ -92,7 +92,7 @@ describe("POST /api/metrics", () => {
     const dup = await post({ type: "close", network: "testnet", txHash: HASH });
     expect(dup.status).toBe(200);
     expect((await dup.json()).duplicate).toBe(true);
-    // verification only ran once — the dedupe short-circuits before re-verifying
+    // verification only ran once: the dedupe short-circuits before re-verifying
     expect(vi.mocked(verifyCloseTx)).toHaveBeenCalledTimes(1);
 
     const snap = await snapshot();

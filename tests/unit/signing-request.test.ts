@@ -85,7 +85,7 @@ describe("inspectClose", () => {
   });
 });
 
-describe("inspectClose — SEC-04: value-moving ops must be flagged for the co-signer", () => {
+describe("inspectClose, SEC-04: value-moving ops must be flagged for the co-signer", () => {
   const source = Keypair.random().publicKey();
   const attacker = Keypair.random().publicKey();
   const dest = Keypair.random().publicKey();
