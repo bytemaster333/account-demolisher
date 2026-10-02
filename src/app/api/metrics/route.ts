@@ -7,7 +7,7 @@
 
 import { createHash, timingSafeEqual } from "node:crypto";
 
-import { createLimiter, getRemoteIp } from "@/server/rate-limit";
+import { createLimiter, rateLimitByIp } from "@/server/rate-limit";
 import { readTextCapped, BodyTooLargeError } from "@/server/read-body";
 import { getMetricsStore } from "@/server/metrics-store";
 import { verifyCloseTx } from "@/server/close-verify";
@@ -30,9 +30,8 @@ function json(body: Record<string, unknown>, status: number): Response {
 }
 
 export async function POST(request: Request): Promise<Response> {
-  if (!limiter.take(getRemoteIp(request))) {
-    return json({ ok: false, code: "RATE_LIMITED" }, 429);
-  }
+  const limited = rateLimitByIp(limiter, request);
+  if (limited !== null) return limited;
 
   let raw: string;
   try {
