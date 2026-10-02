@@ -1,103 +1,57 @@
-// strict 2-op merge-payment co-signing endpoint
+// mediator flow minting (GET) and forward co-signing (POST)
 
 import { StrKey } from "@stellar/stellar-sdk";
 
-import { getPublicEnv } from "@/lib/config/env";
 import { resolveNetwork } from "@/lib/config/networks";
+import { decodeMemoCommitment, isMediatorNetworkId } from "@/lib/mediator/forward-terms";
 import { validateMediatorForwardEnvelope } from "@/lib/mediator/validator";
 import { resolveMediatorFlow, startMediatorFlow } from "@/server/mediator-secret";
 import { createLimiter, getRemoteIp } from "@/server/rate-limit";
 import { readJsonCapped, MAX_JSON_BODY_BYTES, BodyTooLargeError } from "@/server/read-body";
+
+import {
+  badRequest,
+  bodyTooLarge,
+  buildCorsHeaders,
+  failure,
+  jsonResponse,
+  logMediatorError,
+  methodNotAllowed,
+  preflight,
+  rateLimited,
+} from "../_shared/http";
 
 // node runtime: the flow-key derivation (node:crypto) and the validator pull in
 // stellar-sdk / node crypto, which aren't edge-compatible
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// 5 requests per 60s per IP. The shared limiter is bounded (evicts idle keys) and
-// keys on TRUSTED_PROXY_HOPS-aware getRemoteIp, so a forged-XFF flood can't
+// co-signing: 5 requests per 60s per IP. minting is cheap (an hmac), so it gets
+// a looser bucket of its own. The shared limiter is bounded (evicts idle keys)
+// and keys on TRUSTED_PROXY_HOPS-aware getRemoteIp, so a forged-XFF flood can't
 // exhaust memory or mint fresh buckets per request.
-const limiter = createLimiter(5, 60_000);
+const signLimiter = createLimiter(5, 60_000);
+const mintLimiter = createLimiter(30, 60_000);
 
 // test-only: reset the per-IP buckets
 export function __resetRateLimiterForTests(): void {
-  limiter.reset();
+  signLimiter.reset();
+  mintLimiter.reset();
 }
 
-const DEV_ALLOWED_ORIGINS = new Set<string>(["http://localhost:3000", "http://localhost:3001"]);
-
-// build CORS headers for an origin. prod only allows origins in MEDIATOR_ALLOWED_ORIGIN (csv)
-// when unset, no CORS headers (effectively same-origin)
-function buildCorsHeaders(origin: string | null): Record<string, string> {
-  if (origin === null) return {};
-
-  const isProduction = process.env.NODE_ENV === "production";
-  let allowed: Set<string>;
-
-  if (isProduction) {
-    const raw = process.env.MEDIATOR_ALLOWED_ORIGIN;
-    if (typeof raw !== "string" || raw.trim().length === 0) {
-      return {};
-    }
-    allowed = new Set(
-      raw
-        .split(",")
-        .map((o) => o.trim())
-        .filter((o) => o.length > 0),
-    );
-  } else {
-    allowed = DEV_ALLOWED_ORIGINS;
-  }
-
-  if (!allowed.has(origin)) return {};
-
-  return {
-    "access-control-allow-origin": origin,
-    "access-control-allow-methods": "POST, OPTIONS",
-    "access-control-allow-headers": "content-type",
-    vary: "origin",
-  };
-}
-
-function jsonResponse(
-  body: Record<string, unknown>,
-  status: number,
-  extraHeaders: Record<string, string> = {},
-): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json", ...extraHeaders },
-  });
-}
-
-// preflight: 204 + CORS when allow-listed, else bare 204
 export function OPTIONS(request: Request): Response {
-  const origin = request.headers.get("origin");
-  const cors = buildCorsHeaders(origin);
-  return new Response(null, { status: 204, headers: cors });
+  return preflight(request);
 }
 
-// rate-limit, parse body, validate envelope shape, then co-sign and return base64 xdr
+// rate-limit, parse body, validate the envelope against the token's terms, then
+// co-sign and return base64 xdr
 export async function POST(request: Request): Promise<Response> {
-  const origin = request.headers.get("origin");
-  const cors = buildCorsHeaders(origin);
-  const ip = getRemoteIp(request);
-
-  if (!limiter.take(ip)) {
-    return jsonResponse(
-      {
-        ok: false,
-        code: "RATE_LIMITED",
-        reason: "Too many requests; try again shortly.",
-      },
-      429,
-      { ...cors, "retry-after": "60" },
-    );
-  }
+  const cors = buildCorsHeaders(request.headers.get("origin"));
+  if (!signLimiter.take(getRemoteIp(request))) return rateLimited(cors);
 
   let envelopeXdr: string;
   let flowToken: string;
-  let networkId: string | undefined;
+  let requestedNetwork: string | undefined;
   try {
     const raw = (await readJsonCapped(request, MAX_JSON_BODY_BYTES)) as unknown;
     if (typeof raw !== "object" || raw === null) {
@@ -113,121 +67,132 @@ export async function POST(request: Request): Promise<Response> {
         cors,
       );
     }
-    // Optional: the network the client built the envelope on. Lets one deployment
-    // serve both testnet and mainnet closes. When absent (older clients, or a
-    // single-network deployment) it falls back to the deployment default below.
-    if (rec.network !== undefined) {
-      if (rec.network !== "mainnet" && rec.network !== "testnet" && rec.network !== "futurenet") {
-        return badRequest("`network` must be one of mainnet | testnet | futurenet.", cors);
-      }
-      networkId = rec.network;
+    if (rec.network !== undefined && typeof rec.network !== "string") {
+      return badRequest("`network` must be a string when present.", cors);
     }
     envelopeXdr = rec.envelopeXdr;
     flowToken = rec.flowToken;
+    requestedNetwork = rec.network;
   } catch (e) {
-    if (e instanceof BodyTooLargeError) return badRequest("Request body is too large.", cors);
+    if (e instanceof BodyTooLargeError) return bodyTooLarge(cors);
     return badRequest("Request body is not valid JSON.", cors);
   }
 
-  // resolve THIS flow's ephemeral keypair from the token. A forged/expired token
-  // resolves to null and unlocks nothing; a thrown error means the master seed
-  // is unset/malformed (scrubbed so no config detail leaks to the client).
-  let flow: ReturnType<typeof resolveMediatorFlow>;
+  // resolve THIS flow's ephemeral keypair and terms from the token. A thrown
+  // error means the master seed is unset or malformed: logged for the operator,
+  // scrubbed for the client.
+  let resolution: ReturnType<typeof resolveMediatorFlow>;
   try {
-    flow = resolveMediatorFlow(flowToken);
-  } catch {
-    return jsonResponse(
-      { ok: false, code: "MEDIATOR_NOT_CONFIGURED", reason: "Mediator is not configured." },
-      500,
-      cors,
-    );
+    resolution = resolveMediatorFlow(flowToken);
+  } catch (err) {
+    logMediatorError("POST /api/mediator/sign could not resolve a flow token", err);
+    return failure("MEDIATOR_NOT_CONFIGURED", "Mediator is not configured.", 500, cors);
   }
-  if (flow === null) {
-    return jsonResponse(
-      { ok: false, code: "INVALID_FLOW_TOKEN", reason: "Flow token is invalid or expired." },
+  if (!resolution.ok) {
+    if (resolution.reason === "expired") {
+      return failure(
+        "FLOW_TOKEN_EXPIRED",
+        "Flow token has expired; renew it at /api/mediator/reissue and retry.",
+        400,
+        cors,
+      );
+    }
+    return failure("INVALID_FLOW_TOKEN", "Flow token is invalid.", 400, cors);
+  }
+  const flow = resolution.flow;
+
+  // the network is part of the token. A client that says otherwise built its
+  // envelope for a different network, so refuse instead of signing for one it
+  // did not mean.
+  if (requestedNetwork !== undefined && requestedNetwork !== flow.networkId) {
+    return failure(
+      "NETWORK_MISMATCH",
+      `This flow is bound to ${flow.networkId}, not ${requestedNetwork}.`,
       400,
       cors,
     );
   }
 
-  // per-request network (falls back to the deployment default) so a single
-  // deployment can co-sign forwards for whichever network the client is on
-  const networkPassphrase = resolveNetwork(
-    networkId ?? getPublicEnv().NEXT_PUBLIC_STELLAR_NETWORK,
-  ).passphrase;
-
-  // the mediator only co-signs the forward envelope: a native payout + an
-  // accountMerge, both sourced by and drawn from THIS flow's ephemeral account.
-  // Because the account is per-flow and only ever holds this user's funds, a
-  // co-signed drain can never reach anyone else's balance.
   const result = validateMediatorForwardEnvelope(
     envelopeXdr,
-    networkPassphrase,
+    resolveNetwork(flow.networkId).passphrase,
     flow.keypair.publicKey(),
-    flow.destination,
+    { destination: flow.destination, memoXdr: flow.memoXdr },
   );
-  if (!result.ok) {
-    return jsonResponse({ ok: false, code: result.code, reason: result.reason }, 400, cors);
-  }
+  if (!result.ok) return failure(result.code, result.reason, 400, cors);
 
   try {
     const tx = result.tx;
     tx.sign(flow.keypair);
-    const signedXdr = tx.toEnvelope().toXdr("base64");
-    return jsonResponse({ ok: true, signedXdr }, 200, cors);
-  } catch {
-    return jsonResponse(
-      { ok: false, code: "SIGNING_FAILED", reason: "Failed to sign envelope." },
-      500,
+    return jsonResponse({ ok: true, signedXdr: tx.toEnvelope().toXdr("base64") }, 200, cors);
+  } catch (err) {
+    logMediatorError("POST /api/mediator/sign failed to sign a validated forward", err);
+    return failure("SIGNING_FAILED", "Failed to sign envelope.", 500, cors);
+  }
+}
+
+// starts a fresh mediator flow: a flow token bound to the destination, network
+// and deposit memo, and the ephemeral public key the close funds and merges
+// into. The token is echoed back at POST time to unlock signing for this flow's
+// key only, and only for a forward that meets those terms. It can be used more
+// than once (a failed forward is retried with it) until it expires.
+export function GET(request: Request): Response {
+  const cors = buildCorsHeaders(request.headers.get("origin"));
+  if (!mintLimiter.take(getRemoteIp(request))) return rateLimited(cors);
+
+  const params = new URL(request.url).searchParams;
+  const destination = params.get("destination");
+  if (destination === null || !StrKey.isValidEd25519PublicKey(destination)) {
+    return failure(
+      "INVALID_DESTINATION",
+      "A valid `destination` (G...) query parameter is required to start a flow.",
+      400,
       cors,
     );
   }
-}
+  const networkId = params.get("network");
+  if (!isMediatorNetworkId(networkId)) {
+    return failure(
+      "INVALID_NETWORK",
+      "A `network` query parameter of mainnet or testnet is required to start a flow.",
+      400,
+      cors,
+    );
+  }
+  // the deposit memo, as base64 xdr of one Stellar memo (MemoNone for none). It
+  // is required so a client can never start a flow that silently commits to no
+  // memo for a destination that needs one.
+  const memoXdr = params.get("memo");
+  if (memoXdr === null || decodeMemoCommitment(memoXdr) === null) {
+    return failure(
+      "INVALID_MEMO",
+      "A `memo` query parameter with the base64 xdr of the deposit memo (or of MemoNone) is required.",
+      400,
+      cors,
+    );
+  }
 
-function badRequest(reason: string, cors: Record<string, string>): Response {
-  return jsonResponse({ ok: false, code: "BAD_REQUEST", reason }, 400, cors);
-}
-
-function methodNotAllowed(): Response {
-  return jsonResponse(
-    { ok: false, code: "METHOD_NOT_ALLOWED", reason: "Only POST and GET are supported." },
-    405,
-    { allow: "POST, GET, OPTIONS" },
-  );
-}
-
-// starts a fresh mediator flow: mints a one-time flow token and the ephemeral
-// public key the browser orchestrator funds + merges into. The token must be
-// echoed back at POST time to unlock signing for THIS flow's key only.
-export function GET(request: Request): Response {
-  // the destination is committed into the flow token so the co-signer at POST
-  // time is bound to it (a leaked token can't redirect the funds elsewhere)
-  const destination = new URL(request.url).searchParams.get("destination");
-  if (destination === null || !StrKey.isValidEd25519PublicKey(destination)) {
+  try {
+    const flow = startMediatorFlow({ destination, networkId, memoXdr });
     return jsonResponse(
       {
-        ok: false,
-        code: "INVALID_DESTINATION",
-        reason: "A valid `destination` (G...) query parameter is required to start a flow.",
+        ok: true,
+        flowToken: flow.flowToken,
+        mediatorPublicKey: flow.mediatorPublicKey,
+        expiresAt: flow.expiresAt,
       },
-      400,
-    );
-  }
-  try {
-    const flow = startMediatorFlow(destination);
-    return jsonResponse(
-      { flowToken: flow.flowToken, mediatorPublicKey: flow.mediatorPublicKey },
       200,
+      cors,
     );
-  } catch {
-    return jsonResponse(
-      { ok: false, code: "MEDIATOR_NOT_CONFIGURED", reason: "Mediator is not configured." },
-      500,
-    );
+  } catch (err) {
+    logMediatorError("GET /api/mediator/sign could not mint a flow", err);
+    return failure("MEDIATOR_NOT_CONFIGURED", "Mediator is not configured.", 500, cors);
   }
 }
 
-export const PUT = methodNotAllowed;
-export const PATCH = methodNotAllowed;
-export const DELETE = methodNotAllowed;
-export const HEAD = methodNotAllowed;
+const notAllowed = methodNotAllowed("GET, POST, OPTIONS");
+
+export const PUT = notAllowed;
+export const PATCH = notAllowed;
+export const DELETE = notAllowed;
+export const HEAD = notAllowed;
