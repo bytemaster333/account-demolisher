@@ -44,18 +44,16 @@ export async function auditAccount(
   const server = getHorizon(network);
 
   let account: Horizon.AccountResponse;
-  let ledger: LedgerClock;
   try {
-    [account, ledger] = await Promise.all([
-      server.loadAccount(publicKey),
-      fetchLedgerClock(network),
-    ]);
+    account = await server.loadAccount(publicKey);
   } catch (err) {
     if (isHorizonNotFound(err)) {
       throw new AccountNotFoundError(publicKey);
     }
     throw err;
   }
+  // read after the account, so the ledger is never older than the state audited
+  const ledger = await fetchLedgerClock(network);
 
   const balances = parseBalances(account.balances);
   const signers = parseSigners(account.signers);
