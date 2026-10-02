@@ -8,9 +8,8 @@ export interface SelectOption {
   readonly label: ReactNode;
 }
 
-// Themed dropdown. Replaces native <select> whose open menu renders with the
-// OS's own (light/blue) styling that ignores the app theme. This one is a button
-// + a custom dark menu, fully theme-driven.
+// themed dropdown: a button plus a custom menu, because a native <select> opens
+// with the os's own styling and ignores the app theme
 export function Select({
   value,
   options,

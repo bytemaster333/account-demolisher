@@ -43,8 +43,9 @@ export function DiscoveryWarnings({
           color: "var(--fg-3)",
         }}
       >
-        {warnings.map((w) => (
-          <li key={w} style={{ lineHeight: 1.5 }}>
+        {/* two discovery steps can report the same text */}
+        {warnings.map((w, i) => (
+          <li key={`${i}:${w}`} style={{ lineHeight: 1.5 }}>
             {w}
           </li>
         ))}

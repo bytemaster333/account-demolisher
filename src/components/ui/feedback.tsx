@@ -1,7 +1,16 @@
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 import { RADIUS } from "./tokens";
 
-export function Spinner({ size = 16 }: { readonly size?: number }): React.JSX.Element {
+// "current" follows the surrounding text color, for spinners inside buttons
+export function Spinner({
+  size = 16,
+  tone = "accent",
+}: {
+  readonly size?: number;
+  readonly tone?: "accent" | "current";
+}): React.JSX.Element {
+  const ring =
+    tone === "current" ? "color-mix(in srgb, currentColor 30%, transparent)" : "var(--accent-soft)";
   return (
     <span
       aria-hidden
@@ -9,25 +18,27 @@ export function Spinner({ size = 16 }: { readonly size?: number }): React.JSX.El
         width: size,
         height: size,
         borderRadius: "50%",
-        border: `${Math.max(2, size / 8)}px solid var(--accent-soft)`,
-        borderTopColor: "var(--accent)",
+        border: `${Math.max(2, size / 8)}px solid ${ring}`,
+        borderTopColor: tone === "current" ? "currentColor" : "var(--accent)",
         animation: "spin .8s linear infinite",
         display: "inline-block",
+        flexShrink: 0,
       }}
     />
   );
 }
 
-// Labeled progress track (X / Y weight, reserve recovered, signatures…).
-// `tone="accent"` fills with the accent while collecting and flips to success
-// once value reaches max, so a met threshold reads as done rather than staying a
-// flat grey bar. Omitting `tone` keeps the neutral grey fill.
+// labeled progress track (weight collected, reserve recovered, signatures).
+// tone="accent" fills with the accent while collecting and turns success once
+// value reaches max; the default is a neutral fill. the bar takes its
+// accessible name from the visible label, or from ariaLabel when there is none.
 export function Progress({
   value,
   max,
   label,
   valueLabel,
   tone = "neutral",
+  ariaLabel,
   "data-testid": testId,
 }: {
   readonly value: number;
@@ -35,8 +46,10 @@ export function Progress({
   readonly label?: ReactNode;
   readonly valueLabel?: ReactNode;
   readonly tone?: "neutral" | "accent";
+  readonly ariaLabel?: string;
   readonly "data-testid"?: string;
 }): React.JSX.Element {
+  const labelId = useId();
   const pct = max > 0 ? Math.min(100, Math.max(0, (value / max) * 100)) : 0;
   const complete = max > 0 && value >= max;
   const fill = complete ? "var(--success)" : tone === "accent" ? "var(--accent)" : "var(--fg-2)";
@@ -51,7 +64,13 @@ export function Progress({
             marginBottom: 9,
           }}
         >
-          {label ? <span style={{ fontWeight: 600, fontSize: 14 }}>{label}</span> : <span />}
+          {label ? (
+            <span id={labelId} style={{ fontWeight: 600, fontSize: 14 }}>
+              {label}
+            </span>
+          ) : (
+            <span />
+          )}
           {valueLabel ? (
             <span
               data-testid={testId}
@@ -64,6 +83,8 @@ export function Progress({
       ) : null}
       <div
         role="progressbar"
+        aria-labelledby={label ? labelId : undefined}
+        aria-label={label ? undefined : ariaLabel}
         aria-valuenow={value}
         aria-valuemin={0}
         aria-valuemax={max}
@@ -88,7 +109,7 @@ export function Progress({
   );
 }
 
-// Centered placeholder for empty / prompt / loading states.
+// centered placeholder for empty, prompt and loading states
 export function EmptyState({
   icon,
   title,

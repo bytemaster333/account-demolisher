@@ -1,7 +1,5 @@
-// Shared design constants for the UI primitive layer. Colors live as CSS
-// custom properties in globals.css (var(--*)); these are the numeric scales
-// (radius/space/font) the primitives share so the three rebuilt pages stop
-// drifting on paddings and corners.
+// numeric scales the ui primitives share. colors live as css custom
+// properties in globals.css.
 
 export const RADIUS = {
   sm: 8,
@@ -29,3 +27,16 @@ export function toneBorder(tone: Tone): string {
   if (tone === "neutral") return "1px solid var(--border-2)";
   return `1px solid color-mix(in srgb, ${TONE_FG[tone]} 30%, transparent)`;
 }
+
+// hidden on screen, still read by screen readers
+export const VISUALLY_HIDDEN = {
+  position: "absolute",
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: "hidden",
+  clip: "rect(0, 0, 0, 0)",
+  whiteSpace: "nowrap",
+  border: 0,
+} as const;

@@ -76,4 +76,24 @@ describe("TypedConfirmation timed-delay gate", () => {
     const btn = screen.getByTestId("typed-confirmation-confirm") as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
   });
+
+  it("accepts the last-4 typed in lowercase and passes them on uppercased", () => {
+    const onConfirm = vi.fn();
+    render(
+      <TypedConfirmation
+        destination={DEST}
+        delayMs={4000}
+        onConfirm={onConfirm}
+        onCancel={() => {}}
+      />,
+    );
+    fireEvent.change(screen.getByTestId("typed-confirmation-input"), { target: { value: "ktl3" } });
+    act(() => {
+      vi.advanceTimersByTime(4000);
+    });
+    const btn = screen.getByTestId("typed-confirmation-confirm") as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+    fireEvent.click(btn);
+    expect(onConfirm).toHaveBeenCalledWith("KTL3");
+  });
 });

@@ -1,5 +1,4 @@
-// Shared UI primitive layer: token-driven building blocks for the app pages
-// (/demolish, /allowances, /plan). See tokens.ts for the scales.
+// shared ui primitives for the app pages; tokens.ts holds the scales
 
 export { Button } from "./Button";
 export type { ButtonProps } from "./Button";
@@ -21,5 +20,5 @@ export type { SelectOption } from "./Select";
 export { CopyableAddress, AddressActions } from "./Address";
 export { InfoTip } from "./InfoTip";
 export { Spinner, Progress, EmptyState, SearchGlyph } from "./feedback";
-export { RADIUS, MONO, TONE_FG, toneBorder } from "./tokens";
+export { RADIUS, MONO, TONE_FG, VISUALLY_HIDDEN, toneBorder } from "./tokens";
 export type { Tone } from "./tokens";

@@ -271,7 +271,7 @@ export function TypedConfirmation({
           id={inputId}
           type="text"
           value={typed}
-          onChange={(e) => setTyped(e.currentTarget.value)}
+          onChange={(e) => setTyped(e.currentTarget.value.toUpperCase())}
           onKeyDown={(e) => {
             if (e.key === "Enter") confirm();
           }}

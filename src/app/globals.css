@@ -16,7 +16,7 @@
   --border-2: #363b40;
   --fg: #eef0f2;
   --fg-2: #a4a9b0;
-  --fg-3: #7e848c;
+  --fg-3: #848a92;
   --accent: #46a479;
   --accent-2: #5fb78f;
   --accent-fg: #08140d;
@@ -28,8 +28,6 @@
   --warning-soft: rgba(220, 168, 66, 0.15);
   --danger: #d9756a;
   --danger-soft: rgba(217, 117, 106, 0.15);
-  --pending: #686d74;
-  --pending-soft: rgba(104, 109, 116, 0.18);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
   --shadow: 0 2px 6px rgba(0, 0, 0, 0.4), 0 14px 40px rgba(0, 0, 0, 0.36);
   --overlay: rgba(0, 0, 0, 0.62);
@@ -50,20 +48,18 @@
   --border-2: #ccd2d9;
   --fg: #15171a;
   --fg-2: #4a505a;
-  --fg-3: #6b7178;
+  --fg-3: #646a71;
   --accent: #1f7a52;
   --accent-2: #176440;
   --accent-fg: #ffffff;
   --accent-soft: rgba(31, 122, 82, 0.1);
   --accent-line: rgba(31, 122, 82, 0.24);
-  --success: #2b7d55;
-  --success-soft: rgba(43, 125, 85, 0.11);
+  --success: #287650;
+  --success-soft: rgba(40, 118, 80, 0.11);
   --warning: #8a6410; /* AA-compliant (>=4.5:1) on the light background */
   --warning-soft: rgba(138, 100, 16, 0.12);
-  --danger: #c0564a;
-  --danger-soft: rgba(192, 86, 74, 0.1);
-  --pending: #828892;
-  --pending-soft: rgba(130, 136, 146, 0.14);
+  --danger: #b34a3f;
+  --danger-soft: rgba(179, 74, 63, 0.1);
   --shadow-sm: 0 1px 2px rgba(10, 12, 14, 0.05);
   --shadow: 0 2px 6px rgba(10, 12, 14, 0.06), 0 14px 40px rgba(10, 12, 14, 0.08);
   --overlay: rgba(12, 14, 18, 0.45);
@@ -106,7 +102,8 @@ input:focus-visible,
 textarea:focus-visible,
 button:focus-visible,
 select:focus-visible,
-a:focus-visible {
+a:focus-visible,
+[tabindex]:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -275,6 +272,20 @@ textarea::placeholder {
 .never-row:hover .never-body,
 .never-row:focus-within .never-body {
   grid-template-rows: 1fr;
+}
+
+/* honor the os reduce-motion setting: no looping or decorative animation and
+   no animated transitions. state changes (the coverage card flip, accordion
+   rows) still happen, just instantly, so their content stays reachable. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* mobile responsiveness: the landing page and navbar use inline styles with
