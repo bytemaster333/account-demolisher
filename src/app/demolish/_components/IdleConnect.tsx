@@ -23,13 +23,15 @@ export function IdleConnect({
   readonly onSecretConnector: (c: SecretKeyConnector) => void;
 }): React.JSX.Element {
   const isTestnetLike = network.friendbot !== null;
-  const netLabel =
-    network.id === "mainnet" ? "Mainnet" : network.id === "futurenet" ? "Futurenet" : "Testnet";
-  // once demo setup starts it takes over the screen as a dedicated step
+  const netLabel = network.id === "mainnet" ? "Mainnet" : "Testnet";
+  // once demo setup starts it takes over the screen as a dedicated step. The demo
+  // only exists on a network with a friendbot, so on any other network the
+  // connect options show regardless (the demo card isn't there to take over).
   const [demoActive, setDemoActive] = useState(false);
+  const demoTakesOver = demoActive && isTestnetLike;
   return (
     <div style={{ maxWidth: 1080, margin: "8px auto 0" }}>
-      {!demoActive ? (
+      {!demoTakesOver ? (
         <>
           <div
             style={{
@@ -80,8 +82,8 @@ export function IdleConnect({
             Stellar and sends all its XLM to an address you choose.{" "}
             <strong style={{ color: "var(--fg)", fontWeight: 600 }}>This cannot be undone.</strong>{" "}
             First we safely undo everything attached to it (trusted assets, open trades, saved data,
-            extra signers, and DeFi positions). You review and approve every step in your own
-            wallet, and nothing is sent without you.
+            extra signers, and DeFi positions). You review the whole plan first, and nothing is sent
+            until you confirm it.
             {isTestnetLike
               ? " New here? Create a free practice account below to try the whole thing first."
               : ""}

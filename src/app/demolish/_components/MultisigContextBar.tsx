@@ -1,14 +1,36 @@
 "use client";
 
-// small uppercase label that groups the multisig configure sections
-// thin neutral orientation bar for a shared account (not an alarm)
+import type { AuditSigner } from "@/lib/types/account";
+
+// fewest signers whose weights reach the threshold: take the heaviest keys
+// first. null when every key together still falls short.
+export function minSignerCount(threshold: number, signers: readonly AuditSigner[]): number | null {
+  const weights = signers
+    .filter((s) => s.type === "ed25519_public_key" && s.weight > 0)
+    .map((s) => s.weight)
+    .sort((a, b) => b - a);
+  const target = Math.max(1, threshold);
+  let sum = 0;
+  for (let i = 0; i < weights.length; i++) {
+    sum += weights[i]!;
+    if (sum >= target) return i + 1;
+  }
+  return null;
+}
+
+// thin neutral orientation bar for a shared account (not an alarm). Thresholds
+// and signer weights are weights, not a count of signatures, so both are shown
+// as weights plus the fewest signers that can reach the threshold.
 export function MultisigContextBar({
   threshold,
   have,
+  signers,
 }: {
   readonly threshold: number;
   readonly have: number;
+  readonly signers: readonly AuditSigner[];
 }): React.JSX.Element {
+  const needed = minSignerCount(threshold, signers);
   return (
     <div
       style={{
@@ -47,9 +69,13 @@ export function MultisigContextBar({
         Shared account
       </span>
       <span style={{ fontSize: 12.5, color: "var(--fg-3)" }}>
-        Signatures needed:{" "}
-        <strong style={{ color: "var(--fg-2)", fontWeight: 600 }}>{threshold}</strong> · you have{" "}
-        <strong style={{ color: "var(--fg-2)", fontWeight: 600 }}>{have}</strong>
+        Signing weight needed:{" "}
+        <strong style={{ color: "var(--fg-2)", fontWeight: 600 }}>{threshold}</strong> · your
+        key&apos;s weight: <strong style={{ color: "var(--fg-2)", fontWeight: 600 }}>{have}</strong>{" "}
+        ·{" "}
+        {needed === null
+          ? "the account's signers can't reach it together"
+          : `at least ${needed} signer${needed === 1 ? "" : "s"}`}
       </span>
     </div>
   );

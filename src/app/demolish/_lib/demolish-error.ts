@@ -1,6 +1,5 @@
-// kept around for potential future reuse (e.g., a verbose log mode); the
-// execute step now uses the plan tree directly
-// parse a demolisher error string into a human-readable summary + structured
+// turns a close failure string into a plain summary plus the raw result codes
+
 export interface ParsedError {
   readonly summary: string;
   readonly txCode: string | null;
@@ -43,39 +42,67 @@ function plainResultCode(code: string): string {
   return map[code] ?? "the network rejected it";
 }
 
+// every balanced {...} span in the text, in order. String-aware so a brace inside
+// a quoted value doesn't end the object early. Errors from several attempts are
+// joined with "; ", so the text can carry more than one result-code object.
+function balancedObjects(raw: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"' && depth > 0) {
+      inString = true;
+    } else if (ch === "{") {
+      if (depth === 0) start = i;
+      depth += 1;
+    } else if (ch === "}" && depth > 0) {
+      depth -= 1;
+      if (depth === 0) out.push(raw.slice(start, i + 1));
+    }
+  }
+  return out;
+}
+
+interface ResultCodes {
+  readonly transaction?: unknown;
+  readonly operations?: unknown;
+}
+
 export function parseDemolishError(raw: string | null): ParsedError {
   if (!raw) {
-    return {
-      summary: "Something went wrong while closing the account. Your funds are safe, try again.",
-      txCode: null,
-      ops: [],
-    };
+    return { summary: "The close stopped. See the details below.", txCode: null, ops: [] };
   }
-  // try to find an embedded result_codes json object
-  const jsonStart = raw.indexOf("{");
-  const jsonEnd = raw.lastIndexOf("}");
-  if (jsonStart >= 0 && jsonEnd > jsonStart) {
-    const blob = raw.slice(jsonStart, jsonEnd + 1);
+  // the last attempt's result codes describe where the run actually stopped
+  const objects = balancedObjects(raw);
+  for (let i = objects.length - 1; i >= 0; i--) {
+    let parsed: ResultCodes;
     try {
-      const parsed = JSON.parse(blob) as {
-        readonly transaction?: string;
-        readonly operations?: readonly string[];
-      };
-      const txCode = typeof parsed.transaction === "string" ? parsed.transaction : null;
-      const ops = Array.isArray(parsed.operations)
-        ? (parsed.operations.filter((o) => typeof o === "string") as string[])
-        : [];
-      const firstBadIdx = ops.findIndex((o) => o !== "op_success");
-      const summary =
-        firstBadIdx >= 0
-          ? `Step ${firstBadIdx + 1} of ${ops.length} couldn't complete, ${plainResultCode(ops[firstBadIdx]!)}.`
-          : txCode
-            ? `The transaction couldn't complete, ${plainResultCode(txCode)}.`
-            : raw.slice(0, jsonStart).trim() || raw;
-      return { summary, txCode, ops };
+      parsed = JSON.parse(objects[i]!) as ResultCodes;
     } catch {
-      // fall through to raw
+      continue;
     }
+    const txCode = typeof parsed.transaction === "string" ? parsed.transaction : null;
+    const ops = Array.isArray(parsed.operations)
+      ? parsed.operations.filter((o): o is string => typeof o === "string")
+      : [];
+    if (txCode === null && ops.length === 0) continue;
+    // these index operations inside ONE transaction, not plan steps, so they're
+    // labelled as operations to avoid clashing with the step counter
+    const firstBadIdx = ops.findIndex((o) => o !== "op_success");
+    const summary =
+      firstBadIdx >= 0
+        ? `Operation ${firstBadIdx + 1} of ${ops.length} in the transaction was rejected: ${plainResultCode(ops[firstBadIdx]!)}.`
+        : `The transaction couldn't complete: ${plainResultCode(txCode ?? "")}.`;
+    return { summary, txCode, ops };
   }
   return { summary: raw, txCode: null, ops: [] };
 }

@@ -4,9 +4,18 @@ import { Button, Checkbox, InfoTip, Select } from "@/components/ui";
 import type { CexInfo } from "@/lib/safety/cex-registry";
 import type { AccountAudit } from "@/lib/types/account";
 
+import { SR_ONLY } from "../_lib/a11y";
 import type { FormState } from "../_lib/form";
 
 const DEMO_DESTINATION_ADDRESS = "GCAWLISZMTHWMMHJE7BRYYNNKR4OL2PR4COXKH2MKGVDOH4BP6DMAHPE";
+
+// the read-only account check that tells Configure whether this is a shared
+// account. Continue waits for it: a shared account must be planned without
+// market sells, and planning it as single-signer produces a request that fails.
+export type PreflightView =
+  | { readonly status: "loading" }
+  | { readonly status: "ready" }
+  | { readonly status: "error"; readonly message: string; readonly retry: () => void };
 
 export function ConfigurePanel({
   form,
@@ -14,27 +23,45 @@ export function ConfigurePanel({
   cex,
   hasMemo,
   formError,
-  isBusy,
   canStart,
   startHint,
   onGeneratePlan,
-  audit,
+  audit = null,
   isDemo,
+  deterministic,
+  preflight,
+  destinationInvalid = false,
 }: {
   readonly form: FormState;
   readonly setForm: React.Dispatch<React.SetStateAction<FormState>>;
   readonly cex: CexInfo | null;
   readonly hasMemo: boolean;
   readonly formError: string | null;
-  readonly isBusy: boolean;
   readonly canStart: boolean;
   // why the Build button is disabled (bad/self destination); null = no note
   readonly startHint: string | null;
   readonly onGeneratePlan: () => void;
-  readonly audit: AccountAudit | null;
+  readonly audit?: AccountAudit | null;
   readonly isDemo: boolean;
+  // shared account: nothing is sold on the market
+  readonly deterministic: boolean;
+  readonly preflight: PreflightView;
+  // the destination itself is malformed or the account's own address
+  readonly destinationInvalid?: boolean;
 }): React.JSX.Element {
   const claimables = audit?.claimableBalances ?? [];
+  const hint =
+    preflight.status === "loading"
+      ? "Checking this account…"
+      : preflight.status === "error"
+        ? `We couldn't check this account: ${preflight.message}`
+        : startHint;
+  const startEnabled = canStart && preflight.status === "ready";
+  const describedBy = [
+    "demolish-destination-help",
+    ...(hint !== null ? ["demolish-start-hint"] : []),
+    ...(formError ? ["demolish-form-error"] : []),
+  ].join(" ");
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       {claimables.length > 0 ? (
@@ -196,9 +223,11 @@ export function ConfigurePanel({
             lineHeight: 1.5,
           }}
         >
-          Every other asset in this account is swapped to XLM, then your whole XLM balance,
-          including the small amount Stellar keeps locked in every account, is sent to the address
-          below and this account is permanently closed.
+          {deterministic
+            ? "On a shared account nothing is sold on the market: each other asset is returned to its issuer or sent to the destination, as you choose in a later step."
+            : "Assets that have a market are swapped to XLM; anything else follows the choices you make in the next steps."}{" "}
+          Then your whole XLM balance, including the small amount Stellar keeps locked in every
+          account, is sent to the address below and this account is permanently closed.
         </p>
 
         <div
@@ -247,14 +276,16 @@ export function ConfigurePanel({
           type="text"
           value={form.destination}
           onChange={(e) => {
-            const v = e.currentTarget.value;
+            // an address never contains spaces, so pasted padding is dropped here
+            const v = e.currentTarget.value.trim();
             setForm((f) => ({ ...f, destination: v }));
           }}
           placeholder="G… wallet or exchange address"
           spellCheck={false}
           autoComplete="off"
           data-testid="destination-input"
-          aria-describedby="demolish-destination-help"
+          aria-describedby={describedBy}
+          aria-invalid={formError !== null || destinationInvalid ? true : undefined}
           style={{
             width: "100%",
             padding: "13px 14px",
@@ -316,7 +347,6 @@ export function ConfigurePanel({
         ) : null}
 
         <div
-          id="demolish-memo-label"
           style={{
             display: "block",
             fontWeight: 600,
@@ -325,6 +355,11 @@ export function ConfigurePanel({
             color: "var(--fg)",
           }}
         >
+          {/* text-only name for the memo input; the tooltip trigger beside it
+              would otherwise end up in the input's accessible name */}
+          <span id="demolish-memo-label" style={SR_ONLY}>
+            Memo value
+          </span>
           <InfoTip tip="A tag exchanges use to know a deposit is yours. Exchanges share one deposit address across all customers, so the memo is how they credit it to you.">
             Memo
           </InfoTip>{" "}
@@ -415,54 +450,16 @@ export function ConfigurePanel({
             <span style={{ fontSize: 12.5, color: "var(--fg-2)", lineHeight: 1.45 }}>
               <strong style={{ color: "var(--fg)" }}>Memo added.</strong>{" "}
               {cex
-                ? "Because a plain account close-out can't carry a memo, we hop the funds through a temporary helper account so your exchange still sees the memo and credits your deposit. Nothing extra for you to do."
-                : "It's attached directly to the closing transaction, so your destination receives it alongside the funds. Nothing extra for you to do."}
+                ? "Exchanges don't credit an account merge, so we deliver through a helper account as a normal payment carrying your memo. Nothing extra for you to do."
+                : "It's attached to the transaction that closes the account, so your destination receives it alongside the funds. Nothing extra for you to do."}
             </span>
           </div>
         ) : null}
 
-        <label
-          htmlFor="demolish-fallback"
-          style={{
-            display: "block",
-            fontWeight: 600,
-            fontSize: 13,
-            margin: "18px 0 8px",
-            color: "var(--fg)",
-          }}
-        >
-          <InfoTip tip="A safety net: in the rare case an exchange transfer can't be delivered, your funds go here instead of getting stuck. Leave blank to use the destination above. If you're sending to an exchange, consider your own personal wallet here.">
-            Backup address
-          </InfoTip>{" "}
-          <span style={{ color: "var(--fg-3)", fontWeight: 400 }}>· optional</span>
-        </label>
-        <input
-          id="demolish-fallback"
-          type="text"
-          value={form.fallback}
-          onChange={(e) => {
-            const v = e.currentTarget.value;
-            setForm((f) => ({ ...f, fallback: v }));
-          }}
-          placeholder="G… (defaults to the destination above)"
-          spellCheck={false}
-          autoComplete="off"
-          data-testid="fallback-input"
-          style={{
-            width: "100%",
-            padding: "13px 14px",
-            borderRadius: 11,
-            border: "1px solid var(--border-2)",
-            background: "var(--surface-2)",
-            color: "var(--fg)",
-            font: "500 13px/1.3 'Geist Mono', monospace",
-            boxSizing: "border-box",
-          }}
-        />
-
         {formError ? (
           <p
             role="alert"
+            id="demolish-form-error"
             data-testid="form-error"
             style={{
               margin: "12px 0 0",
@@ -475,9 +472,10 @@ export function ConfigurePanel({
           </p>
         ) : null}
 
-        {startHint !== null && !isBusy ? (
+        {hint !== null ? (
           <p
             role="status"
+            id="demolish-start-hint"
             data-testid="demolish-start-hint"
             style={{
               margin: "12px 0 0",
@@ -486,39 +484,47 @@ export function ConfigurePanel({
               lineHeight: 1.5,
             }}
           >
-            {startHint}
+            {hint}
           </p>
         ) : null}
+        {preflight.status === "error" ? (
+          <div style={{ marginTop: 8 }}>
+            <Button
+              variant="secondary"
+              onClick={preflight.retry}
+              data-testid="preflight-check-retry"
+            >
+              Check the account again
+            </Button>
+          </div>
+        ) : null}
 
-        <div style={{ marginTop: startHint !== null && !isBusy ? 10 : 20 }}>
+        <div style={{ marginTop: hint !== null ? 10 : 20 }}>
           <Button
             variant="primary"
             size="lg"
             onClick={onGeneratePlan}
-            disabled={!canStart || isBusy}
-            loading={isBusy}
-            disabledReason={startHint ?? "Connect an account and meet any signing threshold first"}
+            disabled={!startEnabled}
+            disabledReason={hint ?? "Connect an account and meet any signing threshold first"}
             data-testid="demolish-start"
             style={{ width: "100%" }}
             iconRight={
-              isBusy ? undefined : (
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={2.2}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden
-                >
-                  <path d="M5 12h14M13 6l6 6-6 6" />
-                </svg>
-              )
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2.2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <path d="M5 12h14M13 6l6 6-6 6" />
+              </svg>
             }
           >
-            {isBusy ? "Checking your account…" : "Continue, preview the plan"}
+            Continue, preview the plan
           </Button>
         </div>
       </div>

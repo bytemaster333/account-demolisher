@@ -5,8 +5,11 @@ import { z } from "zod";
 
 import type { ClassicMemo } from "@/lib/types/plan";
 
+// trimmed before validation so a pasted address with stray spaces is accepted
+// here exactly as the inline gates (which also trim) already show it
 export const G_ADDRESS = z
   .string()
+  .trim()
   .min(1, { message: "Destination address is required." })
   .refine((v) => StrKey.isValidEd25519PublicKey(v), {
     message: "Not a valid Stellar G... address.",
@@ -18,7 +21,6 @@ export const FORM_SCHEMA = z.object({
   destination: G_ADDRESS,
   memoType: MEMO_TYPE,
   memoValue: z.string(),
-  fallback: z.string(),
   selectedCbIds: z.array(z.string()),
   // pathKey()s of un-routable credit assets the user consented to return to
   // their issuer so the account can close
@@ -32,7 +34,6 @@ export const INITIAL_FORM: FormState = {
   destination: "",
   memoType: "none",
   memoValue: "",
-  fallback: "",
   selectedCbIds: [],
   returnToIssuer: [],
   sendToDestination: [],

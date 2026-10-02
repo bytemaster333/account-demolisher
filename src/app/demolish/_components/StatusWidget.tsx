@@ -1,41 +1,68 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { AddressActions } from "@/components/ui";
+import { PendingForwardBanner } from "@/components/wallet/PendingForwardBanner";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { explorerAccountUrl, explorerTxUrl } from "@/lib/explorer";
-import type { PlanNode } from "@/lib/plan/tree";
+import type { PlanTree } from "@/lib/plan/tree";
 
+import { SR_ONLY } from "../_lib/a11y";
 import { parseDemolishError } from "../_lib/demolish-error";
+import { failureNoteFor, type FailureNote } from "../_lib/failure-note";
 import { truncateHash } from "../_lib/format";
-import { nodeLabel, phasePlainLabel } from "../_lib/plan-copy";
+import { nodePlainLabel, phasePlainLabel, type PlanGroup } from "../_lib/plan-copy";
+import { buildReceiptText } from "../_lib/receipt";
 import { PlanRow } from "./PlanRow";
+
+export type DeliveredAmount =
+  | { readonly status: "loading" }
+  | { readonly status: "ok"; readonly xlm: string }
+  | { readonly status: "unavailable" };
+
+// how the steps of this run get signed: a wallet prompts per step, a pasted or
+// demo key signs in this browser with no prompt, and a collected bundle is
+// already signed by everyone
+export type SigningMode = "wallet" | "secret" | "bundle";
 
 // single, evolving widget that covers execute / succeeded / failed
 export function DemolishStatusWidget({
   state,
+  tree,
   planGroups,
   doneCount,
   activeCount,
   network,
-  totalXlm,
+  closedAccount,
   destination,
   mergeHash,
+  delivered,
   error,
+  signingMode,
+  retryResumes,
+  retryDisabledReason,
   onRetry,
   onReset,
 }: {
   readonly state: "executing" | "succeeded" | "failed";
-  readonly planGroups: ReadonlyArray<{ phase: string; nodes: readonly PlanNode[] }>;
+  readonly tree: PlanTree;
+  readonly planGroups: readonly PlanGroup[];
   readonly doneCount: number;
   readonly activeCount: number;
+  // the network this run is executing on (not the navbar's current choice)
   readonly network: NetworkConfig;
-  readonly totalXlm: string;
+  readonly closedAccount: string;
   readonly destination: string;
   readonly mergeHash: string | null;
+  readonly delivered: DeliveredAmount;
   readonly error: string | null;
+  readonly signingMode: SigningMode;
+  // whether RETRY re-runs the remaining steps (true) or rebuilds from a fresh
+  // audit (false), so the copy never promises a resume that won't happen
+  readonly retryResumes: boolean;
+  readonly retryDisabledReason?: string | null;
   readonly onRetry: () => void;
   readonly onReset: () => void;
 }): React.JSX.Element {
@@ -65,29 +92,49 @@ export function DemolishStatusWidget({
     return () => clearInterval(h);
   }, [state]);
 
-  // a plain-text receipt of an irreversible action, destination + every tx
-  const [copied, setCopied] = useState(false);
-  const copyReceipt = (): void => {
-    const lines = [
-      `Account Demolisher, account closed`,
-      `Forwarded ${totalXlm} XLM to ${destination}`,
-      mergeHash ? `Merge tx: ${explorerTxUrl(network, mergeHash)}` : "",
-      ...planGroups.flatMap((g) =>
-        g.nodes
-          .filter((n) => n.executed?.txHash)
-          .map((n) => `${nodeLabel(n)}: ${explorerTxUrl(network, n.executed!.txHash!)}`),
-      ),
-    ].filter(Boolean);
-    void navigator.clipboard
-      ?.writeText(lines.join("\n"))
-      .then(() => {
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1600);
-      })
-      .catch(() => {
-        /* clipboard blocked, ignore */
-      });
+  const note: FailureNote | null = useMemo(
+    () => (state === "failed" ? failureNoteFor(tree) : null),
+    [state, tree],
+  );
+
+  // a plain-text receipt of an irreversible action. A closed account can't be
+  // looked up later, so when the clipboard is missing or blocked the text is
+  // shown for manual copy, and a download is always offered.
+  const receiptText = buildReceiptText({
+    closedAccount,
+    destination,
+    deliveredXlm: delivered.status === "ok" ? delivered.xlm : null,
+    network,
+    mergeHash,
+    ordered: planGroups.flatMap((g) => g.nodes),
+  });
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const copyReceipt = async (): Promise<void> => {
+    const clipboard = typeof navigator !== "undefined" ? navigator.clipboard : undefined;
+    if (!clipboard || typeof clipboard.writeText !== "function") {
+      setCopyState("failed");
+      return;
+    }
+    try {
+      await clipboard.writeText(receiptText);
+      setCopyState("copied");
+      window.setTimeout(() => setCopyState((s) => (s === "copied" ? "idle" : s)), 1600);
+    } catch {
+      // blocked by permissions or an in-app browser: show the text instead
+      setCopyState("failed");
+    }
   };
+  const downloadReceipt = (): void => {
+    const url = URL.createObjectURL(new Blob([receiptText], { type: "text/plain" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `account-closed-${closedAccount.slice(0, 8)}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+  const copied = copyState === "copied";
 
   return (
     <div
@@ -223,10 +270,18 @@ export function DemolishStatusWidget({
             >
               {state === "succeeded" ? (
                 <>
-                  <strong style={{ color: "var(--fg)", fontFamily: "'Geist Mono', monospace" }}>
-                    {totalXlm} XLM
-                  </strong>{" "}
-                  was sent to{" "}
+                  {delivered.status === "ok" ? (
+                    <>
+                      <strong style={{ color: "var(--fg)", fontFamily: "'Geist Mono', monospace" }}>
+                        {delivered.xlm} XLM
+                      </strong>{" "}
+                      was delivered to{" "}
+                    </>
+                  ) : (
+                    // no figure until the chain confirms one: the pre-close
+                    // balance ignores fees and every conversion
+                    <>Your remaining balance was sent to </>
+                  )}
                   <span
                     title={destination}
                     style={{ fontFamily: "'Geist Mono', monospace", color: "var(--fg-2)" }}
@@ -246,8 +301,17 @@ export function DemolishStatusWidget({
                   </span>
                 </>
               ) : state === "failed" ? (
-                (parsed?.summary ??
-                "Something went wrong while closing the account. Your funds are safe, try again.")
+                (parsed?.summary ?? "The close stopped. See the details below.")
+              ) : signingMode === "bundle" ? (
+                <>
+                  Submitting the collected signatures. Nothing else needs to be signed.{" "}
+                  {elapsed > 0 ? `Running for ${elapsed}s.` : ""}
+                </>
+              ) : signingMode === "secret" ? (
+                <>
+                  Signing each step with your key in this browser, so no wallet window will appear.{" "}
+                  {elapsed > 0 ? `Running for ${elapsed}s.` : ""}
+                </>
               ) : (
                 <>
                   Your wallet will pop up to approve each step, click{" "}
@@ -357,42 +421,14 @@ export function DemolishStatusWidget({
           </a>
         ) : null}
 
-        {state === "failed" ? (
-          <div
-            role="note"
-            style={{
-              display: "flex",
-              gap: 10,
-              marginTop: 14,
-              padding: "12px 14px",
-              borderRadius: 12,
-              border: "1px solid color-mix(in srgb, var(--success) 35%, transparent)",
-              fontSize: 12.5,
-              lineHeight: 1.55,
-              color: "var(--fg-2)",
-            }}
-          >
-            <svg
-              width="17"
-              height="17"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="var(--success)"
-              strokeWidth={2.4}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              style={{ flexShrink: 0, marginTop: 1 }}
-              aria-hidden
-            >
-              <path d="M20 6L9 17l-5-5" />
-            </svg>
-            <span>
-              <strong style={{ color: "var(--fg)", fontWeight: 600 }}>Your funds are safe.</strong>{" "}
-              Your account is still open and its balance is untouched. Any step that already
-              finished (marked ✓ above) is done and recorded on Stellar. Nothing was lost. Press
-              Retry to continue from where it stopped.
-            </span>
-          </div>
+        {state === "failed" && note !== null ? (
+          <FailureNoteView
+            note={note}
+            network={network}
+            destination={destination}
+            closedAccount={closedAccount}
+            retryResumes={retryResumes}
+          />
         ) : null}
 
         {state === "failed" && parsed && parsed.ops.length > 0 ? (
@@ -423,7 +459,7 @@ export function DemolishStatusWidget({
               return (
                 <code
                   key={i}
-                  title={`op ${i + 1}: ${op}`}
+                  title={`operation ${i + 1} in the transaction: ${op}`}
                   style={{
                     padding: "3px 7px",
                     borderRadius: 6,
@@ -449,8 +485,8 @@ export function DemolishStatusWidget({
           padding: "8px 8px 4px",
         }}
       >
-        {planGroups.map((g) => (
-          <div key={g.phase}>
+        {planGroups.map((g, gi) => (
+          <div key={`${g.phase}-${gi}`}>
             <div style={{ padding: "10px 9px 3px" }}>
               <span
                 style={{
@@ -486,6 +522,8 @@ export function DemolishStatusWidget({
               <button
                 type="button"
                 onClick={onRetry}
+                disabled={Boolean(retryDisabledReason)}
+                title={retryDisabledReason ?? undefined}
                 data-testid="demolish-retry"
                 style={{
                   flex: 1,
@@ -526,7 +564,7 @@ export function DemolishStatusWidget({
             <>
               <button
                 type="button"
-                onClick={copyReceipt}
+                onClick={() => void copyReceipt()}
                 data-testid="demolish-copy-receipt"
                 title="Copies a text record of this closure and its transaction links, keep it for your records, since a closed account can't be looked up later."
                 style={{
@@ -542,7 +580,26 @@ export function DemolishStatusWidget({
                   whiteSpace: "nowrap",
                 }}
               >
-                {copied ? "Copied ✓" : "Save a receipt"}
+                {copied ? "Copied ✓" : "Copy a receipt"}
+              </button>
+              <button
+                type="button"
+                onClick={downloadReceipt}
+                data-testid="demolish-download-receipt"
+                style={{
+                  height: 40,
+                  padding: "0 16px",
+                  borderRadius: 10,
+                  border: "1px solid var(--border-2)",
+                  background: "var(--surface)",
+                  color: "var(--fg)",
+                  fontWeight: 600,
+                  fontSize: 13.5,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Download .txt
               </button>
               <Link
                 href="/"
@@ -568,6 +625,44 @@ export function DemolishStatusWidget({
               </Link>
             </>
           )}
+        </div>
+      ) : null}
+
+      {state === "succeeded" ? (
+        <div style={{ background: "var(--bg-2)" }}>
+          <p role="status" aria-live="polite" data-testid="demolish-copy-status" style={SR_ONLY}>
+            {copyState === "copied"
+              ? "Receipt copied to the clipboard."
+              : copyState === "failed"
+                ? "Copying isn't available here. The receipt text is shown below."
+                : ""}
+          </p>
+          {copyState === "failed" ? (
+            <div style={{ padding: "0 18px 16px" }}>
+              <p style={{ margin: "0 0 8px", fontSize: 12.5, color: "var(--fg-2)" }}>
+                Copying isn&apos;t available in this browser. Select the text below to copy it, or
+                use Download .txt.
+              </p>
+              <textarea
+                readOnly
+                value={receiptText}
+                data-testid="demolish-receipt-text"
+                aria-label="Receipt text"
+                rows={Math.min(12, receiptText.split("\n").length + 1)}
+                onFocus={(e) => e.currentTarget.select()}
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  padding: 10,
+                  borderRadius: 9,
+                  border: "1px solid var(--border-2)",
+                  background: "var(--surface)",
+                  color: "var(--fg)",
+                  font: "500 11.5px/1.5 'Geist Mono', monospace",
+                }}
+              />
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -610,6 +705,112 @@ export function DemolishStatusWidget({
           </pre>
         </details>
       ) : null}
+    </div>
+  );
+}
+
+function shortKey(key: string): string {
+  return key.length > 12 ? `${key.slice(0, 6)}…${key.slice(-4)}` : key;
+}
+
+// the failure note, branched on what the tree's receipts prove happened. It
+// never claims the balance is untouched once any step has a receipt, and after
+// the merge into the helper account it points at the one recovery action.
+function FailureNoteView({
+  note,
+  network,
+  destination,
+  closedAccount,
+  retryResumes,
+}: {
+  readonly note: FailureNote;
+  readonly network: NetworkConfig;
+  readonly destination: string;
+  readonly closedAccount: string;
+  readonly retryResumes: boolean;
+}): React.JSX.Element {
+  const retryCopy = retryResumes
+    ? "Press Retry to run the remaining steps again; steps marked done are not repeated."
+    : "Retry re-checks the account and builds a fresh plan before anything else runs.";
+  const warn = note.kind === "in-mediator" || note.kind === "partial" || note.kind === "closed";
+  return (
+    <div
+      role="note"
+      data-testid="demolish-failure-note"
+      data-kind={note.kind}
+      style={{
+        marginTop: 14,
+        padding: "12px 14px",
+        borderRadius: 12,
+        border: `1px solid color-mix(in srgb, var(${warn ? "--warning" : "--border-2"}) 45%, transparent)`,
+        fontSize: 12.5,
+        lineHeight: 1.55,
+        color: "var(--fg-2)",
+      }}
+    >
+      {note.kind === "in-mediator" ? (
+        <>
+          <strong style={{ color: "var(--fg)", fontWeight: 600 }}>
+            Your account was closed and the funds are in a temporary forwarding account.
+          </strong>{" "}
+          The merge (
+          <a
+            href={explorerTxUrl(network, note.mergeHash)}
+            target="_blank"
+            rel="noreferrer noopener"
+            style={{ color: "var(--fg)" }}
+          >
+            {truncateHash(note.mergeHash)}
+          </a>
+          ) moved the whole balance into the helper account {shortKey(note.mediatorPublicKey)}, but
+          the delivery to {shortKey(destination)} didn&apos;t finish. Resume the forward now: it
+          sends that balance on to your destination with your memo.
+          <div style={{ marginTop: 10 }}>
+            <PendingForwardBanner publicKey={closedAccount} />
+          </div>
+          <div style={{ marginTop: 8 }}>{retryCopy}</div>
+        </>
+      ) : note.kind === "closed" ? (
+        <>
+          <strong style={{ color: "var(--fg)", fontWeight: 600 }}>
+            The account merge landed, so this account is closed.
+          </strong>{" "}
+          See the merge on the explorer:{" "}
+          <a
+            href={explorerTxUrl(network, note.mergeHash)}
+            target="_blank"
+            rel="noreferrer noopener"
+            style={{ color: "var(--fg)" }}
+          >
+            {truncateHash(note.mergeHash)}
+          </a>
+          .
+        </>
+      ) : note.kind === "partial" ? (
+        <>
+          <strong style={{ color: "var(--fg)", fontWeight: 600 }}>
+            Some steps already ran and changed your balances.
+          </strong>{" "}
+          Your account is still open. These finished on chain and are not undone:
+          <ul style={{ margin: "6px 0 6px", paddingLeft: 18 }}>
+            {note.ran.map((n) => (
+              <li key={n.id}>{nodePlainLabel(n)}</li>
+            ))}
+          </ul>
+          {retryCopy}
+        </>
+      ) : (
+        <>
+          <strong style={{ color: "var(--fg)", fontWeight: 600 }}>
+            Your account is still open.
+          </strong>{" "}
+          No step of this close finished on chain.
+          {note.multiBatch
+            ? " The close needed more than one transaction, so an earlier one may already have run; check the account on the explorer before retrying."
+            : ""}{" "}
+          {retryCopy}
+        </>
+      )}
     </div>
   );
 }

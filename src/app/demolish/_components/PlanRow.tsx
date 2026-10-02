@@ -8,13 +8,14 @@ import type { PlanNode } from "@/lib/plan/tree";
 import { SR_ONLY } from "../_lib/a11y";
 import { nodeFeeStroops, stroopsToXlm } from "../_lib/fees";
 import { truncateHash } from "../_lib/format";
-import { nodeExplainer, nodeLabel, nodePlainLabel } from "../_lib/plan-copy";
+import { nodeExplainer, nodeLabel, nodePlainLabel, simulatedBadgeLabel } from "../_lib/plan-copy";
 
 export function PlanRow({
   node,
   network,
   mode = "live",
   index,
+  deterministic = false,
 }: {
   readonly node: PlanNode;
   readonly network: NetworkConfig;
@@ -22,13 +23,14 @@ export function PlanRow({
   // "live" = during/after execution (status indicator, tx link, no fee)
   readonly mode?: "plan" | "live";
   readonly index?: number;
+  // shared-account plan: nothing is sold on the market (changes the explainer)
+  readonly deterministic?: boolean;
 }): React.JSX.Element {
   const isDone = node.status === "confirmed";
   const isRunning = node.status === "signed" || node.status === "submitted";
   const isSkipped = node.status === "skipped";
   const isFailed = node.status === "failed";
-  // a step whose dry-run (preview simulation) passed — distinct from a step not
-  // yet checked. In the plan/review this is the central output of the dry run, so
+  // a step whose preview check passed, distinct from a step not yet checked. In the plan/review this is the central output of the dry run, so
   // it must read differently from a plain "pending" step. But during LIVE
   // execution a not-yet-run step is still "simulated", and its accent-check badge
   // reads as "done": there it must render as pending (waiting) so only a real
@@ -84,12 +86,25 @@ export function PlanRow({
                         ? "Simulated: "
                         : "Pending: "}
             </span>
-          ) : null}
+          ) : (
+            // the plan view shows status only as color and a badge, so say it
+            <span style={SR_ONLY}>
+              {`Step ${index ?? ""}, `}
+              {isSimulated
+                ? `${simulatedBadgeLabel(node)}: `
+                : isFailed
+                  ? "Dry run failed: "
+                  : isSkipped
+                    ? "Skipped: "
+                    : "Not checked: "}
+            </span>
+          )}
           {mode === "plan" ? (
             <span
+              aria-hidden
               // a simulated step gets an accent ring + a small check badge so the
-              // dry-run result reads at a glance; an un-simulated step stays neutral
-              title={isSimulated ? "Dry run passed for this step" : undefined}
+              // check result reads at a glance; an unchecked step stays neutral
+              title={isSimulated ? `${simulatedBadgeLabel(node)} for this step` : undefined}
               style={{
                 position: "absolute",
                 inset: 0,
@@ -187,7 +202,7 @@ export function PlanRow({
                 // dry-run passed, not yet executing: a faint accent ring with a
                 // small check, distinct from the empty "pending" circle
                 <span
-                  title="Dry run passed for this step"
+                  title={`${simulatedBadgeLabel(node)} for this step`}
                   style={{
                     position: "absolute",
                     inset: 0,
@@ -276,7 +291,7 @@ export function PlanRow({
             }}
           >
             {mode === "plan" ? (
-              <InfoTip tip={nodeExplainer(node)}>
+              <InfoTip tip={nodeExplainer(node, { deterministic })}>
                 <span
                   style={{
                     fontWeight: 600,

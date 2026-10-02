@@ -12,71 +12,83 @@ import {
 } from "@/components/ui";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { explorerAccountUrl } from "@/lib/explorer";
-import type { PlanNode } from "@/lib/plan/tree";
+import type { BundleabilityResult } from "@/lib/multisig/signing-request";
+import type { AccountAudit } from "@/lib/types/account";
+import type { ClassicMemo } from "@/lib/types/plan";
 
-import { nodeFeeStroops, stroopsToXlm, xlmToStroops } from "../_lib/fees";
-import { phasePlainLabel } from "../_lib/plan-copy";
+import { stroopsToXlm } from "../_lib/fees";
+import {
+  countTrustlines,
+  nodePlainLabel,
+  phasePlainLabel,
+  planStepNumbers,
+  runnableSteps,
+  type PlanGroup,
+} from "../_lib/plan-copy";
+import { computeReviewMoney, reserveReleasedStroops } from "../_lib/review-money";
+import type { ClaimAtRisk } from "../_lib/signing-bundle";
 import { PlanRow } from "./PlanRow";
 
-// Human QA sign-off, the dedicated step before anything executes. Lists every
-// operation to be run, requires an explicit acknowledgment and a typed
-// last-4-char confirmation (with a short unlock delay), then triggers execution.
-// This replaces the old stacked high-value + typed-confirmation modals.
-// The combined Review step, the clean "here is what will happen". Plan
-// overview, every operation grouped, destination + account snapshot. No
-// cautions or warnings (those are acknowledged in the Resolve step); the final
-// gate is the typed-confirmation dialog opened by "Demolish account".
+const MEMO_TYPE_LABEL: Record<ClassicMemo["type"], string> = {
+  text: "Text",
+  id: "ID",
+  hash: "Hash",
+  return: "Return",
+};
+
+export interface SharedReview {
+  // whether this close can be published as one signing request
+  readonly gate: BundleabilityResult;
+  // claimable balances whose claim may fail before co-signers finish
+  readonly claimRisks: readonly ClaimAtRisk[];
+  readonly onCreate: () => void;
+  readonly creating: boolean;
+  readonly error: string | null;
+  // present when the plan was built as single-signer (the account check hadn't
+  // finished): rebuilds it as a shared-account close
+  readonly onRebuildShared?: () => void;
+}
+
+// The Review step, the clean "here is what will happen": every step in the
+// order it runs, the destination and memo, and the money figures. Cautions are
+// acknowledged in the earlier steps; the final gate is the typed confirmation.
 export function ReviewPanel({
   planGroups,
-  totalXlm,
-  activeCount,
+  audit,
+  baseReserveStroops,
   destination,
+  memo,
+  useMediator,
+  deterministic,
   network,
-  snapshot,
   onBack,
   onDemolish,
-  createRequest,
+  shared,
 }: {
-  readonly planGroups: ReadonlyArray<{ phase: string; nodes: readonly PlanNode[] }>;
-  readonly totalXlm: string;
-  readonly activeCount: number;
+  readonly planGroups: readonly PlanGroup[];
+  readonly audit: AccountAudit;
+  // the network's base reserve from the latest ledger; null when it couldn't be read
+  readonly baseReserveStroops: number | null;
   readonly destination: string;
+  readonly memo: ClassicMemo | null;
+  readonly useMediator: boolean;
+  readonly deterministic: boolean;
   readonly network: NetworkConfig;
-  readonly snapshot: {
-    readonly pk: string;
-    readonly sub: number;
-    readonly trustlines: number;
-    readonly offers: number;
-    readonly data: number;
-    readonly claimable: number;
-  } | null;
   readonly onBack: () => void;
   readonly onDemolish: () => void;
-  // present for a shared account whose keys aren't all on this device: the
-  // terminal packages this exact reviewed close as a signing request for the
-  // other signers, instead of executing it immediately.
-  readonly createRequest?: {
-    readonly onCreate: () => void;
-    readonly creating: boolean;
-    readonly error: string | null;
-  };
+  // present for a shared account: the close is published as a signing request
+  // for the other signers instead of being run here
+  readonly shared?: SharedReview;
 }): React.JSX.Element {
   const required = destination.length >= 4 ? destination.slice(-4) : destination;
   const destHead = destination.length > 4 ? destination.slice(0, -4) : "";
 
-  // flatten for numbering + total network cost
-  const allNodes = planGroups.flatMap((g) => g.nodes);
-  const totalFeeStroops = allNodes.reduce((sum, n) => sum + nodeFeeStroops(n), 0);
-  const indexOf = new Map(allNodes.map((n, i) => [n.id, i + 1]));
-
-  // Money math the user can trust. `totalXlm` is the WHOLE native balance, the
-  // locked reserve is already inside it, not on top. What the destination
-  // actually receives is that balance minus network fees. The freed reserve is
-  // shown only as context (part of the amount above), never as a bonus, and is
-  // the real figure: Stellar locks 0.5 XLM for the account base (×2) plus 0.5
-  // per subentry (trustline/offer/signer/data), all released on close.
-  const reserveStroops = (2 + (snapshot?.sub ?? 0)) * 5_000_000;
-  const netReceivedStroops = Math.max(0, xlmToStroops(totalXlm) - totalFeeStroops);
+  const ordered = planGroups.flatMap((g) => g.nodes);
+  const numbers = planStepNumbers(planGroups);
+  const { runnable, skipped } = runnableSteps(ordered);
+  const money = computeReviewMoney({ audit, ordered });
+  const reserve = reserveReleasedStroops(audit, baseReserveStroops);
+  const atLeast = `at least ${stroopsToXlm(money.atLeastStroops)} XLM`;
 
   return (
     <Card padding={24} style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -90,41 +102,93 @@ export function ReviewPanel({
           Review before closing
         </h2>
         <p style={{ margin: "8px 0 0", fontSize: 14, lineHeight: 1.55, color: "var(--fg-2)" }}>
-          {activeCount} {activeCount === 1 ? "step runs" : "steps run"} in order, here is exactly
-          what will happen. Nothing happens until you confirm below.
+          {runnable} {runnable === 1 ? "step runs" : "steps run"} in order, numbered as they run.
+          Each step is final once it lands on Stellar; the account stays open until the last one
+          deletes it. Nothing happens until you confirm below.
         </p>
       </div>
 
       <StatGrid
         stats={[
           {
-            label: "Destination receives",
-            value: `≈ ${stroopsToXlm(netReceivedStroops)} XLM`,
+            label: money.spendsBalance
+              ? "Destination receives, before repayments"
+              : "Destination receives",
+            value: atLeast,
             tone: "accent",
           },
-          { label: "Network fees", value: `≈ ${stroopsToXlm(totalFeeStroops)} XLM` },
-          { label: "Reserve released (included)", value: `≈ ${stroopsToXlm(reserveStroops)} XLM` },
+          {
+            label: "Network fees",
+            value: `about ${stroopsToXlm(money.typicalFeeStroops)} XLM, at most ${stroopsToXlm(money.maxFeeStroops)} XLM`,
+          },
+          {
+            label: "Reserve released (included)",
+            value: reserve === null ? "couldn't load" : `${stroopsToXlm(reserve)} XLM`,
+          },
         ]}
       />
-      <p style={{ margin: "-6px 0 0", fontSize: 12, lineHeight: 1.55, color: "var(--fg-3)" }}>
-        Your whole balance goes to the destination, minus a small{" "}
-        <InfoTip tip="A small charge the Stellar network takes to process each step. It is not paid to us.">
-          network fee
-        </InfoTip>
-        . The{" "}
-        <InfoTip tip="XLM the network keeps locked in every account while it is open. It is released when the account closes, and is already included in the amount above, not extra.">
-          reserve
-        </InfoTip>{" "}
-        is already part of that amount.
-      </p>
+      <div style={{ margin: "-6px 0 0", fontSize: 12, lineHeight: 1.55, color: "var(--fg-3)" }}>
+        <p style={{ margin: 0 }}>
+          The floor counts your XLM balance, the minimum each signed XLM conversion must return, and
+          XLM pending payments, less the most the{" "}
+          <InfoTip tip="A charge the Stellar network takes to process each step. It is not paid to us. The close bids more when the network is busy, up to the maximum shown.">
+            network fees
+          </InfoTip>{" "}
+          can reach. The{" "}
+          <InfoTip tip="XLM the network keeps locked in every account while it is open. It is released when the account closes, and is already part of your balance, not extra.">
+            reserve
+          </InfoTip>{" "}
+          is already part of that balance.
+        </p>
+        {money.notCounted.length > 0 ? (
+          <div data-testid="review-not-counted" style={{ marginTop: 6 }}>
+            Not counted in that figure:
+            <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+              {money.notCounted.map((t) => (
+                <li key={t}>{t}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+      </div>
 
-      {/* every operation, grouped */}
+      {skipped.length > 0 ? (
+        <div
+          data-testid="review-skipped"
+          role="note"
+          style={{
+            padding: "12px 14px",
+            borderRadius: 12,
+            border: "1px solid color-mix(in srgb, var(--warning) 40%, transparent)",
+            fontSize: 12.5,
+            lineHeight: 1.5,
+            color: "var(--fg-2)",
+          }}
+        >
+          <strong style={{ color: "var(--fg)", fontWeight: 600 }}>
+            {skipped.length === 1 ? "1 step won't run" : `${skipped.length} steps won't run`}
+          </strong>
+          <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+            {skipped.map((n) => (
+              <li key={n.id}>
+                {nodePlainLabel(n)}
+                {n.error ? `: ${n.error}` : ""}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {/* every step, in the order it runs */}
       <div style={{ border: "1px solid var(--border)", borderRadius: 14, overflow: "hidden" }}>
         {planGroups.map((g, gi) => {
+          // only the merge (and the delivery out of the helper account) delete or
+          // empty the account for good; earlier steps are final on chain too, but
+          // they leave the account open
           const irreversible = g.phase === "Merge" || g.phase === "Mediator forward";
           return (
             <div
-              key={g.phase}
+              key={`${g.phase}-${gi}`}
               style={{ borderTop: gi > 0 ? "1px solid var(--border)" : undefined }}
             >
               <div
@@ -136,7 +200,11 @@ export function ReviewPanel({
                 }}
               >
                 <SectionLabel>{phasePlainLabel(g.phase)}</SectionLabel>
-                {irreversible ? <Badge tone="danger">Irreversible</Badge> : null}
+                {irreversible ? (
+                  <Badge tone="danger">Irreversible</Badge>
+                ) : (
+                  <Badge tone="neutral">Final on chain</Badge>
+                )}
               </div>
               <div style={{ padding: "0 6px 6px" }}>
                 {g.nodes.map((n) => (
@@ -145,7 +213,8 @@ export function ReviewPanel({
                     node={n}
                     network={network}
                     mode="plan"
-                    index={indexOf.get(n.id) ?? 0}
+                    index={numbers.get(n.id) ?? 0}
+                    deterministic={deterministic}
                   />
                 ))}
               </div>
@@ -154,7 +223,7 @@ export function ReviewPanel({
         })}
       </div>
 
-      {/* destination + amount + account snapshot */}
+      {/* destination + memo + amount + account snapshot */}
       <div
         style={{
           borderRadius: 12,
@@ -189,136 +258,90 @@ export function ReviewPanel({
               label="destination"
             />
           </div>
+          <div
+            data-testid="review-memo"
+            style={{ marginTop: 9, fontSize: 13, color: "var(--fg-2)", wordBreak: "break-all" }}
+          >
+            {memo ? (
+              <>
+                Memo ({MEMO_TYPE_LABEL[memo.type]}):{" "}
+                <span style={{ font: "600 13px 'Geist Mono', monospace", color: "var(--fg)" }}>
+                  {memo.value}
+                </span>
+                {useMediator ? ", applied on the delivery payment from the helper account" : ""}
+              </>
+            ) : (
+              "No memo"
+            )}
+          </div>
           <div style={{ marginTop: 9, fontSize: 13, color: "var(--fg-2)" }}>
             Your balance is sent to this address and the account is permanently closed. The
             destination receives{" "}
             <span style={{ font: "600 13px 'Geist Mono', monospace", color: "var(--fg)" }}>
-              ≈ {stroopsToXlm(netReceivedStroops)} XLM
-            </span>{" "}
-            after network fees.
+              {atLeast}
+            </span>
+            {money.spendsBalance ? " before loan repayments" : ""} after network fees.
           </div>
         </div>
-        {snapshot ? (
-          <div
-            style={{
-              padding: "12px 16px",
-              borderTop: "1px solid var(--border)",
-              display: "flex",
-              gap: 22,
-              flexWrap: "wrap",
-              alignItems: "flex-start",
-            }}
-          >
-            <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-              <span
-                style={{
-                  fontSize: 10,
-                  color: "var(--fg-3)",
-                  letterSpacing: "0.06em",
-                  textTransform: "uppercase",
-                  fontWeight: 600,
-                }}
-              >
-                Account
-              </span>
-              <CopyableAddress
-                value={snapshot.pk}
-                label="account"
-                size={13}
-                href={explorerAccountUrl(network, snapshot.pk)}
-              />
-            </div>
-            <SnapStat
-              label="Subentries"
-              value={snapshot.sub}
-              tip="Extra things attached to the account (trustlines, offers, saved data, signers). Each one locks a little XLM as a reserve; all of it is freed when the account closes."
-            />
-            <SnapStat
-              label="Trustlines"
-              value={snapshot.trustlines}
-              tip="Tokens the account is set up to hold, besides XLM. Each is emptied and removed as part of closing."
-            />
-            <SnapStat
-              label="Offers"
-              value={snapshot.offers}
-              tip="Open buy/sell orders on Stellar's built-in exchange. They're cancelled before the account closes."
-            />
-            <SnapStat
-              label="Data"
-              value={snapshot.data}
-              tip="Small key-value notes stored on the account. They're deleted as part of closing."
-            />
-            <SnapStat
-              label="Claimable"
-              value={snapshot.claimable}
-              tip="Payments set aside for this account that haven't been collected yet. They're claimed into your balance before closing."
+        <div
+          style={{
+            padding: "12px 16px",
+            borderTop: "1px solid var(--border)",
+            display: "flex",
+            gap: 22,
+            flexWrap: "wrap",
+            alignItems: "flex-start",
+          }}
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+            <span
+              style={{
+                fontSize: 10,
+                color: "var(--fg-3)",
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+                fontWeight: 600,
+              }}
+            >
+              Account
+            </span>
+            <CopyableAddress
+              value={audit.accountId}
+              label="account"
+              size={13}
+              href={explorerAccountUrl(network, audit.accountId)}
             />
           </div>
-        ) : null}
+          <SnapStat
+            label="Subentries"
+            value={audit.subentryCount}
+            tip="Extra things attached to the account (trustlines, offers, saved data, signers). Each one locks a little XLM as a reserve; all of it is freed when the account closes."
+          />
+          <SnapStat
+            label="Trustlines"
+            value={countTrustlines(audit)}
+            tip="Tokens the account is set up to hold, besides XLM. Each is emptied and removed as part of closing."
+          />
+          <SnapStat
+            label="Offers"
+            value={audit.offers.length}
+            tip="Open buy/sell orders on Stellar's built-in exchange. They're cancelled before the account closes."
+          />
+          <SnapStat
+            label="Data"
+            value={audit.data.length}
+            tip="Small key-value notes stored on the account. They're deleted as part of closing."
+          />
+          <SnapStat
+            label="Claimable"
+            value={audit.claimableBalances.length}
+            tip="Payments set aside for this account that haven't been collected yet. The ones that can be collected now are claimed before closing; the Warnings step lists any that can't."
+          />
+        </div>
       </div>
 
-      {createRequest ? (
-        <>
-          <div
-            role="note"
-            style={{
-              display: "flex",
-              gap: 10,
-              padding: "12px 14px",
-              borderRadius: 12,
-              border: "1px solid var(--border-2)",
-              background: "var(--surface-2)",
-              fontSize: 13,
-              lineHeight: 1.5,
-              color: "var(--fg-2)",
-            }}
-          >
-            <svg
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="var(--fg-3)"
-              strokeWidth={2}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              style={{ flexShrink: 0, marginTop: 1 }}
-              aria-hidden
-            >
-              <path d="M12 16v-4M12 8h.01" />
-              <circle cx="12" cy="12" r="9" />
-            </svg>
-            <span>
-              This packages the exact close above into one transaction and signs it with your key.
-              Nothing is submitted yet, and{" "}
-              <strong style={{ color: "var(--fg)", fontWeight: 600 }}>
-                the account stays open until enough signers sign.
-              </strong>{" "}
-              You&apos;ll get a link to share, and collect the rest here.
-            </span>
-          </div>
-
-          {createRequest.error !== null ? (
-            <p role="alert" style={{ margin: 0, fontSize: 12.5, color: "var(--danger)" }}>
-              {createRequest.error}
-            </p>
-          ) : null}
-
-          <div style={{ display: "flex", gap: 11 }}>
-            <Button variant="secondary" onClick={onBack} data-testid="review-back">
-              Back
-            </Button>
-            <Button
-              onClick={createRequest.onCreate}
-              loading={createRequest.creating}
-              disabled={createRequest.creating}
-              data-testid="review-create-request"
-              style={{ flex: 1 }}
-            >
-              {createRequest.creating ? "Creating request…" : "Create signing request"}
-            </Button>
-          </div>
-        </>
+      {shared ? (
+        <SharedFooter shared={shared} onBack={onBack} />
       ) : (
         <>
           <div
@@ -352,7 +375,7 @@ export function ReviewPanel({
               This permanently deletes your Stellar account and sends all its XLM to the address
               above.{" "}
               <strong style={{ color: "var(--fg)", fontWeight: 600 }}>It cannot be undone.</strong>{" "}
-              Double-check the address before continuing.
+              Double-check the address and memo before continuing.
             </span>
           </div>
 
@@ -390,17 +413,152 @@ export function ReviewPanel({
   );
 }
 
-// consolidated "handled automatically, no action needed" line, replaces the
-// separate claimable + sponsorship notices that used to stack in Review.
+function SharedFooter({
+  shared,
+  onBack,
+}: {
+  readonly shared: SharedReview;
+  readonly onBack: () => void;
+}): React.JSX.Element {
+  if (!shared.gate.ok) {
+    // a shared close that can't be one signing request can't be run here either:
+    // this browser holds a single key, below the account's threshold
+    return (
+      <>
+        <div
+          role="note"
+          data-testid="review-shared-blocked"
+          style={{
+            padding: "12px 14px",
+            borderRadius: 12,
+            border: "1px solid color-mix(in srgb, var(--warning) 45%, transparent)",
+            fontSize: 13,
+            lineHeight: 1.5,
+            color: "var(--fg-2)",
+          }}
+        >
+          <strong style={{ color: "var(--fg)", fontWeight: 600 }}>
+            This shared account can&apos;t be closed with a signing request yet.
+          </strong>{" "}
+          {shared.gate.reason}
+        </div>
+        <div style={{ display: "flex", gap: 11 }}>
+          <Button variant="secondary" onClick={onBack} data-testid="review-back">
+            Back
+          </Button>
+          {shared.onRebuildShared ? (
+            <Button
+              onClick={shared.onRebuildShared}
+              data-testid="review-rebuild-shared"
+              style={{ flex: 1 }}
+            >
+              Rebuild as a shared-account close
+            </Button>
+          ) : null}
+        </div>
+      </>
+    );
+  }
+  return (
+    <>
+      <div
+        role="note"
+        style={{
+          display: "flex",
+          gap: 10,
+          padding: "12px 14px",
+          borderRadius: 12,
+          border: "1px solid var(--border-2)",
+          background: "var(--surface-2)",
+          fontSize: 13,
+          lineHeight: 1.5,
+          color: "var(--fg-2)",
+        }}
+      >
+        <svg
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="var(--fg-3)"
+          strokeWidth={2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{ flexShrink: 0, marginTop: 1 }}
+          aria-hidden
+        >
+          <path d="M12 16v-4M12 8h.01" />
+          <circle cx="12" cy="12" r="9" />
+        </svg>
+        <span>
+          This packages the exact close above into one transaction and signs it with your key.
+          Nothing is submitted yet, and{" "}
+          <strong style={{ color: "var(--fg)", fontWeight: 600 }}>
+            the account stays open until enough signers sign.
+          </strong>{" "}
+          You&apos;ll get a link to share, and collect the rest here.
+        </span>
+      </div>
+
+      {shared.claimRisks.length > 0 ? (
+        <div
+          role="note"
+          data-testid="review-claim-risks"
+          style={{
+            padding: "12px 14px",
+            borderRadius: 12,
+            border: "1px solid color-mix(in srgb, var(--warning) 45%, transparent)",
+            fontSize: 12.5,
+            lineHeight: 1.5,
+            color: "var(--fg-2)",
+          }}
+        >
+          Some pending payments in this close may stop being collectable before every signer signs.
+          If that happens the whole close fails on submit and a new request is needed:
+          <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+            {shared.claimRisks.map((r) => (
+              <li key={r.id}>
+                {r.amount} {r.asset.kind === "credit" ? r.asset.code : "XLM"}:{" "}
+                {r.reason === "expires"
+                  ? "its claim window closes within the signing window"
+                  : "the sender (or another claimant) can take it back first"}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {shared.error !== null ? (
+        <p role="alert" style={{ margin: 0, fontSize: 12.5, color: "var(--danger)" }}>
+          {shared.error}
+        </p>
+      ) : null}
+
+      <div style={{ display: "flex", gap: 11 }}>
+        <Button variant="secondary" onClick={onBack} data-testid="review-back">
+          Back
+        </Button>
+        <Button
+          onClick={shared.onCreate}
+          loading={shared.creating}
+          disabled={shared.creating}
+          data-testid="review-create-request"
+          style={{ flex: 1 }}
+        >
+          {shared.creating ? "Creating request…" : "Create signing request"}
+        </Button>
+      </div>
+    </>
+  );
+}
+
 function SnapStat({
   label,
   value,
-  mono = false,
   tip,
 }: {
   readonly label: string;
   readonly value: string | number;
-  readonly mono?: boolean;
   readonly tip?: string;
 }): React.JSX.Element {
   const labelStyle: React.CSSProperties = {
@@ -419,12 +577,7 @@ function SnapStat({
       ) : (
         <span style={labelStyle}>{label}</span>
       )}
-      <span
-        style={{
-          font: mono ? "500 12px/1 'Geist Mono', monospace" : "600 14px/1 'Geist Mono', monospace",
-          color: "var(--fg)",
-        }}
-      >
+      <span style={{ font: "600 14px/1 'Geist Mono', monospace", color: "var(--fg)" }}>
         {value}
       </span>
     </div>

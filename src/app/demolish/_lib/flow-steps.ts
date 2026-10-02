@@ -11,6 +11,28 @@ export interface FlowStep {
 
 export type FlowPhase = "connect" | "configure" | "resolve" | "acknowledge" | "review" | "execute";
 
+export type ConfirmStage = "resolve" | "acknowledge" | "review";
+
+// which step the indicator highlights. A cancelled run, or one that failed before
+// a plan existed, sends the user back to Configure, so it is shown there rather
+// than on whatever stage the stale tree or confirm stage last pointed at.
+export function flowPhaseFor(args: {
+  readonly showFlow: boolean;
+  readonly state: string;
+  readonly hasTree: boolean;
+  readonly confirmStage: ConfirmStage;
+}): FlowPhase {
+  const { showFlow, state, hasTree, confirmStage } = args;
+  if (!showFlow) return "connect";
+  if (state === "cancelled") return "configure";
+  if (state === "failed") return hasTree ? "execute" : "configure";
+  if (state === "executing" || state === "succeeded") return "execute";
+  // a rebuild (or a retry that rediscovers) may still hold the previous tree
+  // while it runs, but the user is effectively back at Configure
+  if (!hasTree || state !== "awaiting_confirmation") return "configure";
+  return confirmStage;
+}
+
 export function buildFlowSteps(args: {
   readonly phase: FlowPhase;
   // Resolve (blocker action) and Acknowledge (read warnings) are each shown only

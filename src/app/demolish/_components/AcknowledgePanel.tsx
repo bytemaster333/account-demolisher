@@ -12,6 +12,10 @@ import {
   requiredAcknowledgements,
 } from "@/lib/safety/high-value";
 import type { ScamFinding } from "@/lib/safety/scam-heuristics";
+import type { AssetIdentifier } from "@/lib/types/account";
+
+import type { ClaimableSplit, UnlockTime } from "../_lib/claimables";
+import { stroopsToXlm } from "../_lib/fees";
 
 // small acknowledgment control rendered in each resolution card's footer
 function AckRow({
@@ -47,24 +51,63 @@ const ARROW_RIGHT = (
 // The Acknowledge step, INFORMATION only. Warnings and info that don't block
 // the close-out but must be read and understood. "Continue to review" is gated
 // until every card is acknowledged.
+function assetLabel(asset: AssetIdentifier): string {
+  switch (asset.kind) {
+    case "native":
+      return "XLM";
+    case "credit":
+      return asset.code;
+    case "contract":
+      return asset.symbol ?? "token";
+    case "liquidity_pool_shares":
+      return "pool shares";
+  }
+}
+
+function unlockText(unlock: UnlockTime): string {
+  switch (unlock.kind) {
+    case "at":
+      return `can be collected from ${unlock.at.toLocaleString(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short",
+      })}`;
+    case "never":
+      return "can no longer be collected by this account";
+    case "unknown":
+      return "unlock time can't be worked out here";
+  }
+}
+
 export function AcknowledgePanel({
   network,
   scamFindings,
   discoveryWarnings,
-  autoHandled,
+  claimables,
+  sponsorshipCount,
+  baseReserveStroops,
   highValue,
   tokensSlot,
+  rebuildRequired,
+  onRebuild,
   onBack,
   onContinue,
 }: {
   readonly network: NetworkConfig;
   readonly scamFindings: readonly ScamFinding[];
   readonly discoveryWarnings: readonly string[];
-  readonly autoHandled: { readonly claimableCount: number; readonly sponsorshipCount: number };
+  // what the reviewed close collects, and the balances it leaves behind
+  readonly claimables: ClaimableSplit;
+  readonly sponsorshipCount: number;
+  // the network's base reserve; null when it couldn't be read
+  readonly baseReserveStroops: number | null;
   readonly highValue: { readonly totalXlm: string } | null;
   // optional standalone-token section (opt-in sweep + manual-add); not gated by an
-  // ack checkbox — it's an action, not just a read — so it never blocks Continue.
+  // ack checkbox, it's an action rather than a read
   readonly tokensSlot?: React.ReactNode;
+  // set when choices made on this step (token sweep, convert) aren't in the built
+  // plan yet: Continue stays off until the plan is rebuilt with them
+  readonly rebuildRequired: string | null;
+  readonly onRebuild: () => void;
   readonly onBack: () => void;
   readonly onContinue: () => void;
 }): React.JSX.Element {
@@ -74,28 +117,37 @@ export function AcknowledgePanel({
   const hasScam = scamFindings.length > 0;
   const hasDiscovery = discoveryWarnings.length > 0;
   const autoParts: string[] = [];
-  if (autoHandled.claimableCount > 0) {
-    const n = autoHandled.claimableCount;
+  if (claimables.collectCount > 0) {
+    const n = claimables.collectCount;
     autoParts.push(
-      `Collects ${n} pending payment${n === 1 ? "" : "s"} waiting for this account (a “claimable balance”) into your XLM before closing.`,
+      `Collects ${n} pending payment${n === 1 ? "" : "s"} waiting for this account (a “claimable balance”) into your balance before closing.`,
     );
   }
-  if (autoHandled.sponsorshipCount > 0) {
-    const n = autoHandled.sponsorshipCount;
+  if (sponsorshipCount > 0) {
+    const n = sponsorshipCount;
+    const each =
+      baseReserveStroops === null ? "" : ` (${stroopsToXlm(baseReserveStroops)} XLM each)`;
     autoParts.push(
-      `Frees ${n} XLM deposit${n === 1 ? "" : "s"} this account had locked up as a reserve (a “sponsorship”) back into your balance.`,
+      `Frees ${n} sponsored reserve${n === 1 ? "" : "s"}${each} this account had locked up for entries it sponsors, back into your balance.`,
     );
   }
   const hasAutoHandled = autoParts.length > 0;
   const hasHighValue = highValue !== null;
+  const hasLeftBehind = claimables.leftBehind.length > 0;
 
-  const requiredAckKeys = requiredAcknowledgements({
-    hasScam,
-    hasDiscovery,
-    hasAutoHandled,
-    hasHighValue,
-  });
+  const requiredAckKeys = [
+    ...requiredAcknowledgements({
+      hasScam,
+      hasDiscovery,
+      hasAutoHandled,
+      hasHighValue,
+    }),
+    ...(hasLeftBehind ? ["lockedClaimables"] : []),
+  ];
   const allAcked = allAcknowledged(requiredAckKeys, acks);
+  const canContinue = allAcked && rebuildRequired === null;
+  const blockedReason =
+    rebuildRequired ?? (allAcked ? undefined : "Tick every box above to continue");
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -197,7 +249,57 @@ export function AcknowledgePanel({
         </Notice>
       ) : null}
 
+      {hasLeftBehind ? (
+        <Notice
+          tone="warning"
+          title="Some pending payments will be left behind"
+          data-testid="locked-claimables-notice"
+          footer={
+            <AckRow
+              checked={acks.lockedClaimables === true}
+              onChange={(v) => setAck("lockedClaimables", v)}
+              testId="ack-locked-claimables"
+            />
+          }
+        >
+          These payments set aside for this account can&apos;t be collected now, so the close skips
+          them. Once the account is deleted it can&apos;t collect them, and the sender may take them
+          back. Wait until they unlock if you want them.
+          <ul style={{ margin: "7px 0 0", paddingLeft: 18 }}>
+            {claimables.leftBehind.map((c) => (
+              <li key={c.id} style={{ lineHeight: 1.5 }}>
+                {c.amount} {assetLabel(c.asset)}, {unlockText(c.unlock)}
+              </li>
+            ))}
+          </ul>
+        </Notice>
+      ) : null}
+
       {tokensSlot}
+
+      {rebuildRequired !== null ? (
+        <div
+          role="status"
+          data-testid="acknowledge-rebuild-needed"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 10,
+            flexWrap: "wrap",
+            padding: "11px 13px",
+            borderRadius: 11,
+            border: "1px solid color-mix(in srgb, var(--warning) 40%, transparent)",
+            fontSize: 12.5,
+            color: "var(--fg-2)",
+          }}
+        >
+          <span>{rebuildRequired}</span>
+          <Button variant="secondary" onClick={onRebuild} data-testid="acknowledge-rebuild">
+            Rebuild plan
+          </Button>
+        </div>
+      ) : null}
 
       {!allAcked ? (
         <p
@@ -215,8 +317,8 @@ export function AcknowledgePanel({
         <Button
           variant="primary"
           onClick={onContinue}
-          disabled={!allAcked}
-          disabledReason={allAcked ? undefined : "Tick every box above to continue"}
+          disabled={!canContinue}
+          disabledReason={blockedReason}
           data-testid="acknowledge-continue"
           style={{ flex: 1 }}
           iconRight={ARROW_RIGHT}

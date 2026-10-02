@@ -12,23 +12,48 @@ export function countTrustlines(audit: AccountAudit): number {
   return audit.balances.filter((b) => b.asset.kind === "credit").length;
 }
 
-// plan-tree grouping for the left rail. groups by node "phase"
-// soroban-side nodes belong to "unwind"; the final classic + mediator nodes belong to "merge"
-export function groupPlanNodes(nodes: readonly PlanNode[]): ReadonlyArray<{
-  phase: string;
-  nodes: readonly PlanNode[];
-}> {
-  const groups = new Map<string, PlanNode[]>();
+export interface PlanGroup {
+  readonly phase: string;
+  readonly nodes: readonly PlanNode[];
+}
+
+// groups CONSECUTIVE nodes of the same phase, given nodes in execution
+// (topological) order. Folding every node of a phase into its first group would
+// list a later step (e.g. a Blend withdraw that waits on its repay) ahead of steps
+// that actually run before it, so a phase can appear more than once here.
+export function groupPlanNodes(nodes: readonly PlanNode[]): readonly PlanGroup[] {
+  const groups: { phase: string; nodes: PlanNode[] }[] = [];
   for (const node of nodes) {
     const phase = phaseForNode(node);
-    let arr = groups.get(phase);
-    if (!arr) {
-      arr = [];
-      groups.set(phase, arr);
-    }
-    arr.push(node);
+    const last = groups[groups.length - 1];
+    if (last && last.phase === phase) last.nodes.push(node);
+    else groups.push({ phase, nodes: [node] });
   }
-  return [...groups.entries()].map(([phase, ns]) => ({ phase, nodes: ns }));
+  return groups;
+}
+
+// 1-based step numbers in display order, which is the execution order
+export function planStepNumbers(groups: readonly PlanGroup[]): ReadonlyMap<string, number> {
+  return new Map(groups.flatMap((g) => g.nodes).map((n, i) => [n.id, i + 1]));
+}
+
+// how many steps will actually run; a skipped step (e.g. one whose transaction
+// couldn't be built) is listed with its reason instead of being counted
+export function runnableSteps(ordered: readonly PlanNode[]): {
+  readonly runnable: number;
+  readonly skipped: readonly PlanNode[];
+} {
+  const skipped = ordered.filter((n) => n.status === "skipped");
+  return { runnable: ordered.length - skipped.length, skipped };
+}
+
+// the classic close and the mediator forward are only built offline at preview
+// (no network simulation), so they must not read as a passed dry run like the
+// Soroban steps that really were simulated against the network
+export function simulatedBadgeLabel(node: PlanNode): "Checked offline" | "Dry run passed" {
+  return node.kind === "FinalClassicTx" || node.kind === "MediatorForward"
+    ? "Checked offline"
+    : "Dry run passed";
 }
 
 export function phaseForNode(node: PlanNode): string {
@@ -121,10 +146,16 @@ export function nodePlainLabel(node: PlanNode): string {
   }
 }
 
-// a plain-language "what this step does, and is it safe" line, shown as a tooltip
-// on each step in the Review so the plan reads clearly to a non-expert. Every
-// step before the final one is reversible on its own; only the close is not.
-export function nodeExplainer(node: PlanNode): string {
+// a plain-language "what this step does" line, shown as a tooltip on each step in
+// the Review. Every step is final once it lands on chain (a repay, swap or revoke
+// is not undone if a later step fails); the earlier ones just leave the account
+// open, while the close itself deletes it.
+export function nodeExplainer(
+  node: PlanNode,
+  // a shared-account plan converts nothing on the market: every other asset goes
+  // to its issuer or the destination, as chosen in the Resolve step
+  opts: { readonly deterministic: boolean },
+): string {
   switch (node.kind) {
     case "RevokeAllowance":
       return "Cancels a permission you once gave an app to spend a token for you. The account doesn't need it to close, and leaving stray permissions around is a security risk, so we clear it.";
@@ -145,7 +176,7 @@ export function nodeExplainer(node: PlanNode): string {
     case "ConvertSorobanToXLM":
       return "Swaps a leftover token into XLM at the market rate, so your whole account ends up as a single XLM balance.";
     case "TransferAsIs":
-      return "Moves a leftover token out of the account so its trustline can be removed.";
+      return "Sends this token, unchanged, to your destination so it isn't left on the deleted account.";
     case "BackstopQueue": {
       const unlockDate = node.metadata.queueEndsAt;
       const dateStr =
@@ -163,8 +194,15 @@ export function nodeExplainer(node: PlanNode): string {
         `withdrawn, so this close will stop at the merge with that reminder.`
       );
     }
-    case "FinalClassicTx":
-      return "The last step. It converts anything left to XLM, sends your whole balance to the destination, and permanently deletes the account, all in one transaction. This is the irreversible one.";
+    case "FinalClassicTx": {
+      const cleanup = opts.deterministic
+        ? "It returns or sends on the other assets as you chose, clears the account's trustlines, offers and data"
+        : "It swaps assets that have a market into XLM, returns or sends on the rest as you chose, clears the account's trustlines, offers and data";
+      const delivery = node.metadata.useMediator
+        ? "then moves your whole XLM balance into a short-lived helper account and deletes this account. The next step delivers it from there with your memo"
+        : "then sends your whole XLM balance to the destination and deletes this account";
+      return `The close. ${cleanup}, ${delivery}. This runs in one or more transactions, and the last one is the irreversible delete.`;
+    }
     case "MediatorForward":
       return "Delivers your funds to the destination through a short-lived helper account, so your exchange deposit memo is preserved along the way.";
   }
@@ -183,7 +221,7 @@ export function phasePlainLabel(phase: string): string {
     case "Claim rewards":
       return "Collect rewards";
     case "Liquidation":
-      return "Convert leftovers to XLM";
+      return "Leftover tokens";
     case "Queued backstop":
       return "Backstop withdrawal";
     case "Merge":
