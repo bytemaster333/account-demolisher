@@ -182,32 +182,36 @@ describe("createPlan", () => {
     expect(fourth).toMatchObject({ ok: false, code: "ACCOUNT_LIMIT" });
   });
 
-  it("filling the testnet budget does not block mainnet requests", async () => {
-    for (let i = 0; i < 100; i++) {
-      const a = newAccount(0);
-      loadAccount.mockResolvedValueOnce(accountResponse(a));
-      const ok = await createPlan("testnet", signedBy(buildClose(a), a.kp));
-      expect(ok.ok).toBe(true);
-    }
-    const extra = newAccount(0);
-    loadAccount.mockResolvedValueOnce(accountResponse(extra));
-    expect(await createPlan("testnet", signedBy(buildClose(extra), extra.kp))).toMatchObject({
-      ok: false,
-      code: "CAPACITY",
-    });
+  it(
+    "filling the testnet budget does not block mainnet requests",
+    { timeout: 30_000 },
+    async () => {
+      for (let i = 0; i < 100; i++) {
+        const a = newAccount(0);
+        loadAccount.mockResolvedValueOnce(accountResponse(a));
+        const ok = await createPlan("testnet", signedBy(buildClose(a), a.kp));
+        expect(ok.ok).toBe(true);
+      }
+      const extra = newAccount(0);
+      loadAccount.mockResolvedValueOnce(accountResponse(extra));
+      expect(await createPlan("testnet", signedBy(buildClose(extra), extra.kp))).toMatchObject({
+        ok: false,
+        code: "CAPACITY",
+      });
 
-    const main = newAccount(0);
-    loadAccount.mockResolvedValueOnce(accountResponse(main));
-    const mainTx = new TransactionBuilder(new Account(main.kp.publicKey(), main.sequence), {
-      fee: BASE_FEE,
-      networkPassphrase: Networks.PUBLIC,
-      timebounds: { minTime: 0, maxTime: nowSec() + 72 * HOUR - 60 },
-    })
-      .addOperation(Operation.accountMerge({ destination: Keypair.random().publicKey() }))
-      .build();
-    mainTx.sign(main.kp);
-    expect((await createPlan("mainnet", mainTx.toXdr())).ok).toBe(true);
-  });
+      const main = newAccount(0);
+      loadAccount.mockResolvedValueOnce(accountResponse(main));
+      const mainTx = new TransactionBuilder(new Account(main.kp.publicKey(), main.sequence), {
+        fee: BASE_FEE,
+        networkPassphrase: Networks.PUBLIC,
+        timebounds: { minTime: 0, maxTime: nowSec() + 72 * HOUR - 60 },
+      })
+        .addOperation(Operation.accountMerge({ destination: Keypair.random().publicKey() }))
+        .build();
+      mainTx.sign(main.kp);
+      expect((await createPlan("mainnet", mainTx.toXdr())).ok).toBe(true);
+    },
+  );
 
   it("refuses networks the relay doesn't serve", async () => {
     const a = newAccount();
@@ -276,7 +280,9 @@ describe("createPlan", () => {
 
 describe("worst-case bundle size (M-46)", () => {
   // 97 credit/credit offer cancels + the close marker pair + the merge = 100 ops,
-  // with a 28-byte text memo: the largest envelope the close builder can emit
+  // with a 28-byte text memo: the largest envelope the close builder can emit.
+  // these run a few thousand pure-JS ed25519 checks (about 1ms each), so they get
+  // a longer timeout than the default when the suite runs in parallel.
   function worstCase(a: AccountShape): Transaction {
     const issuer = Keypair.random().publicKey();
     const ops: xdr.Operation[] = [];
@@ -295,33 +301,37 @@ describe("worst-case bundle size (M-46)", () => {
     return buildClose(a, { extraOps: ops, memo: "a".repeat(28) });
   }
 
-  it("publishes and collects signatures up to the 20-signature limit", async () => {
-    const a = newAccount(20);
-    loadAccount.mockResolvedValue(accountResponse(a));
-    const tx = worstCase(a);
-    expect(tx.operations).toHaveLength(100);
+  it(
+    "publishes and collects signatures up to the 20-signature limit",
+    { timeout: 30_000 },
+    async () => {
+      const a = newAccount(20);
+      loadAccount.mockResolvedValue(accountResponse(a));
+      const tx = worstCase(a);
+      expect(tx.operations).toHaveLength(100);
 
-    const published = await createPlan("testnet", signedBy(tx, a.kp));
-    expect(published.ok).toBe(true);
-    const id = published.ok ? published.id : "";
+      const published = await createPlan("testnet", signedBy(tx, a.kp));
+      expect(published.ok).toBe(true);
+      const id = published.ok ? published.id : "";
 
-    let last = "";
-    for (let i = 0; i < 19; i++) {
-      const res = addSignature(id, signedBy(tx, a.cosigners[i]!));
-      expect(res.ok).toBe(true);
-      if (res.ok) last = res.plan.xdr;
-    }
-    const final = TransactionBuilder.fromXdr(last, NET);
-    expect(final.signatures).toHaveLength(20);
-    // well above the old 12,000-char cap that blocked later co-signers
-    expect(last.length).toBeGreaterThan(12_000);
+      let last = "";
+      for (let i = 0; i < 19; i++) {
+        const res = addSignature(id, signedBy(tx, a.cosigners[i]!));
+        expect(res.ok).toBe(true);
+        if (res.ok) last = res.plan.xdr;
+      }
+      const final = TransactionBuilder.fromXdr(last, NET);
+      expect(final.signatures).toHaveLength(20);
+      // well above the old 12,000-char cap that blocked later co-signers
+      expect(last.length).toBeGreaterThan(12_000);
 
-    const overflow = addSignature(id, signedBy(tx, a.cosigners[19]!));
-    expect(overflow).toMatchObject({ ok: false, code: "TOO_MANY_SIGNATURES" });
-    if (!overflow.ok) expect(overflow.reason).toMatch(/at most 20 signatures/);
-  });
+      const overflow = addSignature(id, signedBy(tx, a.cosigners[19]!));
+      expect(overflow).toMatchObject({ ok: false, code: "TOO_MANY_SIGNATURES" });
+      if (!overflow.ok) expect(overflow.reason).toMatch(/at most 20 signatures/);
+    },
+  );
 
-  it("both plan routes accept a body of about 20 KiB", async () => {
+  it("both plan routes accept a body of about 20 KiB", { timeout: 30_000 }, async () => {
     const a = newAccount(20);
     loadAccount.mockResolvedValue(accountResponse(a));
     const tx = worstCase(a);
