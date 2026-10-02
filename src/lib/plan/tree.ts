@@ -385,11 +385,12 @@ export function topologicalOrder(tree: PlanTree): readonly PlanNode[] {
   return order;
 }
 
-// contract ids of the tokens the plan's soroban steps pay into or sweep out of
-// the account, in plan order. A balance of one of these that is still there at
-// the merge (and isn't a classic asset's SAC) would be deleted with the account,
-// so the merge guard re-reads them.
-export function planTokenContracts(tree: PlanTree): readonly string[] {
+// contract ids of the tokens the plan's DeFi exits pay into the account, in plan
+// order. A balance of one of these still there at the merge (and not a classic
+// asset's SAC) is the user's exit proceeds and would be deleted with the
+// account, so the merge guard re-reads them. Airdropped held tokens are not
+// listed: their sweep is best-effort and must not be able to block the close.
+export function planExitPayoutTokens(tree: PlanTree): readonly string[] {
   const out = new Set<string>();
   for (const node of tree.allNodes.values()) {
     switch (node.kind) {
@@ -402,10 +403,6 @@ export function planTokenContracts(tree: PlanTree): readonly string[] {
         break;
       case "WithdrawBlend":
         out.add(node.metadata.asset);
-        break;
-      case "TransferAsIs":
-      case "ConvertSorobanToXLM":
-        if (node.metadata.asset.kind === "contract") out.add(node.metadata.asset.contractId);
         break;
       default:
         break;

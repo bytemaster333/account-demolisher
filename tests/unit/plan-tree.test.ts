@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildPlanTree,
   isSorobanNode,
-  planTokenContracts,
+  planExitPayoutTokens,
   topologicalOrder,
 } from "@/lib/plan/tree";
 import type { PlanNode, PlanTree } from "@/lib/plan/tree";
@@ -179,8 +179,8 @@ describe("isSorobanNode", () => {
   });
 });
 
-describe("planTokenContracts", () => {
-  it("lists every token the plan's exits pay out or its sweeps move, once each", () => {
+describe("planExitPayoutTokens", () => {
+  it("lists every token the exits pay out once each, and no swept held token", () => {
     const tree = buildPlanTree([
       {
         id: "aq",
@@ -226,6 +226,6 @@ describe("planTokenContracts", () => {
       },
       node("native-sweep"),
     ]);
-    expect(planTokenContracts(tree)).toEqual(["CA", "CB", "CC", "CD", "CE"]);
+    expect(planExitPayoutTokens(tree)).toEqual(["CA", "CB", "CC", "CD"]);
   });
 });
