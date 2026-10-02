@@ -5,60 +5,60 @@ export const MIN_SLIPPAGE_BPS = 10;
 export const MAX_SLIPPAGE_BPS = 500;
 export const BPS_DENOMINATOR = 10_000;
 
-// thrown when an executed swap returns less than the slippage-min
-export class SlippageGuardTripped extends Error {
-  public readonly expected: string;
-  public readonly minimumAccepted: string;
-  public readonly actual: string;
-  public readonly slippageBps: number;
-
-  constructor(args: {
-    expected: string;
-    minimumAccepted: string;
-    actual: string;
-    slippageBps: number;
-  }) {
-    super(
-      `Slippage guard tripped: quote returned ${args.actual} (< minimum ${args.minimumAccepted} ` +
-        `derived from expected ${args.expected} @ ${args.slippageBps} bps)`,
-    );
-    this.name = "SlippageGuardTripped";
-    this.expected = args.expected;
-    this.minimumAccepted = args.minimumAccepted;
-    this.actual = args.actual;
-    this.slippageBps = args.slippageBps;
+// a set but unusable slippage variable. thrown rather than replaced by the
+// default: an operator typo must not silently change money-path protection
+export class SlippageConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SlippageConfigError";
   }
 }
 
-// The configured slippage tolerance for the whole close: NEXT_PUBLIC_SLIPPAGE_BPS
-// when set to a valid in-range integer, else DEFAULT_SLIPPAGE_BPS. This is the
-// SINGLE source of truth for slippage across the plan (DeFi-exit floors AND the
-// classic path-payment / LP-withdraw floors), so there is one policy rather than
-// two hardcoded constants. An out-of-range/malformed override falls back to the
-// default rather than throwing, so a bad env value can never break plan-building.
-export function resolveConfiguredSlippageBps(): number {
-  const raw = process.env.NEXT_PUBLIC_SLIPPAGE_BPS;
-  if (typeof raw !== "string" || raw.trim().length === 0) return DEFAULT_SLIPPAGE_BPS;
-  const n = Number(raw.trim());
-  if (!Number.isInteger(n)) return DEFAULT_SLIPPAGE_BPS;
-  try {
-    return clampSlippage(n);
-  } catch {
-    return DEFAULT_SLIPPAGE_BPS;
+// NEXT_PUBLIC_SLIPPAGE_BPS: unset or blank means DEFAULT_SLIPPAGE_BPS; anything
+// else must be a decimal integer in [MIN_SLIPPAGE_BPS, MAX_SLIPPAGE_BPS]. exported
+// for the build-time env schema, so a bad value fails the build.
+export function parseSlippageBpsEnv(raw: string | undefined): number {
+  if (raw === undefined || raw.trim().length === 0) return DEFAULT_SLIPPAGE_BPS;
+  const v = raw.trim();
+  const n = /^\d+$/.test(v) ? Number(v) : Number.NaN;
+  if (!Number.isInteger(n) || n < MIN_SLIPPAGE_BPS || n > MAX_SLIPPAGE_BPS) {
+    throw new SlippageConfigError(
+      `NEXT_PUBLIC_SLIPPAGE_BPS must be an integer from ${MIN_SLIPPAGE_BPS} to ${MAX_SLIPPAGE_BPS}; got "${raw}"`,
+    );
   }
+  return n;
+}
+
+// NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS: unset or blank means 0; anything else must
+// be a non-negative decimal integer of stroops
+export function parseMinMarketOutEnv(raw: string | undefined): bigint {
+  if (raw === undefined || raw.trim().length === 0) return 0n;
+  const v = raw.trim();
+  if (!/^\d+$/.test(v)) {
+    throw new SlippageConfigError(
+      `NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS must be a non-negative integer number of stroops; got "${raw}"`,
+    );
+  }
+  return BigInt(v);
+}
+
+// The configured slippage tolerance for the whole close. This is the single
+// source of truth for slippage across the plan (DeFi-exit floors and the classic
+// path-payment / LP-withdraw floors), so there is one policy rather than two
+// hardcoded constants.
+export function resolveConfiguredSlippageBps(): number {
+  return parseSlippageBpsEnv(process.env.NEXT_PUBLIC_SLIPPAGE_BPS);
 }
 
 // Absolute floor (stroops) for a market conversion's XLM output. A sell whose
-// slippage-adjusted minimum output is AT or BELOW this is refused as
-// value-destroying — the asset is routed to issuer/destination disposal instead
+// slippage-adjusted minimum output is at or below this is refused as
+// value-destroying, and the asset is routed to issuer/destination disposal instead
 // of being sold. Default 0: refuse only a sell that nets nothing (the classic-
 // path analog of the aggregator/router's zero-output refusal), which catches an
 // illiquid asset whose whole balance routes to dust without blocking a legitimate
 // small sale. Raise via NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS for a stronger floor.
 export function resolveMinMarketOutStroops(): bigint {
-  const raw = process.env.NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS;
-  if (typeof raw !== "string" || !/^\d+$/.test(raw.trim())) return 0n;
-  return BigInt(raw.trim());
+  return parseMinMarketOutEnv(process.env.NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS);
 }
 
 // True when a market sell yielding `expectedOutStroops` XLM is worth executing:
