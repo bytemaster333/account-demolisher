@@ -1,20 +1,18 @@
-node_modules
-.next
-.git
-.env
-.env.local
-.env.*.local
-tests
-docs
-design
-researches
-coverage
-playwright-report
-test-results
-*.log
-.DS_Store
-Thumbs.db
-tsconfig.tsbuildinfo
-IMPLEMENTATION_PLAN.md
-IMPLEMENTATION_STATUS.md
-completion.md
+# allow-list: the build context carries only what the image build reads. anything
+# else in the working folder (.env* files with live secrets, the metrics data/,
+# resources/, .claude/, internal notes) never reaches the builder, even if a
+# later Dockerfile change copies the whole context.
+*
+
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!next.config.ts
+!tsconfig.json
+!postcss.config.mjs
+!src
+!public
+
+# keep stray local files out even inside allowed folders
+**/.DS_Store
+**/.env*

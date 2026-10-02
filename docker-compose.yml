@@ -1,18 +1,70 @@
-# Convenience wrapper: `docker compose up --build`
-# Reads server-only secrets from a .env file (not committed). Public config is
-# baked at build time and defaults to testnet.
+# Self-hosting: `docker compose up --build -d`
+#
+# Two services: caddy (the reverse proxy, the only published port) and the app.
+# The app is supported only behind a proxy, so it is not published directly.
+#
+# Compose reads a .env file next to this one (not committed) ONLY to fill in the
+# ${...} values below. No other variable reaches the containers: each one the
+# app reads is listed here explicitly, so unrelated .env entries never leak in.
+#
+# Build-time (inlined into the client bundle; rebuild after changing them):
+#   NEXT_PUBLIC_STELLAR_NETWORK, NEXT_PUBLIC_DEPLOYMENT_MODE,
+#   NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID, NEXT_PUBLIC_SITE_URL,
+#   NEXT_PUBLIC_SLIPPAGE_BPS, NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS
+# Runtime (app): MEDIATOR_SECRET, MEDIATOR_ALLOWED_ORIGIN, SOROSWAP_API_URL,
+#   SOROSWAP_API_KEY, METRICS_ADMIN_TOKEN
+# Runtime (proxy): SITE_ADDRESS (your domain for automatic HTTPS, default :80)
 services:
-  app:
-    build: .
+  proxy:
+    image: caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b
     ports:
-      - "3000:3000"
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
     environment:
-      # server-only; leave unset to run without the CEX mediator / swap key
-      MEDIATOR_SECRET: ${MEDIATOR_SECRET:-}
-      SOROSWAP_API_KEY: ${SOROSWAP_API_KEY:-}
-      # this compose file publishes the app DIRECTLY (no reverse proxy), so the
-      # X-Forwarded-For header is fully client-controlled: ignore it and key the
-      # rate limiter on the real connection. Set this to the real hop count only
-      # when you put a trusted proxy in front that appends the client IP.
-      TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-0}
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      app:
+        condition: service_healthy
     restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_STELLAR_NETWORK: ${NEXT_PUBLIC_STELLAR_NETWORK:-testnet}
+        # a self-hosted deployment has no mediator unless MEDIATOR_SECRET is set,
+        # so exchange closes stay off by default. set "reference" together with
+        # MEDIATOR_SECRET to run the mediator.
+        NEXT_PUBLIC_DEPLOYMENT_MODE: ${NEXT_PUBLIC_DEPLOYMENT_MODE:-self-hosted}
+        NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: ${NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID:-}
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-}
+        NEXT_PUBLIC_SLIPPAGE_BPS: ${NEXT_PUBLIC_SLIPPAGE_BPS:-}
+        NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS: ${NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS:-}
+    # not published: only the proxy reaches it, on the compose network
+    expose:
+      - "3000"
+    init: true
+    environment:
+      MEDIATOR_SECRET: ${MEDIATOR_SECRET:-}
+      MEDIATOR_ALLOWED_ORIGIN: ${MEDIATOR_ALLOWED_ORIGIN:-}
+      SOROSWAP_API_URL: ${SOROSWAP_API_URL:-}
+      SOROSWAP_API_KEY: ${SOROSWAP_API_KEY:-}
+      METRICS_ADMIN_TOKEN: ${METRICS_ADMIN_TOKEN:-}
+      # the metrics volume below; fixed because it is a path inside the container
+      METRICS_DB_DIR: /app/data
+      # exactly one trusted hop: caddy, which overwrites any client-sent
+      # X-Forwarded-For. raise it only if you add another proxy in front of caddy.
+      TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-1}
+    volumes:
+      - metrics:/app/data
+    restart: unless-stopped
+
+volumes:
+  metrics:
+  caddy-data:
+  caddy-config:

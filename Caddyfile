@@ -1,0 +1,13 @@
+# reverse proxy in front of the app (used by docker-compose.yml).
+#
+# SITE_ADDRESS is the public address. ":80" (the default) serves plain HTTP on any
+# host name; set it to your domain (e.g. close.example.com) and caddy obtains and
+# renews a TLS certificate for it automatically.
+#
+# caddy ignores any X-Forwarded-For a client sends and sets it to the connecting
+# address itself, so the app sees exactly one trusted hop (TRUSTED_PROXY_HOPS=1).
+# if you put another proxy or a CDN in front of caddy, add it under
+# trusted_proxies and raise TRUSTED_PROXY_HOPS to match.
+{$SITE_ADDRESS::80} {
+	reverse_proxy app:3000
+}
