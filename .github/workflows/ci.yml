@@ -49,10 +49,10 @@ jobs:
         run: pnpm build
 
   # Dependency audit gated as a release blocker: any high or critical advisory in
-  # the production tree fails the build. Deep-transitive low/moderate advisories
-  # that are not reachable in this app are justified and pinned in
-  # package.json > pnpm.auditConfig.ignoreGhsas; fixable ones are patched via
-  # pnpm.overrides. A newly-introduced high/critical will fail here.
+  # the production tree fails the build (release.yml runs the same gate). Fixable
+  # transitive advisories are patched via the overrides in pnpm-workspace.yaml;
+  # nothing is suppressed, so low/moderate findings stay visible in the output.
+  # A newly-introduced high/critical will fail here.
   audit:
     name: dependency audit (high/critical gate)
     runs-on: ubuntu-latest

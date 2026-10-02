@@ -37,24 +37,29 @@ The following defensive changes ship in `main` as part of the mainnet-readiness 
   gap the operation-level check alone leaves open (`src/lib/stellar/allowlist.ts`).
 - **Dependency audit as a release gate.** Continuous integration fails on any high or critical
   advisory in the production dependency tree (`pnpm audit --prod --audit-level high`) rather than
-  only reporting it.
-- **Two high advisories patched.** The transitive `ip-address` and `nanoid` high-severity advisories
-  are resolved by pinning patched versions through `pnpm.overrides`, not suppressed. The installed
-  versions are `ip-address` 10.5.0 and `nanoid` 3.3.18.
+  only reporting it, and the release workflow runs the same gate before it builds the attested
+  artifact.
+- **Toolchain and dependencies on current releases.** The app runs on Node.js 24 LTS and pnpm 12,
+  with Stellar SDK 17, Next.js 16.3 and React 19.3, and the lockfile is resolved fresh from those
+  versions. Every transitive advisory with a compatible fix resolves to its patched version.
 - **Mainnet allow-list provenance.** Every mainnet contract entry cites a real upstream source,
   verified against the protocols' own published deployment files, and a source-level test asserts the
   list stays complete and correctly enforced (`tests/unit/allowlist-mainnet.test.ts`).
 
 ## Dependency posture
 
-Runtime dependencies are pinned by a committed `pnpm-lock.yaml`, and known-vulnerable transitive
-packages are pinned to patched versions through `pnpm.overrides`. The release gate blocks on any
-high or critical advisory, and the production tree carries none.
+Runtime dependencies are pinned by a committed `pnpm-lock.yaml`. One override in
+`pnpm-workspace.yaml` lifts `axios` to 1.20.0 under the Stellar SDK 16 copy that
+`@blend-capital/blend-sdk` pins, which would otherwise ship `axios` 1.18.0 and its high-severity
+advisories. The release gate blocks on any high or critical advisory, and the production tree
+carries none.
 
-Two advisories below that threshold are formally accepted and recorded in
-`pnpm.auditConfig.ignoreGhsas`, each because it is not reachable in this app:
+No advisory is suppressed. `pnpm audit --prod` reports three below that threshold. All three sit
+under `@hot-wallet/sdk`, a dependency of the Stellar Wallets Kit HOT wallet module, which the app
+never imports, and none has a fix inside the version ranges that pull it in:
 
-- `GHSA-w5hq-g745-h8pq` (uuid, moderate): affects the `v3`/`v5`/`v6` buffer-writing paths, which the app does not use.
-- `GHSA-848j-6mx2-7j84` (elliptic, low): an ECDSA edge case, where signing here is ed25519 through the Stellar SDK rather than elliptic-curve ECDSA.
+- `GHSA-848j-6mx2-7j84` (elliptic 6.6.1, low): no patched release exists. Signing here is ed25519 through the Stellar SDK, not ECDSA.
+- `GHSA-w5hq-g745-h8pq` (uuid 8.3.2, moderate): fixed in uuid 11.1.1, while `jayson` 4 requires uuid 8. It affects the `v3`/`v5`/`v6` buffer-writing paths, and `jayson` calls `v4`.
+- `GHSA-528h-pc64-c93x` (stream-json 1.9.1, moderate): fixed in stream-json 3.5.0, while `jayson` 4 requires stream-json 1. It affects the pick, ignore, filter and replace filters, and `jayson` uses only `StreamValues` and `Verifier`.
 
-Each acceptance is revisited when the external audit runs.
+Each finding is revisited when the external audit runs.

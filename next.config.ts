@@ -25,7 +25,10 @@ const config: NextConfig = {
   turbopack: { root: import.meta.dirname },
   outputFileTracingRoot: import.meta.dirname,
   images: {
-    // account demolisher does not load remote images; tight allow-list
+    // account demolisher does not use next/image, so the optimizer is turned off:
+    // /_next/image answers 404 instead of exposing an image endpoint nothing needs
+    unoptimized: true,
+    // and no remote image origin is allowed either way
     remotePatterns: [],
   },
   // serve the SEP-1 stellar.toml at its canonical well-known path. rewrites do not

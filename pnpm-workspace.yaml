@@ -6,32 +6,17 @@
 allowBuilds:
   lefthook: true
   "@reown/appkit": false
-  "@stellar/stellar-sdk": false
-  blake-hash: false
   bufferutil: false
-  protobufjs: false
   secp256k1: false
-  tiny-secp256k1: false
   unrs-resolver: false
-  usb: false
   utf-8-validate: false
 
 enablePrePostScripts: true
 
+# blend-sdk 3.3.1 pins @stellar/stellar-sdk 16.3.0, which pins axios 1.18.0 (7 high
+# and 5 moderate advisories, all fixed in 1.20.0). the sdk's default http client is
+# fetch, so axios is not on blend's request path, but it ships in the production
+# tree. 1.20.0 is the same version stellar-sdk 17.1+ moved to. drop this once
+# blend-sdk depends on an sdk release that carries axios >=1.20.0.
 overrides:
-  protobufjs: ^7.6.3
-  axios: ^1.18.0
-  form-data: ^4.0.6
-  ua-parser-js: ^2.0.10
-  postcss: ^8.5.18
-  "@babel/core": ^7.29.6
-  sharp: ^0.35.0
-  ws@7: ^7.5.11
-  ws@8: ^8.21.0
-  ip-address: ^10.2.2
-  nanoid@3: ^3.3.18
-
-audit:
-  ignore:
-    - GHSA-w5hq-g745-h8pq
-    - GHSA-848j-6mx2-7j84
+  "@stellar/stellar-sdk@16>axios": 1.20.0
