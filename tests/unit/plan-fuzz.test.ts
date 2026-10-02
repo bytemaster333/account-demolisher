@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import fc from "fast-check";
 import { StrKey } from "@stellar/stellar-sdk";
 
+import { batchClassicDemolition, MAX_OPS_PER_TX } from "@/lib/plan/classic-batcher";
 import { generatePlan } from "@/lib/plan/generator";
 import { buildPlanTree, topologicalOrder, type PlanNode } from "@/lib/plan/tree";
 import type { AccountAudit, AssetIdentifier } from "@/lib/types/account";
@@ -59,18 +60,33 @@ const arbData = fc.record({
   value: fc.constant("AA=="),
 });
 
-const arbPoolShare = fc.record({
-  poolId: arbHex64,
-  poolType: fc.constant("constant_product"),
-  shareBalance: arbAmount,
-  totalShares: arbAmount,
-  shareLimit: fc.constant("1000000.0000000"),
-  fee: fc.constant(30),
-  reserves: fc.tuple(
-    fc.record({ asset: arbAsset, amount: arbAmount }),
-    fc.record({ asset: arbCredit, amount: arbAmount }),
-  ),
-});
+// a holder never owns more than the pool's total shares, so the share balance
+// is drawn at or below the total
+const arbShares = fc
+  .integer({ min: 1, max: 1_000_000 })
+  .chain((total) =>
+    fc
+      .integer({ min: 1, max: total })
+      .map((share) => ({ shareBalance: `${share}.0000000`, totalShares: `${total}.0000000` })),
+  );
+
+const arbPoolShare = fc
+  .record({
+    poolId: arbHex64,
+    shares: arbShares,
+    reserves: fc.tuple(
+      fc.record({ asset: arbAsset, amount: arbAmount }),
+      fc.record({ asset: arbCredit, amount: arbAmount }),
+    ),
+  })
+  .map(({ poolId, shares, reserves }) => ({
+    poolId,
+    poolType: "constant_product",
+    ...shares,
+    shareLimit: "1000000.0000000",
+    fee: 30,
+    reserves,
+  }));
 
 const arbClaimable = fc.record({
   id: arbHex64,
@@ -205,6 +221,37 @@ describe("plan generation — property-based fuzzing", () => {
         // teardown/position node scheduled after account_merge would be stranded
         for (let i = finalIdx + 1; i < order.length; i++) {
           expect(order[i]!.kind).toBe("MediatorForward");
+        }
+      }),
+      { numRuns: 250 },
+    );
+  });
+
+  it("packs every classic batch within one transaction with the merge group whole and last", () => {
+    const mediator = StrKey.encodeEd25519PublicKey(Buffer.alloc(32, 7));
+    fc.assert(
+      fc.property(arbAudit, fc.boolean(), (audit, useMediator) => {
+        const batches = batchClassicDemolition(
+          audit,
+          useMediator
+            ? { destination: DEST, useMediator: true, mediatorPublicKey: mediator }
+            : { destination: DEST, useMediator: false },
+        );
+        for (const b of batches) {
+          expect(b.operations.length).toBeGreaterThan(0);
+          expect(b.operations.length).toBeLessThanOrEqual(MAX_OPS_PER_TX);
+        }
+        const last = batches[batches.length - 1]!.operations.map((o) => o.kind);
+        expect(last[last.length - 1]).toBe("account_merge");
+        if (useMediator) expect(last[last.length - 2]).toBe("create_account_mediator");
+        for (const b of batches.slice(0, -1)) {
+          for (const op of b.operations) {
+            expect([
+              "set_options_clear_signers",
+              "account_merge",
+              "create_account_mediator",
+            ]).not.toContain(op.kind);
+          }
         }
       }),
       { numRuns: 250 },
