@@ -1,14 +1,18 @@
-// multi-signer connector for closing multisig accounts.
+// test helper: a Connector that holds several signers' keys and returns one
+// envelope carrying all of their signatures.
 //
-// The account being demolished is the transaction source; closing it needs
-// signature weight >= the account's high threshold. This connector holds the
-// keys of several authorized signers and, for every transaction in the plan,
-// applies all of their signatures and merges them into one envelope. That
-// satisfies the RFP's "add multiple secret keys / sign with different wallets"
-// requirement without changing the executor: it just receives a connector that
-// happens to produce a fully-signed, threshold-meeting envelope.
+// the app does not use this. a shared account is closed in production through
+// the signing relay: the initiator publishes the bundled close (CollectSignatures)
+// and each co-signer adds a signature on /sign, merged server-side. this helper
+// lets tests produce a threshold-meeting envelope for a multisig account without
+// driving that flow.
+//
+// it signs with every member, not just enough to meet the threshold, so a test
+// that gives it more weight than the account needs gets tx_bad_auth_extra from
+// the network. it signs plain transactions only.
 
-import type { FeeBumpTransaction, Transaction } from "@stellar/stellar-sdk";
+import { FeeBumpTransaction, type Transaction } from "@stellar/stellar-sdk";
+
 import type { Connector, ConnectorKind } from "@/lib/wallet/connector";
 import { mergeSignatures } from "@/lib/multisig/partial-xdr";
 
@@ -29,10 +33,16 @@ export class MultiSignerConnector implements Connector {
       throw new Error("MultiSignerConnector: at least one signer is required.");
     }
     this.#accountPublicKey = accountPublicKey;
-    this.#members = members;
+    // a key listed twice signs once and counts once
+    const seen = new Set<string>();
+    this.#members = members.filter((m) => {
+      if (seen.has(m.publicKey)) return false;
+      seen.add(m.publicKey);
+      return true;
+    });
   }
 
-  // total signing weight the collected members contribute
+  // total signing weight the distinct members contribute
   get totalWeight(): number {
     return this.#members.reduce((sum, m) => sum + m.weight, 0);
   }
@@ -58,6 +68,9 @@ export class MultiSignerConnector implements Connector {
     tx: Transaction | FeeBumpTransaction,
     networkPassphrase: string,
   ): Promise<{ signedXdr: string; signerPublicKey: string }> {
+    if (tx instanceof FeeBumpTransaction) {
+      throw new Error("MultiSignerConnector: fee-bump envelopes are not supported.");
+    }
     const base = tx.toXdr();
     const partials: string[] = [];
     for (const member of this.#members) {
@@ -70,9 +83,7 @@ export class MultiSignerConnector implements Connector {
     return { signedXdr: merged, signerPublicKey: this.#accountPublicKey };
   }
 
-  // per-signer Soroban auth-entry signing isn't part of the demolition flow
-  // (source-account auth is carried by the envelope signatures above), and doing
-  // it correctly for multisig is non-trivial. refuse rather than sign wrongly.
+  // per-signer Soroban auth-entry signing is out of scope for this helper
   async signAuthEntry(): Promise<{ signedXdr: string; signerAddress: string }> {
     throw new Error(
       "MultiSignerConnector: SEP-43 auth-entry signing is not supported for multisig accounts.",

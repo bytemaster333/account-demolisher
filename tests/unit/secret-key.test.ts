@@ -104,9 +104,9 @@ describe("SecretKeyConnector signing", () => {
 
   it("refuses to sign a soroban auth-entry rather than signing raw bytes", async () => {
     // signing the raw base64 bytes would be a plain ed25519 signature, not a
-    // valid network-bound SEP-43 Soroban auth signature. mirroring
-    // MultiSignerConnector, the connector refuses instead of producing a
-    // silently-wrong signature (a raw signing oracle over the in-memory seed).
+    // valid network-bound SEP-43 Soroban auth signature. the connector refuses
+    // instead of producing a silently-wrong signature (a raw signing oracle over
+    // the in-memory seed).
     const kp = Keypair.random();
     const connector = new SecretKeyConnector(kp.secret());
     const preimage = Buffer.from("some-auth-entry-preimage").toString("base64");

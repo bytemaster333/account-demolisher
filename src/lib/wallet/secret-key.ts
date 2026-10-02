@@ -68,8 +68,8 @@ export class SecretKeyConnector implements Connector {
   // not a valid network-bound Soroban auth signature: SEP-43 requires signing
   // the sha-256 hash of an xdr.HashIdPreimageSorobanAuthorization that binds the
   // network id, nonce, and signature-expiration ledger, none of which the single
-  // authEntryXdr string carries. No production caller reaches this method, so,
-  // like MultiSignerConnector.signAuthEntry, it refuses rather than sign wrongly.
+  // authEntryXdr string carries. No production caller reaches this method, so it
+  // refuses rather than sign wrongly.
   async signAuthEntry(
     _authEntryXdr: string,
     _address: string,
