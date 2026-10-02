@@ -1,47 +1,104 @@
 // Re-point an already-built plan's mediator nodes at a freshly minted flow.
 //
-// SEC-01: the mediator flow token is minted at PREVIEW time with a hard 15-minute
-// TTL (server/mediator-secret.ts). The close then runs FinalClassicTx — which
-// funds an ephemeral mediator account and merges the user's ENTIRE balance into
-// it — strictly before the separate MediatorForward sweeps that balance back out
-// under the token. If more than 15 minutes elapse between preview and the forward
-// (a careful review of a permanent action, a slow multi-position execution, a
-// network hiccup), the token expires, the forward can no longer be co-signed, and
-// the whole balance is stranded on an ephemeral account with no in-app recovery.
-//
-// The fix: re-mint the flow at EXECUTE time and re-point both mediator nodes at it,
-// so the TTL clock starts immediately before the merge+forward — which both run in
-// the same execute pass, well inside the window. The mediator account is internal
-// and ephemeral (never something the user reviews; the reviewed DESTINATION is
-// unchanged), so swapping its key between preview and execute is transparent.
+// The preview mints a flow so the plan can show and simulate the merge into a
+// mediator. The orchestrator mints again at execute time and swaps the new flow
+// in here, so the token in use is younger than the one the user reviewed. The
+// mediator account is internal and ephemeral; the reviewed destination and memo
+// do not change. The token still expires 15 minutes after this mint, which can
+// fall inside a long close; the forward renews an expired token through the
+// re-issue route, so a late forward is not stranded by it.
 
 export interface RefreshedFlow {
   readonly mediatorPublicKey: string;
   readonly flowToken: string;
 }
 
-// A structural view of the plan tree — avoids importing the full PlanTree/PlanNode
-// types (and their readonly metadata) just to mutate the two hydration points.
+// A structural view of the plan tree, to avoid importing the full PlanTree and
+// PlanNode types (and their readonly metadata) just to rewrite these fields.
 export interface MediatorFlowTree {
-  readonly allNodes: ReadonlyMap<string, { readonly metadata: unknown }>;
+  readonly allNodes: ReadonlyMap<
+    string,
+    { readonly metadata: unknown; readonly description?: string }
+  >;
 }
 
 export const FINAL_CLASSIC_TX_NODE_ID = "final-classic-tx";
 export const MEDIATOR_FORWARD_NODE_ID = "mediator-forward";
 
-// Re-point FinalClassicTx (funds + merges INTO the mediator) and MediatorForward
-// (sweeps OUT of it, under the flow token) at `flow`. Both must carry the SAME
-// mediatorPublicKey or the merge and the forward would target different accounts.
-// Returns true when the tree is a mediator close (a forward node exists) and was
-// updated; false otherwise (nothing to do).
+interface MutableOp {
+  kind: string;
+  summary: string;
+  metadata: Record<string, unknown>;
+}
+
+interface MutableBatch {
+  operations: MutableOp[];
+  mediator?: { publicKey: string; fundingXlm: string };
+}
+
+// same short form the plan generator uses in descriptions
+function shortAddr(s: string): string {
+  return s.length <= 12 ? s : `${s.slice(0, 6)}...${s.slice(-4)}`;
+}
+
+function repointText(text: string, from: string, to: string): string {
+  return text
+    .split(from)
+    .join(to)
+    .split(shortAddr(from))
+    .join(shortAddr(to))
+    .split(`${from.slice(0, 6)}...`)
+    .join(`${to.slice(0, 6)}...`);
+}
+
+// the batches carry the mediator as the funding target, the merge destination
+// and in their summaries; all of it has to follow the new key or the reviewed
+// plan and an exported copy would name an account that is never used
+function repointBatches(batches: unknown, from: string, to: string): unknown {
+  if (!Array.isArray(batches)) return batches;
+  return (batches as MutableBatch[]).map((batch) => ({
+    ...batch,
+    ...(batch.mediator?.publicKey === from
+      ? { mediator: { ...batch.mediator, publicKey: to } }
+      : {}),
+    operations: batch.operations.map((op) => {
+      const pointsAtMediator =
+        (op.kind === "create_account_mediator" || op.kind === "account_merge") &&
+        op.metadata.destination === from;
+      if (!pointsAtMediator) return op;
+      return {
+        ...op,
+        summary: repointText(op.summary, from, to),
+        metadata: { ...op.metadata, destination: to },
+      };
+    }),
+  }));
+}
+
+// Re-point FinalClassicTx (funds and merges INTO the mediator) and
+// MediatorForward (sweeps OUT of it, under the flow token) at `flow`. Both must
+// carry the SAME mediatorPublicKey or the merge and the forward would target
+// different accounts. Returns true when the tree is a mediator close (a forward
+// node exists) and was updated; false otherwise (nothing to do).
 export function applyRefreshedMediatorFlow(tree: MediatorFlowTree, flow: RefreshedFlow): boolean {
   const forwardNode = tree.allNodes.get(MEDIATOR_FORWARD_NODE_ID);
   if (!forwardNode) return false;
 
   const finalNode = tree.allNodes.get(FINAL_CLASSIC_TX_NODE_ID);
   if (finalNode) {
-    (finalNode.metadata as { mediatorPublicKey?: string }).mediatorPublicKey =
-      flow.mediatorPublicKey;
+    const metadata = finalNode.metadata as { mediatorPublicKey?: string; batches?: unknown };
+    const previous = metadata.mediatorPublicKey;
+    metadata.mediatorPublicKey = flow.mediatorPublicKey;
+    if (previous !== undefined && previous !== flow.mediatorPublicKey) {
+      metadata.batches = repointBatches(metadata.batches, previous, flow.mediatorPublicKey);
+      if (typeof finalNode.description === "string") {
+        (finalNode as { description: string }).description = repointText(
+          finalNode.description,
+          previous,
+          flow.mediatorPublicKey,
+        );
+      }
+    }
   }
 
   const forwardMetadata = forwardNode.metadata as {
