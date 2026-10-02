@@ -7,7 +7,7 @@ import { TypedConfirmation } from "@/components/confirmations/TypedConfirmation"
 
 // The final destructive gate combines a typed last-4 match AND a timed unlock
 // delay (canConfirm = matches && delayElapsed). These lock in that the DELAY half
-// of the gate actually fires — the previously-untested safety control.
+// of the gate actually fires, the previously-untested safety control.
 describe("TypedConfirmation timed-delay gate", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => {
