@@ -210,8 +210,7 @@ function buildSetOptions(op: BatchedOperation): xdr.Operation {
     });
   }
   const t = op.metadata["thresholds"] as
-    | { low?: number; medium?: number; high?: number; masterWeight?: number }
-    | undefined;
+    { low?: number; medium?: number; high?: number; masterWeight?: number } | undefined;
   const low = t?.low ?? 0;
   const medium = t?.medium ?? 0;
   const high = t?.high ?? 0;

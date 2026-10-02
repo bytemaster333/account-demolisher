@@ -25,8 +25,7 @@ export interface MediatorForwardInput {
 }
 
 export type MediatorForwardResult =
-  | { readonly ok: true; readonly txHash: string }
-  | { readonly ok: false; readonly error: string };
+  { readonly ok: true; readonly txHash: string } | { readonly ok: false; readonly error: string };
 
 // The payment (op0) may not drop the mediator below its minimum reserve, or it
 // fails with op_underfunded before the merge (op1) ever runs. A freshly-merged

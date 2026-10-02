@@ -19,24 +19,20 @@ export interface AllowedContract {
 
 // blend mainnet pool ids + infrastructure (factory, backstop, BLND/USDC
 const BLEND_ALLOWLIST_ENTRIES: readonly AllowedContract[] = [
-  ...BLEND_MAINNET_POOLS.map(
-    (pool): AllowedContract => ({
-      id: pool.pool_id,
-      name: `BlendPool::${pool.name}`,
-      protocol: "blend",
-      verified_at: pool.verified_at,
-      source: pool.source,
-    }),
-  ),
-  ...BLEND_MAINNET_INFRASTRUCTURE.map(
-    (entry): AllowedContract => ({
-      id: entry.id,
-      name: `Blend::${entry.name}`,
-      protocol: "blend",
-      verified_at: entry.verified_at,
-      source: entry.source,
-    }),
-  ),
+  ...BLEND_MAINNET_POOLS.map((pool): AllowedContract => ({
+    id: pool.pool_id,
+    name: `BlendPool::${pool.name}`,
+    protocol: "blend",
+    verified_at: pool.verified_at,
+    source: pool.source,
+  })),
+  ...BLEND_MAINNET_INFRASTRUCTURE.map((entry): AllowedContract => ({
+    id: entry.id,
+    name: `Blend::${entry.name}`,
+    protocol: "blend",
+    verified_at: entry.verified_at,
+    source: entry.source,
+  })),
 ];
 
 // fxdao mainnet vault contract + synthetic-stablecoin sacs, mirrored from
@@ -90,24 +86,20 @@ export const MAINNET_ALLOWLIST: readonly AllowedContract[] = [
 // blend testnet infrastructure (factory, backstopV2, emitter, tokens…) is
 // snapshotted in blend/pools.ts and shared with backstop resolution.
 const TESTNET_BLEND_ENTRIES: readonly AllowedContract[] = [
-  ...BLEND_TESTNET_POOLS.map(
-    (pool): AllowedContract => ({
-      id: pool.pool_id,
-      name: `BlendPool::${pool.name}`,
-      protocol: "blend",
-      verified_at: pool.verified_at,
-      source: pool.source,
-    }),
-  ),
-  ...BLEND_TESTNET_INFRASTRUCTURE.map(
-    (entry): AllowedContract => ({
-      id: entry.id,
-      name: `Blend::${entry.name}`,
-      protocol: "blend",
-      verified_at: entry.verified_at,
-      source: entry.source,
-    }),
-  ),
+  ...BLEND_TESTNET_POOLS.map((pool): AllowedContract => ({
+    id: pool.pool_id,
+    name: `BlendPool::${pool.name}`,
+    protocol: "blend",
+    verified_at: pool.verified_at,
+    source: pool.source,
+  })),
+  ...BLEND_TESTNET_INFRASTRUCTURE.map((entry): AllowedContract => ({
+    id: entry.id,
+    name: `Blend::${entry.name}`,
+    protocol: "blend",
+    verified_at: entry.verified_at,
+    source: entry.source,
+  })),
 ];
 
 // soroswap testnet contracts (factory + router; no aggregator on testnet)

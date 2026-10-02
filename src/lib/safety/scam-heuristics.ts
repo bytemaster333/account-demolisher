@@ -7,10 +7,7 @@ import type { AssetIdentifier, AuditBalance } from "@/lib/types/account";
 export type ScamSeverity = "info" | "warning" | "critical";
 
 export type ScamHeuristicId =
-  | "lookalike_symbol"
-  | "exact_symbol_collision"
-  | "suspicious_character"
-  | "unknown_contract";
+  "lookalike_symbol" | "exact_symbol_collision" | "suspicious_character" | "unknown_contract";
 
 export interface ScamFlag {
   readonly id: ScamHeuristicId;

@@ -2,8 +2,7 @@
 // from a client component; no server-only deps
 
 export type MediatorSignatureResult =
-  | { ok: true; signedXdr: string }
-  | { ok: false; code: string; reason: string };
+  { ok: true; signedXdr: string } | { ok: false; code: string; reason: string };
 
 export type MediatorFlowResult =
   | { ok: true; flowToken: string; mediatorPublicKey: string }

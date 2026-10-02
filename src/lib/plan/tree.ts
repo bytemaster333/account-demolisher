@@ -26,13 +26,7 @@ export type SimulationOutcome =
     };
 
 export type PlanNodeStatus =
-  | "pending"
-  | "simulated"
-  | "signed"
-  | "submitted"
-  | "confirmed"
-  | "failed"
-  | "skipped";
+  "pending" | "simulated" | "signed" | "submitted" | "confirmed" | "failed" | "skipped";
 
 export type PlanNodeKind =
   | "RevokeAllowance"
