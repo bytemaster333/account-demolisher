@@ -19,7 +19,7 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:integration": "vitest run --config vitest.integration.config.mts",
     "test:e2e": "playwright test"
   },
   "dependencies": {
@@ -39,23 +39,24 @@
     "zustand": "5.0.13"
   },
   "devDependencies": {
-    "@axe-core/playwright": "^4.11.3",
-    "@playwright/test": "1.60.0",
+    "@axe-core/playwright": "^4.13.0",
+    "@playwright/test": "1.63.0",
     "@tailwindcss/postcss": "4.3.0",
-    "@testing-library/react": "^16.3.2",
+    "@testing-library/react": "^16.3.3",
     "@types/node": "25.8.0",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "@walletconnect/sign-client": "2.23.0",
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.12",
-    "fast-check": "4.8.0",
-    "happy-dom": "20.9.0",
+    "fast-check": "4.10.2",
+    "happy-dom": "20.14.5",
     "lefthook": "2.1.6",
     "postcss": "8.5.18",
     "prettier": "3.8.3",
     "tailwindcss": "4.3.0",
     "typescript": "6.0.3",
-    "vitest": "4.1.6"
+    "vite": "8.3.2",
+    "vitest": "5.0.3"
   }
 }
