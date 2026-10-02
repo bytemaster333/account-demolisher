@@ -1,9 +1,11 @@
 // Aggregate usage metrics. POST records a visit / funnel step / verified close;
 // GET returns the aggregate snapshot behind an admin bearer token.
 //
-// A `close` is counted only after verifyCloseTx confirms it on-chain, so the
-// ledger cannot be inflated with fabricated hashes. No addresses or personal data
-// are accepted — a close carries only its public tx hash.
+// a close is counted only after verifyCloseTx confirms a successful merge that
+// carries the on-chain close marker, so made-up hashes and unrelated merges are
+// refused. the marker is public, so copies of it can still be counted, within the
+// store's per-network daily caps. no addresses or personal data are accepted: a
+// close carries only its public tx hash.
 
 import { createHash, timingSafeEqual } from "node:crypto";
 
@@ -73,10 +75,17 @@ export async function POST(request: Request): Promise<Response> {
     if (!result.ok) {
       return json({ ok: false, reason: result.reason }, result.retryable ? 503 : 422);
     }
-    const { added } = await store.recordClose({ ...result.close, recordedAt: Date.now() });
-    return json({ ok: true, added }, added ? 201 : 200);
-  } catch {
-    // never surface internals; a storage hiccup must not break the client flow.
+    const recorded = await store.recordClose({ ...result.close, recordedAt: Date.now() });
+    if (recorded.added) return json({ ok: true, added: true }, 201);
+    if (recorded.reason === "duplicate") return json({ ok: true, duplicate: true }, 200);
+    // the store logged the cap; the close is real but not counted today
+    return json(
+      { ok: false, code: "DAILY_CAP", reason: "Today's close count for this network is full." },
+      429,
+    );
+  } catch (e) {
+    // the client only learns that recording failed; the cause goes to the log
+    console.error("metrics: could not record event", e);
     return json({ ok: false, reason: "Could not record metric." }, 500);
   }
 }

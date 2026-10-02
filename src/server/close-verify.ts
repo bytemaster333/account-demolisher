@@ -1,19 +1,25 @@
 import "server-only";
 
 import type { NetworkConfig } from "@/lib/config/networks";
+import { CLOSE_MARKER_NAME, CLOSE_MARKER_VALUE } from "@/lib/metrics/close-marker";
 import type { MetricNetwork } from "@/lib/metrics/events";
 import type { CloseOpCounts, VerifiedClose } from "@/server/metrics-store";
 
-// Independently verify that a claimed close really happened on-chain before it is
-// counted. This is what makes the close ledger trustworthy rather than
-// self-reported: the browser sends only a tx hash, and the server confirms
-// against Horizon that the transaction (a) succeeded and (b) contains an
-// account_merge, then derives the reclaimed XLM and op breakdown from the public
-// ledger. A hash that doesn't check out is never recorded, so the counter cannot
-// be inflated with fabricated or replayed hashes.
+// check a claimed close against Horizon before it is counted. the browser sends
+// only a transaction hash; the server confirms that the transaction succeeded,
+// that it is shaped like a close this app builds (one account merge whose source
+// is the transaction source, only operation types the close builder emits, all
+// from the closing account) and that it carries the on-chain close marker
+// (close-marker.ts). the reclaimed XLM is read from the merge operation's own
+// effects.
 //
-// Fail CLOSED: if Horizon is unreachable we return a retryable failure and record
-// nothing, rather than counting an unverified close.
+// what this proves: the hash is a real, successful merge that carried the
+// marker. the marker is public, so anyone can put it in their own merge; the
+// count means "merges that carried the marker", and per-day caps in the store
+// bound what such copying can add.
+//
+// fails closed: if Horizon is unreachable the result is retryable and nothing is
+// recorded.
 
 export type VerifyResult =
   | { readonly ok: true; readonly close: Omit<VerifiedClose, "recordedAt"> }
@@ -27,16 +33,42 @@ export interface VerifyDeps {
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+const PAGE_LIMIT = 200;
+// a transaction has at most 100 operations, so one page always holds them all;
+// the cap only guards against a misbehaving server
+const MAX_PAGES = 3;
+
+// operation types the close builder emits in the final classic transaction
+const CLOSE_OP_TYPES = new Set([
+  "account_merge",
+  "change_trust",
+  "manage_sell_offer",
+  "claim_claimable_balance",
+  "path_payment_strict_send",
+  "payment",
+  "manage_data",
+  "set_options",
+  "liquidity_pool_withdraw",
+  "create_account",
+]);
+
+const MARKER_VALUE_B64 = Buffer.from(CLOSE_MARKER_VALUE, "utf8").toString("base64");
 
 interface HorizonTx {
   successful?: boolean;
   ledger?: number;
   created_at?: string;
+  source_account?: string;
 }
 
 interface HorizonOp {
+  id?: string;
   type?: string;
+  source_account?: string;
+  account?: string; // account_merge: the merged account
   into?: string; // account_merge destination
+  name?: string; // manage_data
+  value?: string; // manage_data, base64; "" when the entry is deleted
 }
 
 interface HorizonEffect {
@@ -46,8 +78,9 @@ interface HorizonEffect {
   amount?: string;
 }
 
-interface Embedded<T> {
+interface Page<T> {
   _embedded?: { records?: T[] };
+  _links?: { next?: { href?: string } };
 }
 
 // Convert a Horizon decimal XLM amount ("12.3456789") to stroops (1e7). Robust to
@@ -60,7 +93,7 @@ export function xlmToStroops(amount: string): bigint {
   return whole * 10_000_000n + BigInt(frac || "0");
 }
 
-function countOps(ops: HorizonOp[]): CloseOpCounts {
+function countOps(ops: readonly HorizonOp[]): CloseOpCounts {
   const counts = {
     total: ops.length,
     accountMerge: 0,
@@ -90,6 +123,43 @@ function countOps(ops: HorizonOp[]): CloseOpCounts {
   return counts;
 }
 
+class HorizonUnavailable extends Error {}
+
+// why a transaction is not a close this app built, or null when it is one
+function shapeProblem(tx: HorizonTx, ops: readonly HorizonOp[]): string | null {
+  const merges = ops.filter((o) => o.type === "account_merge");
+  if (merges.length !== 1) {
+    return merges.length === 0
+      ? "transaction contains no account_merge"
+      : "transaction contains more than one account_merge";
+  }
+  const closing = tx.source_account;
+  const merge = merges[0]!;
+  if (typeof closing !== "string" || merge.account !== closing) {
+    return "the merged account is not the transaction source";
+  }
+  for (const op of ops) {
+    if (op.type === undefined || !CLOSE_OP_TYPES.has(op.type)) {
+      return `transaction contains a ${op.type ?? "unknown"} operation, which a close never has`;
+    }
+    if (op.source_account !== closing) {
+      return "an operation acts on an account other than the one being closed";
+    }
+  }
+  const setAt = ops.findIndex(
+    (o) => o.type === "manage_data" && o.name === CLOSE_MARKER_NAME && o.value === MARKER_VALUE_B64,
+  );
+  const deleteAt = ops.findIndex(
+    (o, i) =>
+      i > setAt &&
+      o.type === "manage_data" &&
+      o.name === CLOSE_MARKER_NAME &&
+      (o.value === undefined || o.value === ""),
+  );
+  if (setAt < 0 || deleteAt < 0) return "transaction does not carry the close marker";
+  return null;
+}
+
 export async function verifyCloseTx(
   network: NetworkConfig,
   txHash: string,
@@ -97,6 +167,7 @@ export async function verifyCloseTx(
 ): Promise<VerifyResult> {
   const fetchImpl = deps.fetchImpl ?? (globalThis.fetch as FetchLike);
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const horizonOrigin = new URL(network.horizon).origin;
   const base = `${network.horizon}/transactions/${txHash}`;
 
   const get = async <T>(url: string): Promise<{ status: number; body: T | null }> => {
@@ -104,7 +175,6 @@ export async function verifyCloseTx(
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const res = await fetchImpl(url, { signal: controller.signal });
-      if (res.status === 404) return { status: 404, body: null };
       if (!res.ok) return { status: res.status, body: null };
       return { status: res.status, body: (await res.json()) as T };
     } finally {
@@ -112,53 +182,68 @@ export async function verifyCloseTx(
     }
   };
 
+  // read every record of a paged Horizon collection
+  const getAll = async <T>(url: string): Promise<T[]> => {
+    const out: T[] = [];
+    let next: string | undefined = url;
+    for (let page = 0; next !== undefined; page++) {
+      if (page >= MAX_PAGES) throw new HorizonUnavailable("too many result pages");
+      const res: { status: number; body: Page<T> | null } = await get<Page<T>>(next);
+      if (res.body === null) throw new HorizonUnavailable(`status ${res.status}`);
+      const records = res.body._embedded?.records ?? [];
+      out.push(...records);
+      // Horizon always sends a next link; only a full page can have more after it
+      const href = res.body._links?.next?.href;
+      next =
+        records.length === PAGE_LIMIT &&
+        href !== undefined &&
+        new URL(href).origin === horizonOrigin
+          ? href
+          : undefined;
+    }
+    return out;
+  };
+
   let tx: { status: number; body: HorizonTx | null };
-  let opsResp: { status: number; body: Embedded<HorizonOp> | null };
-  let effResp: { status: number; body: Embedded<HorizonEffect> | null };
+  let ops: HorizonOp[];
   try {
     tx = await get<HorizonTx>(base);
     if (tx.status === 404) {
       return { ok: false, reason: "transaction not found on this network", retryable: false };
     }
-    if (tx.status >= 500 || tx.body === null) {
+    if (tx.body === null) {
       return { ok: false, reason: `Horizon unavailable (status ${tx.status})`, retryable: true };
     }
-    // check success BEFORE fetching ops/effects: a failed tx is a definitive
-    // rejection and shouldn't cost two more round-trips.
+    // a failed tx is a definitive rejection and shouldn't cost more round-trips
     if (tx.body.successful !== true) {
       return { ok: false, reason: "transaction did not succeed", retryable: false };
     }
-    [opsResp, effResp] = await Promise.all([
-      get<Embedded<HorizonOp>>(`${base}/operations?limit=200`),
-      get<Embedded<HorizonEffect>>(`${base}/effects?limit=200`),
-    ]);
-  } catch {
-    // network error / timeout / abort → retryable, count nothing
-    return { ok: false, reason: "verification request failed", retryable: true };
+    ops = await getAll<HorizonOp>(`${base}/operations?limit=${PAGE_LIMIT}`);
+  } catch (e) {
+    const detail = e instanceof HorizonUnavailable ? `: ${e.message}` : "";
+    return { ok: false, reason: `verification request failed${detail}`, retryable: true };
   }
 
-  if (opsResp.body === null || effResp.body === null) {
-    return { ok: false, reason: "could not read transaction operations", retryable: true };
-  }
+  const problem = shapeProblem(tx.body, ops);
+  if (problem !== null) return { ok: false, reason: problem, retryable: false };
 
-  const ops = opsResp.body._embedded?.records ?? [];
-  const opCounts = countOps(ops);
-  if (opCounts.accountMerge < 1) {
-    return { ok: false, reason: "transaction contains no account_merge", retryable: false };
+  // the reclaimed XLM is the merge operation's own credit to its destination
+  const merge = ops.find((o) => o.type === "account_merge")!;
+  let effects: HorizonEffect[];
+  try {
+    effects = await getAll<HorizonEffect>(
+      `${network.horizon}/operations/${merge.id}/effects?limit=${PAGE_LIMIT}`,
+    );
+  } catch (e) {
+    const detail = e instanceof HorizonUnavailable ? `: ${e.message}` : "";
+    return { ok: false, reason: `could not read the merge effects${detail}`, retryable: true };
   }
-
-  // reclaimed native XLM = credits to the merge destination(s) in this tx.
-  const destinations = new Set(
-    ops.filter((o) => o.type === "account_merge" && typeof o.into === "string").map((o) => o.into!),
-  );
-  const effects = effResp.body._embedded?.records ?? [];
   let reclaimed = 0n;
   for (const eff of effects) {
     if (
       eff.type === "account_credited" &&
       eff.asset_type === "native" &&
-      typeof eff.account === "string" &&
-      destinations.has(eff.account) &&
+      eff.account === merge.into &&
       typeof eff.amount === "string"
     ) {
       reclaimed += xlmToStroops(eff.amount);
@@ -175,7 +260,7 @@ export async function verifyCloseTx(
       ledger: tx.body.ledger ?? 0,
       closedAt: Number.isFinite(closedAt) ? closedAt : 0,
       reclaimedStroops: reclaimed.toString(),
-      ops: opCounts,
+      ops: countOps(ops),
     },
   };
 }

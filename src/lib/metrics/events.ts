@@ -5,9 +5,11 @@
 //   visit  — a page was loaded (optional network; no cookie, no IP stored)
 //   funnel — a usage milestone was reached (wallet connected, discovery done, …)
 //   close  — a successful account close, identified ONLY by its public on-chain
-//            transaction hash. The server independently verifies that hash against
-//            Horizon before counting it, so the close ledger is auditable and
-//            cannot be inflated with fabricated hashes.
+//            transaction hash. The server checks that hash against Horizon and
+//            counts it only when it is a successful merge carrying the on-chain
+//            close marker (close-marker.ts), so made-up hashes and unrelated
+//            merges are refused. The marker is public, so copies of it can be
+//            counted too, within per-network daily caps.
 //
 // No addresses, wallet identifiers, or amounts are ever sent from the client —
 // a close carries just its tx hash, and every derived detail (reclaimed XLM, op

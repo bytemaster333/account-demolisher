@@ -7,23 +7,75 @@ import { verifyCloseTx, xlmToStroops } from "@/server/close-verify";
 import { TESTNET } from "@/lib/config/networks";
 
 const HASH = "a".repeat(64);
+const SRC = "GCDDMAWHDVSTLGKYYNOX6FFFDILTASIUBGUP4KHJ4EN6WHPEWMREUXY4";
+const DEST = "GBSEFCV4ZJE4LFO72RNMDZQEM5JZMGOI5E5KW7OK7X6CPV6EGXGXQUNO";
+const MERGE_ID = "21417185134006275";
 
-// route a mocked Horizon by URL suffix
-function mockHorizon(map: {
+// record shapes copied from a real testnet close carrying the marker
+// (tx dd05e0450f52bac1168f0bb7897a0628cb4a45f687e84947d99f02bbcdadc821)
+const markerSet = {
+  id: "21417185134006273",
+  type: "manage_data",
+  source_account: SRC,
+  name: "account-demolisher.close",
+  value: "MQ==",
+};
+const markerDelete = {
+  id: "21417185134006274",
+  type: "manage_data",
+  source_account: SRC,
+  name: "account-demolisher.close",
+  value: "",
+};
+const merge = {
+  id: MERGE_ID,
+  type: "account_merge",
+  source_account: SRC,
+  account: SRC,
+  into: DEST,
+};
+const mergeEffects = [
+  { type: "account_debited", account: SRC, asset_type: "native", amount: "9999.9999700" },
+  { type: "account_credited", account: DEST, asset_type: "native", amount: "9999.9999700" },
+  { type: "account_removed", account: SRC },
+];
+
+interface Fixture {
   tx?: { status: number; body?: unknown };
-  ops?: { status: number; body?: unknown };
-  effects?: { status: number; body?: unknown };
-}) {
-  return async (url: string): Promise<Response> => {
-    const pick = url.includes("/operations")
-      ? map.ops
-      : url.includes("/effects")
-        ? map.effects
-        : map.tx;
-    const status = pick?.status ?? 200;
-    const body = pick?.body === undefined ? null : JSON.stringify(pick.body);
-    return new Response(body, { status });
+  ops?: unknown[];
+  opsStatus?: number;
+  effects?: unknown[];
+}
+
+// a mocked Horizon routed by URL, recording every URL it was asked for
+function horizon(f: Fixture) {
+  const urls: string[] = [];
+  const fetchImpl = async (url: string): Promise<Response> => {
+    urls.push(url);
+    const page = (records: unknown[]) =>
+      JSON.stringify({ _embedded: { records }, _links: { next: { href: `${url}&cursor=x` } } });
+    if (url.includes(`/operations/${MERGE_ID}/effects`)) {
+      return new Response(page(f.effects ?? mergeEffects), { status: 200 });
+    }
+    if (url.includes("/effects")) return new Response(null, { status: 500 });
+    if (url.includes("/operations")) {
+      if (f.opsStatus !== undefined) return new Response(null, { status: f.opsStatus });
+      return new Response(page(f.ops ?? [markerSet, markerDelete, merge]), { status: 200 });
+    }
+    const tx = f.tx ?? {
+      status: 200,
+      body: {
+        successful: true,
+        ledger: 555,
+        created_at: "2026-10-02T15:54:32Z",
+        source_account: SRC,
+      },
+    };
+    return new Response(tx.body === undefined ? null : JSON.stringify(tx.body), {
+      status: tx.status,
+    });
   };
+  return { fetchImpl, urls };
 }
 
 describe("xlmToStroops", () => {
@@ -37,115 +89,99 @@ describe("xlmToStroops", () => {
 });
 
 describe("verifyCloseTx", () => {
-  it("accepts a successful account_merge and derives reclaimed XLM + op counts", async () => {
-    const fetchImpl = mockHorizon({
-      tx: {
-        status: 200,
-        body: { successful: true, ledger: 555, created_at: "2026-07-30T12:00:00Z" },
-      },
-      ops: {
-        status: 200,
-        body: {
-          _embedded: {
-            records: [
-              { type: "account_merge", into: "GDEST" },
-              { type: "change_trust" },
-              { type: "invoke_host_function" },
-            ],
-          },
-        },
-      },
-      effects: {
-        status: 200,
-        body: {
-          _embedded: {
-            records: [
-              {
-                type: "account_credited",
-                account: "GDEST",
-                asset_type: "native",
-                amount: "12.3456789",
-              },
-              { type: "account_removed", account: "GSRC" },
-            ],
-          },
-        },
-      },
-    });
-
+  it("accepts a close carrying the marker and reads the merge's own credit", async () => {
+    const { fetchImpl, urls } = horizon({});
     const res = await verifyCloseTx(TESTNET, HASH, { fetchImpl });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.close.ledger).toBe(555);
-    expect(res.close.closedAt).toBe(Math.floor(Date.parse("2026-07-30T12:00:00Z") / 1000));
-    expect(res.close.reclaimedStroops).toBe("123456789");
-    expect(res.close.ops).toMatchObject({
-      total: 3,
-      accountMerge: 1,
-      changeTrust: 1,
-      invokeHostFunction: 1,
-    });
+    expect(res.close.closedAt).toBe(Math.floor(Date.parse("2026-10-02T15:54:32Z") / 1000));
+    expect(res.close.reclaimedStroops).toBe("99999999700");
+    expect(res.close.ops).toMatchObject({ total: 3, accountMerge: 1 });
     expect(res.close.network).toBe("testnet");
+    // effects come from the merge operation, never from the whole transaction
+    expect(urls.some((u) => u.includes(`/operations/${MERGE_ID}/effects`))).toBe(true);
+    expect(urls.some((u) => u.includes(`/transactions/${HASH}/effects`))).toBe(false);
   });
 
-  it("ignores native credits to accounts other than the merge destination", async () => {
-    const fetchImpl = mockHorizon({
-      tx: {
-        status: 200,
-        body: { successful: true, ledger: 1, created_at: "2026-07-30T12:00:00Z" },
-      },
-      ops: {
-        status: 200,
-        body: { _embedded: { records: [{ type: "account_merge", into: "GDEST" }] } },
-      },
-      effects: {
-        status: 200,
-        body: {
-          _embedded: {
-            records: [
-              { type: "account_credited", account: "GOTHER", asset_type: "native", amount: "9.0" },
-              { type: "account_credited", account: "GDEST", asset_type: "native", amount: "2.0" },
-            ],
-          },
-        },
-      },
+  it("rejects an unrelated merge without the marker", async () => {
+    const { fetchImpl } = horizon({ ops: [merge] });
+    const res = await verifyCloseTx(TESTNET, HASH, { fetchImpl });
+    expect(res).toMatchObject({ ok: false, retryable: false });
+    if (!res.ok) expect(res.reason).toMatch(/close marker/);
+  });
+
+  it("rejects a marker that is set but never deleted, or carries the wrong value", async () => {
+    const setOnly = await verifyCloseTx(TESTNET, HASH, {
+      fetchImpl: horizon({ ops: [markerSet, merge] }).fetchImpl,
+    });
+    expect(setOnly).toMatchObject({ ok: false, retryable: false });
+    const wrong = await verifyCloseTx(TESTNET, HASH, {
+      fetchImpl: horizon({ ops: [{ ...markerSet, value: "Mg==" }, markerDelete, merge] }).fetchImpl,
+    });
+    expect(wrong).toMatchObject({ ok: false, retryable: false });
+  });
+
+  it("rejects a merge whose source is not the transaction source", async () => {
+    const other = "GOTHERACCOUNTXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
+    const { fetchImpl } = horizon({
+      ops: [markerSet, markerDelete, { ...merge, account: other, source_account: other }],
     });
     const res = await verifyCloseTx(TESTNET, HASH, { fetchImpl });
+    expect(res).toMatchObject({ ok: false, retryable: false });
+  });
+
+  it("rejects operation types a close never contains", async () => {
+    const { fetchImpl } = horizon({
+      ops: [
+        markerSet,
+        markerDelete,
+        { id: "1", type: "invoke_host_function", source_account: SRC },
+        merge,
+      ],
+    });
+    const res = await verifyCloseTx(TESTNET, HASH, { fetchImpl });
+    expect(res).toMatchObject({ ok: false, retryable: false });
+    if (!res.ok) expect(res.reason).toMatch(/invoke_host_function/);
+  });
+
+  it("counts only the merge credit, not other native credits to the destination", async () => {
+    const payment = {
+      id: "21417185134006272",
+      type: "payment",
+      source_account: SRC,
+      to: DEST,
+      asset_type: "native",
+      amount: "50",
+    };
+    const { fetchImpl } = horizon({ ops: [payment, markerSet, markerDelete, merge] });
+    const res = await verifyCloseTx(TESTNET, HASH, { fetchImpl });
     expect(res.ok).toBe(true);
-    if (res.ok) expect(res.close.reclaimedStroops).toBe("20000000");
+    if (res.ok) expect(res.close.reclaimedStroops).toBe("99999999700");
   });
 
   it("rejects a transaction that did not succeed (not retryable)", async () => {
-    const fetchImpl = mockHorizon({ tx: { status: 200, body: { successful: false, ledger: 1 } } });
+    const { fetchImpl } = horizon({ tx: { status: 200, body: { successful: false, ledger: 1 } } });
     const res = await verifyCloseTx(TESTNET, HASH, { fetchImpl });
     expect(res).toMatchObject({ ok: false, retryable: false });
-  });
-
-  it("rejects a transaction with no account_merge (not retryable)", async () => {
-    const fetchImpl = mockHorizon({
-      tx: {
-        status: 200,
-        body: { successful: true, ledger: 1, created_at: "2026-07-30T12:00:00Z" },
-      },
-      ops: { status: 200, body: { _embedded: { records: [{ type: "payment" }] } } },
-      effects: { status: 200, body: { _embedded: { records: [] } } },
-    });
-    const res = await verifyCloseTx(TESTNET, HASH, { fetchImpl });
-    expect(res).toMatchObject({ ok: false, retryable: false });
-    if (!res.ok) expect(res.reason).toMatch(/account_merge/);
   });
 
   it("treats a 404 as a definitive not-found (not retryable)", async () => {
-    const fetchImpl = mockHorizon({ tx: { status: 404 } });
+    const { fetchImpl } = horizon({ tx: { status: 404 } });
     const res = await verifyCloseTx(TESTNET, HASH, { fetchImpl });
     expect(res).toMatchObject({ ok: false, retryable: false });
   });
 
-  it("fails CLOSED and retryable when Horizon 5xxs or the request throws", async () => {
+  it("fails closed and retryable when Horizon 5xxs or the request throws", async () => {
     const five = await verifyCloseTx(TESTNET, HASH, {
-      fetchImpl: mockHorizon({ tx: { status: 503 } }),
+      fetchImpl: horizon({ tx: { status: 503 } }).fetchImpl,
     });
     expect(five).toMatchObject({ ok: false, retryable: true });
+
+    const opsDown = await verifyCloseTx(TESTNET, HASH, {
+      fetchImpl: horizon({ opsStatus: 502 }).fetchImpl,
+    });
+    expect(opsDown).toMatchObject({ ok: false, retryable: true });
 
     const threw = await verifyCloseTx(TESTNET, HASH, {
       fetchImpl: async () => {
