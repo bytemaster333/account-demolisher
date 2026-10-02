@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { Keypair, StrKey, type rpc, type xdr } from "@stellar/stellar-sdk";
+import { Address, Keypair, StrKey, xdr, type rpc } from "@stellar/stellar-sdk";
 import { discoverSoroswapPositions, getSoroswapFactoryId } from "@/lib/adapters/soroswap/discovery";
 import { address, i128, u32 } from "@/lib/soroban/scval";
 import type { simulateRead } from "@/lib/soroban/simulate";
@@ -83,6 +83,31 @@ describe("discoverSoroswapPositions", () => {
       loadHeldPairs: async () => [],
     });
     expect(positions).toEqual([]);
+  });
+
+  it("treats an archived Balance entry the rpc returns as a candidate", async () => {
+    // stellar-rpc returns archived entries with liveUntilLedgerSeq 0 and drops
+    // only keys that do not exist; the real bulk filter must keep the archived one
+    const server = {
+      getLedgerEntries: async (...keys: xdr.LedgerKey[]) => ({
+        latestLedger: 100,
+        entries: keys
+          .filter(
+            (k) =>
+              Address.fromScAddress(
+                xdr.expectUnionVariant(k, "contractData").contractData.contract,
+              ).toString() === PAIR1,
+          )
+          .map((key) => ({ key, val: {} as never, liveUntilLedgerSeq: 0 })),
+      }),
+    } as unknown as rpc.Server;
+    const positions = await discoverSoroswapPositions(server, TESTNET, USER, {
+      simulateRead: makeRead(2),
+      loadPairAddresses: async () => [PAIR0, PAIR1],
+    });
+    expect(positions).toEqual([
+      { pair: { tokenA: TOKEN_A, tokenB: TOKEN_B }, shareBalance: 5000n },
+    ]);
   });
 
   it("refuses to enumerate a factory larger than the cap", async () => {
