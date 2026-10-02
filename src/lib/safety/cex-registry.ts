@@ -1,5 +1,7 @@
 // curated registry of known cex hot-wallet stellar addresses
 
+import { memoHashBytes } from "@/lib/stellar/memo";
+
 export type CexMemoType = "text" | "id" | "hash" | "return";
 
 export interface CexInfo {
@@ -175,28 +177,51 @@ export function validateMemoFormat(type: CexMemoType, value: string): string | n
     }
     case "hash":
     case "return": {
-      // exactly 32 bytes: hex (64 chars) or base64 (44 chars) that DECODES to 32
-      if (new RegExp(`^[0-9a-fA-F]{${HASH_MEMO_HEX_LENGTH}}$`).test(v)) return null;
-      if (new RegExp(`^[A-Za-z0-9+/]{${HASH_MEMO_BASE64_LENGTH - 1}}=$`).test(v)) {
-        try {
-          if (Buffer.from(v, "base64").length === 32) return null;
-        } catch {
-          /* fall through to the error below */
-        }
+      // exactly 32 bytes, hex or base64: the same decoding the memo builder uses,
+      // so a value accepted here always encodes
+      try {
+        memoHashBytes(v);
+        return null;
+      } catch {
+        return `A "${type}" memo must be 32 bytes as hex (${HASH_MEMO_HEX_LENGTH} chars) or base64 (${HASH_MEMO_BASE64_LENGTH} chars).`;
       }
-      return `A "${type}" memo must be 32 bytes as hex (${HASH_MEMO_HEX_LENGTH} chars) or base64 (${HASH_MEMO_BASE64_LENGTH} chars).`;
     }
   }
 }
 
-// verify that a destination's cex memo requirement is satisfied by the
-// caller-supplied memo, if any. returns ok:true for non-cex destinations
+// SEP-29: an account that does not credit memo-less deposits publishes the data
+// entry config.memo_required with value "1" (base64 "MQ=="). this is the exact
+// check the sdk's submitTransaction runs, done up front so the close is routed
+// and gated before any step runs instead of failing at the final merge.
+export const SEP29_MEMO_REQUIRED_KEY = "config.memo_required";
+const SEP29_MEMO_REQUIRED_VALUE = "MQ==";
+
+export function isSep29MemoRequired(dataAttr: Readonly<Record<string, string>>): boolean {
+  return dataAttr[SEP29_MEMO_REQUIRED_KEY] === SEP29_MEMO_REQUIRED_VALUE;
+}
+
+// every memo-required destination, a registry exchange or an account flagged
+// under SEP-29, goes through the mediator: a memo-carrying account_merge is not
+// credited as a deposit
+export function destinationRequiresMediator(
+  destination: string,
+  sep29MemoRequired: boolean,
+): boolean {
+  return lookupCex(destination) !== null || sep29MemoRequired;
+}
+
+// verify that a destination's memo requirement (registry exchange, or SEP-29
+// flag read from the destination account) is satisfied by the caller-supplied
+// memo, if any. returns ok:true for a destination with no memo requirement
 export function requireMemoEnforcement(
   destination: string,
   memo?: MemoLike,
+  options: { readonly sep29MemoRequired?: boolean } = {},
 ): MemoEnforcementResult {
   const cex = lookupCex(destination);
-  if (cex === null) return { ok: true };
+  if (cex === null) {
+    return options.sep29MemoRequired === true ? requireSep29Memo(memo) : { ok: true };
+  }
   if (!cex.requiresMemo) return { ok: true };
 
   if (memo === undefined) {
@@ -235,4 +260,19 @@ export function requireMemoEnforcement(
     };
   }
   return { ok: true };
+}
+
+// an unlisted SEP-29 account says a memo is required but not which type, so any
+// well-formed memo is accepted
+function requireSep29Memo(memo: MemoLike | undefined): MemoEnforcementResult {
+  if (memo === undefined || memo.value.trim().length === 0) {
+    return {
+      ok: false,
+      reason:
+        "This destination requires a memo (it sets SEP-29 config.memo_required). Enter the " +
+        "deposit memo it gave you; without it the funds may never be credited.",
+    };
+  }
+  const formatError = validateMemoFormat(memo.type, memo.value);
+  return formatError === null ? { ok: true } : { ok: false, reason: formatError };
 }
