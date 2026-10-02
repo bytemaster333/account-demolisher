@@ -84,3 +84,9 @@ Thumbs.db
 # all markdown by default except the repo readme
 *.md
 !README.md
+
+# internal working files (owner rule: internal artifacts live in resources/ and are never committed)
+resources/
+.claude/
+m3_tranche_formatted.txt
+tranche*.md
