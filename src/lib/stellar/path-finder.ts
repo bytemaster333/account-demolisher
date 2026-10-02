@@ -1,7 +1,8 @@
 // wrapper around horizon's strict-send path search
 
-import { Asset } from "@stellar/stellar-sdk";
+import { Asset, BadRequestError, NetworkError, NotFoundError } from "@stellar/stellar-sdk";
 import { getHorizon } from "@/lib/stellar/horizon-client";
+import { isFrozenBalance } from "@/lib/stellar/account-audit";
 import type { NetworkConfig } from "@/lib/config/networks";
 import type { AccountAudit, AssetIdentifier } from "@/lib/types/account";
 import { pathKey, type PathResultRef } from "@/lib/types/plan";
@@ -37,7 +38,9 @@ export async function findPathToXLM(
   const sourceAsset = toSdkAsset(source);
 
   // constrain the search to xlm-only outputs
-  const page = await server.strictSendPaths(sourceAsset, amount, [Asset.native()]).call();
+  const page = await withRateLimitRetry(() =>
+    server.strictSendPaths(sourceAsset, amount, [Asset.native()]).call(),
+  );
 
   let best: PathResult | null = null;
   for (const record of page.records) {
@@ -64,19 +67,20 @@ export async function findPathToXLM(
 // from the map, so the caller treats them as un-routable and disposes of them via
 // issuer-return / send-to-destination instead of selling them for a pittance. A
 // network error propagates rather than being silently treated as "no path".
+// Balances frozen by their issuer are skipped: horizon's path search ignores
+// whether the source may send the asset, and any payment of it fails with
+// op_src_not_authorized (assessMergeability blocks the close on them instead).
 export async function resolveCreditPaths(
   audit: AccountAudit,
   network: NetworkConfig,
 ): Promise<Map<string, PathResultRef>> {
   const credits = audit.balances.filter(
-    (b) => b.asset.kind === "credit" && hasPositiveAmount(b.amount),
+    (b) => b.asset.kind === "credit" && hasPositiveAmount(b.amount) && !isFrozenBalance(b),
   );
-  const resolved = await Promise.all(
-    credits.map(async (b) => ({
-      key: pathKey(b.asset),
-      res: await findPathToXLM(b.asset, b.amount, network),
-    })),
-  );
+  const resolved = await mapWithConcurrency(credits, PATH_REQUEST_CONCURRENCY, async (b) => ({
+    key: pathKey(b.asset),
+    res: await findPathToXLM(b.asset, b.amount, network),
+  }));
   const bps = resolveConfiguredSlippageBps();
   const floor = resolveMinMarketOutStroops();
   const map = new Map<string, PathResultRef>();
@@ -91,6 +95,58 @@ export async function resolveCreditPaths(
     map.set(key, res);
   }
   return map;
+}
+
+// an account with hundreds of trustlines would otherwise fire hundreds of path
+// requests at once and trip public horizon's rate limit
+export const PATH_REQUEST_CONCURRENCY = 8;
+export const PATH_REQUEST_ATTEMPTS = 4;
+const RETRY_BASE_DELAY_MS = 250;
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+// 429, 5xx and connection failures are transient; anything else (a 400 on a
+// malformed asset, a 404) is a real answer and is thrown at once. the last
+// error is surfaced as is once the attempts run out.
+async function withRateLimitRetry<T>(call: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await call();
+    } catch (err) {
+      if (attempt >= PATH_REQUEST_ATTEMPTS || !isTransientHorizonError(err)) throw err;
+      await new Promise((r) => setTimeout(r, RETRY_BASE_DELAY_MS * 2 ** (attempt - 1)));
+    }
+  }
+}
+
+function isTransientHorizonError(err: unknown): boolean {
+  if (err instanceof NotFoundError || err instanceof BadRequestError) return false;
+  if (err instanceof NetworkError) {
+    // the sdk stores the response body here; horizon problem documents carry the
+    // status, a proxy error page does not
+    const body = err.getResponse() as unknown;
+    const status =
+      typeof body === "object" && body !== null ? (body as { status?: unknown }).status : undefined;
+    if (typeof status !== "number") return true;
+    return status === 429 || status >= 500;
+  }
+  // no response at all: the request never reached horizon
+  return err instanceof Error;
 }
 
 // convert an XLM horizon-decimal string ("12.3456789") to integer stroops.

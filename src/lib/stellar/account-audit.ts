@@ -1,6 +1,11 @@
 import { Horizon } from "@stellar/stellar-sdk";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { filterClaimableNow } from "@/lib/stellar/claimable-balances";
+import {
+  DEFAULT_TX_VALIDITY_SECONDS,
+  fetchLedgerClock,
+  type LedgerClock,
+} from "@/lib/stellar/ledger-clock";
 import type { NetworkConfig } from "@/lib/config/networks";
 import type {
   AccountAudit,
@@ -17,17 +22,34 @@ import type {
   SponsorshipInfo,
 } from "@/lib/types/account";
 
+// the audit plus the ledger it was evaluated against, so later checks (merge
+// sequence ceiling, transaction time bounds) use the same network clock
+export interface AccountAuditResult extends AccountAudit {
+  readonly ledger: LedgerClock;
+}
+
+export interface AuditOptions {
+  // how long the transaction that claims balances stays valid. a balance is only
+  // marked claimable when it stays claimable for this whole window
+  readonly claimWindowSeconds?: number;
+}
+
 // read-only audit of a classic stellar account. no caching. every call
 // re-reads horizon
 export async function auditAccount(
   publicKey: string,
   network: NetworkConfig,
-): Promise<AccountAudit> {
+  options: AuditOptions = {},
+): Promise<AccountAuditResult> {
   const server = getHorizon(network);
 
   let account: Horizon.AccountResponse;
+  let ledger: LedgerClock;
   try {
-    account = await server.loadAccount(publicKey);
+    [account, ledger] = await Promise.all([
+      server.loadAccount(publicKey),
+      fetchLedgerClock(network),
+    ]);
   } catch (err) {
     if (isHorizonNotFound(err)) {
       throw new AccountNotFoundError(publicKey);
@@ -47,29 +69,30 @@ export async function auditAccount(
     loadPoolShares(server, balances),
   ]);
 
-  // mark which CBs this account can actually claim right now, so the UI and
-  // the batcher never attempt an unclaimable balance (which would fail on-chain
-  // and, if self-sponsored, would leave the merge blocked).
+  // mark which CBs this account can claim, judged on the ledger clock and kept
+  // claimable for the whole signing window, so the UI and the batcher never
+  // attempt a claim that fails on chain (and, if self-sponsored, would leave the
+  // merge blocked).
   const claimableIds = new Set(
-    filterClaimableNow(rawClaimableBalances, publicKey, new Date()).map((c) => c.id),
+    filterClaimableNow(
+      rawClaimableBalances,
+      publicKey,
+      new Date(ledger.closedAt * 1000),
+      options.claimWindowSeconds ?? DEFAULT_TX_VALIDITY_SECONDS,
+    ).map((c) => c.id),
   );
   const claimableBalances: readonly ClaimableBalanceEntry[] = rawClaimableBalances.map((cb) => ({
     ...cb,
     claimableNow: claimableIds.has(cb.id),
   }));
 
-  // sponsorships the demolition can release itself: the account's OWN entries
-  // that it self-sponsors (removed/cancelled/cleared on close) plus claimable
-  // self-sponsored CBs. Anything beyond this in num_sponsoring is a foreign
-  // sponsorship the user must resolve before the account can merge.
+  // the only sponsorships the close releases itself are claimable balances this
+  // account created with itself as a claimant. everything else in num_sponsoring
+  // is a reserve it pays for another account's entry, which blocks the merge
+  // until the user resolves it. this counts every claimable one; the user's
+  // actual claim selection is applied in assessMergeability.
   const accountId = account.account_id;
-  const coverableSponsorships = computeCoverableSponsorships(accountId, {
-    balances,
-    offers,
-    signers,
-    claimableBalances,
-    data,
-  });
+  const coverableSponsorships = computeCoverableSponsorships(accountId, claimableBalances);
 
   const sponsorship: SponsorshipInfo = {
     numSponsoring: account.num_sponsoring,
@@ -97,6 +120,7 @@ export async function auditAccount(
     sponsorship,
     requiresMultisig,
     mergeability,
+    ledger,
   };
 }
 
@@ -311,57 +335,161 @@ function serverAssetStringToIdentifier(asset: string): AssetIdentifier {
   return { kind: "credit", code: parts[0] ?? "", issuer: parts[1] ?? "" };
 }
 
-// account_merge and set_options (clearing signers / resetting thresholds) are
-// HIGH-threshold operations. The connected master key can complete the merge on
-// its own only if its weight meets the high threshold; otherwise additional
-// signers are required and the merge must go through multisig coordination.
+// the master key alone can run the close only if its weight meets every
+// threshold the close touches: account_merge and set_options are high, path
+// payments, payments, change_trust and offers are medium, claims are low. the
+// three thresholds are independent, so medium or low can sit above high.
 export function computeRequiresMultisig(thresholds: AuditThresholds): boolean {
-  const { masterWeight, high } = thresholds;
-  return masterWeight === 0 || masterWeight < high;
+  const { masterWeight, low, medium, high } = thresholds;
+  return masterWeight === 0 || masterWeight < Math.max(low, medium, high);
 }
 
-// count of the account's OWN self-sponsored entries the demolition will release
-// on close. Only claimable self-sponsored CBs count (unclaimable ones aren't
-// released). num_sponsoring beyond this is foreign sponsorship that blocks.
+// sponsorships the close releases on its own. an account cannot sponsor its own
+// trustlines, offers, signers or data entries (begin_sponsoring with itself as
+// the sponsored id is op_malformed), so the only entries in num_sponsoring the
+// close frees are claimable balances this account created with itself as a
+// claimant, and only those it can claim and actually claims. claimableBalanceIds
+// is the user's claim selection with the batcher's meaning: undefined claims
+// every claimable balance.
 export function computeCoverableSponsorships(
   accountId: string,
-  entries: {
-    readonly balances: readonly AuditBalance[];
-    readonly offers: readonly OfferEntry[];
-    readonly signers: readonly AuditSigner[];
-    readonly claimableBalances: readonly ClaimableBalanceEntry[];
-    readonly data: readonly DataEntry[];
-  },
+  claimableBalances: readonly ClaimableBalanceEntry[],
+  claimableBalanceIds?: readonly string[],
 ): number {
-  // horizon's account record carries no per-data-entry sponsor field, so we
-  // can't tell which data entries are self-sponsored. The demolition deletes
-  // every data entry on close, releasing any self-sponsorship they carry, so
-  // count them all as coverable. The Math.min clamp against num_sponsoring at
-  // the call site absorbs any overcount from non-self-sponsored data entries.
-  return (
-    entries.balances.filter((b) => b.sponsor === accountId).length +
-    entries.offers.filter((o) => o.sponsor === accountId).length +
-    entries.signers.filter((s) => s.sponsor === accountId).length +
-    entries.claimableBalances.filter((cb) => cb.sponsor === accountId && cb.claimableNow).length +
-    entries.data.length
-  );
+  const selected = claimableBalanceIds === undefined ? null : new Set(claimableBalanceIds);
+  return claimableBalances.filter(
+    (cb) =>
+      cb.sponsor === accountId &&
+      cb.claimableNow === true &&
+      (selected === null || selected.has(cb.id)),
+  ).length;
 }
 
+// flag and sponsorship check stored on the audit record, assuming every
+// claimable balance is claimed. assessMergeability is the full pre-merge check.
 export function computeMergeability(flags: AuditFlags, sponsorship: SponsorshipInfo): Mergeability {
   if (flags.authImmutable) {
     return { mergeable: false, reason: "AUTH_IMMUTABLE" };
   }
-  // only FOREIGN sponsorships block: the account's self-sponsored entries are
-  // released automatically when the demolition removes/claims them.
   const foreign = sponsorship.numSponsoring - sponsorship.coverable;
   if (foreign > 0) {
-    return {
-      mergeable: false,
-      reason: "IS_SPONSOR",
-      detail: `Account sponsors ${foreign} ledger ${
-        foreign === 1 ? "entry" : "entries"
-      } for other accounts that must be resolved before it can be merged.`,
-    };
+    return { mergeable: false, reason: "IS_SPONSOR", detail: foreignSponsorDetail(foreign) };
   }
   return { mergeable: true };
+}
+
+function foreignSponsorDetail(foreign: number): string {
+  return `Account sponsors ${foreign} ledger ${
+    foreign === 1 ? "entry" : "entries"
+  } for other accounts that must be resolved before it can be merged.`;
+}
+
+export type MergeBlockReason =
+  "AUTH_IMMUTABLE" | "IS_SPONSOR" | "FROZEN_TRUSTLINE" | "SEQNUM_TOO_FAR";
+
+export type MergeAssessment =
+  | { readonly mergeable: true }
+  | { readonly mergeable: false; readonly reason: MergeBlockReason; readonly detail: string };
+
+export interface MergeAssessmentOptions {
+  // the ledger the audit was read against (AccountAuditResult.ledger)
+  readonly ledger: LedgerClock;
+  // the user's claim selection; undefined claims every claimable balance
+  readonly claimableBalanceIds?: readonly string[];
+  // classic transactions this account submits up to and including the one that
+  // carries account_merge. each consumes one sequence number.
+  readonly transactionsBeforeMerge: number;
+}
+
+// a positive credit balance on a trustline the issuer has deauthorized (or left
+// authorized to maintain liabilities only) cannot be paid, path-paid or sent back
+// to the issuer, and the trustline cannot be removed while it holds a balance
+export function isFrozenBalance(balance: AuditBalance): boolean {
+  return (
+    balance.asset.kind === "credit" && balance.isAuthorized === false && isPositive(balance.amount)
+  );
+}
+
+// the full pre-merge check, run at preview and again on a fresh audit right
+// before the merge is signed. returns the first blocker in the order a user has
+// to resolve them.
+export function assessMergeability(
+  audit: AccountAudit,
+  options: MergeAssessmentOptions,
+): MergeAssessment {
+  if (!Number.isInteger(options.transactionsBeforeMerge) || options.transactionsBeforeMerge < 1) {
+    throw new RangeError(
+      `assessMergeability: transactionsBeforeMerge must be a positive integer; got ${options.transactionsBeforeMerge}`,
+    );
+  }
+  if (audit.flags.authImmutable) {
+    return {
+      mergeable: false,
+      reason: "AUTH_IMMUTABLE",
+      detail: "The account has AUTH_IMMUTABLE set, and the network never merges such an account.",
+    };
+  }
+
+  const frozen = audit.balances.filter(isFrozenBalance);
+  if (frozen.length > 0) {
+    const names = frozen
+      .map((b) =>
+        b.asset.kind === "credit" ? `${b.amount} ${b.asset.code} (${b.asset.issuer})` : "",
+      )
+      .join(", ");
+    return {
+      mergeable: false,
+      reason: "FROZEN_TRUSTLINE",
+      detail:
+        `Frozen by the issuer: ${names}. A frozen balance cannot be sent or returned, and its ` +
+        `trustline cannot be removed. Ask the issuer to unfreeze it or claw it back.`,
+    };
+  }
+
+  const coverable = Math.min(
+    computeCoverableSponsorships(
+      audit.accountId,
+      audit.claimableBalances,
+      options.claimableBalanceIds,
+    ),
+    audit.sponsorship.numSponsoring,
+  );
+  const foreign = audit.sponsorship.numSponsoring - coverable;
+  if (foreign > 0) {
+    return { mergeable: false, reason: "IS_SPONSOR", detail: foreignSponsorDetail(foreign) };
+  }
+
+  // core refuses account_merge with ACCOUNT_MERGE_SEQNUM_TOO_FAR when the source
+  // sequence, after the merge transaction consumed its own number, is at or above
+  // (applying ledger << 32). the merge applies in a ledger after the latest
+  // closed one, so latest + 1 is the lowest ledger it can land in.
+  const seqAtMerge = BigInt(audit.sequence) + BigInt(options.transactionsBeforeMerge);
+  const firstApplyLedger = BigInt(options.ledger.sequence) + 1n;
+  if (seqAtMerge >= firstApplyLedger << 32n) {
+    const mergeableFrom = (seqAtMerge >> 32n) + 1n;
+    const wait = mergeableFrom - firstApplyLedger;
+    return {
+      mergeable: false,
+      reason: "SEQNUM_TOO_FAR",
+      detail:
+        `The account's sequence number was bumped ahead of the network, which refuses to ` +
+        `merge it before ledger ${mergeableFrom} (${wait} ledgers from now, ` +
+        `${describeLedgerWait(wait)}).`,
+    };
+  }
+
+  return { mergeable: true };
+}
+
+// ledgers close about every 5 to 6 seconds, so this is a rough estimate only
+function describeLedgerWait(ledgers: bigint): string {
+  const hours = (ledgers * 6n) / 3600n;
+  if (hours < 1n) return "under an hour at about 6 seconds per ledger";
+  if (hours < 48n) return `roughly ${hours} hours at about 6 seconds per ledger`;
+  return `roughly ${hours / 24n} days at about 6 seconds per ledger`;
+}
+
+function isPositive(amount: string): boolean {
+  for (const ch of amount) if (ch >= "1" && ch <= "9") return true;
+  return false;
 }
