@@ -18,6 +18,10 @@ export interface SimulationDeps {
   readonly userPublicKey: string;
   readonly fetchSourceAccount: (publicKey: string) => Promise<Horizon.AccountResponse>;
   readonly simulateFn?: (server: rpc.Server, tx: Transaction) => Promise<SimulationResult>;
+  // per-operation fee the classic batches are priced at. The executor bids a
+  // surge-aware base, so callers that know it pass it; otherwise the network
+  // minimum (BASE_FEE) is used and the figure is a lower bound.
+  readonly classicFeePerOp?: number;
 }
 
 // simulate one node. throws on structural issues or simulation failure
@@ -37,10 +41,7 @@ async function simulateSorobanNode(
 ): Promise<SimulationOutcome> {
   const tx = getSorobanTransaction(node);
   if (!tx) {
-    throw new Error(
-      `simulateNode: Soroban node "${node.id}" (${node.kind}) has no built transaction; ` +
-        "attach metadata.transaction before simulating",
-    );
+    throw new NodeNotBuiltError(node);
   }
   const simulateFn = deps.simulateFn ?? simulate;
   const result = await simulateFn(deps.server, tx);
@@ -55,6 +56,7 @@ async function simulateSorobanNode(
     kind: "soroban",
     retval: result.retval,
     minResourceFee: result.minResourceFee,
+    maxFee: tx.fee,
     transactionData: result.transactionData,
     latestLedger: result.latestLedger,
     auth: result.auth,
@@ -119,18 +121,19 @@ async function simulateFinalClassicTx(
   }
   // In-memory validation: actually BUILD each batch's classic envelope. A synthetic
   // account (sequence 0) suffices because this is structural well-formedness, not a
-  // submit — buildClassicTransaction throws on an empty/malformed op set or a total
+  // submit: buildClassicTransaction throws on an empty/malformed op set or a total
   // fee over the u32 ceiling, so a doomed classic close surfaces at preview time
   // instead of xdr:"" hiding it. The executor rebuilds against live account state.
   const source = new Account(deps.userPublicKey, "0") as unknown as Horizon.AccountResponse;
-  let firstTx: Transaction | undefined;
+  const feePerOp = deps.classicFeePerOp ?? Number.parseInt(BASE_FEE, 10);
+  const built: Transaction[] = [];
   try {
     for (const batch of batches) {
-      const built = buildClassicTransaction(batch, source, deps.network).transaction;
-      if ("innerTransaction" in built) {
+      const tx = buildClassicTransaction(batch, source, deps.network, feePerOp).transaction;
+      if ("innerTransaction" in tx) {
         throw new Error("buildClassicTransaction returned a fee-bump transaction unexpectedly");
       }
-      if (firstTx === undefined) firstTx = built;
+      built.push(tx);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -140,12 +143,14 @@ async function simulateFinalClassicTx(
       msg,
     );
   }
-  const tx = firstTx!;
+  // a multi-batch close signs and pays for every batch, so the counts and the fee
+  // cover all of them
   return {
     kind: "classic",
-    xdr: tx.toEnvelope().toXdr("base64"), // the real built envelope, not ""
-    operationCount: tx.operations.length,
-    estimatedFee: tx.fee, // real total fee from the built envelope
+    xdr: built[0]!.toEnvelope().toXdr("base64"),
+    operationCount: built.reduce((n, tx) => n + tx.operations.length, 0),
+    estimatedFee: built.reduce((sum, tx) => sum + BigInt(tx.fee), 0n).toString(),
+    transactionCount: built.length,
   };
 }
 
@@ -156,7 +161,7 @@ async function simulateMediatorForward(
   // The mediator forward is exactly one payment + one accountMerge, built and
   // signed server-side against the mediator's live sequence at submit time (its
   // envelope can't be reproduced here without the flow token). 2 ops is the fixed,
-  // known structure — not a guess — but validate the metadata carries what the
+  // known structure, not a guess, but validate the metadata carries what the
   // forward needs so a malformed node fails at preview, not mid-execution.
   const md = node.metadata;
   if (!md.mediatorPublicKey || !md.ultimateDestination || !md.flowToken) {
@@ -172,7 +177,28 @@ async function simulateMediatorForward(
     xdr: "",
     operationCount: FORWARD_OP_COUNT,
     estimatedFee: (Number.parseInt(BASE_FEE, 10) * FORWARD_OP_COUNT).toString(),
+    transactionCount: 1,
   };
+}
+
+// a soroban node reached simulation without a built transaction. When hydration
+// deferred it (it runs after steps that haven't happened yet), it isn't broken:
+// it is built at execute time, and `deferred` carries why the preview build failed.
+export class NodeNotBuiltError extends Error {
+  readonly nodeId: string;
+  readonly deferred: PlanNode["deferred"];
+  constructor(node: PlanNode) {
+    super(
+      node.deferred
+        ? `simulateNode: Soroban node "${node.id}" (${node.kind}) has no built transaction yet; ` +
+            `it is built after ${node.deferred.after.join(", ")} confirm (${node.deferred.reason})`
+        : `simulateNode: Soroban node "${node.id}" (${node.kind}) has no built transaction; ` +
+            "attach metadata.transaction before simulating",
+    );
+    this.name = "NodeNotBuiltError";
+    this.nodeId = node.id;
+    this.deferred = node.deferred;
+  }
 }
 
 export class SimulationFailedError extends Error {

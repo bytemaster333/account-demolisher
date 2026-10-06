@@ -4,7 +4,7 @@
 import type { rpc as RpcNS, Transaction, xdr as XdrNS } from "@stellar/stellar-sdk";
 
 import type { AssetIdentifier } from "@/lib/types/account";
-import type { ClassicBatch, ClassicMemo } from "@/lib/types/plan";
+import type { ClassicBatch, ClassicMemo, ReferenceQuote } from "@/lib/types/plan";
 
 // soroban nodes carry the full simulation response; classic nodes
 // just confirm well-formedness and emit envelope xdr
@@ -13,6 +13,8 @@ export type SimulationOutcome =
       readonly kind: "soroban";
       readonly retval: XdrNS.ScVal | null;
       readonly minResourceFee: string;
+      // the fee the built transaction authorizes: inclusion bid plus resource fee
+      readonly maxFee: string;
       readonly transactionData: RpcNS.Api.SimulateTransactionSuccessResponse["transactionData"];
       readonly latestLedger: number;
       readonly auth: readonly XdrNS.SorobanAuthorizationEntry[];
@@ -20,9 +22,11 @@ export type SimulationOutcome =
     }
   | {
       readonly kind: "classic";
+      // envelope of the first transaction; the counts and fee cover every batch
       readonly xdr: string;
       readonly operationCount: number;
       readonly estimatedFee: string;
+      readonly transactionCount: number;
     };
 
 export type PlanNodeStatus =
@@ -53,6 +57,9 @@ export interface PlanNodeBase {
   simulated?: SimulationOutcome;
   executed?: { readonly txHash: string; readonly ledger: number };
   error?: string;
+  // set by preview hydration when a step that runs after other steps could not
+  // be built against today's state; it is built at execute time once they land
+  deferred?: { readonly after: readonly string[]; readonly reason: string };
 }
 
 export interface RevokeAllowanceMetadata {
@@ -116,20 +123,33 @@ export interface ClaimBlendEmissionsMetadata {
 export interface ClaimAquariusRewardsMetadata {
   readonly kind: "ClaimAquariusRewards";
   readonly poolIndex: string;
+  // pool_index is only unique within a token set, so the pool is (tokens, index)
+  readonly tokens: readonly string[];
   readonly transaction?: Transaction;
 }
 
 export interface ConvertSorobanToXLMMetadata {
   readonly kind: "ConvertSorobanToXLM";
   readonly asset: AssetIdentifier;
-  // smallest-units amount, normalized by the source adapter
+  // smallest-units amount. Hydration replaces it with the live balance, so tokens
+  // credited by earlier exits are swapped too.
   readonly amount: bigint;
+  // the user confirmed selling although the swap is over the price-impact cap or
+  // could not be priced against a reference trade
+  readonly priceImpactAccepted?: boolean;
+  // what the built swap expects, the floor it signs, and the measured impact
+  readonly quote?: {
+    readonly expectedOut: bigint;
+    readonly minOut: bigint;
+    readonly priceImpactBps: number | null;
+  };
   readonly transaction?: Transaction;
 }
 
 export interface TransferAsIsMetadata {
   readonly kind: "TransferAsIs";
   readonly asset: AssetIdentifier;
+  // smallest-units amount; hydration replaces it with the live balance
   readonly amount: bigint;
   readonly destination: string;
   readonly transaction?: Transaction;
@@ -148,10 +168,16 @@ export interface FinalClassicTxMetadata {
   readonly batches: readonly ClassicBatch[];
   readonly destination: string;
   readonly useMediator: boolean;
-  // forwarded into batchClassicDemolition during execute-time re-batching
+  // forwarded into batchClassicDemolition during execute-time re-batching. The
+  // generator always sets the reviewed claim list, so an execute-time audit can
+  // only claim balances the user saw.
   readonly claimableBalanceIds?: readonly string[];
   readonly returnToIssuerAssetKeys?: readonly string[];
   readonly sendToDestinationAssetKeys?: readonly string[];
+  readonly acceptedPriceImpactAssetKeys?: readonly string[];
+  // reference quotes shown at review, per pathKey; a re-quote far below them is
+  // refused rather than signed
+  readonly reviewedReferenceQuotes?: Readonly<Record<string, ReferenceQuote>>;
   readonly userFallbackAddress?: string;
   readonly mediatorPublicKey?: string;
   // deposit memo for a DIRECT (non-mediator) merge to a memo-required destination.
@@ -357,6 +383,32 @@ export function topologicalOrder(tree: PlanTree): readonly PlanNode[] {
     );
   }
   return order;
+}
+
+// contract ids of the tokens the plan's DeFi exits pay into the account, in plan
+// order. A balance of one of these still there at the merge (and not a classic
+// asset's SAC) is the user's exit proceeds and would be deleted with the
+// account, so the merge guard re-reads them. Airdropped held tokens are not
+// listed: their sweep is best-effort and must not be able to block the close.
+export function planExitPayoutTokens(tree: PlanTree): readonly string[] {
+  const out = new Set<string>();
+  for (const node of tree.allNodes.values()) {
+    switch (node.kind) {
+      case "WithdrawAquarius":
+        for (const token of node.metadata.tokens) out.add(token);
+        break;
+      case "WithdrawSoroswapLp":
+        out.add(node.metadata.tokenA);
+        out.add(node.metadata.tokenB);
+        break;
+      case "WithdrawBlend":
+        out.add(node.metadata.asset);
+        break;
+      default:
+        break;
+    }
+  }
+  return [...out];
 }
 
 // true for soroban-touching kinds; routes simulation in simulator.ts

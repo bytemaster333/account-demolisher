@@ -1,6 +1,7 @@
-// walks the plan tree and attaches an unsigned transaction to every soroban
+// walks the plan tree and attaches an unsigned transaction to every soroban node
 
 import {
+  Account,
   Asset,
   scValToNative,
   type Horizon,
@@ -25,10 +26,15 @@ import {
 } from "@/lib/adapters/fxdao/prev-key";
 import { getFxDAOVaultsContractIdForNetwork } from "@/lib/adapters/fxdao/contracts";
 import { buildRevoke } from "@/lib/soroban/allowances";
-import { buildTransfer } from "@/lib/soroban/sep41";
+import { balance as readTokenBalance, buildTransfer } from "@/lib/soroban/sep41";
 import { simulate } from "@/lib/soroban/simulate";
 import { applySlippageMin, resolveConfiguredSlippageBps } from "@/lib/safety/slippage";
 import type { AssetIdentifier } from "@/lib/types/account";
+import {
+  MAX_PRICE_IMPACT_BPS,
+  priceImpactBps,
+  referenceTradeAmount,
+} from "@/lib/plan/price-impact";
 
 import type { PlanNode, PlanTree } from "./tree";
 import { topologicalOrder } from "./tree";
@@ -36,6 +42,9 @@ import { topologicalOrder } from "./tree";
 export interface HydrationFailure {
   readonly nodeId: string;
   readonly reason: string;
+  // the node runs after other steps, so this failure against today's state is
+  // not final: the node stays pending and is built at execute time
+  readonly deferred: boolean;
 }
 
 export interface HydrationDeps {
@@ -58,10 +67,16 @@ export interface HydrationAdapterOverrides {
   readonly findPrevVaultKey?: typeof defaultFindPrevVaultKey;
   readonly buildSwapToXLM?: typeof buildSwapToXLM;
   readonly buildTransfer?: typeof buildTransfer;
+  readonly readTokenBalance?: typeof readTokenBalance;
 }
 
-// per-node failures populate `failures[]` and set node.status = "failed";
-// only `deps` misuse throws. idempotent: nodes with a transaction are skipped
+// per-node failures populate `failures[]`. A node with no dependencies is marked
+// "failed". A node that runs after other steps (a collateral withdraw behind its
+// repay, a sweep behind the exits that pay it) is simulated here against state
+// those steps haven't changed yet, so its failure only defers it: it stays
+// "pending" with node.deferred set and is built at execute time once they land.
+// A swap refused for its price impact fails either way: it needs the user's
+// confirmation, which no earlier step provides. only `deps` misuse throws. idempotent: nodes with a transaction are skipped
 export async function hydratePlanTransactions(
   tree: PlanTree,
   userPublicKey: string,
@@ -76,13 +91,8 @@ export async function hydratePlanTransactions(
 
   const failures: HydrationFailure[] = [];
 
-  // each builder reads + increments its own sequence copy, so caching is safe
-  let sourceAccount: Horizon.AccountResponse | null = null;
-  const getSourceAccount = async (): Promise<Horizon.AccountResponse> => {
-    if (sourceAccount !== null) return sourceAccount;
-    sourceAccount = await deps.fetchSourceAccount(userPublicKey);
-    return sourceAccount;
-  };
+  // one account read for the whole pass; every build gets its own copy of it
+  const getSourceAccount = sourceAccountCopies(() => deps.fetchSourceAccount(userPublicKey));
 
   for (const node of topologicalOrder(tree)) {
     if (nodeHasTransaction(node)) continue;
@@ -94,11 +104,19 @@ export async function hydratePlanTransactions(
 
     try {
       await hydrateNode(node, userPublicKey, deps, getSourceAccount);
+      delete node.deferred;
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      failures.push({ nodeId: node.id, reason });
-      node.status = "failed";
-      node.error = reason;
+      // a price-impact refusal waits on the user's confirmation, not on an
+      // earlier step, so it never defers
+      const deferred = node.dependencies.length > 0 && !(err instanceof PriceImpactRefusedError);
+      failures.push({ nodeId: node.id, reason, deferred });
+      if (deferred) {
+        node.deferred = { after: node.dependencies, reason };
+      } else {
+        node.status = "failed";
+        node.error = reason;
+      }
     }
   }
 
@@ -110,7 +128,7 @@ export async function hydratePlanTransactions(
 // timebound. Called at EXECUTE time immediately before signing, so a plan that
 // sat in the review step for minutes is not submitted carrying the preview-time
 // sequence/footprint/5-minute timebound (which would fail as tx_bad_seq, a stale
-// footprint, or an expired tx). No-op for classic/forward nodes — the executor
+// footprint, or an expired tx). No-op for classic/forward nodes: the executor
 // rebuilds the FinalClassicTx from fresh state itself and the MediatorForward is
 // re-minted per run. Throws if the rebuild's simulation fails (a genuinely broken
 // step surfaces its real error rather than submitting a stale tx).
@@ -121,10 +139,33 @@ export async function rebuildSorobanNodeTransaction(
 ): Promise<void> {
   if (node.kind === "FinalClassicTx" || node.kind === "MediatorForward") return;
   clearTransaction(node);
-  // one fresh account read per rebuild: the builder increments its own sequence
-  // copy off the current on-chain value, so the resulting tx carries seq+1.
-  const sourceAccount = await deps.fetchSourceAccount(userPublicKey);
-  await hydrateNode(node, userPublicKey, deps, async () => sourceAccount);
+  await hydrateNode(
+    node,
+    userPublicKey,
+    deps,
+    sourceAccountCopies(() => deps.fetchSourceAccount(userPublicKey)),
+  );
+  delete node.deferred;
+}
+
+// TransactionBuilder.build() increments the source account's sequence in place,
+// and the probe-then-build kinds below build twice. Sharing one AccountResponse
+// made the signed tx carry seq+2 (tx_bad_seq on every submit). So the account is
+// loaded once and every build gets a fresh copy pinned to the loaded sequence,
+// which makes each built tx carry exactly on-chain seq + 1.
+function sourceAccountCopies(
+  load: () => Promise<Horizon.AccountResponse>,
+): () => Promise<Horizon.AccountResponse> {
+  let account: Horizon.AccountResponse | null = null;
+  return async () => {
+    account ??= await load();
+    // builders only use the TransactionSource surface (accountId, sequenceNumber,
+    // incrementSequenceNumber), which Account provides
+    return new Account(
+      account.accountId(),
+      account.sequenceNumber(),
+    ) as unknown as Horizon.AccountResponse;
+  };
 }
 
 async function hydrateNode(
@@ -190,13 +231,14 @@ async function hydrateNode(
     case "ClaimBlendEmissions": {
       const sourceAccount = await getSourceAccount();
       const fn = a.buildExitSequence ?? buildExitSequence;
-      const position = synthesizeBlendPositionForClaim(node.metadata);
-      const deps2: Parameters<typeof fn>[4] = {
-        // force a non-empty reserve-id list; the pool clamps to actual emissions
-        claimReserveIds:
-          node.metadata.reserveTokenIds.length > 0 ? node.metadata.reserveTokenIds : [0],
-      };
-      const steps = await fn(deps.network, position, userPublicKey, sourceAccount, deps2);
+      // the generator only emits a claim for discovered emission reserves
+      if (node.metadata.reserveTokenIds.length === 0) {
+        throw new Error("ClaimBlendEmissions: no reserve token ids to claim");
+      }
+      const position = synthesizeBlendPositionForPool(node.metadata);
+      const steps = await fn(deps.network, position, userPublicKey, sourceAccount, {
+        claimReserveIds: node.metadata.reserveTokenIds,
+      });
       const step = steps.find((s) => s.kind === "claim_emissions");
       if (!step || step.kind !== "claim_emissions") {
         throw new Error(
@@ -210,7 +252,7 @@ async function hydrateNode(
     case "BackstopQueue": {
       const sourceAccount = await getSourceAccount();
       const fn = a.buildExitSequence ?? buildExitSequence;
-      const position = synthesizeBlendPositionForBackstop(node.metadata);
+      const position = synthesizeBlendPositionForPool(node.metadata);
       const steps = await fn(deps.network, position, userPublicKey, sourceAccount, {
         backstopShares: node.metadata.shares,
       });
@@ -225,7 +267,6 @@ async function hydrateNode(
     }
 
     case "WithdrawAquarius": {
-      const sourceAccount = await getSourceAccount();
       if (node.metadata.tokens.length === 0) {
         throw new Error(
           `WithdrawAquarius: metadata.tokens is empty; cannot construct withdraw call without reserve token order`,
@@ -244,7 +285,7 @@ async function hydrateNode(
           poolIndex,
           shareAmount: node.metadata.shareAmount,
           minAmounts: node.metadata.tokens.map(() => 0n),
-          sourceAccount,
+          sourceAccount: await getSourceAccount(),
           network: deps.network,
         },
         { server: deps.rpc },
@@ -258,7 +299,7 @@ async function hydrateNode(
           poolIndex,
           shareAmount: node.metadata.shareAmount,
           minAmounts,
-          sourceAccount,
+          sourceAccount: await getSourceAccount(),
           network: deps.network,
         },
         { server: deps.rpc },
@@ -270,21 +311,21 @@ async function hydrateNode(
     case "ClaimAquariusRewards": {
       const sourceAccount = await getSourceAccount();
       const fn = a.aquariusClaim ?? aquariusClaim;
-      const tx = await fn(
-        {
-          user: userPublicKey,
-          poolIndex: poolIndexHexToBytes(node.metadata.poolIndex),
-          sourceAccount,
-          network: deps.network,
-        },
-        { server: deps.rpc },
-      );
+      // the router's claim takes the pool's tokens as well as its index; the
+      // tokens ride along so the adapter can encode them
+      const claimArgs: Parameters<typeof fn>[0] & { readonly tokens: readonly string[] } = {
+        user: userPublicKey,
+        tokens: node.metadata.tokens,
+        poolIndex: poolIndexHexToBytes(node.metadata.poolIndex),
+        sourceAccount,
+        network: deps.network,
+      };
+      const tx = await fn(claimArgs, { server: deps.rpc });
       setTransaction(node, tx);
       return;
     }
 
     case "WithdrawSoroswapLp": {
-      const sourceAccount = await getSourceAccount();
       const fn = a.removeLiquidityByContractIds ?? removeLiquidityByContractIds;
       const deadline = Math.floor(Date.now() / 1000) + 300; // 5 min
       // First build+simulate with zero floors to read remove_liquidity's expected
@@ -302,7 +343,7 @@ async function hydrateNode(
           deadline,
           network: deps.network,
         },
-        { server: deps.rpc, sourceAccount },
+        { server: deps.rpc, sourceAccount: await getSourceAccount() },
       );
       const expected = await readExpectedAmounts(deps.rpc, probe, 2);
       const tx = await fn(
@@ -316,7 +357,7 @@ async function hydrateNode(
           deadline,
           network: deps.network,
         },
-        { server: deps.rpc, sourceAccount },
+        { server: deps.rpc, sourceAccount: await getSourceAccount() },
       );
       setTransaction(node, tx);
       return;
@@ -351,35 +392,57 @@ async function hydrateNode(
     }
 
     case "ConvertSorobanToXLM": {
-      const sourceAccount = await getSourceAccount();
       const fn = a.buildSwapToXLM ?? buildSwapToXLM;
       const deadline = Math.floor(Date.now() / 1000) + 300; // 5 min
-      const amountIn = node.metadata.amount.toString();
-      // First build+simulate with a zero floor to read the router's expected XLM
-      // output (swap_exact_tokens_for_tokens returns the amount vector along the
-      // path; the last element is the XLM out), then rebuild with a slippage-
-      // bounded minimum. Refuse a swap the router prices at zero output rather
-      // than sign the token away for free — the caller then leaves it in place.
-      const probe = await fn(
-        {
-          assetIn: node.metadata.asset,
-          amountIn,
-          amountOutMin: "0",
-          userAddress: userPublicKey,
-          deadline,
-          network: deps.network,
-        },
-        { server: deps.rpc, sourceAccount },
-      );
-      const expected = await readExpectedAmounts(deps.rpc, probe, 2); // [amountIn, amountOut]
-      const expectedOut = expected[1]!;
-      if (expectedOut <= 0n) {
+      const held = await liveTokenBalance(node, userPublicKey, deps);
+      const amountIn = held.toString();
+      // swap_exact_tokens_for_tokens returns the amount vector along the path, so a
+      // zero-floor probe reads the router's expected XLM out; the signed swap then
+      // carries a slippage-bounded minimum.
+      const quoteSwap = async (amount: string): Promise<{ in: bigint; out: bigint }> => {
+        const probe = await fn(
+          {
+            assetIn: node.metadata.asset,
+            amountIn: amount,
+            amountOutMin: "0",
+            userAddress: userPublicKey,
+            deadline,
+            network: deps.network,
+          },
+          { server: deps.rpc, sourceAccount: await getSourceAccount() },
+        );
+        const [quotedIn, quotedOut] = await readExpectedAmounts(deps.rpc, probe, 2);
+        return { in: quotedIn!, out: quotedOut! };
+      };
+      const full = await quoteSwap(amountIn);
+      // refuse a swap the router prices at zero output rather than sign the
+      // token away for free; the token is then left in place
+      if (full.out <= 0n) {
         throw new Error(
           `ConvertSorobanToXLM: router quoted zero XLM out for ${amountIn}; ` +
             `refusing to swap the token away for free`,
         );
       }
-      const amountOutMin = applySlippageMin(expectedOut.toString(), slippageBps);
+      // the whole balance goes through one pair, so its rate is checked against a
+      // small reference trade in the same pair before anything is signed
+      const reference = await quoteSwap(referenceTradeAmount(held).toString());
+      const impact = priceImpactBps(full.in, full.out, reference.in, reference.out);
+      if (node.metadata.priceImpactAccepted !== true) {
+        if (impact === null) {
+          throw new PriceImpactRefusedError(
+            `ConvertSorobanToXLM: the router can't price a reference trade for this token, ` +
+              `so the swap's price impact is unknown; confirm the conversion to sell it anyway`,
+          );
+        }
+        if (impact > MAX_PRICE_IMPACT_BPS) {
+          throw new PriceImpactRefusedError(
+            `ConvertSorobanToXLM: selling the whole balance has a ${formatBps(impact)} price ` +
+              `impact, over the ${formatBps(MAX_PRICE_IMPACT_BPS)} cap; confirm the conversion ` +
+              `to sell it anyway`,
+          );
+        }
+      }
+      const amountOutMin = applySlippageMin(full.out.toString(), slippageBps);
       const tx = await fn(
         {
           assetIn: node.metadata.asset,
@@ -389,25 +452,29 @@ async function hydrateNode(
           deadline,
           network: deps.network,
         },
-        { server: deps.rpc, sourceAccount },
+        { server: deps.rpc, sourceAccount: await getSourceAccount() },
       );
+      const md = node.metadata as { amount: bigint; quote?: unknown };
+      md.amount = held;
+      md.quote = { expectedOut: full.out, minOut: BigInt(amountOutMin), priceImpactBps: impact };
       setTransaction(node, tx);
       return;
     }
 
     case "TransferAsIs": {
-      const sourceAccount = await getSourceAccount();
       const fn = a.buildTransfer ?? buildTransfer;
       const contractId = resolveContractIdForAsset(node.metadata.asset, deps.network);
+      const held = await liveTokenBalance(node, userPublicKey, deps);
       const tx = await fn(
         deps.rpc,
         contractId,
         userPublicKey,
         node.metadata.destination,
-        node.metadata.amount,
+        held,
         deps.network,
-        sourceAccount,
+        await getSourceAccount(),
       );
+      (node.metadata as { amount: bigint }).amount = held;
       setTransaction(node, tx);
       return;
     }
@@ -506,6 +573,36 @@ export function resolveContractIdForAsset(asset: AssetIdentifier, network: Netwo
   }
 }
 
+// the account's balance of a swept token right now. Exits that ran earlier in the
+// close may have paid more of it in, so the sweep moves what is there, not the
+// amount seen at discovery.
+async function liveTokenBalance(
+  node: Extract<PlanNode, { kind: "TransferAsIs" | "ConvertSorobanToXLM" }>,
+  userPublicKey: string,
+  deps: HydrationDeps,
+): Promise<bigint> {
+  const read = deps.adapters?.readTokenBalance ?? readTokenBalance;
+  const contractId = resolveContractIdForAsset(node.metadata.asset, deps.network);
+  const held = await read(deps.rpc, contractId, userPublicKey, userPublicKey, deps.network);
+  if (held <= 0n) {
+    throw new Error(`${node.kind}: the account holds none of token ${contractId} to move`);
+  }
+  return held;
+}
+
+// a conversion refused for its price impact (or an unpriceable reference). It
+// is built only once the user confirms selling at that price.
+export class PriceImpactRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PriceImpactRefusedError";
+  }
+}
+
+function formatBps(bps: number): string {
+  return `${(bps / 100).toFixed(2)}%`;
+}
+
 // re-simulate an already-assembled withdraw/remove_liquidity tx to read the
 // router's expected per-token output vector. returns exactly `count`
 // non-negative bigints. throws (rather than falling back to a zero floor) if
@@ -574,28 +671,9 @@ function synthesizeBlendPositionForWithdraw(metadata: {
   };
 }
 
-function synthesizeBlendPositionForClaim(metadata: {
-  readonly poolId: string;
-  readonly reserveTokenIds: readonly number[];
-}): BlendUserPositions {
-  // claimReserveIds on the deps overrides this anyway
-  void metadata;
-  return {
-    poolId: metadata.poolId,
-    poolName: metadata.poolId,
-    poolVersion: "V2",
-    liabilities: new Map(),
-    collateral: new Map(),
-    supply: new Map(),
-    emissions: new Map(),
-  };
-}
-
-function synthesizeBlendPositionForBackstop(metadata: {
-  readonly poolId: string;
-  readonly shares: bigint;
-}): BlendUserPositions {
-  void metadata;
+// the claim targets the reserve ids passed as claimReserveIds, and the backstop
+// queue its share amount, so both only need the pool
+function synthesizeBlendPositionForPool(metadata: { readonly poolId: string }): BlendUserPositions {
   return {
     poolId: metadata.poolId,
     poolName: metadata.poolId,

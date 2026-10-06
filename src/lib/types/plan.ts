@@ -40,12 +40,22 @@ export interface ClassicBatch {
   readonly memo?: ClassicMemo;
 }
 
+// a strict-send quote for a small slice of the same balance through the same
+// market (decimal strings, 7 places). Its rate is what a full-size conversion's
+// price impact is measured against.
+export interface ReferenceQuote {
+  readonly sourceAmount: string;
+  readonly destinationAmount: string;
+}
+
 // per-asset path map injected by the orchestrator. keys are "native" for
 // xlm or "<code>:<issuer>" for credit assets
 export interface PathResultRef {
   readonly destinationAmount: string;
   readonly path: readonly AssetIdentifier[];
   readonly sourceAmount: string;
+  // without a reference the conversion is unpriced and needs per-asset confirmation
+  readonly reference?: ReferenceQuote;
 }
 
 export interface BatchOptions {
@@ -58,17 +68,28 @@ export interface BatchOptions {
   // op_already_exists). The executor sets this on re-audit phases after the
   // funding op has landed.
   readonly mediatorAlreadyFunded?: boolean;
-  // user-opted-in cb ids. batcher emits a claim op for each id present in the audit
+  // reviewed claimable-balance selection; [] claims none. Left undefined, every
+  // collectable claimable-now balance is claimed (callers that showed the user a
+  // list must pass the reviewed ids). Self-sponsored claimable balances are always
+  // claimed: leaving one behind keeps num_sponsoring above zero and the merge fails.
   readonly claimableBalanceIds?: readonly string[];
+  // pathKey()s of assets the user confirmed selling although the conversion is
+  // over the price-impact cap or could not be priced against a reference quote
+  readonly acceptedPriceImpactAssetKeys?: readonly string[];
+  // reference quotes the user reviewed, per pathKey. A fresh reference that is
+  // worse by more than the slippage tolerance blocks the conversion until the
+  // user reviews the new price.
+  readonly reviewedReferenceQuotes?: Readonly<Record<string, ReferenceQuote>>;
   // pathKey()s of credit assets the user has explicitly consented to send back
-  // to their issuer when no XLM conversion path exists. Without consent, an
-  // un-routable balance is left in place (and blocks the merge) rather than
-  // being silently paid to the issuer.
+  // to their issuer. Without consent, a balance that can't be converted is left
+  // in place (and blocks the merge) rather than being silently paid to the
+  // issuer. An explicit choice wins over a market path found later.
   readonly returnToIssuerAssetKeys?: readonly string[];
-  // pathKey()s of un-routable credit assets the user chose to send to the merge
-  // destination instead of the issuer. Only valid when the destination already
-  // holds a trustline for the asset (checked at preview time); otherwise the
-  // payment would fail with op_no_trust.
+  // pathKey()s of credit assets the user chose to send to the merge destination.
+  // Only valid when the destination already holds a trustline for the asset
+  // (checked at preview time); otherwise the payment would fail with op_no_trust.
+  // Refused on a mediator close: the payment would reach the exchange's shared
+  // address without the deposit memo.
   readonly sendToDestinationAssetKeys?: readonly string[];
   // forwarded into the plan summary; the actual forward tx lives in the orchestrator
   readonly userFallbackAddress?: string;

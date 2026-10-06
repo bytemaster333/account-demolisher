@@ -15,7 +15,7 @@ export type AssetIdentifier =
   // a standalone SEP-41 token identified ONLY by its contract id (a custom token
   // transferred to the account, not a classic asset with a code:issuer form).
   // `symbol` is a best-effort display label read from the contract; it is never
-  // trusted for identity (a hostile token can lie) — identity is the contract id.
+  // trusted for identity (a hostile token can lie); identity is the contract id.
   | {
       readonly kind: "contract";
       readonly contractId: string;
@@ -76,7 +76,8 @@ export interface ClaimableBalanceEntry {
   readonly asset: AssetIdentifier;
   readonly amount: string;
   readonly sponsor: string;
-  // encoded predicate. evaluated against ledger close time to decide claimability
+  // the raw Horizon claimants array; each entry carries its own predicate, which
+  // filterClaimableNow evaluates for this account
   readonly predicate: unknown;
   readonly claimants: readonly string[];
   // whether the auditing account can claim this balance right now (predicate
