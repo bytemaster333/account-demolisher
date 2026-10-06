@@ -2,17 +2,25 @@
 // user sees before confirming in ./warnings.
 
 import { assign, setup } from "xstate";
+import { TransactionBuilder, type Operation } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import type { PlanTree } from "@/lib/plan/tree";
 import type { UnroutableCredit } from "@/lib/plan/classic-batcher";
+import type { SignerSnapshot } from "@/lib/multisig/bundle-freshness";
 import { classifyFailure, isRetryableFailure, type FailureKind } from "@/lib/orchestrator/failures";
 import type { PhaseReceipt } from "@/lib/orchestrator/journal";
 import { prepareTreeForExecution, previewBlockers } from "@/lib/orchestrator/retry";
+import { txHashHex } from "@/lib/orchestrator/submit";
 import { discoveryWarningFor } from "@/lib/orchestrator/warnings";
 import { discoverActor, type DiscoverInput } from "@/lib/orchestrator/actors/discover";
-import { previewActor, type PreviewInput } from "@/lib/orchestrator/actors/preview";
+import {
+  previewActor,
+  type EmissionForfeit,
+  type PreviewInput,
+  type RefusedConversion,
+} from "@/lib/orchestrator/actors/preview";
 import { executeActor, type ExecuteInput } from "@/lib/orchestrator/actors/execute";
 import type { AccountAudit } from "@/lib/types/account";
 import type { ClassicMemo, DemolishProgressEvent, DemolishResult } from "@/lib/types/plan";
@@ -24,7 +32,11 @@ import type { Connector } from "@/lib/wallet/connector";
 export { classifyFailure, isRetryableFailure, type FailureKind };
 export { previewBlockers, type PreviewBlocker } from "@/lib/orchestrator/retry";
 export { discoveryWarningFor, heldTokenDispositionWarnings } from "@/lib/orchestrator/warnings";
-export { fetchDestinationUsableKeys } from "@/lib/orchestrator/actors/preview";
+export {
+  fetchDestinationUsableKeys,
+  type EmissionForfeit,
+  type RefusedConversion,
+} from "@/lib/orchestrator/actors/preview";
 
 export interface PageFlowInput {
   readonly publicKey: string;
@@ -33,16 +45,25 @@ export interface PageFlowInput {
   readonly destination: string;
   readonly useMediator: boolean;
   readonly memo?: ClassicMemo;
-  readonly userFallbackAddress?: string;
+  // the reviewed claimable-balance ids; [] claims none. left undefined, every
+  // balance the close can collect is claimed.
   readonly selectedClaimableBalanceIds?: readonly string[];
   readonly returnToIssuerAssetKeys?: readonly string[];
   readonly sendToDestinationAssetKeys?: readonly string[];
+  // pathKey()s the user agreed to sell although the conversion is over the
+  // price-impact cap or could not be priced: "CODE:ISSUER" for a credit balance,
+  // "contract:C..." for a held token
+  readonly acceptedPriceImpactAssetKeys?: readonly string[];
+  // pools whose accrued backstop emissions the user agreed to leave unclaimed
+  // because the claim can't run (see ctx.emissionForfeits)
+  readonly forfeitBackstopEmissionPoolIds?: readonly string[];
   // standalone SEP-41 tokens the user opted in to sweep to the destination
   // (discovered tokens they ticked, plus any they added manually); none by default.
   readonly selectedHeldTokens?: readonly HeldToken[];
   // when true, opted-in held tokens are converted to XLM through the soroswap
   // router rather than transferred as-is. a token that can't be converted is
-  // sent as-is instead.
+  // sent as-is instead, unless it was refused for its price, which the user
+  // decides.
   readonly convertHeldTokensToXLM?: boolean;
   readonly positions?: ProtocolPositions;
   readonly allowances?: readonly AllowanceRecord[];
@@ -60,6 +81,12 @@ export type PageFlowRunInput = Omit<PageFlowInput, "connector"> & {
   readonly signerKind: Connector["kind"];
 };
 type StoredInput = PageFlowRunInput;
+
+// a collected multisig close and the signer set the relay checked it against
+export interface SignedBundle {
+  readonly signedXdr: string;
+  readonly snapshot: SignerSnapshot;
+}
 
 export interface PageFlowContext {
   readonly input: StoredInput | null;
@@ -81,6 +108,13 @@ export interface PageFlowContext {
   // technical detail behind the discovery warnings, for a collapsed section
   readonly discoveryDiagnostics: readonly string[];
   readonly unroutableCredits: readonly UnroutableCredit[];
+  // what the preview found that keeps the close from starting (mergeability,
+  // the BLND trustline, the exchange-forward funding), in words for the user
+  readonly reviewBlockers: readonly string[];
+  // held-token conversions refused for their price; each needs the user's choice
+  readonly refusedConversions: readonly RefusedConversion[];
+  // backstop emissions claims that can't run; each needs a forfeit acknowledgement
+  readonly emissionForfeits: readonly EmissionForfeit[];
   readonly tree: PlanTree | null;
   readonly progress: readonly DemolishProgressEvent[];
   readonly result: DemolishResult | null;
@@ -88,7 +122,7 @@ export interface PageFlowContext {
   // typed classification of `error`, driving recovery. null without a failure.
   readonly failureKind: FailureKind | null;
   // set when a multisig close's collected bundle is submitted (SUBMIT_BUNDLE)
-  readonly signedBundleXdr: string | null;
+  readonly signedBundle: SignedBundle | null;
   // best-effort steps that did not do what the plan asked
   readonly executionNotes: readonly string[];
   // classic phases that landed, including those of a close that did not finish
@@ -97,13 +131,30 @@ export interface PageFlowContext {
   readonly executionAbort: AbortController | null;
 }
 
+// the account and network the page showed when the user acted; an event for a
+// different run than the one the machine holds is refused
+export interface ExpectedRun {
+  readonly publicKey: string;
+  readonly networkId: string;
+}
+
 export type PageFlowEvent =
   | { type: "START"; input: PageFlowInput }
   // typed = the last-4 characters of the reviewed destination the user re-typed;
   // the machine guard re-checks it so a bare/forged CONFIRM can't execute
-  | { type: "CONFIRM"; typed: string }
-  // the multisig bundle path has the same typed-destination gate as CONFIRM
-  | { type: "SUBMIT_BUNDLE"; signedXdr: string; typed?: string }
+  | { type: "CONFIRM"; typed: string; expected: ExpectedRun }
+  // the multisig bundle path has the same gates as CONFIRM, and the bundle must
+  // be the request the link names (planId is its hash) and close this account
+  // into the reviewed destination
+  | {
+      type: "SUBMIT_BUNDLE";
+      signedXdr: string;
+      planId: string;
+      typed: string;
+      expected: ExpectedRun;
+      // the signer set the relay checked the signatures against (RelayPlan)
+      snapshot: SignerSnapshot;
+    }
   | { type: "CANCEL" }
   // the wallet currently connected; without one a retry can only rediscover
   | { type: "RETRY"; connector?: Connector | null }
@@ -123,12 +174,15 @@ const initialContext: PageFlowContext = {
   discoveryWarnings: [],
   discoveryDiagnostics: [],
   unroutableCredits: [],
+  reviewBlockers: [],
+  refusedConversions: [],
+  emissionForfeits: [],
   tree: null,
   progress: [],
   result: null,
   error: null,
   failureKind: null,
-  signedBundleXdr: null,
+  signedBundle: null,
   executionNotes: [],
   landedPhases: [],
   executionAbort: null,
@@ -140,16 +194,73 @@ function storeInput(input: PageFlowInput): StoredInput {
 }
 
 // everything that must be resolved before the close may start, in words for the
-// user: a required step that failed preview, and any defi protocol discovery
-// could not read. the merge guard refuses an unreadable protocol at merge time,
-// so confirming anyway would only unwind the other positions first.
+// user: a required step that failed preview, a balance the plan can't dispose
+// of, a conversion refused for its price, an emissions claim the user has not
+// agreed to forfeit, what the preview's own checks found, and any defi protocol
+// discovery could not read. confirming anyway would run the steps before the
+// merge and then stop at it.
 export function confirmBlockers(
-  context: Pick<PageFlowContext, "tree" | "positions">,
+  context: Pick<
+    PageFlowContext,
+    | "tree"
+    | "positions"
+    | "unroutableCredits"
+    | "reviewBlockers"
+    | "refusedConversions"
+    | "emissionForfeits"
+  >,
 ): readonly string[] {
+  const forfeitPools = new Set(context.emissionForfeits.map((f) => f.poolId));
   return [
-    ...previewBlockers(context.tree).map((b) => `${b.description}: ${b.error}`),
+    ...previewBlockers(context.tree)
+      // a claim the user can forfeit is listed once, with its own wording below
+      .filter((b) => !isForfeitable(context.tree, b.nodeId, forfeitPools))
+      .map((b) => `${b.description}: ${b.error}`),
+    ...context.unroutableCredits.map(
+      (c) => `${c.amount} ${c.code} can't be disposed of as planned (${creditReason(c)}).`,
+    ),
+    ...context.refusedConversions.map(
+      (r) =>
+        `Converting token ${r.contractId} was refused for its price (${r.reason}). Accept the price, send it as-is, or leave it out.`,
+    ),
+    ...context.emissionForfeits.map(
+      (f) =>
+        `The backstop emissions claim for pool ${f.poolId} can't run (${f.reason}). Confirm that you leave ${
+          f.accruedEmissions === null ? "the accrued" : formatBlnd(f.accruedEmissions)
+        } BLND unclaimed to continue.`,
+    ),
+    ...context.reviewBlockers,
     ...context.positions.errors.map((e) => discoveryWarningFor(e)),
   ];
+}
+
+function isForfeitable(tree: PlanTree | null, nodeId: string, pools: ReadonlySet<string>): boolean {
+  const node = tree?.allNodes.get(nodeId);
+  const poolId = (node?.metadata as { readonly poolId?: unknown } | undefined)?.poolId;
+  return (
+    (node?.kind as string | undefined) === "ClaimBackstopEmissions" &&
+    typeof poolId === "string" &&
+    pools.has(poolId)
+  );
+}
+
+function creditReason(c: UnroutableCredit): string {
+  switch (c.reason) {
+    case "no_path":
+      return "no market path to XLM; return it to its issuer or send it to your destination";
+    case "unpriced":
+      return "its price can't be checked against a reference quote; accept the price to sell it";
+    case "price_impact":
+      return `selling it all would move the price by ${((c.priceImpactBps ?? 0) / 100).toFixed(2)}%; accept that price to sell it`;
+    case "requote_worse":
+      return "the market price fell below the one you reviewed";
+  }
+}
+
+function formatBlnd(stroops: bigint): string {
+  const frac = (stroops % 10_000_000n).toString().padStart(7, "0").replace(/0+$/, "");
+  const whole = (stroops / 10_000_000n).toString();
+  return frac.length > 0 ? `${whole}.${frac}` : whole;
 }
 
 function typedMatches(context: PageFlowContext, typed: string | undefined): boolean {
@@ -162,11 +273,47 @@ function typedMatches(context: PageFlowContext, typed: string | undefined): bool
   );
 }
 
+function sameRun(context: PageFlowContext, expected: ExpectedRun | undefined): boolean {
+  return (
+    expected !== undefined &&
+    context.input !== null &&
+    expected.publicKey === context.input.publicKey &&
+    expected.networkId === context.input.network.id
+  );
+}
+
+// the collected bundle is the request the link names and does what was reviewed:
+// it closes this account into the reviewed destination, and every operation in
+// it acts on this account
+export function bundleMatchesReview(
+  signedXdr: string,
+  planId: string,
+  run: { readonly publicKey: string; readonly destination: string; readonly passphrase: string },
+): boolean {
+  let tx;
+  try {
+    tx = TransactionBuilder.fromXdr(signedXdr, run.passphrase);
+  } catch {
+    return false;
+  }
+  if ("innerTransaction" in tx) return false;
+  if (txHashHex(tx) !== planId) return false;
+  const sourceOf = (op: Operation) => (op as { readonly source?: string }).source ?? tx.source;
+  if (!tx.operations.every((op) => sourceOf(op) === run.publicKey)) return false;
+  const merge = tx.operations.find((op) => op.type === "accountMerge") as
+    Operation.AccountMerge | undefined;
+  return merge !== undefined && merge.destination === run.destination;
+}
+
 // what a failed discovery or preview leaves: nothing from an earlier plan may be
 // executed by a later RETRY
 const clearedPlan = {
   tree: null,
-  signedBundleXdr: null,
+  signedBundle: null,
+  unroutableCredits: [],
+  reviewBlockers: [],
+  refusedConversions: [],
+  emissionForfeits: [],
   progress: [],
   result: null,
   executionNotes: [],
@@ -185,23 +332,32 @@ export const pageFlowMachine = setup({
   },
   guards: {
     // the irreversible execute transition refuses unless the event carries the
-    // last 4 characters of the reviewed destination, a wallet is connected, and
-    // nothing in confirmBlockers is open. a CONFIRM dispatched outside the
-    // confirmation UI can't trigger the merge.
+    // last 4 characters of the reviewed destination and names the run on screen,
+    // a wallet is connected, and nothing in confirmBlockers is open. a CONFIRM
+    // dispatched outside the confirmation UI can't trigger the merge.
     confirmMatchesDestination: ({ context, event }) => {
       if (event.type !== "CONFIRM") return false;
       return (
         typedMatches(context, event.typed) &&
+        sameRun(context, event.expected) &&
         context.connector !== null &&
         confirmBlockers(context).length === 0
       );
     },
     bundleConfirmed: ({ context, event }) => {
       if (event.type !== "SUBMIT_BUNDLE") return false;
+      const i = context.input;
       return (
+        i !== null &&
         typedMatches(context, event.typed) &&
+        sameRun(context, event.expected) &&
         context.connector !== null &&
-        confirmBlockers(context).length === 0
+        confirmBlockers(context).length === 0 &&
+        bundleMatchesReview(event.signedXdr, event.planId, {
+          publicKey: i.publicKey,
+          destination: i.destination,
+          passphrase: i.network.passphrase,
+        })
       );
     },
     canResume: ({ context, event }) => {
@@ -229,7 +385,6 @@ export const pageFlowMachine = setup({
             audit: null,
             discoveryWarnings: [],
             discoveryDiagnostics: [],
-            unroutableCredits: [],
             error: null,
             failureKind: null,
             ...clearedPlan,
@@ -299,8 +454,8 @@ export const pageFlowMachine = setup({
             destination: i.destination,
             useMediator: i.useMediator,
             ...(i.memo ? { memo: i.memo } : {}),
-            ...(i.userFallbackAddress ? { userFallbackAddress: i.userFallbackAddress } : {}),
-            ...(i.selectedClaimableBalanceIds
+            // [] is a real choice (claim none), so only undefined is left out
+            ...(i.selectedClaimableBalanceIds !== undefined
               ? { selectedClaimableBalanceIds: i.selectedClaimableBalanceIds }
               : {}),
             ...(i.returnToIssuerAssetKeys
@@ -308,6 +463,12 @@ export const pageFlowMachine = setup({
               : {}),
             ...(i.sendToDestinationAssetKeys
               ? { sendToDestinationAssetKeys: i.sendToDestinationAssetKeys }
+              : {}),
+            ...(i.acceptedPriceImpactAssetKeys
+              ? { acceptedPriceImpactAssetKeys: i.acceptedPriceImpactAssetKeys }
+              : {}),
+            ...(i.forfeitBackstopEmissionPoolIds
+              ? { forfeitBackstopEmissionPoolIds: i.forfeitBackstopEmissionPoolIds }
               : {}),
             ...(i.deterministicDisposal ? { deterministicDisposal: true } : {}),
           };
@@ -317,11 +478,17 @@ export const pageFlowMachine = setup({
           actions: assign({
             tree: ({ event }) => event.output.tree,
             unroutableCredits: ({ event }) => event.output.unroutableCredits,
+            // optional in the output: a preview that found none leaves them out
+            reviewBlockers: ({ event }) => event.output.reviewBlockers ?? [],
+            refusedConversions: ({ event }) => event.output.refusedConversions ?? [],
+            emissionForfeits: ({ event }) => event.output.emissionForfeits ?? [],
             // held-token disposition depends on the destination kind, decided at
-            // preview; fold those notes into the discovery warnings the UI shows.
+            // preview; fold those notes and the review notes into the warnings
+            // the UI shows.
             discoveryWarnings: ({ context, event }) => [
               ...context.discoveryWarnings,
-              ...(event.output.heldTokenWarnings ?? []),
+              ...event.output.heldTokenWarnings,
+              ...(event.output.reviewNotes ?? []),
             ],
           }),
         },
@@ -348,18 +515,19 @@ export const pageFlowMachine = setup({
             audit: null,
             discoveryWarnings: [],
             discoveryDiagnostics: [],
-            unroutableCredits: [],
             error: null,
             failureKind: null,
             ...clearedPlan,
           }),
         },
         CONFIRM: { target: "executing", guard: "confirmMatchesDestination" },
-        // a multisig close: submit the collected, fully-signed bundle as-is
+        // a multisig close: submit the collected, fully-signed bundle
         SUBMIT_BUNDLE: {
           target: "executing",
           guard: "bundleConfirmed",
-          actions: assign({ signedBundleXdr: ({ event }) => event.signedXdr }),
+          actions: assign({
+            signedBundle: ({ event }) => ({ signedXdr: event.signedXdr, snapshot: event.snapshot }),
+          }),
         },
         CANCEL: { target: "cancelled", actions: assign({ connector: null }) },
       },
@@ -388,7 +556,7 @@ export const pageFlowMachine = setup({
             connector: context.connector,
             tree: context.tree,
             interrupt: context.executionAbort.signal,
-            ...(context.signedBundleXdr ? { signedBundleXdr: context.signedBundleXdr } : {}),
+            ...(context.signedBundle ? { bundle: context.signedBundle } : {}),
             onProgress: (event: DemolishProgressEvent) => {
               self.send({ type: "_PROGRESS", event });
             },
@@ -468,7 +636,8 @@ export const pageFlowMachine = setup({
         // a retryable failure re-executes the same tree with the wallet that is
         // connected now: landed steps are skipped, everything else re-runs. any
         // other failure, or a retry without a wallet, rebuilds the plan from fresh
-        // discovery and drops the old tree so it can't be executed later.
+        // discovery and drops the old tree, its error and a collected bundle so
+        // none of it can be executed or shown later.
         RETRY: [
           {
             target: "executing",

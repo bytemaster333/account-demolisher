@@ -12,8 +12,19 @@ import { EMPTY_POSITIONS, type ProtocolPositions } from "@/lib/adapters/position
 import { DirectContractProvider } from "@/lib/adapters/positions/direct";
 import { blendRepayShortfallWarnings } from "@/lib/adapters/blend/repay-check";
 import { manualCloseRequiredNotice } from "@/lib/safety/manual-close";
-import { enumerateAllowances, type AllowanceRecord } from "@/lib/soroban/allowances";
-import { discoverHeldTokens, type HeldToken } from "@/lib/soroban/held-tokens";
+import {
+  confirmAllowancesOnChain,
+  DEFAULT_SCAN_WINDOW_LEDGERS,
+  scanAllowances,
+  withoutConfirmedZero,
+  type AllowanceRecord,
+} from "@/lib/soroban/allowances";
+import { describeIncompleteScan } from "@/lib/soroban/event-scan";
+import {
+  discoverHeldTokens,
+  heldTokenScanWarning,
+  type HeldToken,
+} from "@/lib/soroban/held-tokens";
 import { ALL_PROTOCOLS, discoveryWarningFor } from "@/lib/orchestrator/warnings";
 
 export interface DiscoverInput {
@@ -38,8 +49,6 @@ export interface DiscoverOutput {
 
 // per-discovery-step ceiling so a hanging rpc can't pin the ui on a spinner
 export const DISCOVERY_TIMEOUT_MS = 30_000;
-// matches the rpc's typical event-retention window (about 7 days)
-const ALLOWANCE_SCAN_WINDOW_LEDGERS = 120_960;
 
 export function withTimeout<T>(label: string, p: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -82,17 +91,43 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
               rpc.getLatestLedger(),
               DISCOVERY_TIMEOUT_MS,
             );
-            const allowances = await withTimeout(
-              "enumerateAllowances",
-              enumerateAllowances(
-                rpc,
-                input.publicKey,
-                latest.sequence,
-                ALLOWANCE_SCAN_WINDOW_LEDGERS,
-              ),
+            const scan = await withTimeout(
+              "scanAllowances",
+              scanAllowances(rpc, input.publicKey, latest.sequence, DEFAULT_SCAN_WINDOW_LEDGERS),
               DISCOVERY_TIMEOUT_MS,
             );
-            return { allowances };
+            // an allowance already spent through transfer_from (or revoked) reads
+            // zero on chain and needs no revoke; a row whose read failed stays in
+            let allowances: readonly AllowanceRecord[] = scan.records;
+            let confirmDetail: string | undefined;
+            try {
+              const confirmed = await withTimeout(
+                "confirmAllowancesOnChain",
+                confirmAllowancesOnChain(
+                  rpc,
+                  input.publicKey,
+                  scan.records,
+                  input.network,
+                  input.publicKey,
+                ),
+                DISCOVERY_TIMEOUT_MS,
+              );
+              allowances = withoutConfirmedZero(confirmed);
+            } catch (e) {
+              confirmDetail = `allowance confirm: ${errorMessage(e)}`;
+            }
+            // a partial scan keeps what it found and says how much it checked
+            return {
+              allowances,
+              ...(scan.incomplete !== null
+                ? {
+                    warning: `${describeIncompleteScan(scan.incomplete, "token spending permissions")} An older permission may be missing from this plan; review them on the Allowances page before closing.`,
+                    detail: `allowance scan: ${scan.incomplete.detail}${confirmDetail ? `; ${confirmDetail}` : ""}`,
+                  }
+                : confirmDetail !== undefined
+                  ? { detail: confirmDetail }
+                  : {}),
+            };
           } catch (e) {
             return {
               allowances: [] as readonly AllowanceRecord[],
@@ -103,7 +138,7 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
           }
         })();
 
-  // defi positions: direct-contract probing across blend/aquarius/soroswap/fxdao.
+  // defi positions: direct-contract probing across blend/aquarius/soroswap.
   // a timeout keeps no partial result, so it is recorded as an unfinished
   // discovery in positions.errors, which the merge guard also refuses on
   const positionsPromise: Promise<{ positions: ProtocolPositions; detail?: string }> =
@@ -152,7 +187,18 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
         discoverHeldTokens(rpc, input.publicKey, latest.sequence, input.network),
         DISCOVERY_TIMEOUT_MS,
       );
-      return { held: scan.held, unreadable: scan.unreadable, failed: false };
+      return {
+        held: scan.held,
+        unreadable: scan.unreadable,
+        failed: false,
+        // a scan that covered only part of the window says so; what it found stays
+        ...(scan.incomplete !== null
+          ? {
+              warning: heldTokenScanWarning(scan.incomplete),
+              detail: `held-token scan: ${scan.incomplete.detail}`,
+            }
+          : {}),
+      };
     } catch (e) {
       // an optional, opt-in scan with a manual-add fallback: a blip must not read
       // like imminent fund loss

@@ -46,11 +46,11 @@ import { executePlanTreeOnChain } from "@/lib/orchestrator/executor";
 const ROUTER = allowlisted("soroswap", "SoroswapRouter");
 const AQUA_ROUTER = allowlisted("aquarius", "AquariusAmmRouter");
 const BLEND_POOL = allowlisted("blend", "BlendPool::");
-const FXDAO_VAULTS = allowlisted("fxdao", "FxDAO::VaultsContract");
+// the mainnet v2 blend backstop, pinned in blend/constants
+const BACKSTOP_V2 = "CAQQR5SWBXKIGZKPBZDH3KM5GQ5GUTPKB7JAFCINLZBC5WXPJKRG3IM7";
 const POOL_INDEX = "b2e02fcfca6c96f8ad5cbd84e7784a777b36d9c96a2459402c4f458462aab7f0";
 const AQUA_POOL = "CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQPIICCJBE";
 const AQUA_SHARE = "CAVKLYY4RWFQBRA2YI5GTGGXKUKJQI3JLAHDGXMS7L5RDH6X6A47NMOZ";
-const USDX = "CDIKURWHYS4FFTR5KOQK6MBFZA2K3E26WGBQI6PXBYWZ4XIOPJHDFJKP";
 
 interface Case {
   readonly name: string;
@@ -190,23 +190,32 @@ const CASES: Case[] = [
     },
   },
   {
-    name: "PayFxDAODebt",
-    node: nodeOf("PayFxDAODebt", { vaultDenomination: "USD", debt: 700n, collateral: 9000n }),
+    name: "ClaimBlendEmissions",
+    node: nodeOf("ClaimBlendEmissions", { poolId: BLEND_POOL, reserveTokenIds: [3] }),
     build: (a, extra) => {
-      const vaultKey = xdr.ScVal.scvMap([
-        new xdr.ScMapEntry({ key: sym("account"), val: addr(USER) }),
-        new xdr.ScMapEntry({ key: sym("denomination"), val: sym("USD") }),
-        new xdr.ScMapEntry({ key: sym("index"), val: u128(12_857_142_857n) }),
+      const args = [addr(USER), xdr.ScVal.scvVec([u32(3)]), addr(USER)];
+      return invokeTx(a, BLEND_POOL, "claim", args, [
+        sourceAuth(inv(BLEND_POOL, "claim", args, extra)),
       ]);
-      const none = xdr.ScVal.scvVec([sym("None")]);
-      const args = [none, vaultKey, none, u128(700n)];
-      return invokeTx(a, FXDAO_VAULTS, "pay_debt", args, [
-        sourceAuth(
-          inv(FXDAO_VAULTS, "pay_debt", args, [
-            inv(USDX, "burn", [addr(USER), i128(700n)]),
-            ...extra,
-          ]),
-        ),
+    },
+  },
+  {
+    name: "BackstopQueue",
+    node: nodeOf("BackstopQueue", { poolId: BLEND_POOL, shares: 70n }),
+    build: (a, extra) => {
+      const args = [addr(USER), addr(BLEND_POOL), i128(70n)];
+      return invokeTx(a, BACKSTOP_V2, "queue_withdrawal", args, [
+        sourceAuth(inv(BACKSTOP_V2, "queue_withdrawal", args, extra)),
+      ]);
+    },
+  },
+  {
+    name: "BackstopWithdraw",
+    node: nodeOf("BackstopWithdraw", { poolId: BLEND_POOL, amount: 70n }),
+    build: (a, extra) => {
+      const args = [addr(USER), addr(BLEND_POOL), i128(70n)];
+      return invokeTx(a, BACKSTOP_V2, "withdraw", args, [
+        sourceAuth(inv(BACKSTOP_V2, "withdraw", args, extra)),
       ]);
     },
   },
@@ -219,6 +228,8 @@ function deps(build: (a: Account) => Transaction) {
     horizon: fakeHorizon(new Map([[USER, { seq: 10n, balances: [] }]])),
     submitClassic: vi.fn(async () => ({ txHash: "M", ledger: 1 })),
     submitSoroban: vi.fn(async () => ({ txHash: "S", ledger: 1 })),
+    // the exits' payouts are swept before the merge; nothing is left here
+    readTokenBalance: async () => 0n,
     rebuildSorobanNode: async (node: PlanNode) => {
       (node.metadata as { transaction?: Transaction }).transaction = build(new Account(USER, "10"));
     },

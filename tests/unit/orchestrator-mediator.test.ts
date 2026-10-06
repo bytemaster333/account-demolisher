@@ -208,6 +208,8 @@ function harness(
       );
     },
     mediatorFlow: control,
+    // the blend withdraw pays out USDC's SAC; nothing of it is left at the merge
+    readTokenBalance: async () => 0n,
     now: () => h.clock,
     ...opts.over,
   };
@@ -239,7 +241,13 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
   auditAccount.mockResolvedValue(makeAudit());
-  submitMediatorForward.mockResolvedValue({ ok: true, txHash: "FWD" });
+  submitMediatorForward.mockImplementation(async (input: { flowToken: string }) => ({
+    ok: true,
+    txHash: "FWD",
+    ledger: 50,
+    alreadyDelivered: false,
+    flowToken: input.flowToken,
+  }));
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -321,6 +329,7 @@ describe("a funded mediator is never replaced", () => {
         mediatorPublicKey: MEDIATOR_A,
         flowToken: "OLD-TOKEN",
         ultimateDestination: EXCHANGE,
+        memo: { type: "id", value: "777" },
         issuedAt: T0 - 2 * MINUTE,
       },
     });
@@ -333,6 +342,27 @@ describe("a funded mediator is never replaced", () => {
       mediatorPublicKey: MEDIATOR_A,
       flowToken: "OLD-TOKEN",
     });
+  });
+
+  it("refuses to adopt an earlier flow bound to a different deposit memo", async () => {
+    // the flow token binds the memo, so a forward under the old token could only
+    // ever carry the old memo
+    const h = harness({
+      previous: {
+        mediatorPublicKey: MEDIATOR_A,
+        flowToken: "OLD-TOKEN",
+        ultimateDestination: EXCHANGE,
+        memo: { type: "id", value: "111" },
+        issuedAt: T0 - 2 * MINUTE,
+      },
+    });
+    h.table.set(MEDIATOR_A, { seq: 1n, balances: [] });
+    await expect(run(mediatorTree(MEDIATOR_B), h.deps)).rejects.toMatchObject({
+      kind: "not_mergeable",
+      message: expect.stringMatching(/different deposit memo/),
+    });
+    expect(h.deps.connector.signTransaction).not.toHaveBeenCalled();
+    expect(h.control.persist).not.toHaveBeenCalled();
   });
 
   it("refuses to close to another destination while an earlier flow's mediator holds funds", async () => {
@@ -352,8 +382,9 @@ describe("a funded mediator is never replaced", () => {
     expect(h.control.mint).not.toHaveBeenCalled();
   });
 
-  it("re-runs a multi-phase close against the mediator phase 0 funded", async () => {
-    // an lp share puts its withdraw (and the funding op leading it) in phase 0
+  it("re-runs a multi-phase close against the flow it already minted", async () => {
+    // an lp share puts its withdraw in phase 0; the funding op rides with the
+    // merge in the last batch
     const lpAudit = makeAudit({
       subentryCount: 1,
       poolShares: [
@@ -381,9 +412,13 @@ describe("a funded mediator is never replaced", () => {
     const t = mediatorTree(MEDIATOR_A);
     await expect(run(t, h.deps)).rejects.toThrow(/op_no_issuer/);
     expect(h.control.mint).toHaveBeenCalledTimes(1);
-    expect(h.table.has(MEDIATOR_B)).toBe(true);
+    // the refused batch carried the funding op, so nothing reached the mediator
+    expect(h.table.has(MEDIATOR_B)).toBe(false);
+    const [phase0, refused] = h.deps.connector.signed;
+    expect(opDestinations(phase0!, "createAccount")).toEqual([]);
+    expect(opDestinations(refused!, "createAccount")).toEqual([MEDIATOR_B]);
 
-    // retry: the same tree, the mediator phase 0 funded is still there
+    // retry: the same tree; the minted flow is still fresh, so it is used again
     submit.mockImplementation(landed);
     const final = t.allNodes.get("final-classic-tx")!;
     final.status = "pending";
@@ -399,6 +434,7 @@ describe("the forward token is checked before the merge is signed", () => {
     mediatorPublicKey: MEDIATOR_A,
     flowToken: "OLD-TOKEN",
     ultimateDestination: EXCHANGE,
+    memo: { type: "id", value: "777" },
     issuedAt,
   });
 
@@ -486,5 +522,32 @@ describe("a merge that landed with its reply lost", () => {
       message: expect.stringMatching(/not by this close/),
     });
     expect(submitMediatorForward).not.toHaveBeenCalled();
+  });
+});
+
+describe("the exchange forward's funding is checked before anything is minted or signed", () => {
+  it("refuses the merge when the account can't spare the mediator's starting balance", async () => {
+    // 2.5 XLM, of which the account's own 1 XLM reserve stays locked until the
+    // merge: less than the 2 XLM the temporary account must be created with
+    auditAccount.mockResolvedValue(
+      makeAudit({
+        balances: [
+          {
+            asset: { kind: "native" },
+            amount: "2.5000000",
+            buyingLiabilities: "0",
+            sellingLiabilities: "0",
+          },
+        ],
+      }),
+    );
+    const h = harness();
+    await expect(run(mediatorTree(MEDIATOR_A), h.deps)).rejects.toMatchObject({
+      kind: "not_mergeable",
+      message: expect.stringMatching(/not enough XLM to fund the exchange forward/),
+    });
+    expect(h.deps.connector.signTransaction).not.toHaveBeenCalled();
+    expect(h.control.mint).not.toHaveBeenCalled();
+    expect(h.control.persist).not.toHaveBeenCalled();
   });
 });

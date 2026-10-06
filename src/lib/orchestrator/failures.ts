@@ -36,6 +36,9 @@ export type FailureKind =
   // a conversion the user reviewed would now sell at a worse price, or over the
   // price-impact cap; the plan is rebuilt so they can decide per token
   | "conversion_refused"
+  // another run of the close for this account is still going in this tab; a
+  // retry after it ends re-runs only what did not land
+  | "close_running"
   | "unknown";
 
 export class CloseFailure extends Error {
@@ -192,6 +195,7 @@ export function isRetryableFailure(kind: FailureKind): boolean {
     case "ambiguous":
     case "forward_pending":
     case "interrupted":
+    case "close_running":
       return true;
     case "not_mergeable":
     case "position_open":

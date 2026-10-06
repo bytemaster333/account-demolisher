@@ -13,7 +13,7 @@ export function discoveryWarningFor(e: {
   readonly message: string;
 }): string {
   if (e.protocol === ALL_PROTOCOLS) {
-    return "We couldn't finish checking for DeFi positions, so anything you have in apps like Blend, Aquarius, Soroswap or FxDAO might be missing from this plan. If you've used those, check them before closing.";
+    return "We couldn't finish checking for DeFi positions, so anything you have in apps like Blend, Aquarius or Soroswap might be missing from this plan. The close stays blocked until a rebuilt plan can read them, because a position missed here would be left on the deleted account.";
   }
   const actionable =
     /backstop|stranded|will be stranded|withdraw it|manual close|close it manually|before closing/i.test(
@@ -21,7 +21,7 @@ export function discoveryWarningFor(e: {
     );
   return actionable
     ? e.message
-    : `We couldn't check your ${e.protocol} positions. If you've used ${e.protocol}, review it before closing.`;
+    : `We couldn't check your ${e.protocol} positions. The close stays blocked until a rebuilt plan can read them.`;
 }
 
 // held-token notes shown before the user confirms, so a token that can't be
