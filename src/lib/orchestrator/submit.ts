@@ -3,6 +3,7 @@
 // unknown (with the hash, so a retry looks it up first), or a receipt.
 
 import {
+  AccountRequiresMemoError,
   FeeBumpTransaction,
   NotFoundError,
   TransactionBuilder,
@@ -12,7 +13,7 @@ import {
   type rpc as RpcNS,
 } from "@stellar/stellar-sdk";
 
-import { errorMessage } from "@/lib/errors";
+import { describeSubmitError, errorMessage } from "@/lib/errors";
 import { describeSorobanFailure } from "@/lib/soroban/diagnostics";
 import {
   AmbiguousSubmitError,
@@ -102,6 +103,17 @@ export function createClassicSubmitter(
     try {
       res = (await horizon.submitTransaction(signed)) as typeof res;
     } catch (err) {
+      // the sdk's sep-29 check refused it before anything was sent, so there is
+      // nothing to look up, and the same envelope would be refused again
+      if (err instanceof AccountRequiresMemoError) {
+        throw new CloseFailure(
+          "not_mergeable",
+          `submitClassic rejected: ${describeSubmitError(err)}`,
+          {
+            cause: err,
+          },
+        );
+      }
       const status = statusOf(err);
       const data = dataOf(err);
       const codes = data?.extras?.result_codes as ResultCodes | undefined;
@@ -145,12 +157,33 @@ export function createSorobanSubmitter(
   const sleep = timing.sleep ?? realSleep;
   return async (signedXdr) => {
     const signed = TransactionBuilder.fromXdr(signedXdr, passphrase) as Transaction;
+    const hash = txHashHex(signed);
     const maxTime = txMaxTime(signed);
-    let send = await rpc.sendTransaction(signed);
+    // a send that drops in transit may still have reached the rpc, so the hash
+    // is kept for the retry to look up. a json-rpc error answer is the rpc
+    // refusing the request, which is definite.
+    const sendOnce = async () => {
+      try {
+        return await rpc.sendTransaction(signed);
+      } catch (err) {
+        if (isJsonRpcError(err)) {
+          throw new SorobanSubmitError(
+            null,
+            `submitSoroban: sendTransaction refused: ${errorMessage(err)}`,
+          );
+        }
+        throw new AmbiguousSubmitError(
+          hash,
+          maxTime,
+          `sendTransaction failed: ${errorMessage(err)}`,
+        );
+      }
+    };
+    let send = await sendOnce();
     // the rpc's queue is full: the identical signed envelope can be sent again
     for (let i = 0; send.status === "TRY_AGAIN_LATER" && i < TRY_AGAIN_LATER_RESENDS; i++) {
       await sleep(1_000 * 2 ** i);
-      send = await rpc.sendTransaction(signed);
+      send = await sendOnce();
     }
     if (send.status === "TRY_AGAIN_LATER") {
       throw new CloseFailure(
@@ -178,7 +211,12 @@ export function createSorobanSubmitter(
       );
     }
     // bounded poll (~60s); a NOT_FOUND after it means still pending, not failed
-    const result = await rpc.pollTransaction(send.hash, { attempts: 60 });
+    let result: Awaited<ReturnType<SorobanSubmitRpc["pollTransaction"]>>;
+    try {
+      result = await rpc.pollTransaction(send.hash, { attempts: 60 });
+    } catch (err) {
+      throw new AmbiguousSubmitError(send.hash, maxTime, `polling failed: ${errorMessage(err)}`);
+    }
     if (result.status === "FAILED") {
       const reason = describeSorobanFailure(result.diagnosticEventsXdr);
       throw new SorobanSubmitError(
@@ -191,6 +229,17 @@ export function createSorobanSubmitter(
     }
     return { txHash: send.hash, ledger: result.ledger };
   };
+}
+
+// the sdk's json-rpc client rejects with the response's plain { code, message }
+// error object when the server answered with an error
+function isJsonRpcError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    !(err instanceof Error) &&
+    typeof (err as { code?: unknown }).code === "number"
+  );
 }
 
 // horizon's call builders reject a 404 with NotFoundError, whose `response` is

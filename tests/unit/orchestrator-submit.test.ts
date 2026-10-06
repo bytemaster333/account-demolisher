@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   Account,
+  AccountRequiresMemoError,
   BadResponseError,
   NotFoundError,
   Operation,
@@ -161,6 +162,24 @@ describe("classic submit reports what horizon really said", () => {
   });
 });
 
+describe("a submit the sdk refuses before sending", () => {
+  it("names a SEP-29 memo refusal and does not wait for a tx that was never sent", async () => {
+    const { xdr: env } = signedXdr();
+    const horizon = horizonDouble({
+      submit: async () => {
+        throw new AccountRequiresMemoError("account requires memo", DEST, 0);
+      },
+    });
+    const clock = timing(MAX_TIME * 1000 - 20 * 60_000);
+    const err = await createClassicSubmitter(horizon, PASS, clock)(env).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CloseFailure);
+    expect(err).toMatchObject({ kind: "not_mergeable" });
+    expect((err as Error).message).toMatch(new RegExp(`destination ${DEST} requires a memo`));
+    expect(horizon.lookups).toEqual([]);
+    expect(clock.sleep).not.toHaveBeenCalled();
+  });
+});
+
 describe("soroban submit resends on TRY_AGAIN_LATER", () => {
   function rpcDouble(statuses: string[]): SorobanSubmitRpc & {
     sendTransaction: ReturnType<typeof vi.fn>;
@@ -197,6 +216,46 @@ describe("soroban submit resends on TRY_AGAIN_LATER", () => {
     const err = await submit(env).catch((e: unknown) => e);
     expect(err).toMatchObject({ kind: "network" });
     expect(rpcServer.sendTransaction).toHaveBeenCalledTimes(6);
+  });
+
+  it("keeps the hash when the send itself drops, since the rpc may have taken it", async () => {
+    const { xdr: env, hash } = signedXdr();
+    const rpcServer = {
+      sendTransaction: vi.fn(async () => {
+        throw new Error("socket hang up");
+      }),
+      pollTransaction: vi.fn(),
+    } as unknown as SorobanSubmitRpc;
+    const err = await createSorobanSubmitter(rpcServer, PASS)(env).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AmbiguousSubmitError);
+    expect(err).toMatchObject({ txHash: hash, maxTime: MAX_TIME });
+    expect((err as Error).message).toMatch(/socket hang up/);
+  });
+
+  it("keeps the hash when polling drops after the rpc accepted the send", async () => {
+    const { xdr: env, hash } = signedXdr();
+    const rpcServer = {
+      sendTransaction: vi.fn(async () => ({ status: "PENDING", hash })),
+      pollTransaction: vi.fn(async () => {
+        throw new Error("fetch failed");
+      }),
+    } as unknown as SorobanSubmitRpc;
+    const err = await createSorobanSubmitter(rpcServer, PASS)(env).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AmbiguousSubmitError);
+    expect(err).toMatchObject({ txHash: hash });
+  });
+
+  it("treats a json-rpc error answer to the send as a refusal, not an unknown outcome", async () => {
+    const { xdr: env } = signedXdr();
+    const rpcServer = {
+      sendTransaction: vi.fn(async () => {
+        throw { code: -32602, message: "invalid parameters" };
+      }),
+      pollTransaction: vi.fn(),
+    } as unknown as SorobanSubmitRpc;
+    const err = await createSorobanSubmitter(rpcServer, PASS)(env).catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(AmbiguousSubmitError);
+    expect((err as Error).message).toMatch(/invalid parameters/);
   });
 
   it("reports a poll that never settled as an unknown outcome with its hash", async () => {
