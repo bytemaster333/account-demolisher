@@ -707,11 +707,15 @@ export function DemolishFlow(): React.JSX.Element {
   } as const;
 
   // the confirm-dialog and Collect actions refuse a plan whose account or
-  // network no longer match (the guard also cancels it)
+  // network no longer match (the guard also cancels it). Each event also names
+  // the account and network on screen, so the machine can refuse one that
+  // doesn't match the run it holds.
+  const expected = { publicKey: publicKey ?? "", networkId: network.id };
   const confirmClose = (typed: string): void => {
     setShowConfirmDialog(false);
     if (runMismatched) return;
-    send({ type: "CONFIRM", typed });
+    const event = { type: "CONFIRM" as const, typed, expected };
+    send(event);
   };
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -881,7 +885,12 @@ export function DemolishFlow(): React.JSX.Element {
                     connectedKey={publicKey}
                     onClose={(finalXdr) => {
                       if (runMismatched) return;
-                      send({ type: "SUBMIT_BUNDLE", signedXdr: finalXdr });
+                      const event = {
+                        type: "SUBMIT_BUNDLE" as const,
+                        signedXdr: finalXdr,
+                        expected,
+                      };
+                      send(event);
                     }}
                   />
                 </>
