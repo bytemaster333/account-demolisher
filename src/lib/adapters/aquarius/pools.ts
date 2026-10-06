@@ -5,6 +5,7 @@
 import { Address, xdr, type rpc } from "@stellar/stellar-sdk";
 import { getAllowlistForNetwork, type AllowedContract } from "@/lib/config/contracts";
 import { unsupportedNetwork, type NetworkConfig } from "@/lib/config/networks";
+import { errorMessage } from "@/lib/errors";
 import { balance as sep41Balance } from "@/lib/soroban/sep41";
 import {
   fromScValAddress,
@@ -275,9 +276,7 @@ export class AquariusAPIPoolProvider implements AquariusPoolProvider {
           shareBalance: sharesRaw,
         });
       } catch (e) {
-        errors.push(
-          `could not read shares in pool ${entry.address} (${e instanceof Error ? e.message : String(e)})`,
-        );
+        errors.push(`could not read shares in pool ${entry.address} (${errorMessage(e)})`);
       }
     }
     return { standard, concentratedAddresses, errors };
@@ -546,7 +545,7 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
         // scan (a whole-scan throw becomes a user-facing discoveryWarning).
         throw new Error(
           `Aquarius: failed to probe pool ${value.poolAddress}; discovery may be incomplete ` +
-            `(${e instanceof Error ? e.message : String(e)})`,
+            `(${errorMessage(e)})`,
         );
       }
     }
