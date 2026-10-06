@@ -8,7 +8,7 @@ import {
   type OperationRecord,
   type Transaction,
 } from "@stellar/stellar-sdk";
-import { isAllowedContract } from "@/lib/config/contracts";
+import { isAllowedRootTarget } from "@/lib/config/contracts";
 import type { NetworkConfig } from "@/lib/config/networks";
 
 export interface AllowlistViolationDetail {
@@ -30,11 +30,12 @@ export class AllowlistViolation extends Error {
   }
 }
 
-// throws AllowlistViolation if any contract invocation isn't on the list
-// omitting network defaults to mainnet
+// throws AllowlistViolation if any contract invocation isn't on the list for
+// the given network. the network is required so no caller silently gets the
+// other network's list
 export function assertTransactionAllowed(
   tx: Transaction | FeeBumpTransaction,
-  network?: NetworkConfig,
+  network: NetworkConfig,
 ): void {
   const violations = getViolations(tx, network);
   if (violations.length > 0) throw new AllowlistViolation(violations);
@@ -43,7 +44,7 @@ export function assertTransactionAllowed(
 // non-throwing variant. returns every violation for ui display
 export function getViolations(
   tx: Transaction | FeeBumpTransaction,
-  network?: NetworkConfig,
+  network: NetworkConfig,
 ): readonly AllowlistViolationDetail[] {
   const ops = collectOperations(tx);
   const out: AllowlistViolationDetail[] = [];
@@ -111,7 +112,7 @@ function inspectAuthEntries(ihf: Operation.InvokeHostFunction): AllowlistViolati
 // returns null for classical ops or for allow-listed invocations
 function inspectOperation(
   op: OperationRecord,
-  network: NetworkConfig | undefined,
+  network: NetworkConfig,
 ): AllowlistViolationDetail | null {
   if (op.type !== "invokeHostFunction") return null;
 
@@ -142,7 +143,9 @@ function inspectOperation(
             reason: "Invocation target is not a contract address (expected C... strkey).",
           };
         }
-        if (!isAllowedContract(addrStrkey, network)) {
+        // only entry points may be the root of a signed call; known tokens and
+        // infrastructure are refused even though they are curated
+        if (!isAllowedRootTarget(addrStrkey, network)) {
           return {
             contractId: addrStrkey,
             reason: networkAwareReason(network),
@@ -180,8 +183,7 @@ function inspectOperation(
 }
 
 // only mainnet and testnet are supported targets; any other id has no allow-list
-function networkAwareReason(network: NetworkConfig | undefined): string {
-  if (network === undefined) return "Contract is not on MAINNET_ALLOWLIST.";
+function networkAwareReason(network: NetworkConfig): string {
   switch (network.id) {
     case "mainnet":
       return "Contract is not on MAINNET_ALLOWLIST.";
