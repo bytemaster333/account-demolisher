@@ -3,7 +3,11 @@ import fc from "fast-check";
 import { Account, StrKey, xdr, type Horizon } from "@stellar/stellar-sdk";
 
 import { TESTNET } from "@/lib/config/networks";
-import { batchClassicDemolition, MAX_OPS_PER_TX } from "@/lib/plan/classic-batcher";
+import {
+  batchClassicDemolition,
+  closeMarkerPlanned,
+  MAX_OPS_PER_TX,
+} from "@/lib/plan/classic-batcher";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
 import { generatePlan } from "@/lib/plan/generator";
 import { buildPlanTree, topologicalOrder, type PlanNode } from "@/lib/plan/tree";
@@ -91,16 +95,35 @@ const arbPoolShare = fc
     reserves,
   }));
 
-const arbClaimable = fc.record({
-  // horizon's claimable balance id: the 4-byte type then the 32-byte hash, in hex
-  id: arbHex64.map((h) => "00000000" + h),
-  asset: arbAsset,
-  amount: arbAmount,
-  sponsor: arbG,
-  predicate: fc.constant(null),
-  claimants: fc.constant([] as string[]),
-  claimableNow: fc.boolean(),
-});
+// a claimable balance of a credit the account may not trust (with the issuer's
+// auth_required flag the audit tags it with, or none when the issuer is
+// unknown), or of the account's own asset, which it claims with no trustline
+const arbClaimableAsset = fc.oneof(
+  { weight: 3, arbitrary: arbAsset },
+  {
+    weight: 1,
+    arbitrary: arbCode.map((code) => ({ kind: "credit", code, issuer: ACC }) as const),
+  },
+);
+const arbClaimable = fc
+  .record({
+    // horizon's claimable balance id: the 4-byte type then the 32-byte hash, in hex
+    id: arbHex64.map((h) => "00000000" + h),
+    asset: arbClaimableAsset,
+    amount: arbAmount,
+    sponsor: arbG,
+    predicate: fc.constant(null),
+    claimants: fc.constant([] as string[]),
+    claimableNow: fc.boolean(),
+    issuerAuthRequired: fc.option(fc.boolean(), { nil: undefined }),
+  })
+  .map(({ issuerAuthRequired, ...cb }) => ({
+    ...cb,
+    ...(issuerAuthRequired !== undefined ? { issuerAuthRequired } : {}),
+    ...(cb.asset.kind === "credit" && cb.asset.issuer === ACC
+      ? { issuedByAccount: true as const }
+      : {}),
+  }));
 
 const arb32 = fc.uint8Array({ minLength: 32, maxLength: 32 }).map((b) => Buffer.from(b));
 // every signer type an account can hold, each with a strkey of its own kind
@@ -122,8 +145,17 @@ const arbSigner = fc
 // arrays are sized so a run can exceed MAX_OPS_PER_TX (100) and force the
 // high-subentry transaction-splitting path, and subentryCount is derived from the
 // actual subentries rather than pinned to 0.
+// the XLM line, sometimes too small for the reserve a new trustline locks
+const arbNative = fc.integer({ min: 1, max: 5_000 }).map((n) => ({
+  asset: { kind: "native" } as const,
+  amount: `${n}.0000000`,
+  buyingLiabilities: "0",
+  sellingLiabilities: "0",
+}));
+
 const arbAudit: fc.Arbitrary<AccountAudit> = fc
   .record({
+    native: arbNative,
     balances: fc.array(arbBalance, { maxLength: 20 }),
     offers: fc.array(arbOffer, { maxLength: 60 }),
     data: fc.array(arbData, { maxLength: 60 }),
@@ -150,7 +182,7 @@ const arbAudit: fc.Arbitrary<AccountAudit> = fc
         authRevocable: false,
         authClawbackEnabled: false,
       },
-      balances: r.balances,
+      balances: [r.native, ...r.balances],
       signers: r.signers,
       offers: r.offers,
       data: r.data,
@@ -161,6 +193,30 @@ const arbAudit: fc.Arbitrary<AccountAudit> = fc
       mergeability: { mergeable: true },
     } as unknown as AccountAudit;
   });
+
+function emptyAudit(): AccountAudit {
+  return {
+    accountId: ACC,
+    sequence: "1",
+    subentryCount: 0,
+    thresholds: { low: 0, medium: 0, high: 0, masterWeight: 1 },
+    flags: {
+      authImmutable: false,
+      authRequired: false,
+      authRevocable: false,
+      authClawbackEnabled: false,
+    },
+    balances: [],
+    signers: [],
+    offers: [],
+    data: [],
+    claimableBalances: [],
+    poolShares: [],
+    sponsorship: { numSponsoring: 0, numSponsored: 0, coverable: 0 },
+    requiresMultisig: false,
+    mergeability: { mergeable: true },
+  };
+}
 
 // randomized DeFi positions across the protocols + the Blend backstop, so
 // the stranding invariant is asserted over accounts that also carry Soroban
@@ -181,15 +237,41 @@ const arbBlendPos = fc.record({
   supply: arbTokenMap,
   emissionReserveTokenIds: fc.array(fc.integer({ min: 0, max: 12 }), { maxLength: 3 }),
 });
-const arbBackstopPos = fc.record({
-  poolId: arbContractId,
-  shares: arbBig,
-  queuedForWithdrawal: fc.oneof(fc.constant(0n), arbBig),
-});
+const arbMaybeZero = fc.oneof(fc.constant(0n), arbBig);
+const arbBackstopPos = fc
+  .record({
+    poolId: arbContractId,
+    backstopId: arbContractId,
+    shares: arbMaybeZero,
+    queued: arbMaybeZero,
+    unlocked: arbMaybeZero,
+    accruedEmissions: arbMaybeZero,
+  })
+  .map(({ queued, unlocked, ...bs }) => ({
+    ...bs,
+    // the unlocked part of the queue is never more than the queue
+    queuedForWithdrawal: queued + unlocked,
+    unlockedQueuedForWithdrawal: unlocked,
+  }));
 const arbAquariusPos = fc.record({
   poolIndex: arbHex64,
   shareBalance: arbBig,
   tokens: fc.array(arbContractId, { minLength: 2, maxLength: 2 }),
+});
+const arbConcentratedPos = fc.record({
+  poolAddress: arbContractId,
+  poolIndex: arbHex64,
+  tokens: fc.array(arbContractId, { minLength: 2, maxLength: 2 }),
+  ranges: fc.uniqueArray(
+    fc.record({
+      tickLower: fc.integer({ min: -1000, max: 0 }),
+      tickUpper: fc.integer({ min: 1, max: 1000 }),
+      liquidity: arbMaybeZero,
+    }),
+    { maxLength: 3, selector: (r) => `${r.tickLower}:${r.tickUpper}` },
+  ),
+  pendingFees: fc.array(arbMaybeZero, { minLength: 2, maxLength: 2 }),
+  pendingReward: arbMaybeZero,
 });
 const arbSoroswapPos = fc.record({
   pair: fc.record({ tokenA: arbContractId, tokenB: arbContractId }),
@@ -200,7 +282,10 @@ const arbPositions: fc.Arbitrary<ProtocolPositions> = fc.record({
   blend: fc.array(arbBlendPos, { maxLength: 2 }),
   backstop: fc.array(arbBackstopPos, { maxLength: 1 }),
   aquarius: fc.array(arbAquariusPos, { maxLength: 2 }),
-  aquariusConcentrated: fc.constant([]),
+  aquariusConcentrated: fc.uniqueArray(arbConcentratedPos, {
+    maxLength: 2,
+    selector: (p) => p.poolAddress,
+  }),
   soroswap: fc.array(arbSoroswapPos, { maxLength: 2 }),
   backstopUnclaimedEmissions: fc.constant([]),
   errors: fc.constant([] as { protocol: string; message: string }[]),
@@ -297,6 +382,51 @@ describe("plan generation, property-based fuzzing", () => {
         }
       }),
       { numRuns: 250 },
+    );
+  });
+
+  it("keeps a direct memo close within one merge transaction, marked only when the marker fits", () => {
+    const arbTokens = fc.uniqueArray(arbCredit, {
+      minLength: 40,
+      maxLength: 49,
+      selector: (a) => (a.kind === "credit" ? `${a.code}:${a.issuer}` : "native"),
+    });
+    fc.assert(
+      fc.property(arbTokens, (tokens) => {
+        const audit = {
+          ...emptyAudit(),
+          balances: [
+            {
+              asset: { kind: "native" },
+              amount: "1000",
+              buyingLiabilities: "0",
+              sellingLiabilities: "0",
+            },
+            ...tokens.map((asset) => ({
+              asset,
+              amount: "1",
+              limit: "100",
+              buyingLiabilities: "0",
+              sellingLiabilities: "0",
+            })),
+          ],
+          subentryCount: tokens.length,
+        } as AccountAudit;
+        const batches = batchClassicDemolition(audit, {
+          destination: DEST,
+          useMediator: false,
+          memo: { type: "text", value: "deposit" },
+          sendToDestinationAssetKeys: tokens.map((a) =>
+            a.kind === "credit" ? `${a.code}:${a.issuer}` : "native",
+          ),
+        });
+        const final = batches[batches.length - 1]!.operations;
+        expect(final.length).toBeLessThanOrEqual(MAX_OPS_PER_TX);
+        // every payment, its trustline removal and the merge ride with the memo
+        expect(final.length).toBe(2 * tokens.length + 1 + (closeMarkerPlanned(batches) ? 2 : 0));
+        expect(closeMarkerPlanned(batches)).toBe(2 * tokens.length + 3 <= MAX_OPS_PER_TX);
+      }),
+      { numRuns: 50 },
     );
   });
 

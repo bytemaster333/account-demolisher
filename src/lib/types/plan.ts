@@ -137,15 +137,7 @@ export function pathKey(asset: AssetIdentifier): string {
 // progress + result shapes for the on-chain demolition run, emitted by the
 // orchestrator's execute path and consumed by the page-flow machine / ui
 export interface DemolishProgressEvent {
-  readonly kind:
-    | "audit"
-    | "batch-built"
-    | "submitting"
-    | "submitted"
-    | "rebatching"
-    | "mediator-cosign"
-    | "complete"
-    | "blocked";
+  readonly kind: "submitting" | "complete" | "blocked";
   readonly batchIndex?: number;
   readonly totalBatches?: number;
   readonly txHash?: string;
