@@ -349,6 +349,42 @@ describe("hydratePlanTransactions, ConvertSorobanToXLM price-impact cap", () => 
 
     expect(failures[0]!.reason).toMatch(/can't price a reference trade/);
   });
+
+  // the refusal is a price the user has to confirm, not state an earlier step
+  // changes, so a swap queued behind the exits must not read as "built later"
+  it("fails an over-cap swap that runs after other steps instead of deferring it", async () => {
+    const market = swapMarket(thinPool);
+    const node = convertNode({ deps: ["exit"] });
+    const exit: PlanNode = {
+      id: "exit",
+      kind: "TransferAsIs",
+      dependencies: [],
+      description: "already built",
+      status: "pending",
+      metadata: {
+        kind: "TransferAsIs",
+        asset: { kind: "contract", contractId: HELD_TOKEN },
+        amount: 1n,
+        destination: USER,
+        transaction: { fake: "tx" } as never,
+      },
+    };
+    const deps = baseDeps({
+      rpc: market.rpc,
+      adapters: {
+        buildSwapToXLM: market.buildSwapToXLM,
+        readTokenBalance: async () => 1_000_000n,
+      },
+    });
+
+    const { failures } = await hydratePlanTransactions(buildPlanTree([exit, node]), USER, deps);
+
+    expect(failures).toHaveLength(1);
+    expect(failures[0]!.deferred).toBe(false);
+    expect(node.status).toBe("failed");
+    expect(node.error).toMatch(/over the 2\.00% cap/);
+    expect(node.deferred).toBeUndefined();
+  });
 });
 
 // M-24: sweeps run after the exits and move the balance that is there by then

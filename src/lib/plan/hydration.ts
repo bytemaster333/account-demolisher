@@ -75,7 +75,8 @@ export interface HydrationAdapterOverrides {
 // repay, a sweep behind the exits that pay it) is simulated here against state
 // those steps haven't changed yet, so its failure only defers it: it stays
 // "pending" with node.deferred set and is built at execute time once they land.
-// only `deps` misuse throws. idempotent: nodes with a transaction are skipped
+// A swap refused for its price impact fails either way: it needs the user's
+// confirmation, which no earlier step provides. only `deps` misuse throws. idempotent: nodes with a transaction are skipped
 export async function hydratePlanTransactions(
   tree: PlanTree,
   userPublicKey: string,
@@ -106,7 +107,9 @@ export async function hydratePlanTransactions(
       delete node.deferred;
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      const deferred = node.dependencies.length > 0;
+      // a price-impact refusal waits on the user's confirmation, not on an
+      // earlier step, so it never defers
+      const deferred = node.dependencies.length > 0 && !(err instanceof PriceImpactRefusedError);
       failures.push({ nodeId: node.id, reason, deferred });
       if (deferred) {
         node.deferred = { after: node.dependencies, reason };
@@ -426,13 +429,13 @@ async function hydrateNode(
       const impact = priceImpactBps(full.in, full.out, reference.in, reference.out);
       if (node.metadata.priceImpactAccepted !== true) {
         if (impact === null) {
-          throw new Error(
+          throw new PriceImpactRefusedError(
             `ConvertSorobanToXLM: the router can't price a reference trade for this token, ` +
               `so the swap's price impact is unknown; confirm the conversion to sell it anyway`,
           );
         }
         if (impact > MAX_PRICE_IMPACT_BPS) {
-          throw new Error(
+          throw new PriceImpactRefusedError(
             `ConvertSorobanToXLM: selling the whole balance has a ${formatBps(impact)} price ` +
               `impact, over the ${formatBps(MAX_PRICE_IMPACT_BPS)} cap; confirm the conversion ` +
               `to sell it anyway`,
@@ -585,6 +588,15 @@ async function liveTokenBalance(
     throw new Error(`${node.kind}: the account holds none of token ${contractId} to move`);
   }
   return held;
+}
+
+// a conversion refused for its price impact (or an unpriceable reference). It
+// is built only once the user confirms selling at that price.
+export class PriceImpactRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PriceImpactRefusedError";
+  }
 }
 
 function formatBps(bps: number): string {
