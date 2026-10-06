@@ -28,10 +28,10 @@ export function buildClassicTransaction(
   account: Horizon.AccountResponse,
   network: NetworkConfig,
   feeBase: number = Number.parseInt(BASE_FEE, 10),
-  // signing window. The live execute path signs+submits within minutes, so the
-  // default is short. A multisig signing plan circulates for hours/days, so its
-  // builder passes a much longer window (the tx must still be valid when the last
-  // co-signer signs).
+  // signing window. the live execute path signs and submits within minutes, so
+  // the default is short. a multisig signing plan circulates for hours or days,
+  // so its builder passes a much longer window (the tx must still be valid when
+  // the last co-signer signs).
   timeoutSeconds: number = DEFAULT_TX_VALIDITY_SECONDS,
   // close time (unix seconds) of the latest ledger, from fetchLedgerClock or
   // AccountAuditResult.ledger. when given, maxTime is anchored to the network's
@@ -41,15 +41,15 @@ export function buildClassicTransaction(
   if (batch.operations.length === 0) {
     throw new Error("buildClassicTransaction: batch has no operations");
   }
-  // validate the TOTAL fee (feeBase per op × opCount, which is what the SDK and
-  // Horizon actually charge) against the u32 ceiling before building.
+  // validate the total fee (feeBase per op times opCount, which is what the sdk
+  // and horizon charge) against the u32 ceiling before building
   const totalFee = computeFee(feeBase, batch.operations.length);
 
   const builder = new TransactionBuilder(account, {
-    // the SDK's `fee` option is the PER-OPERATION base fee; it multiplies by the
-    // operation count internally. Pass feeBase, NOT the pre-multiplied total, or
-    // the on-chain fee becomes feeBase × opCount² (a silent over-charge that also
-    // defeats the surge cap and the u32 guard).
+    // the sdk's `fee` option is the per-operation base fee and it multiplies by
+    // the operation count itself. passing the pre-multiplied total would make the
+    // on-chain fee feeBase times opCount squared, a silent over-charge that also
+    // defeats the surge cap and the u32 guard
     fee: String(feeBase),
     networkPassphrase: network.passphrase,
     ...(batch.memo ? { memo: toSdkMemo(batch.memo) } : {}),
@@ -97,9 +97,12 @@ function computeFee(base: number, opCount: number): string {
   return total.toString();
 }
 
-// change_trust_add and close_marker are spelled out here so the builder is ready
-// before ClassicOpKind lists them; once it does, this is just ClassicOpKind
-type BuildableOpKind = ClassicOpKind | "change_trust_add" | "close_marker";
+// change_trust_add and the close marker kinds are spelled out here so the
+// builder is ready before ClassicOpKind lists them; once it does, this is just
+// ClassicOpKind. the marker has two spellings because the planner may emit
+// either: close_marker with an action, or close_marker_set followed by a
+// manage_data_delete of the marker name. both build the same two operations
+type BuildableOpKind = ClassicOpKind | "change_trust_add" | "close_marker" | "close_marker_set";
 
 function addOperation(op: BatchedOperation): xdr.Operation {
   // widened with `as` so control flow does not narrow it back to ClassicOpKind
@@ -219,6 +222,9 @@ function addOperation(op: BatchedOperation): xdr.Operation {
       if (action === "delete") return del;
       throw new Error(`close_marker action must be "set" or "delete"; got ${String(action)}`);
     }
+
+    case "close_marker_set":
+      return closeMarkerOperations(op.source)[0];
 
     case "set_options_clear_signers":
       return buildSetOptions(op);

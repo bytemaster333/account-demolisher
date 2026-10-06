@@ -386,6 +386,33 @@ describe("buildClassicTransaction close_marker", () => {
     expect(() => firstOp(batchOf(op("close_marker", { action: "toggle" })))).toThrow(/action/);
     expect(() => firstOp(batchOf(op("close_marker", {})))).toThrow(/action/);
   });
+
+  // the set-only spelling: the delete half then goes through manage_data_delete
+  // with the marker's name, which builds the same operation
+  it("builds close_marker_set plus a manage_data_delete of the marker name", () => {
+    const source = Keypair.random().publicKey();
+    const batch: ClassicBatch = {
+      operations: [
+        op("close_marker_set", {}, source),
+        {
+          kind: "manage_data_delete",
+          summary: "remove",
+          metadata: { name: CLOSE_MARKER_NAME },
+          source,
+        },
+      ],
+      destination: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+    };
+    const tx = buildClassicTransaction(batch, newSource(), TEST_NET, 100)
+      .transaction as Transaction;
+    const env = tx.toEnvelope();
+    if (env.type !== "envelopeTypeTx") throw new Error("expected a v1 envelope");
+    const [set, del] = closeMarkerOperations(source);
+    expect(env.v1.tx.operations.map((o) => o.toXdr("base64"))).toEqual([
+      set.toXdr("base64"),
+      del.toXdr("base64"),
+    ]);
+  });
 });
 
 it("refuses an operation kind the builder does not know", () => {

@@ -187,11 +187,15 @@ describe("evaluateScamHeuristics, suspicious_character", () => {
 });
 
 describe("evaluateScamHeuristics, unknown_contract", () => {
-  it("flags a soroban contract that is not on the allow-list (warning)", () => {
+  it("flags a soroban contract the app does not recognize (warning)", () => {
     const flags = evaluateScamHeuristics({ contractId: UNKNOWN_CONTRACT }, "mainnet");
     const unknown = flag(flags, "unknown_contract");
     expect(unknown.severity).toBe("warning");
     expect(unknown.detail).toMatchObject({ contractId: UNKNOWN_CONTRACT });
+    // the check is "curated or canonical", not the call allow-list
+    expect(unknown.message).toBe(
+      `Contract ${UNKNOWN_CONTRACT} is not a contract this app recognizes on mainnet.`,
+    );
   });
 
   it("does not flag a mainnet allow-listed contract", () => {

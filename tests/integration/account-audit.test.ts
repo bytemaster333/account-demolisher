@@ -306,4 +306,50 @@ describe("integration: audit merge verdicts (testnet)", () => {
     expect(line?.amount).toBe("5.0000000");
     expect(after.claimableBalances.map((c) => c.id)).toEqual([byCode.get("GATED")!.id]);
   });
+
+  // the closing account issued the asset: it claims the balance with no trustline
+  // even with auth_required set, and change_trust on its own asset is op_malformed
+  it("collects a balance of the account's own asset directly", async () => {
+    const issuer = Keypair.random();
+    const holder = Keypair.random();
+    await friendbotFund(issuer.publicKey());
+    await friendbotFund(holder.publicKey());
+    const own = new Asset("OWN", issuer.publicKey());
+    await submitAs(holder, [Operation.changeTrust({ asset: own })]);
+    await submitAs(issuer, [
+      Operation.payment({ destination: holder.publicKey(), asset: own, amount: "10" }),
+      Operation.setOptions({ setFlags: AuthRequiredFlag }),
+    ]);
+    await submitAs(holder, [
+      Operation.createClaimableBalance({
+        asset: own,
+        amount: "5",
+        claimants: [new Claimant(issuer.publicKey(), Claimant.predicateUnconditional())],
+      }),
+    ]);
+
+    const audit = await auditAccount(issuer.publicKey(), TESTNET);
+    expect(audit.flags.authRequired).toBe(true);
+    expect(audit.claimableBalances).toHaveLength(1);
+    const cb = audit.claimableBalances[0]!;
+    expect(cb).toMatchObject({ issuedByAccount: true, claimableNow: true });
+    expect(cb).not.toHaveProperty("issuerAuthRequired");
+
+    const source = await server.loadAccount(issuer.publicKey());
+    const built = buildClassicTransaction(
+      {
+        operations: [
+          { kind: "claim_claimable_balance", summary: "claim", metadata: { balanceId: cb.id } },
+        ],
+        destination: issuer.publicKey(),
+      },
+      source,
+      TESTNET,
+    );
+    const tx = built.transaction as Transaction;
+    tx.sign(issuer);
+    await server.submitTransaction(tx, { skipMemoRequiredCheck: true });
+    const after = await auditAccount(issuer.publicKey(), TESTNET);
+    expect(after.claimableBalances).toEqual([]);
+  });
 });

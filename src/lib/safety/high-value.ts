@@ -55,6 +55,8 @@ export function assessCloseValue(
   for (const cb of audit.claimableBalances) {
     if (!claimed.has(cb.id) || !isPositive(cb.amount)) continue;
     if (cb.asset.kind === "native") stroops += decimalToStroops(cb.amount);
+    // claiming the account's own asset burns it, so it moves nothing
+    else if (cb.asset.kind === "credit" && cb.asset.issuer === audit.accountId) continue;
     else unpriced += 1;
   }
 
@@ -71,15 +73,19 @@ function isPositive(amount: string): boolean {
   return false;
 }
 
-// true when the total strictly exceeds the threshold. a non-numeric total never
-// trips it, so callers pass assessCloseValue's estimatedXlm, which is always a
-// well-formed amount.
+// true when an xlm total strictly exceeds the threshold, compared in stroops. a
+// malformed total or threshold throws: a value that cannot be read must never
+// pass as small.
 export function isHighValueTotalXlm(
   totalXlm: string,
   threshold: number = HIGH_VALUE_THRESHOLD_XLM,
 ): boolean {
-  const n = Number.parseFloat(totalXlm);
-  return Number.isFinite(n) && n > threshold;
+  if (!Number.isSafeInteger(threshold) || threshold < 0) {
+    throw new RangeError(
+      `high-value threshold must be a non-negative whole number of XLM; got ${threshold}`,
+    );
+  }
+  return decimalToStroops(totalXlm) > BigInt(threshold) * 10_000_000n;
 }
 
 // which acknowledgement boxes the acknowledge step must collect before the user

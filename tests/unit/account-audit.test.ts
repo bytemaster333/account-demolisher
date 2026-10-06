@@ -38,7 +38,7 @@ vi.mock("@/lib/stellar/horizon-client", () => ({
   }),
 }));
 
-import { NetworkError, NotFoundError } from "@stellar/stellar-sdk";
+import { BadRequestError, NetworkError, NotFoundError } from "@stellar/stellar-sdk";
 import {
   assessMergeability,
   auditAccount,
@@ -226,6 +226,17 @@ describe("collectableClaimableBalanceIds", () => {
 
   it("skips balances that are not claimable now", () => {
     expect(collectableClaimableBalanceIds([], [cb("later", ACC, false)])).toEqual([]);
+  });
+
+  // an issuer claiming its own asset needs no trustline (it cannot hold one), so
+  // the claim succeeds whatever its own auth flags say
+  it("collects a balance of the account's own asset without a trustline", () => {
+    const own = {
+      ...creditCb("own", "OWN", "5"),
+      asset: { kind: "credit" as const, code: "OWN", issuer: ACC },
+      issuedByAccount: true as const,
+    };
+    expect(collectableClaimableBalanceIds([], [own])).toEqual(["own"]);
   });
 });
 
@@ -515,11 +526,82 @@ describe("auditAccount", () => {
     );
   });
 
+  // spam balances can name many issuers; one rate-limited lookup must not fail
+  // the whole audit
+  it("retries a rate-limited issuer lookup", async () => {
+    fakeHorizon.account = horizonAccount({ num_sponsoring: 0 });
+    let refusals = 1;
+    fakeHorizon.others = {
+      get [ISSUER_OPEN]() {
+        if (refusals-- > 0) return new NetworkError("Too Many Requests", { status: 429 });
+        return issuerAccount(ISSUER_OPEN, false);
+      },
+    };
+    fakeHorizon.claimable = [cbRecord("open", `OPEN:${ISSUER_OPEN}`)];
+    fakeHorizon.loads = [];
+    const audit = await auditAccount(ACC, TESTNET);
+    expect(fakeHorizon.loads.filter((id) => id === ISSUER_OPEN)).toHaveLength(2);
+    expect(
+      (audit.claimableBalances[0] as { issuerAuthRequired?: boolean }).issuerAuthRequired,
+    ).toBe(false);
+  });
+
+  it("does not retry an issuer lookup horizon refused outright", async () => {
+    fakeHorizon.account = horizonAccount({ num_sponsoring: 0 });
+    fakeHorizon.others = { [ISSUER_OPEN]: new BadRequestError("Bad Request", { status: 400 }) };
+    fakeHorizon.claimable = [cbRecord("open", `OPEN:${ISSUER_OPEN}`)];
+    fakeHorizon.loads = [];
+    await expect(auditAccount(ACC, TESTNET)).rejects.toThrow("Bad Request");
+    expect(fakeHorizon.loads.filter((id) => id === ISSUER_OPEN)).toHaveLength(1);
+  });
+
   it("surfaces an issuer lookup failure other than not-found", async () => {
     fakeHorizon.account = horizonAccount({ num_sponsoring: 0 });
     fakeHorizon.others = { [ISSUER_OPEN]: new NetworkError("Bad Gateway", { status: 502 }) };
     fakeHorizon.claimable = [cbRecord("open", `OPEN:${ISSUER_OPEN}`)];
     await expect(auditAccount(ACC, TESTNET)).rejects.toThrow("Bad Gateway");
+  });
+
+  // the account is the asset's issuer: it claims its own asset without a
+  // trustline, and change_trust on its own asset is op_malformed, so neither its
+  // auth_required flag nor an issuer lookup applies
+  it("marks a balance of the account's own asset as issued by it, with no lookup", async () => {
+    fakeHorizon.account = horizonAccount({
+      num_sponsoring: 0,
+      flags: {
+        auth_immutable: false,
+        auth_required: true,
+        auth_revocable: true,
+        auth_clawback_enabled: false,
+      },
+    });
+    fakeHorizon.claimable = [cbRecord("own", `OWN:${ACC}`)];
+    fakeHorizon.loads = [];
+    const audit = await auditAccount(ACC, TESTNET);
+    const own = audit.claimableBalances.find((c) => c.id === "own");
+    expect(own).toMatchObject({ issuedByAccount: true, claimableNow: true });
+    expect(own).not.toHaveProperty("issuerAuthRequired");
+    expect(fakeHorizon.loads).toEqual([ACC]);
+    expect(collectableClaimableBalanceIds(audit.balances, audit.claimableBalances)).toEqual([
+      "own",
+    ]);
+  });
+
+  it("counts a self-sponsored balance of its own asset as coverable", async () => {
+    fakeHorizon.account = horizonAccount({
+      num_sponsoring: 1,
+      data_attr: {},
+      flags: {
+        auth_immutable: false,
+        auth_required: true,
+        auth_revocable: false,
+        auth_clawback_enabled: false,
+      },
+    });
+    fakeHorizon.claimable = [cbRecord("own", `OWN:${ACC}`, ACC)];
+    const audit = await auditAccount(ACC, TESTNET);
+    expect(audit.sponsorship.coverable).toBe(1);
+    expect(audit.mergeability).toEqual({ mergeable: true });
   });
 
   // a self-sponsored CB the close cannot claim keeps num_sponsoring above zero

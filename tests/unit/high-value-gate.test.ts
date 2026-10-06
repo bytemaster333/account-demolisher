@@ -19,12 +19,26 @@ describe("high-value gate: trigger", () => {
     expect(isHighValueTotalXlm(String(HIGH_VALUE_THRESHOLD_XLM))).toBe(false);
     expect(isHighValueTotalXlm("10")).toBe(false);
     expect(isHighValueTotalXlm("0")).toBe(false);
-    expect(isHighValueTotalXlm("not-a-number")).toBe(false);
+    expect(isHighValueTotalXlm("1000.0000001")).toBe(true);
   });
 
   it("honours a custom threshold", () => {
     expect(isHighValueTotalXlm("150", 100)).toBe(true);
     expect(isHighValueTotalXlm("150", 200)).toBe(false);
+  });
+
+  // a total that cannot be read must never pass as small
+  it("throws on a malformed total instead of treating it as below the threshold", () => {
+    expect(() => isHighValueTotalXlm("not-a-number")).toThrow(/malformed amount/);
+    expect(() => isHighValueTotalXlm("")).toThrow(/malformed amount/);
+    expect(() => isHighValueTotalXlm("1e9")).toThrow(/malformed amount/);
+    expect(() => isHighValueTotalXlm("5000.12345678")).toThrow(/malformed amount/);
+  });
+
+  it("throws on a threshold that is not a non-negative whole number of XLM", () => {
+    expect(() => isHighValueTotalXlm("10", Number.NaN)).toThrow(/threshold/);
+    expect(() => isHighValueTotalXlm("10", -1)).toThrow(/threshold/);
+    expect(() => isHighValueTotalXlm("10", 1.5)).toThrow(/threshold/);
   });
 });
 
@@ -194,6 +208,28 @@ describe("assessCloseValue", () => {
       unpricedHoldings: 0,
       highValue: false,
     });
+  });
+
+  // the account issued the asset, so claiming it burns it and nothing moves
+  it("does not count a claim of the account's own asset as unpriced", () => {
+    const own = {
+      id: "own",
+      asset: { kind: "credit" as const, code: "OWN", issuer: ACC },
+      amount: "5",
+      sponsor: "GSPONSOR",
+      predicate: {},
+      claimants: [ACC],
+      claimableNow: true,
+    } satisfies ClaimableBalanceEntry;
+    const audit = auditWith([line({ kind: "native" }, "20")], [own]);
+    expect(
+      assessCloseValue({
+        audit,
+        creditQuotes: new Map(),
+        unpricedPositions: 0,
+        claimedBalanceIds: ["own"],
+      }),
+    ).toEqual({ estimatedXlm: "20.0000000", unpricedHoldings: 0, highValue: false });
   });
 
   it("refuses a malformed amount instead of reading it as zero", () => {
