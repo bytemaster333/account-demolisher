@@ -348,8 +348,8 @@ const ISSUER_LOOKUP_CONCURRENCY = 8;
 // tags each claimable-now credit balance the account has no trustline for with
 // its issuer's auth_required flag, one lookup per distinct issuer, each retried
 // on a rate limit or server error. a missing issuer leaves the flag unset; any
-// other failure propagates. a balance of the
-// account's own asset is tagged issuedByAccount instead and needs no lookup.
+// other failure propagates. a balance of the account's own asset is tagged
+// issuedByAccount instead and needs no lookup.
 async function withIssuerAuthRequired(
   server: Horizon.Server,
   accountId: string,
