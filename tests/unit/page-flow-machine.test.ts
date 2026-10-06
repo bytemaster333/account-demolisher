@@ -482,7 +482,12 @@ describe("what the preview found blocks the close until it is resolved", () => {
       { reviewBlockers: ["Frozen by the issuer: 5 USDC"] },
       {
         refusedConversions: [
-          { key: "contract:CTOKEN", contractId: "CTOKEN", reason: "9.00% price impact" },
+          {
+            key: "contract:CTOKEN",
+            contractId: "CTOKEN",
+            refusal: "price_impact",
+            reason: "9.00% price impact",
+          },
         ],
       },
       { emissionForfeits: [{ poolId: "CPOOL", accruedEmissions: 18_611_659n, reason: "trapped" }] },
@@ -494,6 +499,27 @@ describe("what the preview found blocks the close until it is resolved", () => {
       expect(execute).not.toHaveBeenCalled();
       actor.stop();
     }
+  });
+
+  it("does not offer to accept a price for a token with no route at all", async () => {
+    const { actor } = machineWith({
+      execute: hang,
+      preview: {
+        refusedConversions: [
+          {
+            key: "contract:CTOKEN",
+            contractId: "CTOKEN",
+            refusal: "no_route",
+            reason: "No Soroswap route from CTOKEN to XLM (no pair path exists)",
+          },
+        ],
+      },
+    });
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    expect(confirmBlockers(actor.getSnapshot().context)).toEqual([
+      "Token CTOKEN can't be converted: it has no route to XLM. Send it as-is or leave it.",
+    ]);
+    actor.stop();
   });
 
   it("names the BLND an unacknowledged forfeit would leave behind, once", async () => {
