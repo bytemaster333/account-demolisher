@@ -254,10 +254,10 @@ export function getKit(network: NetworkConfig): KitHandle {
   return StellarWalletsKit;
 }
 
-// Fully disconnect the kit: forget the selected wallet and reset its internal
-// state, so the wallet extension no longer treats the site as connected and a
-// later connect re-prompts the picker. Safe to call when the kit was never
-// initialized (no-op) and idempotent (the kit's own disconnect resets state).
+// fully disconnect the kit: forget the selected wallet and reset its state, so
+// the extension no longer treats the site as connected and a later connect opens
+// the picker again. does nothing when the kit was never initialized, and is safe
+// to repeat.
 export async function disconnectKit(): Promise<void> {
   if (initializedPassphrase === null) return;
   await StellarWalletsKit.disconnect();
@@ -278,11 +278,10 @@ function hasPersistedKitSession(): boolean {
   }
 }
 
-// Silently restore a prior kit connection after a hard refresh. The kit persists
-// the selected wallet id AND the address in localStorage and re-seeds them on
-// init, so getAddress() returns the remembered address with NO wallet prompt.
-// Returns the address if a session was persisted, or null if there is nothing to
-// restore. Skips kit init entirely when nothing was persisted.
+// restore a kit connection after a hard refresh without a wallet prompt. the kit
+// keeps the selected wallet id and the address in localStorage and re-seeds both
+// on init, so getAddress() returns the remembered address. returns null, without
+// initializing the kit, when nothing was persisted.
 export async function restoreKitSession(network: NetworkConfig): Promise<string | null> {
   if (!hasPersistedKitSession()) return null;
   getKit(network);

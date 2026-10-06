@@ -1,15 +1,15 @@
 # syntax=docker/dockerfile:1
-# Reproducible production build of Account Demolisher.
+# reproducible production build of account demolisher.
 #   docker build -t account-demolisher \
 #     --build-arg NEXT_PUBLIC_SITE_URL=https://close.example.com .
-# The app is supported only behind a reverse proxy that sets X-Forwarded-For
-# (docker-compose.yml ships one). Server-only settings (MEDIATOR_SECRET,
+# the app is supported only behind a reverse proxy that sets X-Forwarded-For
+# (docker-compose.yml ships one). server-only settings (MEDIATOR_SECRET,
 # SOROSWAP_API_KEY, TRUSTED_PROXY_HOPS, METRICS_ADMIN_TOKEN, ...) are supplied at
 # runtime; NEXT_PUBLIC_* settings are build args because next build inlines them.
 
 # base image pinned by digest (multi-arch index for node:24-slim, node 24.21.0,
 # resolved 2026-10-02) so the build is reproducible and the base can't drift under
-# the tag. Update the digest deliberately when bumping the base.
+# the tag. update the digest deliberately when bumping the base.
 FROM node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS node
 
 # pnpm is needed to install and build, never to run

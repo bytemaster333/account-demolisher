@@ -1,16 +1,15 @@
-// The active signing connector for the current session, held in module scope.
+// the active signing connector for this session, held in module scope.
 //
-// A Connector is a live object with in-memory signing capability. A pasted-seed
-// SecretKeyConnector holds the seed and must never be serialized into the Zustand
-// store or any persisted state. The store keeps only the display-side publicKey +
-// connectorKind; the connector itself lives here.
+// a connector is a live object that can sign. a pasted-seed SecretKeyConnector
+// holds the seed, so it must never go into the zustand store or any persisted
+// state: the store keeps only the publicKey and connectorKind for display.
 //
-// Module state survives App Router client-side navigation (Link / router.push do
-// not reload the page), so a connection made on /demolish stays usable on
-// /allowances. It is intentionally lost on a hard reload, at which point the
-// (non-persisted) wallet store is empty too, so the two stay consistent. Only a
-// "kit" connection can be rebuilt after that (from the wallet-kit's own persisted
-// selection); a pasted-seed connector cannot, by design.
+// module state survives client-side navigation (Link and router.push do not
+// reload the page), so a connection made on /demolish stays usable on
+// /allowances. a hard reload loses it, and the wallet store (not persisted) is
+// empty then too, so the two stay consistent. only a kit connection can be
+// rebuilt after a reload, from the kit's own persisted selection; a pasted seed
+// cannot.
 
 import type { Connector } from "./connector";
 
@@ -24,17 +23,16 @@ export function getActiveConnector(): Connector | null {
   return active;
 }
 
-// Canonical wallet teardown. EVERY disconnect path must go through here so the
-// three pieces of session state can never drift apart:
-//   1. the in-memory session connector (cleared here),
-//   2. the display store (cleared via the passed callback), and
-//   3. the wallet-kit's own persisted selection (StellarWalletsKit.disconnect).
-// The previous store-only disconnect cleared (2) alone, leaving the kit still
-// "connected" to the wallet: the extension kept the site authorized and a later
-// connect could silently reuse the stale session. A "kit" connector forwards its
-// own disconnect() to the kit; the extra disconnectKit() covers a lingering kit
-// selection with no live connector. Teardown is best-effort: the UI is already
-// disconnected, so a failing wallet hook must not leave the app stuck connected.
+// the one wallet teardown every disconnect path uses, so these three never drift
+// apart:
+//   1. the in-memory connector (cleared here),
+//   2. the display store (cleared through clearStore), and
+//   3. the kit's persisted selection (disconnectKit).
+// clearing only the store would leave the extension still authorizing the site,
+// and a later connect could quietly reuse that session. a kit connector forwards
+// its own disconnect() to the kit; disconnectKit() also covers a kit selection
+// left with no live connector. the ui is disconnected before the wallet is told,
+// so a wallet whose teardown fails cannot keep the app connected.
 export async function disconnectSession(clearStore: () => void): Promise<void> {
   const conn = active;
   active = null;

@@ -1,19 +1,19 @@
-# Self-hosting: `docker compose up --build -d`
+# self-hosting: `docker compose up --build -d`
 #
-# Two services: caddy (the reverse proxy, the only published port) and the app.
-# The app is supported only behind a proxy, so it is not published directly.
+# two services: caddy (the reverse proxy, the only published port) and the app.
+# the app is supported only behind a proxy, so it is not published directly.
 #
-# Compose reads a .env file next to this one (not committed) ONLY to fill in the
-# ${...} values below. No other variable reaches the containers: each one the
-# app reads is listed here explicitly, so unrelated .env entries never leak in.
+# compose reads a .env file next to this one (not committed) only to fill in the
+# ${...} values below. no other variable reaches the containers: each one the
+# app reads is listed here, so unrelated .env entries never leak in.
 #
-# Build-time (inlined into the client bundle; rebuild after changing them):
+# build time (inlined into the client bundle; rebuild after changing them):
 #   NEXT_PUBLIC_STELLAR_NETWORK, NEXT_PUBLIC_DEPLOYMENT_MODE,
 #   NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID, NEXT_PUBLIC_SITE_URL,
 #   NEXT_PUBLIC_SLIPPAGE_BPS, NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS
-# Runtime (app): MEDIATOR_SECRET, MEDIATOR_ALLOWED_ORIGIN, SOROSWAP_API_URL,
-#   SOROSWAP_API_KEY, METRICS_ADMIN_TOKEN
-# Runtime (proxy): SITE_ADDRESS (your domain for automatic HTTPS, default :80)
+# runtime (app): MEDIATOR_SECRET, MEDIATOR_ALLOWED_ORIGIN, SOROSWAP_API_URL,
+#   SOROSWAP_API_KEY, METRICS_ADMIN_TOKEN, TRUSTED_PROXY_HOPS
+# runtime (proxy): SITE_ADDRESS (your domain for automatic HTTPS, default :80)
 services:
   proxy:
     image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f

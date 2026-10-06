@@ -23,12 +23,11 @@ const PublicEnvSchema = z.object({
     blankToUndefined,
     z.enum(["reference", "self-hosted"]).default("reference"),
   ),
-  // WalletConnect/Reown project id (a public client-side identifier). When unset,
-  // the WalletConnect wallet is simply left out of the picker; no placeholder.
-  // optional: an empty string (a GitHub Actions secret that is not set injects
-  // "", not undefined) or a whitespace-only value means "not configured" and
-  // disables WalletConnect, rather than failing the build. A .min(1) here would
-  // run on "" before the transform could map it to undefined, so it is omitted.
+  // the walletconnect (reown) project id, a public client-side identifier. when
+  // unset, walletconnect is left out of the picker. a github actions secret that
+  // is not set arrives as "", so blank means "not configured" rather than a build
+  // failure. there is no .min(1): it would run on "" before the transform maps
+  // it to undefined.
   NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: z
     .string()
     .trim()

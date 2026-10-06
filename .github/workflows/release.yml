@@ -1,16 +1,16 @@
 name: Release
 
-# Build a release artifact and attach a SIGNED SLSA build-provenance attestation
+# build a release artifact and attach a signed slsa build-provenance attestation
 # to it, so a deployment can verify the artifact was built from this repo by this
-# workflow (satisfies the Tranche-3 "provenance-attested releases" criterion).
+# workflow (the tranche 3 "provenance-attested releases" criterion).
 #
-# Cut a GitHub Release (or push a v* tag and publish it) to trigger this. The
-# reference deployment then rsyncs the attested artifact rather than an ad-hoc
-# local build.
+# cut a github release (or push a v* tag and publish it) to trigger this. the
+# reference deployment then rsyncs the attested artifact rather than a local
+# build.
 #
-# Jobs are split by privilege. Everything that runs third-party code (install,
-# lint, tests, next build) holds a read-only token. Only the attest job can mint
-# an OIDC token, and only the publish job can write to the release; neither runs
+# jobs are split by privilege. everything that runs third-party code (install,
+# lint, tests, next build) holds a read-only token. only the attest job can mint
+# an oidc token, and only the publish job can write to the release; neither runs
 # any project or dependency code.
 on:
   release:
@@ -66,7 +66,7 @@ jobs:
       - run: pnpm format:check
       # same em dash check as ci.yml, spelled as utf-8 bytes
       - run: |
-          ! git grep -n $'\xe2\x80\x94' -- src tests public '*.ts' '*.tsx' '*.yml' '*.mjs' '*.mts' '*.sh' Dockerfile Caddyfile .env.example .dockerignore .gitignore
+          ! git grep -n $'\xe2\x80\x94' -- src tests public '*.ts' '*.tsx' '*.yml' '*.mjs' '*.mts' '*.sh' '*.md' '*.mdx' Dockerfile Caddyfile .env.example .dockerignore .gitignore
       - run: pnpm test
       # release blocker: no high or critical advisory may ship in the production
       # dependency tree of an attested artifact
