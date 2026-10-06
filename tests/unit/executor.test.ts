@@ -1,933 +1,1232 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Account, Asset, nativeToScVal, xdr, type Transaction } from "@stellar/stellar-sdk";
 
 import { AccountNotFoundError } from "@/lib/stellar/account-audit";
-import type { NetworkConfig } from "@/lib/config/networks";
+import type { PlanNode, PlanTree } from "@/lib/plan/tree";
+import { soroswapPairFor } from "@/lib/soroban/defi-auth-guard";
+import type { PathResultRef } from "@/lib/types/plan";
 
-// The FinalClassicTx branch performs three live horizon reads (auditAccount,
-// resolveCreditPaths, and the per-batch loadAccount) AFTER the soroban exits
-// have already confirmed on-chain. A transient horizon 5xx must NOT abort the
-// merge, the reads are pure/idempotent, so the executor rides out the blip with
-// a bounded retry. A deterministic answer (AccountNotFoundError / 4xx) is fatal
-// and must fail fast without wasting retries. These tests lock in both.
+import {
+  ATTACKER,
+  DEST,
+  HOSTILE_TOKEN,
+  NETWORK,
+  USDC_ISSUER,
+  USDC_SAC,
+  USER,
+  addr,
+  allowlisted,
+  fakeHorizon,
+  horizonError,
+  i128,
+  inv,
+  invokeTx,
+  makeAudit,
+  signingConnector,
+  sourceAuth,
+  transferTx,
+  u32,
+  type FakeAccount,
+} from "./orchestrator-fixtures";
 
+// only the network edges are replaced: the audit and path reads hit horizon, the
+// forward hits the mediator route. the batcher, the classic builder, the guards,
+// the allow-list and the signing are real.
 const auditAccount = vi.fn();
 const resolveCreditPaths = vi.fn();
-const batchClassicDemolition = vi.fn();
-const buildClassicTransaction = vi.fn();
 const submitMediatorForward = vi.fn();
 
 vi.mock("@/lib/stellar/account-audit", async () => {
   const actual = await vi.importActual<typeof import("@/lib/stellar/account-audit")>(
     "@/lib/stellar/account-audit",
   );
-  return {
-    ...actual,
-    auditAccount: (...args: unknown[]) => auditAccount(...args),
-  };
+  return { ...actual, auditAccount: (...args: unknown[]) => auditAccount(...args) };
 });
-
 vi.mock("@/lib/stellar/path-finder", () => ({
   resolveCreditPaths: (...args: unknown[]) => resolveCreditPaths(...args),
 }));
-
-vi.mock("@/lib/plan/classic-batcher", () => ({
-  batchClassicDemolition: (...args: unknown[]) => batchClassicDemolition(...args),
-  // the merge guard calls this against fresh state; MERGEABLE_AUDIT has no
-  // credit balances, so no credit is unroutable
-  unroutableCredits: () => [],
-}));
-
-vi.mock("@/lib/stellar/classic-builder", () => ({
-  buildClassicTransaction: (...args: unknown[]) => buildClassicTransaction(...args),
-}));
-
 vi.mock("@/lib/mediator/forward", () => ({
   submitMediatorForward: (...args: unknown[]) => submitMediatorForward(...args),
 }));
 
-// the transfer-guard is exhaustively tested on its own; here we control it to
-// exercise the executor's best-effort SKIP behavior for a held-token drain.
-const assertSafeTransferInvocation = vi.fn();
-vi.mock("@/lib/soroban/transfer-guard", () => ({
-  assertSafeTransferInvocation: (...args: unknown[]) => assertSafeTransferInvocation(...args),
-  UnsafeTransferError: class UnsafeTransferError extends Error {},
-}));
+import {
+  executePlanTreeOnChain,
+  type ConfirmationReceipt,
+  type ExecutorDeps,
+} from "@/lib/orchestrator/executor";
+import {
+  AmbiguousSubmitError,
+  CloseFailure,
+  SubmitRejectedError,
+} from "@/lib/orchestrator/failures";
+import { journalFor } from "@/lib/orchestrator/journal";
 
-// the revoke-guard has its own exhaustive tests; the RevokeAllowance branch is
-// covered by allowlist.test.ts. Here we control it so the generic-node tests
-// below can drive the shared rebuild/recovery path.
-const assertSafeRevokeInvocation = vi.fn();
-vi.mock("@/lib/soroban/revoke-guard", () => ({
-  assertSafeRevokeInvocation: (...args: unknown[]) => assertSafeRevokeInvocation(...args),
-}));
-
-// the allow-list gate is tested exhaustively in allowlist.test.ts; the generic
-// Soroban-node tests below use a dummy tx, so no-op it here.
-vi.mock("@/lib/stellar/allowlist", () => ({
-  assertTransactionAllowed: vi.fn(),
-}));
-
-// imported AFTER the mocks are registered so the executor picks them up
-import { executePlanTreeOnChain } from "@/lib/orchestrator/executor";
-import type { ExecutorDeps } from "@/lib/orchestrator/executor";
-import type { PlanTree } from "@/lib/plan/tree";
-
-const NETWORK = {
-  id: "mainnet",
-  passphrase: "Public Global Stellar Network ; September 2015",
-} as unknown as NetworkConfig;
-
-// a fresh-state audit that passes the executor's execute-time merge guard
-// (not auth-immutable, sponsors nothing foreign, no unroutable credit balances)
-const MERGEABLE_AUDIT = {
-  balances: [],
-  flags: { authImmutable: false },
-  sponsorship: { numSponsoring: 0, coverable: 0 },
-};
-
-function makeFinalClassicTree() {
-  const node = {
-    id: "final",
-    kind: "FinalClassicTx" as const,
-    dependencies: [] as string[],
-    description: "close account",
-    status: "ready",
-    metadata: {
-      kind: "FinalClassicTx" as const,
-      batches: [],
-      destination: "GDEST",
-      useMediator: false,
-    },
-  };
+function tree(...nodes: PlanNode[]): PlanTree {
   return {
-    node,
-    tree: {
-      rootNodes: [node],
-      allNodes: new Map([[node.id, node]]),
-    } as unknown as PlanTree,
+    rootNodes: nodes.filter((n) => n.dependencies.length === 0),
+    allNodes: new Map(nodes.map((n) => [n.id, n])),
   };
 }
 
-function makeDeps(overrides: Partial<ExecutorDeps> = {}): ExecutorDeps {
+function finalNode(deps: string[] = [], over: Record<string, unknown> = {}): PlanNode {
+  return {
+    id: "final-classic-tx",
+    kind: "FinalClassicTx",
+    dependencies: deps,
+    description: "close account",
+    status: "pending",
+    metadata: {
+      kind: "FinalClassicTx",
+      batches: [],
+      destination: DEST,
+      useMediator: false,
+      ...over,
+    },
+  } as PlanNode;
+}
+
+function accounts(seq = 100n): Map<string, FakeAccount> {
+  return new Map([[USER, { seq, balances: [] }]]);
+}
+
+let receiptN = 0;
+function receipt(): ConfirmationReceipt {
+  receiptN += 1;
+  return { txHash: `H${receiptN}`, ledger: receiptN };
+}
+
+function deps(
+  over: Partial<ExecutorDeps> = {},
+  table = accounts(),
+): ExecutorDeps & {
+  connector: ReturnType<typeof signingConnector>;
+  submitClassic: ReturnType<typeof vi.fn>;
+  submitSoroban: ReturnType<typeof vi.fn>;
+} {
   return {
     network: NETWORK,
-    connector: {
-      signTransaction: vi.fn(async () => ({ signedXdr: "SIGNED" })),
-    } as never,
-    horizon: {
-      loadAccount: vi.fn(async () => ({ accountId: () => "GUSER" })),
-    } as never,
-    submitClassic: vi.fn(async () => ({ txHash: "HASH", ledger: 42 })),
-    submitSoroban: vi.fn(async () => ({ txHash: "HASH", ledger: 42 })),
-    ...overrides,
-  };
+    connector: signingConnector(),
+    horizon: fakeHorizon(table),
+    submitClassic: vi.fn(async () => receipt()),
+    submitSoroban: vi.fn(async () => receipt()),
+    ...over,
+  } as never;
 }
 
-function horizon5xx(): Error {
-  const err = new Error("Bad Gateway") as Error & { response: { status: number } };
-  err.response = { status: 502 };
-  return err;
+async function run(t: PlanTree, d: ExecutorDeps, notes: string[] = []) {
+  const p = executePlanTreeOnChain({ publicKey: USER, tree: t, onNote: (n) => notes.push(n) }, d);
+  // the caller asserts on p; this only keeps a rejection from counting as
+  // unhandled while the backoff timers are drained
+  p.catch(() => {});
+  await vi.runAllTimersAsync();
+  return p;
 }
 
-describe("executePlanTreeOnChain, horizon retry on FinalClassicTx prep", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.useFakeTimers();
-    // healthy defaults; individual tests override auditAccount to inject failures
-    auditAccount.mockResolvedValue(MERGEABLE_AUDIT);
-    resolveCreditPaths.mockResolvedValue(new Map());
-    batchClassicDemolition.mockReturnValue([{ ops: [] }]);
-    buildClassicTransaction.mockReturnValue({ transaction: {} });
-  });
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.useFakeTimers();
+  auditAccount.mockResolvedValue(makeAudit());
+  resolveCreditPaths.mockResolvedValue(new Map());
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
 
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it("retries a transient horizon 5xx during merge prep and still completes", async () => {
-    // first two auditAccount calls blip, third succeeds
+describe("FinalClassicTx prep reads ride out horizon blips", () => {
+  it("retries a 5xx during merge prep and still merges", async () => {
     auditAccount
-      .mockRejectedValueOnce(horizon5xx())
-      .mockRejectedValueOnce(horizon5xx())
-      .mockResolvedValueOnce(MERGEABLE_AUDIT);
-
-    const { tree } = makeFinalClassicTree();
-    const deps = makeDeps();
-
-    const promise = executePlanTreeOnChain(
-      { publicKey: "GUSER", tree, previousReceipts: {} },
-      deps,
-    );
-    // drain the backoff sleeps (300ms, 600ms)
-    await vi.runAllTimersAsync();
-    const output = await promise;
-
+      .mockRejectedValueOnce(horizonError(502))
+      .mockRejectedValueOnce(horizonError(503))
+      .mockResolvedValueOnce(makeAudit());
+    const t = tree(finalNode());
+    const d = deps();
+    const out = await run(t, d);
     expect(auditAccount).toHaveBeenCalledTimes(3);
-    expect(output.receipts["final"]).toEqual({ txHash: "HASH", ledger: 42 });
-    expect(tree.allNodes.get("final")!.status).toBe("confirmed");
-    expect(deps.submitClassic).toHaveBeenCalledTimes(1);
+    expect(t.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
+    expect(out.receipts["final-classic-tx"]).toBeDefined();
+    // the merge really merges into the destination
+    const merge = d.connector.signed[0]!;
+    expect(merge.operations[0]).toMatchObject({ type: "accountMerge", destination: DEST });
   });
 
-  it("does NOT retry AccountNotFoundError, fails fast with no wasted attempts", async () => {
-    auditAccount.mockRejectedValue(new AccountNotFoundError("GUSER"));
+  it("retries a 429 instead of failing on a rate limit", async () => {
+    auditAccount.mockRejectedValueOnce(horizonError(429)).mockResolvedValueOnce(makeAudit());
+    const t = tree(finalNode());
+    await run(t, deps());
+    expect(auditAccount).toHaveBeenCalledTimes(2);
+    expect(t.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
+  });
 
-    const { tree } = makeFinalClassicTree();
-    const deps = makeDeps();
-
-    const promise = executePlanTreeOnChain(
-      { publicKey: "GUSER", tree, previousReceipts: {} },
-      deps,
-    );
-    // attach the rejection expectation before draining timers so the rejection
-    // is always handled (avoids a dangling unhandled-rejection warning)
-    const settled = expect(promise).rejects.toBeInstanceOf(AccountNotFoundError);
-    await vi.runAllTimersAsync();
-    await settled;
+  it("does not retry a missing account and says the account is gone", async () => {
+    auditAccount.mockRejectedValue(new AccountNotFoundError(USER));
+    const t = tree(finalNode());
+    const d = deps();
+    const p = run(t, d);
+    await expect(p).rejects.toMatchObject({ kind: "not_mergeable" });
     expect(auditAccount).toHaveBeenCalledTimes(1);
-    expect(deps.submitClassic).not.toHaveBeenCalled();
+    expect(d.submitClassic).not.toHaveBeenCalled();
   });
 
-  it("blocks the merge when the Soroban re-probe still finds an open position (SEC-10)", async () => {
-    auditAccount.mockResolvedValue(MERGEABLE_AUDIT);
-    const { tree } = makeFinalClassicTree();
-    const deps = makeDeps({
-      reprobeSorobanPositions: async () =>
-        ({
-          blend: [{ poolId: "P" }],
-          backstop: [],
-          aquarius: [],
-          soroswap: [],
-          fxdao: [],
-          errors: [],
-        }) as never,
-    });
+  it("does not retry a 4xx", async () => {
+    const err = horizonError(400, "Bad Request");
+    auditAccount.mockRejectedValue(err);
+    await expect(run(tree(finalNode()), deps())).rejects.toBe(err);
+    expect(auditAccount).toHaveBeenCalledTimes(1);
+  });
 
-    const promise = executePlanTreeOnChain(
-      { publicKey: "GUSER", tree, previousReceipts: {} },
-      deps,
+  it("gives up after a persistent 5xx", async () => {
+    auditAccount.mockRejectedValue(horizonError(502, "Bad Gateway"));
+    const d = deps();
+    await expect(run(tree(finalNode()), d)).rejects.toThrow(/Bad Gateway/);
+    expect(auditAccount).toHaveBeenCalledTimes(3);
+    expect(d.submitClassic).not.toHaveBeenCalled();
+  });
+
+  it("refuses to sign when fresh state is no longer mergeable", async () => {
+    auditAccount.mockResolvedValue(
+      makeAudit({
+        flags: {
+          authImmutable: true,
+          authRequired: false,
+          authRevocable: false,
+          authClawbackEnabled: false,
+        },
+      }),
     );
-    const settled = expect(promise).rejects.toThrow(/Soroban DeFi position\(s\) still open/);
-    await vi.runAllTimersAsync();
-    await settled;
-    expect(deps.submitClassic).not.toHaveBeenCalled();
+    const d = deps();
+    await expect(run(tree(finalNode()), d)).rejects.toThrow(
+      /account_merge blocked: AUTH_IMMUTABLE/,
+    );
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
+  });
+});
+
+describe("FinalClassicTx soroban re-probe", () => {
+  const empty = { blend: [], backstop: [], aquarius: [], soroswap: [], fxdao: [], errors: [] };
+
+  it("blocks the merge while a position is still open", async () => {
+    const d = deps({
+      reprobeSorobanPositions: async () => ({ ...empty, blend: [{ poolId: "P" }] }) as never,
+    });
+    await expect(run(tree(finalNode()), d)).rejects.toThrow(/position\(s\) still open/);
+    expect(d.submitClassic).not.toHaveBeenCalled();
   });
 
-  it("blocks the merge when the Soroban re-probe itself fails (fail-closed)", async () => {
-    auditAccount.mockResolvedValue(MERGEABLE_AUDIT);
-    const { tree } = makeFinalClassicTree();
-    const deps = makeDeps({
+  it("blocks the merge when a protocol could not be read (fail closed)", async () => {
+    const d = deps({
+      reprobeSorobanPositions: async () =>
+        ({ ...empty, errors: [{ protocol: "blend", message: "429" }] }) as never,
+    });
+    await expect(run(tree(finalNode()), d)).rejects.toMatchObject({ kind: "network" });
+    expect(d.submitClassic).not.toHaveBeenCalled();
+  });
+
+  it("blocks the merge when the re-probe throws", async () => {
+    const d = deps({
       reprobeSorobanPositions: async () => {
         throw new Error("discovery RPC unavailable");
       },
     });
-
-    const promise = executePlanTreeOnChain(
-      { publicKey: "GUSER", tree, previousReceipts: {} },
-      deps,
-    );
-    const settled = expect(promise).rejects.toThrow(/discovery RPC unavailable/);
-    await vi.runAllTimersAsync();
-    await settled;
-    expect(deps.submitClassic).not.toHaveBeenCalled();
+    await expect(run(tree(finalNode()), d)).rejects.toThrow(/discovery RPC unavailable/);
+    expect(d.submitClassic).not.toHaveBeenCalled();
   });
 
-  it("blocks the merge when the re-probe cannot confirm a protocol (empty arrays + errors, fail-closed)", async () => {
-    // The real failure mode: getPositions uses allSettled, so a rate-limited /
-    // timed-out protocol probe returns an EMPTY array for that protocol and
-    // records the failure in errors[]. An empty-array-with-error must NOT read
-    // as "no positions" — otherwise an undiscovered position is merged around.
-    auditAccount.mockResolvedValue(MERGEABLE_AUDIT);
-    const { tree } = makeFinalClassicTree();
-    const deps = makeDeps({
-      reprobeSorobanPositions: async () =>
-        ({
-          blend: [],
-          backstop: [],
-          aquarius: [],
-          soroswap: [],
-          fxdao: [],
-          errors: [{ protocol: "blend", message: "429 Too Many Requests" }],
-        }) as never,
-    });
-
-    const promise = executePlanTreeOnChain(
-      { publicKey: "GUSER", tree, previousReceipts: {} },
-      deps,
-    );
-    const settled = expect(promise).rejects.toThrow(/could not confirm/i);
-    await vi.runAllTimersAsync();
-    await settled;
-    expect(deps.submitClassic).not.toHaveBeenCalled();
-  });
-
-  it("proceeds with the merge when the Soroban re-probe finds nothing open", async () => {
-    auditAccount.mockResolvedValue(MERGEABLE_AUDIT);
-    const { tree } = makeFinalClassicTree();
-    const deps = makeDeps({
-      reprobeSorobanPositions: async () =>
-        ({ blend: [], backstop: [], aquarius: [], soroswap: [], fxdao: [], errors: [] }) as never,
-    });
-
-    const promise = executePlanTreeOnChain(
-      { publicKey: "GUSER", tree, previousReceipts: {} },
-      deps,
-    );
-    await vi.runAllTimersAsync();
-    await promise;
-    expect(tree.allNodes.get("final")!.status).toBe("confirmed");
-    expect(deps.submitClassic).toHaveBeenCalledTimes(1);
-  });
-
-  it("does NOT retry a deterministic 4xx, fails fast", async () => {
-    const err = new Error("Bad Request") as Error & { response: { status: number } };
-    err.response = { status: 400 };
-    auditAccount.mockRejectedValue(err);
-
-    const { tree } = makeFinalClassicTree();
-    const deps = makeDeps();
-
-    const promise = executePlanTreeOnChain(
-      { publicKey: "GUSER", tree, previousReceipts: {} },
-      deps,
-    );
-    const settled = expect(promise).rejects.toBe(err);
-    await vi.runAllTimersAsync();
-    await settled;
-    expect(auditAccount).toHaveBeenCalledTimes(1);
-  });
-
-  it("gives up after exhausting retries on a persistent 5xx", async () => {
-    auditAccount.mockRejectedValue(horizon5xx());
-
-    const { tree } = makeFinalClassicTree();
-    const deps = makeDeps();
-
-    const promise = executePlanTreeOnChain(
-      { publicKey: "GUSER", tree, previousReceipts: {} },
-      deps,
-    );
-    const settled = expect(promise).rejects.toThrow(/Bad Gateway/);
-    await vi.runAllTimersAsync();
-    await settled;
-    expect(auditAccount).toHaveBeenCalledTimes(3);
-    expect(deps.submitClassic).not.toHaveBeenCalled();
-  });
-
-  it("refuses to build/sign the merge when fresh state is no longer mergeable", async () => {
-    // between preview and execute the account became auth-immutable; the merge
-    // guard must throw BEFORE anything is signed, not commit a doomed batch.
-    auditAccount.mockResolvedValue({
-      balances: [],
-      flags: { authImmutable: true },
-      sponsorship: { numSponsoring: 0, coverable: 0 },
-    });
-
-    const { tree } = makeFinalClassicTree();
-    const deps = makeDeps();
-
-    const promise = executePlanTreeOnChain(
-      { publicKey: "GUSER", tree, previousReceipts: {} },
-      deps,
-    );
-    const settled = expect(promise).rejects.toThrow(/account_merge blocked: AUTH_IMMUTABLE/);
-    await vi.runAllTimersAsync();
-    await settled;
-    expect(deps.connector.signTransaction).not.toHaveBeenCalled();
-    expect(deps.submitClassic).not.toHaveBeenCalled();
+  it("merges when nothing is open", async () => {
+    const t = tree(finalNode());
+    await run(t, deps({ reprobeSorobanPositions: async () => empty as never }));
+    expect(t.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
   });
 });
 
-describe("executePlanTreeOnChain, merge fee/reprice retry", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.useFakeTimers();
-    auditAccount.mockResolvedValue(MERGEABLE_AUDIT);
-    resolveCreditPaths.mockResolvedValue(new Map());
-    batchClassicDemolition.mockReturnValue([{ ops: [] }]);
-    buildClassicTransaction.mockReturnValue({ transaction: {} });
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it("retries with a higher fee on tx_insufficient_fee, then succeeds", async () => {
-    const deps = makeDeps();
-    (deps.submitClassic as ReturnType<typeof vi.fn>)
-      .mockRejectedValueOnce(
-        new Error('submitClassic rejected: {"transaction":"tx_insufficient_fee"}'),
-      )
-      .mockResolvedValueOnce({ txHash: "HASH2", ledger: 43 });
-
-    const { tree } = makeFinalClassicTree();
-    const promise = executePlanTreeOnChain(
-      { publicKey: "GUSER", tree, previousReceipts: {} },
-      deps,
-    );
-    await vi.runAllTimersAsync();
-    const output = await promise;
-
-    // re-audited on retry, and the second build bid a strictly higher fee
-    expect(auditAccount).toHaveBeenCalledTimes(2);
-    const fees = (buildClassicTransaction as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[3]);
-    expect(fees[1]).toBeGreaterThan(fees[0]);
-    expect(output.receipts["final"]).toEqual({ txHash: "HASH2", ledger: 43 });
-  });
-
-  it("retries on op_under_dest_min (re-resolving paths) without changing the fee", async () => {
-    const deps = makeDeps();
-    (deps.submitClassic as ReturnType<typeof vi.fn>)
-      .mockRejectedValueOnce(
-        new Error('submitClassic rejected: {"operations":["op_under_dest_min"]}'),
-      )
-      .mockResolvedValueOnce({ txHash: "HASH2", ledger: 44 });
-
-    const { tree } = makeFinalClassicTree();
-    const promise = executePlanTreeOnChain(
-      { publicKey: "GUSER", tree, previousReceipts: {} },
-      deps,
-    );
-    await vi.runAllTimersAsync();
-    await promise;
-
-    // paths re-resolved on the retry; fee held steady (price, not congestion)
-    expect(resolveCreditPaths).toHaveBeenCalledTimes(2);
-    const fees = (buildClassicTransaction as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[3]);
-    expect(fees[1]).toBe(fees[0]);
-  });
-
-  it("does NOT retry a deleted-issuer disposal (op_no_issuer is terminal), fails fast", async () => {
-    // adversarial corpus: the account holds a credit whose issuer account was
-    // deleted, so returning it to its issuer fails with op_no_issuer. This is
-    // deterministic (retrying can never succeed), so it must NOT be classified as
-    // recoverable: submit exactly once and surface the error, never loop or strand.
-    const deps = makeDeps();
-    (deps.submitClassic as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new Error('submitClassic rejected: {"operations":["op_no_issuer"]}'),
-    );
-
-    const { tree } = makeFinalClassicTree();
-    const promise = executePlanTreeOnChain(
-      { publicKey: "GUSER", tree, previousReceipts: {} },
-      deps,
-    );
-    const settled = expect(promise).rejects.toThrow(/op_no_issuer/);
-    await vi.runAllTimersAsync();
-    await settled;
-    expect(deps.submitClassic).toHaveBeenCalledTimes(1);
-    expect(auditAccount).toHaveBeenCalledTimes(1);
-  });
-
-  it("recovers from a stale sequence (tx_bad_seq): re-audits, rebuilds in-sequence, succeeds", async () => {
-    const deps = makeDeps();
-    // the account's sequence advanced between build and submit; the retry reloads
-    // the account (fresh sequence) and rebuilds the merge so it is in-sequence.
-    (deps.submitClassic as ReturnType<typeof vi.fn>)
-      .mockRejectedValueOnce(new Error('submitClassic rejected: {"transaction":"tx_bad_seq"}'))
-      .mockResolvedValueOnce({ txHash: "HASH2", ledger: 45 });
-
-    const { tree } = makeFinalClassicTree();
-    const promise = executePlanTreeOnChain(
-      { publicKey: "GUSER", tree, previousReceipts: {} },
-      deps,
-    );
-    await vi.runAllTimersAsync();
-    const output = await promise;
-
-    // re-audited on the retry (fresh sequence); fee held steady (not congestion)
-    expect(auditAccount).toHaveBeenCalledTimes(2);
-    const fees = (buildClassicTransaction as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[3]);
-    expect(fees[1]).toBe(fees[0]);
-    expect(output.receipts["final"]).toEqual({ txHash: "HASH2", ledger: 45 });
-  });
-
-  it("gives up after MAX attempts on a persistent tx_bad_seq (bounded, fails loudly)", async () => {
-    const deps = makeDeps();
-    (deps.submitClassic as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new Error('submitClassic rejected: {"transaction":"tx_bad_seq"}'),
-    );
-
-    const { tree } = makeFinalClassicTree();
-    const promise = executePlanTreeOnChain(
-      { publicKey: "GUSER", tree, previousReceipts: {} },
-      deps,
-    );
-    const settled = expect(promise).rejects.toThrow(/tx_bad_seq/);
-    await vi.runAllTimersAsync();
-    await settled;
-    // a genuine (non-race) bad-seq isn't cleared by rebuilding, so the bounded
-    // retry exhausts MAX_MERGE_ATTEMPTS and then fails rather than looping.
-    expect(deps.submitClassic).toHaveBeenCalledTimes(3);
-  });
-
-  it("bids a surge-aware fee from feeStats on the first attempt", async () => {
-    const deps = makeDeps({
-      horizon: {
-        loadAccount: vi.fn(async () => ({ accountId: () => "GUSER" })),
-        feeStats: vi.fn(async () => ({ max_fee: { p90: "5000" } })),
-      } as never,
-    });
-
-    const { tree } = makeFinalClassicTree();
-    const promise = executePlanTreeOnChain(
-      { publicKey: "GUSER", tree, previousReceipts: {} },
-      deps,
-    );
-    await vi.runAllTimersAsync();
-    await promise;
-
-    const firstFee = (buildClassicTransaction as ReturnType<typeof vi.fn>).mock.calls[0]![3];
-    expect(firstFee).toBe(5000);
-  });
-
-  it("gives up after MAX attempts on a persistent fee rejection", async () => {
-    const deps = makeDeps();
-    (deps.submitClassic as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new Error('submitClassic rejected: {"transaction":"tx_insufficient_fee"}'),
-    );
-
-    const { tree } = makeFinalClassicTree();
-    const promise = executePlanTreeOnChain(
-      { publicKey: "GUSER", tree, previousReceipts: {} },
-      deps,
-    );
-    const settled = expect(promise).rejects.toThrow(/tx_insufficient_fee/);
-    await vi.runAllTimersAsync();
-    await settled;
-    // MAX_MERGE_ATTEMPTS = 3
-    expect(deps.submitClassic).toHaveBeenCalledTimes(3);
-  });
-});
-
-// The MediatorForward hop is the ONLY leg that reaches the exchange, and a
-// swallowed forward failure would falsely report the CEX deposit as delivered.
-// These lock in that the branch confirms only on a real forward and throws (never
-// returns a phantom success) on failure, carrying the CEX memo through verbatim.
-function makeMediatorForwardTree() {
-  const node = {
-    id: "forward",
-    kind: "MediatorForward" as const,
-    dependencies: [] as string[],
-    description: "forward to exchange",
-    status: "ready",
-    metadata: {
-      kind: "MediatorForward" as const,
-      mediatorPublicKey: "GMEDIATOR",
-      flowToken: "FLOWTOKEN",
-      ultimateDestination: "GEXCHANGE",
-      memo: { type: "id" as const, value: "12345" },
-    },
-  };
-  return {
-    node,
-    tree: {
-      rootNodes: [node],
-      allNodes: new Map([[node.id, node]]),
-    } as unknown as PlanTree,
-  };
-}
-
-describe("executePlanTreeOnChain, MediatorForward honesty", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("confirms the forward with the returned hash and passes the CEX memo through", async () => {
-    submitMediatorForward.mockResolvedValue({ ok: true, txHash: "FWDHASH" });
-    const { tree } = makeMediatorForwardTree();
-    const deps = makeDeps();
-
-    const output = await executePlanTreeOnChain(
-      { publicKey: "GUSER", tree, previousReceipts: {} },
-      deps,
-    );
-
-    expect(tree.allNodes.get("forward")!.status).toBe("confirmed");
-    expect(output.receipts["forward"]).toEqual({ txHash: "FWDHASH", ledger: 0 });
-    expect(submitMediatorForward).toHaveBeenCalledTimes(1);
-    const input = submitMediatorForward.mock.calls[0]![0] as {
-      memo?: unknown;
-      destination?: string;
-    };
-    // the full memo (type + value) must reach the exchange verbatim on this hop
-    expect(input.memo).toEqual({ type: "id", value: "12345" });
-    expect(input.destination).toBe("GEXCHANGE");
-  });
-
-  it("marks the node failed and rejects (never phantom success) when the forward fails", async () => {
-    submitMediatorForward.mockResolvedValue({ ok: false, error: "no native balance" });
-    const { tree } = makeMediatorForwardTree();
-    const deps = makeDeps();
-
-    await expect(
-      executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps),
-    ).rejects.toThrow(/MediatorForward failed: no native balance/);
-
-    expect(tree.allNodes.get("forward")!.status).toBe("failed");
-    expect(tree.allNodes.get("forward")!.error).toBe("no native balance");
-    // no receipt is recorded for a failed forward: a failed hop leaves no
-    // confirmed trace (belt-and-suspenders on the never-phantom-success guarantee)
-    expect(tree.allNodes.get("forward")!.executed).toBeUndefined();
-  });
-});
-
-// A discovered standalone SEP-41 token is airdrop-reachable (attacker-controlled),
-// so its auto-drain must be BEST-EFFORT: a failing or unsafe drain is SKIPPED, and
-// because a skipped dependency still lets the merge proceed, one un-drainable token
-// can never wedge the close. These lock in that fail-open-for-the-close behavior.
-function makeDrainThenMergeTree() {
-  const drain = {
-    id: "drain",
-    kind: "TransferAsIs" as const,
-    dependencies: [] as string[],
-    status: "pending",
-    metadata: {
-      kind: "TransferAsIs" as const,
-      asset: {
-        kind: "contract" as const,
-        contractId: "CDRAINTOKENAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1",
+describe("FinalClassicTx fee bid and in-call rebuilds", () => {
+  it("bids from fee_charged, not max_fee", async () => {
+    const table = accounts();
+    const d = deps(
+      {
+        horizon: fakeHorizon(table, {
+          feeStats: vi.fn(async () => ({
+            fee_charged: { p90: "6970" },
+            max_fee: { p90: "1000000" },
+          })) as never,
+        }),
       },
-      amount: 500n,
-      destination: "GDEST",
-      // dummy tx: the guard and the connector are mocked, so it is never inspected
-      transaction: {} as never,
-    },
-  };
-  const final = {
-    id: "final",
-    kind: "FinalClassicTx" as const,
-    dependencies: ["drain"],
-    status: "pending",
-    metadata: {
-      kind: "FinalClassicTx" as const,
-      batches: [],
-      destination: "GDEST",
-      useMediator: false,
-    },
-  };
-  return {
-    tree: {
-      rootNodes: [drain],
-      allNodes: new Map<string, typeof drain | typeof final>([
-        [drain.id, drain],
-        [final.id, final],
-      ]),
-    } as unknown as PlanTree,
-  };
-}
-
-describe("executePlanTreeOnChain, held-token drain is best-effort (never wedges the close)", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    auditAccount.mockResolvedValue(MERGEABLE_AUDIT);
-    resolveCreditPaths.mockResolvedValue(new Map());
-    batchClassicDemolition.mockReturnValue([{ ops: [] }]);
-    buildClassicTransaction.mockReturnValue({ transaction: {} });
-    // default: the guard passes (no-op)
-    assertSafeTransferInvocation.mockReset();
-  });
-
-  it("skips a drain whose transfer reverts (griefing token) and still completes the merge", async () => {
-    const deps = makeDeps();
-    (deps.submitSoroban as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new Error("transfer reverted"),
+      table,
     );
-    const { tree } = makeDrainThenMergeTree();
-
-    await executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
-
-    // the drain is SKIPPED (not failed), so the merge's dependency check passes
-    expect(tree.allNodes.get("drain")!.status).toBe("skipped");
-    expect(tree.allNodes.get("drain")!.error).toMatch(/Token drain skipped/);
-    expect(tree.allNodes.get("final")!.status).toBe("confirmed");
-    expect(deps.submitClassic).toHaveBeenCalledTimes(1);
+    await run(tree(finalNode()), d);
+    // a single-op merge at 6970 stroops per op, not the 0.1 XLM cap
+    expect(d.connector.signed[0]!.fee).toBe("6970");
   });
 
-  it("skips a drain whose auth tree fails the guard (hostile token) WITHOUT signing it, and still merges", async () => {
-    assertSafeTransferInvocation.mockImplementation(() => {
-      throw new Error("auth[0] carries 1 sub-invocation(s)");
+  it("caps the bid at what the account can spend above its reserves", async () => {
+    const table = accounts();
+    // 1.0000500 XLM with a 0.5 XLM base reserve and no subentries: 500 stroops
+    // spendable, so a one-op merge may bid at most 500 even though fees ran high
+    auditAccount.mockResolvedValue(
+      makeAudit({
+        balances: [
+          {
+            asset: { kind: "native" },
+            amount: "1.0000500",
+            buyingLiabilities: "0",
+            sellingLiabilities: "0",
+          },
+        ],
+      }),
+    );
+    const ledgers = () => ({
+      order: () => ({
+        limit: () => ({
+          call: async () => ({ records: [{ base_reserve_in_stroops: 5_000_000 }] }),
+        }),
+      }),
     });
-    const deps = makeDeps();
-    const { tree } = makeDrainThenMergeTree();
-
-    await executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
-
-    expect(tree.allNodes.get("drain")!.status).toBe("skipped");
-    // the unsafe transfer was never submitted (guard rejected it before signing)
-    expect(deps.submitSoroban).not.toHaveBeenCalled();
-    expect(tree.allNodes.get("final")!.status).toBe("confirmed");
-    expect(deps.submitClassic).toHaveBeenCalledTimes(1);
-  });
-});
-
-// The opt-in held-token conversion (ConvertSorobanToXLM, a Soroswap-router swap)
-// is likewise best-effort: an unroutable/failing swap must SKIP, never wedge the
-// close, so the merge still completes.
-function makeConvertThenMergeTree() {
-  const convert = {
-    id: "convert",
-    kind: "ConvertSorobanToXLM" as const,
-    dependencies: [] as string[],
-    status: "pending",
-    metadata: {
-      kind: "ConvertSorobanToXLM" as const,
-      asset: {
-        kind: "contract" as const,
-        contractId: "CHELDTOKENAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1",
+    const d = deps(
+      {
+        horizon: fakeHorizon(table, {
+          feeStats: vi.fn(async () => ({ fee_charged: { p90: "800000" } })) as never,
+          ledgers: ledgers as never,
+        }),
       },
-      amount: 500n,
-      transaction: {} as never,
-    },
-  };
-  const final = {
-    id: "final",
-    kind: "FinalClassicTx" as const,
-    dependencies: ["convert"],
-    status: "pending",
-    metadata: {
-      kind: "FinalClassicTx" as const,
-      batches: [],
-      destination: "GDEST",
-      useMediator: false,
-    },
-  };
-  return {
-    tree: {
-      rootNodes: [convert],
-      allNodes: new Map<string, typeof convert | typeof final>([
-        [convert.id, convert],
-        [final.id, final],
-      ]),
-    } as unknown as PlanTree,
-  };
-}
-
-describe("executePlanTreeOnChain, held-token conversion is best-effort", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    auditAccount.mockResolvedValue(MERGEABLE_AUDIT);
-    resolveCreditPaths.mockResolvedValue(new Map());
-    batchClassicDemolition.mockReturnValue([{ ops: [] }]);
-    buildClassicTransaction.mockReturnValue({ transaction: {} });
-  });
-
-  it("skips an unroutable token conversion (rebuild/simulate fails) and still merges", async () => {
-    // an unroutable token has no Soroswap route, so the rebuild's simulate throws
-    const rebuildSorobanNode = vi.fn(async () => {
-      throw new Error("could not simulate swap to derive slippage floor: no path");
-    });
-    const deps = makeDeps({ rebuildSorobanNode });
-    const { tree } = makeConvertThenMergeTree();
-
-    await executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
-
-    expect(tree.allNodes.get("convert")!.status).toBe("skipped");
-    expect(tree.allNodes.get("convert")!.error).toMatch(/Token conversion skipped/);
-    // the swap never submitted, yet the close completed
-    expect(deps.submitSoroban).not.toHaveBeenCalled();
-    expect(tree.allNodes.get("final")!.status).toBe("confirmed");
-    expect(deps.submitClassic).toHaveBeenCalledTimes(1);
-  });
-});
-
-// A single generic DeFi Soroban node (WithdrawBlend), which exercises the shared
-// signAndSubmitSorobanNode rebuild/recovery path. The allow-list gate is mocked
-// no-op above (its own coverage is in allowlist.test.ts), and the connector is
-// mocked, so the dummy pre-built tx is never inspected.
-function makeSorobanNodeTree() {
-  const node = {
-    id: "soroban",
-    kind: "WithdrawBlend" as const,
-    dependencies: [] as string[],
-    status: "pending",
-    metadata: {
-      kind: "WithdrawBlend" as const,
-      // dummy pre-built tx (the preview build); the connector is mocked so it is
-      // never inspected. rebuildSorobanNode is mocked, so it stays in place.
-      transaction: {} as never,
-    },
-  };
-  return {
-    node,
-    tree: {
-      rootNodes: [node],
-      allNodes: new Map([[node.id, node]]),
-    } as unknown as PlanTree,
-  };
-}
-
-describe("executePlanTreeOnChain, Soroban nodes are rebuilt fresh before signing + recover", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("rebuilds the node against fresh state immediately before signing (A1)", async () => {
-    const rebuildSorobanNode = vi.fn(async () => {});
-    const deps = makeDeps({ rebuildSorobanNode });
-    const { tree, node } = makeSorobanNodeTree();
-
-    await executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
-
-    // the fresh rebuild ran once, for THIS node, before the single submit
-    expect(rebuildSorobanNode).toHaveBeenCalledTimes(1);
-    expect(rebuildSorobanNode).toHaveBeenCalledWith(node, "GUSER");
-    expect(deps.submitSoroban).toHaveBeenCalledTimes(1);
-    expect(node.status).toBe("confirmed");
-  });
-
-  it("recovers from a stale sequence (tx_bad_seq) by rebuilding and retrying (A2)", async () => {
-    const rebuildSorobanNode = vi.fn(async () => {});
-    const deps = makeDeps({ rebuildSorobanNode });
-    (deps.submitSoroban as ReturnType<typeof vi.fn>)
-      .mockRejectedValueOnce(new Error("submitSoroban: sendTransaction returned tx_bad_seq"))
-      .mockResolvedValueOnce({ txHash: "OK", ledger: 9 });
-    const { tree, node } = makeSorobanNodeTree();
-
-    const output = await executePlanTreeOnChain(
-      { publicKey: "GUSER", tree, previousReceipts: {} },
-      deps,
+      table,
     );
-
-    // rebuilt again on the retry (fresh sequence), then submitted successfully
-    expect(rebuildSorobanNode).toHaveBeenCalledTimes(2);
-    expect(deps.submitSoroban).toHaveBeenCalledTimes(2);
-    expect(node.status).toBe("confirmed");
-    expect(output.receipts["soroban"]).toEqual({ txHash: "OK", ledger: 9 });
+    await run(tree(finalNode()), d);
+    expect(d.connector.signed[0]!.fee).toBe("500");
   });
 
-  it("recovers from a changed/expired footprint by re-simulating and retrying (A3)", async () => {
-    const rebuildSorobanNode = vi.fn(async () => {});
-    const deps = makeDeps({ rebuildSorobanNode });
-    (deps.submitSoroban as ReturnType<typeof vi.fn>)
-      .mockRejectedValueOnce(new Error("transaction simulation failed: restorePreamble required"))
-      .mockResolvedValueOnce({ txHash: "OK2", ledger: 10 });
-    const { tree, node } = makeSorobanNodeTree();
-
-    await executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
-
-    expect(rebuildSorobanNode).toHaveBeenCalledTimes(2);
-    expect(node.status).toBe("confirmed");
-  });
-
-  it("recovers from an on-chain footprint trap (time-dependent write under-declared) by re-simulating and retrying (A3b)", async () => {
-    const rebuildSorobanNode = vi.fn(async () => {});
-    const deps = makeDeps({ rebuildSorobanNode });
-    // the tx simulated clean but trapped on-chain writing a key outside its
-    // declared footprint (e.g. Blend emission accrual, a time-dependent write):
-    // the decoded reason carries that signal, so a rebuild re-simulates the full
-    // write-set and the retry lands. Distinct from a bare revert (below), which is
-    // NOT retried.
-    (deps.submitSoroban as ReturnType<typeof vi.fn>)
+  it("retries at the network minimum after tx_insufficient_balance", async () => {
+    const table = accounts();
+    const d = deps(
+      {
+        horizon: fakeHorizon(table, {
+          feeStats: vi.fn(async () => ({ fee_charged: { p90: "20000" } })) as never,
+        }),
+      },
+      table,
+    );
+    d.submitClassic
       .mockRejectedValueOnce(
-        new Error(
-          'submitSoroban: transaction HASH failed on-chain: {"value":"scecExceededLimit"} trying to access contract data key outside of the footprint',
-        ),
+        new SubmitRejectedError({ transaction: "tx_insufficient_balance" }, 400),
       )
-      .mockResolvedValueOnce({ txHash: "OK3", ledger: 11 });
-    const { tree, node } = makeSorobanNodeTree();
-
-    await executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
-
-    expect(rebuildSorobanNode).toHaveBeenCalledTimes(2);
-    expect(deps.submitSoroban).toHaveBeenCalledTimes(2);
-    expect(node.status).toBe("confirmed");
+      .mockResolvedValueOnce(receipt());
+    const t = tree(finalNode());
+    await run(t, d);
+    expect(d.connector.signed.map((tx) => tx.fee)).toEqual(["20000", "100"]);
+    expect(t.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
   });
 
-  it("gives up after MAX attempts on a persistent recoverable failure (bounded)", async () => {
-    const rebuildSorobanNode = vi.fn(async () => {});
-    const deps = makeDeps({ rebuildSorobanNode });
-    (deps.submitSoroban as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new Error("submitSoroban: sendTransaction returned tx_bad_seq"),
+  it("refuses up front when even the minimum fee is not covered", async () => {
+    auditAccount.mockResolvedValue(
+      makeAudit({
+        balances: [
+          {
+            asset: { kind: "native" },
+            amount: "1.0000050",
+            buyingLiabilities: "0",
+            sellingLiabilities: "0",
+          },
+        ],
+      }),
     );
-    const { tree } = makeSorobanNodeTree();
-
-    await expect(
-      executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps),
-    ).rejects.toThrow(/tx_bad_seq/);
-    expect(deps.submitSoroban).toHaveBeenCalledTimes(3);
+    const table = accounts();
+    const ledgers = () => ({
+      order: () => ({
+        limit: () => ({
+          call: async () => ({ records: [{ base_reserve_in_stroops: 5_000_000 }] }),
+        }),
+      }),
+    });
+    const d = deps({ horizon: fakeHorizon(table, { ledgers: ledgers as never }) }, table);
+    await expect(run(tree(finalNode()), d)).rejects.toMatchObject({ kind: "not_mergeable" });
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
   });
 
-  it("does NOT retry a non-recoverable failure (contract revert), even with a rebuild callback", async () => {
-    const rebuildSorobanNode = vi.fn(async () => {});
-    const deps = makeDeps({ rebuildSorobanNode });
-    (deps.submitSoroban as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new Error("submitSoroban: transaction HASH failed on-chain"),
-    );
-    const { tree } = makeSorobanNodeTree();
-
-    await expect(
-      executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps),
-    ).rejects.toThrow(/failed on-chain/);
-    // a genuine revert is not a seq/footprint race, so it is submitted exactly once
-    expect(deps.submitSoroban).toHaveBeenCalledTimes(1);
+  it("escalates the fee on tx_insufficient_fee", async () => {
+    const d = deps();
+    d.submitClassic
+      .mockRejectedValueOnce(new SubmitRejectedError({ transaction: "tx_insufficient_fee" }, 400))
+      .mockResolvedValueOnce(receipt());
+    await run(tree(finalNode()), d);
+    expect(d.connector.signed.map((tx) => tx.fee)).toEqual(["100", "300"]);
   });
 
-  it("without a rebuild callback, a Soroban failure is not retried (lighter-caller behavior)", async () => {
-    const deps = makeDeps(); // no rebuildSorobanNode
-    (deps.submitSoroban as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new Error("submitSoroban: sendTransaction returned tx_bad_seq"),
-    );
-    const { tree } = makeSorobanNodeTree();
+  it("rebuilds in sequence after tx_bad_seq, using the account's fresh sequence", async () => {
+    const table = accounts(100n);
+    const d = deps({}, table);
+    d.submitClassic.mockImplementationOnce(async () => {
+      // someone else used the account's next sequence meanwhile
+      table.get(USER)!.seq = 105n;
+      throw new SubmitRejectedError({ transaction: "tx_bad_seq" }, 400);
+    });
+    await run(tree(finalNode()), d);
+    expect(d.connector.signed.map((tx) => tx.sequence)).toEqual(["101", "106"]);
+  });
 
-    await expect(
-      executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps),
-    ).rejects.toThrow(/tx_bad_seq/);
-    // resubmitting the identical stale tx can't help, so it fails after one try
-    expect(deps.submitSoroban).toHaveBeenCalledTimes(1);
+  it("stops after the attempt budget on a persistent tx_bad_seq", async () => {
+    const d = deps();
+    d.submitClassic.mockRejectedValue(new SubmitRejectedError({ transaction: "tx_bad_seq" }, 400));
+    await expect(run(tree(finalNode()), d)).rejects.toThrow(/tx_bad_seq/);
+    expect(d.submitClassic).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not retry a deterministic op failure (op_no_issuer)", async () => {
+    const d = deps();
+    d.submitClassic.mockRejectedValue(
+      new SubmitRejectedError({ transaction: "tx_failed", operations: ["op_no_issuer"] }, 400),
+    );
+    await expect(run(tree(finalNode()), d)).rejects.toThrow(/op_no_issuer/);
+    expect(d.submitClassic).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-audits and rebuilds in the same call after state drift", async () => {
+    for (const code of ["op_invalid_limit", "op_under_minimum", "op_underfunded"]) {
+      vi.clearAllMocks();
+      auditAccount.mockResolvedValue(makeAudit());
+      resolveCreditPaths.mockResolvedValue(new Map());
+      const d = deps();
+      d.submitClassic
+        .mockRejectedValueOnce(
+          new SubmitRejectedError(
+            { transaction: "tx_failed", operations: ["op_success", code] },
+            400,
+          ),
+        )
+        .mockResolvedValueOnce(receipt());
+      const t = tree(finalNode());
+      await run(t, d);
+      expect(auditAccount).toHaveBeenCalledTimes(2);
+      expect(t.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
+    }
   });
 });
 
-// The close-plan RevokeAllowance node targets an attacker-influenceable token
-// contract with a simulation-supplied auth tree, so it MUST run the revoke safety
-// guard before signing (like the standalone /allowances path), and be best-effort
-// (skip, never abort the close) so a hostile token can neither drain nor block.
-describe("executePlanTreeOnChain, RevokeAllowance is guarded and best-effort", () => {
-  function makeRevokeTree() {
-    const revoke = {
-      id: "revoke",
-      kind: "RevokeAllowance" as const,
-      dependencies: [] as string[],
-      status: "pending",
-      metadata: {
-        kind: "RevokeAllowance" as const,
-        contractId: "CTOKENAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1",
-        spender: "CSPENDERAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1",
-        transaction: {} as never,
-      },
-    };
-    return {
-      revoke,
-      tree: {
-        rootNodes: [revoke],
-        allNodes: new Map([[revoke.id, revoke]]),
-      } as unknown as PlanTree,
-    };
+describe("conversions that share a market", () => {
+  const usdcBalance = {
+    asset: { kind: "credit" as const, code: "USDC", issuer: USDC_ISSUER },
+    amount: "500.0000000",
+    buyingLiabilities: "0",
+    sellingLiabilities: "0",
+    limit: "1000",
+  };
+  const path = (out: string): Map<string, PathResultRef> =>
+    new Map([[`USDC:${USDC_ISSUER}`, { destinationAmount: out, path: [], sourceAmount: "500" }]]);
+  const priceMiss = () =>
+    new SubmitRejectedError(
+      { transaction: "tx_failed", operations: ["op_success", "op_under_dest_min"] },
+      400,
+    );
+
+  beforeEach(() => {
+    auditAccount.mockResolvedValue(
+      makeAudit({ balances: [...makeAudit().balances, usdcBalance], subentryCount: 1 }),
+    );
+  });
+
+  it("stops after one identical re-quote instead of prompting a third time", async () => {
+    resolveCreditPaths.mockResolvedValue(path("2000.0000000"));
+    const d = deps();
+    d.submitClassic.mockRejectedValue(priceMiss());
+    await expect(run(tree(finalNode()), d)).rejects.toMatchObject({ kind: "not_mergeable" });
+    // one signature, then the identical quote is caught before a second prompt
+    expect(d.connector.signTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("does retry when the market moved and the quote changed", async () => {
+    resolveCreditPaths
+      .mockResolvedValueOnce(path("2000.0000000"))
+      .mockResolvedValueOnce(path("1990.0000000"));
+    const d = deps();
+    d.submitClassic.mockRejectedValueOnce(priceMiss()).mockResolvedValueOnce(receipt());
+    const t = tree(finalNode());
+    await run(t, d);
+    expect(d.connector.signTransaction).toHaveBeenCalledTimes(2);
+    expect(t.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
+  });
+});
+
+describe("residue sent to the destination is re-checked at execute", () => {
+  const ISSUER = USDC_ISSUER;
+  const residue = {
+    asset: { kind: "credit" as const, code: "JUNK", issuer: ISSUER },
+    amount: "5.0000000",
+    buyingLiabilities: "0",
+    sellingLiabilities: "0",
+    limit: "1000",
+  };
+
+  function withDestinationLine(line: Record<string, unknown> | null) {
+    const table = accounts();
+    table.set(DEST, { seq: 1n, balances: line ? [line] : [] });
+    return table;
   }
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    auditAccount.mockResolvedValue(
+      makeAudit({ balances: [...makeAudit().balances, residue], subentryCount: 1 }),
+    );
   });
 
-  it("runs the revoke safety guard before signing", async () => {
-    const deps = makeDeps({ rebuildSorobanNode: vi.fn(async () => {}) });
-    const { tree } = makeRevokeTree();
-    await executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
-    expect(assertSafeRevokeInvocation).toHaveBeenCalledTimes(1);
+  const send = { sendToDestinationAssetKeys: [`JUNK:${ISSUER}`] };
+
+  it("refuses before signing when the destination dropped its trustline", async () => {
+    const table = withDestinationLine(null);
+    const d = deps({}, table);
+    await expect(run(tree(finalNode([], send)), d)).rejects.toThrow(/no trustline/);
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
   });
 
-  it("SKIPS the revoke (never signs) when the guard rejects a hostile auth tree, without aborting the close", async () => {
-    assertSafeRevokeInvocation.mockImplementationOnce(() => {
-      throw new Error("unsafe revoke: auth authorizes an extra call");
-    });
-    const deps = makeDeps({ rebuildSorobanNode: vi.fn(async () => {}) });
-    const { tree, revoke } = makeRevokeTree();
+  it("refuses when the line is not authorized or too full", async () => {
+    for (const line of [
+      {
+        asset_type: "credit_alphanum4",
+        asset_code: "JUNK",
+        asset_issuer: ISSUER,
+        balance: "0",
+        limit: "100",
+        is_authorized: false,
+      },
+      {
+        asset_type: "credit_alphanum4",
+        asset_code: "JUNK",
+        asset_issuer: ISSUER,
+        balance: "98",
+        limit: "100",
+        is_authorized: true,
+      },
+    ]) {
+      const d = deps({}, withDestinationLine(line));
+      await expect(run(tree(finalNode([], send)), d)).rejects.toMatchObject({
+        kind: "not_mergeable",
+      });
+      expect(d.connector.signTransaction).not.toHaveBeenCalled();
+    }
+  });
 
-    // best-effort: does not throw
-    await executePlanTreeOnChain({ publicKey: "GUSER", tree, previousReceipts: {} }, deps);
-
-    expect(revoke.status).toBe("skipped");
-    // the hostile tx is never signed or submitted
-    expect(deps.connector.signTransaction).not.toHaveBeenCalled();
-    expect(deps.submitSoroban).not.toHaveBeenCalled();
+  it("pays the residue when the line can take it", async () => {
+    const line = {
+      asset_type: "credit_alphanum4",
+      asset_code: "JUNK",
+      asset_issuer: ISSUER,
+      balance: "0",
+      limit: "100",
+      is_authorized: true,
+    };
+    const d = deps({}, withDestinationLine(line));
+    const t = tree(finalNode([], send));
+    await run(t, d);
+    const ops = d.connector.signed[0]!.operations.map((o) => o.type);
+    expect(ops).toContain("payment");
+    expect(t.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
   });
 });
+
+describe("a merge whose outcome is unknown is looked up before anything is re-signed", () => {
+  it("records the hash, and a re-run confirms from the chain without a new signature", async () => {
+    const d = deps();
+    d.submitClassic.mockImplementationOnce(async () => {
+      throw new AmbiguousSubmitError("unknown-outcome", null, "504");
+    });
+    const t = tree(finalNode());
+    await expect(run(t, d)).rejects.toBeInstanceOf(AmbiguousSubmitError);
+    const node = t.allNodes.get("final-classic-tx")!;
+    const pending = journalFor(node).pending!;
+    expect(pending.final).toBe(true);
+
+    node.status = "pending";
+    const lookup = vi.fn(async () => ({ status: "success" as const, ledger: 77 }));
+    const d2 = deps({ lookupClassicTransaction: lookup });
+    await run(t, d2);
+    expect(lookup).toHaveBeenCalledWith(pending.hash, pending.maxTime);
+    expect(d2.connector.signTransaction).not.toHaveBeenCalled();
+    expect(node.status).toBe("confirmed");
+    expect(node.executed).toEqual({ txHash: pending.hash, ledger: 77 });
+  });
+
+  it("refuses to sign again while the earlier merge can still land", async () => {
+    const d = deps();
+    d.submitClassic.mockImplementationOnce(async () => {
+      throw new AmbiguousSubmitError("abc", 9_999_999_999, "504");
+    });
+    const t = tree(finalNode());
+    await expect(run(t, d)).rejects.toBeInstanceOf(AmbiguousSubmitError);
+    const d2 = deps({ lookupClassicTransaction: async () => ({ status: "pending" }) });
+    t.allNodes.get("final-classic-tx")!.status = "pending";
+    await expect(run(t, d2)).rejects.toMatchObject({ kind: "ambiguous" });
+    expect(d2.connector.signTransaction).not.toHaveBeenCalled();
+  });
+});
+
+describe("landed phases are kept when a later phase fails", () => {
+  it("records phase receipts on the node's journal", async () => {
+    // an lp share makes the batcher isolate the withdraw into its own phase
+    auditAccount.mockResolvedValueOnce(
+      makeAudit({
+        subentryCount: 1,
+        poolShares: [
+          {
+            poolId: "a".repeat(64),
+            poolType: "constant_product",
+            shareBalance: "10.0000000",
+            totalShares: "100.0000000",
+            shareLimit: "1000",
+            fee: 30,
+            reserves: [
+              { asset: { kind: "native" }, amount: "100.0000000" },
+              {
+                asset: { kind: "credit", code: "USDC", issuer: USDC_ISSUER },
+                amount: "50.0000000",
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    const d = deps();
+    d.submitClassic
+      .mockResolvedValueOnce({ txHash: "PHASE0", ledger: 1 })
+      .mockRejectedValueOnce(
+        new SubmitRejectedError({ transaction: "tx_failed", operations: ["op_no_issuer"] }, 400),
+      );
+    const t = tree(finalNode());
+    await expect(run(t, d)).rejects.toThrow(/op_no_issuer/);
+    expect(journalFor(t.allNodes.get("final-classic-tx")!).landedPhases).toEqual([
+      { txHash: "PHASE0", ledger: 1 },
+    ]);
+  });
+});
+
+describe("MediatorForward", () => {
+  function forwardTree(finalStatus: PlanNode["status"]) {
+    const final = finalNode([], { useMediator: true });
+    final.status = finalStatus;
+    if (finalStatus === "confirmed") final.executed = { txHash: "MERGE", ledger: 1 };
+    const forward = {
+      id: "mediator-forward",
+      kind: "MediatorForward",
+      dependencies: ["final-classic-tx"],
+      description: "forward",
+      status: "pending",
+      metadata: {
+        kind: "MediatorForward",
+        mediatorPublicKey: ATTACKER,
+        flowToken: "TOKEN",
+        ultimateDestination: DEST,
+        memo: { type: "id", value: "12345" },
+      },
+    } as PlanNode;
+    return tree(final, forward);
+  }
+
+  it("confirms with the forward hash and carries the memo", async () => {
+    submitMediatorForward.mockResolvedValue({ ok: true, txHash: "FWD" });
+    const table = accounts();
+    table.set(ATTACKER, { seq: 1n, balances: [] });
+    const t = forwardTree("confirmed");
+    await run(t, deps({}, table));
+    expect(t.allNodes.get("mediator-forward")!.executed).toEqual({ txHash: "FWD", ledger: 0 });
+    expect(submitMediatorForward.mock.calls[0]![0]).toMatchObject({
+      destination: DEST,
+      memo: { type: "id", value: "12345" },
+    });
+  });
+
+  it("fails as forward_pending (never a phantom success) when the forward fails", async () => {
+    submitMediatorForward.mockResolvedValue({ ok: false, error: "no native balance" });
+    const table = accounts();
+    table.set(ATTACKER, { seq: 1n, balances: [] });
+    const t = forwardTree("confirmed");
+    await expect(run(t, deps({}, table))).rejects.toMatchObject({ kind: "forward_pending" });
+    const node = t.allNodes.get("mediator-forward")!;
+    expect(node.status).toBe("failed");
+    expect(node.error).toBe("no native balance");
+    expect(node.executed).toBeUndefined();
+  });
+
+  it("never calls the forward when the merge was skipped", async () => {
+    const t = forwardTree("skipped");
+    t.allNodes.get("final-classic-tx")!.error = 'Skipped: dependency "x" did not complete: boom';
+    await run(t, deps());
+    expect(submitMediatorForward).not.toHaveBeenCalled();
+    expect(t.allNodes.get("mediator-forward")!.status).toBe("skipped");
+  });
+
+  it("finds a forward that landed with its reply lost instead of failing on the missing mediator", async () => {
+    const t = forwardTree("confirmed");
+    const findForward = vi.fn(async () => "LANDED");
+    const d = deps({
+      mediatorFlow: {
+        mint: vi.fn(),
+        persist: vi.fn(),
+        previous: () => null,
+        forwarded: vi.fn(),
+        findForward,
+      },
+    });
+    await run(t, d);
+    expect(submitMediatorForward).not.toHaveBeenCalled();
+    expect(t.allNodes.get("mediator-forward")!.executed).toEqual({ txHash: "LANDED", ledger: 0 });
+  });
+});
+
+describe("best-effort held-token drain", () => {
+  function drainTree() {
+    const drain = {
+      id: "drain",
+      kind: "TransferAsIs",
+      dependencies: [],
+      description: "drain",
+      status: "simulated",
+      metadata: {
+        kind: "TransferAsIs",
+        asset: { kind: "contract", contractId: HOSTILE_TOKEN },
+        amount: 500n,
+        destination: DEST,
+      },
+    } as PlanNode;
+    return tree(drain, finalNode(["drain"]));
+  }
+  const rebuildWith = (make: (account: Account) => Transaction) => async (node: PlanNode) => {
+    (node.metadata as { transaction?: Transaction }).transaction = make(new Account(USER, "200"));
+  };
+
+  it("skips a token whose transfer reverts, reports it, and still merges", async () => {
+    const d = deps({
+      rebuildSorobanNode: rebuildWith((a) => transferTx(a, HOSTILE_TOKEN, DEST, 500n)),
+    });
+    d.submitSoroban.mockRejectedValue(new Error("transfer reverted"));
+    const notes: string[] = [];
+    const t = drainTree();
+    await run(t, d, notes);
+    expect(t.allNodes.get("drain")!.status).toBe("skipped");
+    expect(t.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
+    expect(notes.join(" ")).toMatch(/stays on the closed account/);
+  });
+
+  it("never signs a drain whose auth tree smuggles another call, and still merges", async () => {
+    const d = deps({
+      rebuildSorobanNode: rebuildWith((a) => {
+        const args = [addr(USER), addr(DEST), i128(500n)];
+        return invokeTx(a, HOSTILE_TOKEN, "transfer", args, [
+          sourceAuth(
+            inv(HOSTILE_TOKEN, "transfer", args, [
+              inv(allowlisted("soroswap", "SoroswapRouter"), "noop", []),
+            ]),
+          ),
+        ]);
+      }),
+    });
+    const t = drainTree();
+    await run(t, d);
+    expect(t.allNodes.get("drain")!.status).toBe("skipped");
+    // only the merge was signed
+    expect(d.connector.signed).toHaveLength(1);
+    expect(d.submitSoroban).not.toHaveBeenCalled();
+  });
+
+  it("never signs a drain whose fee is above the ceiling", async () => {
+    const d = deps({
+      rebuildSorobanNode: rebuildWith((a) => transferTx(a, HOSTILE_TOKEN, DEST, 500n, "50000000")),
+    });
+    const t = drainTree();
+    await run(t, d);
+    expect(t.allNodes.get("drain")!.status).toBe("skipped");
+    expect(t.allNodes.get("drain")!.error).toMatch(/above the 2000000 stroop limit/);
+    expect(d.submitSoroban).not.toHaveBeenCalled();
+  });
+});
+
+describe("RevokeAllowance is guarded and best-effort", () => {
+  const token = HOSTILE_TOKEN;
+  const spender = allowlisted("soroswap", "SoroswapRouter");
+  function revokeTree() {
+    const revoke = {
+      id: "revoke",
+      kind: "RevokeAllowance",
+      dependencies: [],
+      description: "revoke",
+      status: "simulated",
+      metadata: { kind: "RevokeAllowance", contractId: token, spender },
+    } as PlanNode;
+    return tree(revoke, finalNode(["revoke"]));
+  }
+
+  it("signs exactly approve(user, spender, 0)", async () => {
+    const d = deps({
+      rebuildSorobanNode: async (node) => {
+        const args = [addr(USER), addr(spender), i128(0n), u32(1000)];
+        (node.metadata as { transaction?: Transaction }).transaction = invokeTx(
+          new Account(USER, "1"),
+          token,
+          "approve",
+          args,
+          [sourceAuth(inv(token, "approve", args))],
+        );
+      },
+    });
+    const t = revokeTree();
+    await run(t, d);
+    expect(t.allNodes.get("revoke")!.status).toBe("confirmed");
+  });
+
+  it("skips (never signs) a hostile revoke, reports that the allowance survives the close", async () => {
+    const d = deps({
+      rebuildSorobanNode: async (node) => {
+        const args = [addr(USER), addr(spender), i128(0n), u32(1000)];
+        (node.metadata as { transaction?: Transaction }).transaction = invokeTx(
+          new Account(USER, "1"),
+          token,
+          "approve",
+          args,
+          [
+            sourceAuth(
+              inv(token, "approve", args, [
+                inv(token, "transfer", [addr(USER), addr(ATTACKER), i128(1n)]),
+              ]),
+            ),
+          ],
+        );
+      },
+    });
+    const notes: string[] = [];
+    const t = revokeTree();
+    await run(t, d, notes);
+    expect(t.allNodes.get("revoke")!.status).toBe("skipped");
+    expect(d.submitSoroban).not.toHaveBeenCalled();
+    expect(notes.join(" ")).toMatch(/does not remove it/);
+    expect(t.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
+  });
+});
+
+describe("soroban nodes are rebuilt fresh before signing and recover", () => {
+  const pool = allowlisted("blend", "BlendPool::");
+  function withdrawTree() {
+    const node = {
+      id: "withdraw",
+      kind: "WithdrawBlend",
+      dependencies: [],
+      description: "withdraw",
+      status: "simulated",
+      metadata: { kind: "WithdrawBlend", poolId: pool, asset: USDCId(), bucket: "supply" },
+    } as PlanNode;
+    return { node, t: tree(node) };
+  }
+  function USDCId() {
+    return USDC_SAC;
+  }
+  // each rebuild loads the account fresh and builds at its next sequence
+  function liveRebuild(table: Map<string, FakeAccount>) {
+    return vi.fn(async (node: PlanNode) => {
+      const acct = new Account(USER, table.get(USER)!.seq.toString());
+      const req = {
+        address: USDCId(),
+        amount: 5n,
+        request_type: 1,
+      };
+      const reqVal = addrMap(req);
+      const args = [addr(USER), addr(USER), addr(USER), reqVal];
+      (node.metadata as { transaction?: Transaction }).transaction = invokeTx(
+        acct,
+        pool,
+        "submit",
+        args,
+        [sourceAuth(inv(pool, "submit", args))],
+      );
+    });
+  }
+
+  it("rebuilds once and signs the rebuilt transaction", async () => {
+    const table = accounts(300n);
+    const rebuild = liveRebuild(table);
+    const d = deps({ rebuildSorobanNode: rebuild }, table);
+    const { node, t } = withdrawTree();
+    await run(t, d);
+    expect(rebuild).toHaveBeenCalledTimes(1);
+    expect(d.connector.signed[0]!.sequence).toBe("301");
+    expect(node.status).toBe("confirmed");
+  });
+
+  it("recovers from tx_bad_seq by rebuilding at the account's new sequence", async () => {
+    const table = accounts(300n);
+    const d = deps({ rebuildSorobanNode: liveRebuild(table) }, table);
+    d.submitSoroban.mockImplementationOnce(async () => {
+      table.get(USER)!.seq = 310n;
+      throw Object.assign(
+        new Error("submitSoroban: sendTransaction returned ERROR; result txBadSeq"),
+        {
+          resultCode: "txBadSeq",
+        },
+      );
+    });
+    const { node, t } = withdrawTree();
+    await run(t, d);
+    expect(d.connector.signed.map((tx) => tx.sequence)).toEqual(["301", "311"]);
+    expect(node.status).toBe("confirmed");
+  });
+
+  it("recovers from a stale footprint and from an on-chain exceeded-limit trap", async () => {
+    for (const msg of [
+      "transaction simulation failed: restorePreamble required",
+      'submitSoroban: transaction H failed on-chain: {"value":"scecExceededLimit"}',
+    ]) {
+      const table = accounts(300n);
+      const d = deps({ rebuildSorobanNode: liveRebuild(table) }, table);
+      d.submitSoroban.mockRejectedValueOnce(new Error(msg));
+      const { node, t } = withdrawTree();
+      await run(t, d);
+      expect(d.submitSoroban).toHaveBeenCalledTimes(2);
+      expect(node.status).toBe("confirmed");
+    }
+  });
+
+  it("does not retry a genuine revert, and marks the required node failed", async () => {
+    const table = accounts(300n);
+    const d = deps({ rebuildSorobanNode: liveRebuild(table) }, table);
+    d.submitSoroban.mockRejectedValue(new Error("submitSoroban: transaction H failed on-chain"));
+    const { node, t } = withdrawTree();
+    await expect(run(t, d)).rejects.toThrow(/failed on-chain/);
+    expect(d.submitSoroban).toHaveBeenCalledTimes(1);
+    expect(node.status).toBe("failed");
+  });
+
+  it("stops after the attempt budget on a persistent recoverable failure", async () => {
+    const table = accounts(300n);
+    const d = deps({ rebuildSorobanNode: liveRebuild(table) }, table);
+    d.submitSoroban.mockRejectedValue(new Error("tx_bad_seq"));
+    const { t } = withdrawTree();
+    await expect(run(t, d)).rejects.toThrow(/tx_bad_seq/);
+    expect(d.submitSoroban).toHaveBeenCalledTimes(3);
+  });
+
+  it("looks up a submission left pending before signing again", async () => {
+    const table = accounts(300n);
+    const d = deps({ rebuildSorobanNode: liveRebuild(table) }, table);
+    d.submitSoroban.mockImplementationOnce(async () => {
+      throw new AmbiguousSubmitError("unknown-outcome", null, "still pending after polling");
+    });
+    const { node, t } = withdrawTree();
+    await expect(run(t, d)).rejects.toMatchObject({ kind: "ambiguous" });
+    expect(journalFor(node).pending).not.toBeNull();
+
+    // it landed after all: confirmed from the lookup, nothing re-signed
+    node.status = "pending";
+    const d2 = deps(
+      {
+        rebuildSorobanNode: liveRebuild(table),
+        lookupSorobanTransaction: async () => ({ status: "success", ledger: 9 }),
+      },
+      table,
+    );
+    await run(t, d2);
+    expect(d2.connector.signTransaction).not.toHaveBeenCalled();
+    expect(node.status).toBe("confirmed");
+  });
+
+  it("rebuilds and signs again once the pending submission has expired", async () => {
+    const table = accounts(300n);
+    const { node, t } = withdrawTree();
+    journalFor(node).pending = { hash: "old", maxTime: 1 };
+    const d = deps(
+      {
+        rebuildSorobanNode: liveRebuild(table),
+        lookupSorobanTransaction: async () => ({ status: "expired" }),
+      },
+      table,
+    );
+    await run(t, d);
+    expect(d.connector.signTransaction).toHaveBeenCalledTimes(1);
+    expect(node.status).toBe("confirmed");
+  });
+});
+
+describe("a close can be stopped at a step boundary", () => {
+  it("signs nothing once the signal is aborted", async () => {
+    const stop = new AbortController();
+    stop.abort();
+    const d = deps({ signal: stop.signal });
+    await expect(run(tree(finalNode()), d)).rejects.toMatchObject({ kind: "interrupted" });
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
+  });
+
+  it("finishes the step in flight and signs nothing after it", async () => {
+    const stop = new AbortController();
+    const drain = {
+      id: "drain",
+      kind: "TransferAsIs",
+      dependencies: [],
+      description: "drain",
+      status: "simulated",
+      metadata: {
+        kind: "TransferAsIs",
+        asset: { kind: "contract", contractId: HOSTILE_TOKEN },
+        amount: 1n,
+        destination: DEST,
+      },
+    } as PlanNode;
+    const d = deps({
+      signal: stop.signal,
+      rebuildSorobanNode: async (node) => {
+        (node.metadata as { transaction?: Transaction }).transaction = transferTx(
+          new Account(USER, "1"),
+          HOSTILE_TOKEN,
+          DEST,
+          1n,
+        );
+      },
+    });
+    d.submitSoroban.mockImplementationOnce(async () => {
+      stop.abort();
+      return receipt();
+    });
+    const t = tree(drain, finalNode(["drain"]));
+    await expect(run(t, d)).rejects.toMatchObject({ kind: "interrupted" });
+    expect(t.allNodes.get("drain")!.status).toBe("confirmed");
+    expect(d.connector.signTransaction).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a stop request never strands the balance in the temporary account", () => {
+  it("still runs the forward when the stop comes after the merge landed", async () => {
+    const stop = new AbortController();
+    submitMediatorForward.mockResolvedValue({ ok: true, txHash: "FWD" });
+    const table = accounts();
+    table.set(ATTACKER, { seq: 1n, balances: [] });
+    const final = finalNode([], { useMediator: true });
+    final.status = "confirmed";
+    final.executed = { txHash: "MERGE", ledger: 1 };
+    const forward = {
+      id: "mediator-forward",
+      kind: "MediatorForward",
+      dependencies: ["final-classic-tx"],
+      description: "forward",
+      status: "pending",
+      metadata: {
+        kind: "MediatorForward",
+        mediatorPublicKey: ATTACKER,
+        flowToken: "TOKEN",
+        ultimateDestination: DEST,
+      },
+    } as PlanNode;
+    stop.abort();
+    const t = tree(final, forward);
+    await run(t, deps({ signal: stop.signal }, table));
+    expect(forward.status).toBe("confirmed");
+    expect(submitMediatorForward).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a best-effort step with an unknown outcome is reported as unknown", () => {
+  it("does not claim a token stayed behind when its transfer may have landed", async () => {
+    const drain = {
+      id: "drain",
+      kind: "TransferAsIs",
+      dependencies: [],
+      description: "drain",
+      status: "simulated",
+      metadata: {
+        kind: "TransferAsIs",
+        asset: { kind: "contract", contractId: HOSTILE_TOKEN },
+        amount: 1n,
+        destination: DEST,
+      },
+    } as PlanNode;
+    const d = deps({
+      rebuildSorobanNode: async (node) => {
+        (node.metadata as { transaction?: Transaction }).transaction = transferTx(
+          new Account(USER, "1"),
+          HOSTILE_TOKEN,
+          DEST,
+          1n,
+        );
+      },
+    });
+    d.submitSoroban.mockRejectedValue(
+      new AmbiguousSubmitError("DRAINHASH", null, "still pending after polling"),
+    );
+    const notes: string[] = [];
+    await run(tree(drain, finalNode(["drain"])), d, notes);
+    expect(notes.join(" ")).toMatch(/submitted as DRAINHASH, but the network has not confirmed/);
+    expect(notes.join(" ")).not.toMatch(/was not moved/);
+  });
+});
+
+describe("wallet refusals are typed", () => {
+  it("classifies a wallet rejection as signing", async () => {
+    const d = deps();
+    d.connector.signTransaction.mockRejectedValueOnce({ code: -4, message: "User declined" });
+    const p = run(tree(finalNode()), d);
+    await expect(p).rejects.toBeInstanceOf(CloseFailure);
+    await expect(p).rejects.toMatchObject({ kind: "signing" });
+    await expect(p).rejects.toThrow(/User declined/);
+  });
+});
+
+describe("a held-token conversion that can't run falls back to sending the token as-is", () => {
+  const router = allowlisted("soroswap", "SoroswapRouter");
+  function convertTree(useMediator = false) {
+    const convert = {
+      id: "convert",
+      kind: "ConvertSorobanToXLM",
+      dependencies: [],
+      description: "convert token",
+      status: "simulated",
+      metadata: {
+        kind: "ConvertSorobanToXLM",
+        asset: { kind: "contract", contractId: HOSTILE_TOKEN },
+        amount: 500n,
+      },
+    } as PlanNode;
+    return tree(convert, finalNode(["convert"], { useMediator }));
+  }
+  // the router swap the hydration builds, and the guarded transfer for the fallback
+  const rebuild = vi.fn(async (node: PlanNode) => {
+    const account = new Account(USER, "200");
+    const md = node.metadata as { transaction?: Transaction };
+    if (node.kind === "TransferAsIs") {
+      md.transaction = transferTx(account, HOSTILE_TOKEN, DEST, 500n);
+      return;
+    }
+    const xlm = Asset.native().contractId(NETWORK.passphrase);
+    const args = [
+      i128(500n),
+      i128(1n),
+      xdr.ScVal.scvVec([addr(HOSTILE_TOKEN), addr(xlm)]),
+      addr(USER),
+      nativeToScVal(1_791_000_000n, { type: "u64" }),
+    ];
+    const pair = soroswapPairFor(NETWORK, HOSTILE_TOKEN, xlm);
+    md.transaction = invokeTx(account, router, "swap_exact_tokens_for_tokens", args, [
+      sourceAuth(
+        inv(router, "swap_exact_tokens_for_tokens", args, [
+          inv(HOSTILE_TOKEN, "transfer", [addr(USER), addr(pair), i128(500n)]),
+        ]),
+      ),
+    ]);
+  });
+
+  it("sends the token to the destination when the swap reverts, then merges", async () => {
+    const d = deps({ rebuildSorobanNode: rebuild });
+    d.submitSoroban
+      .mockRejectedValueOnce(new Error("submitSoroban: transaction H failed on-chain"))
+      .mockResolvedValueOnce({ txHash: "ASIS", ledger: 3 });
+    const notes: string[] = [];
+    const t = convertTree();
+    await run(t, d, notes);
+    const fallback = d.connector.signed[1]!;
+    expect(fallback.operations[0]!.type).toBe("invokeHostFunction");
+    expect(
+      (
+        fallback.operations[0] as unknown as {
+          func: { invokeContract: xdr.InvokeContractArgs };
+        }
+      ).func.invokeContract.functionName.toString(),
+    ).toBe("transfer");
+    expect(t.allNodes.get("convert")!.status).toBe("confirmed");
+    expect(t.allNodes.get("convert")!.executed).toEqual({ txHash: "ASIS", ledger: 3 });
+    expect(notes.join(" ")).toMatch(/sent to your destination as-is/);
+    expect(t.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
+  });
+
+  it("stops before the merge when the token can't be converted or sent", async () => {
+    const d = deps({ rebuildSorobanNode: rebuild });
+    d.submitSoroban.mockRejectedValue(new Error("submitSoroban: transaction H failed on-chain"));
+    const t = convertTree();
+    await expect(run(t, d)).rejects.toMatchObject({ kind: "position_open" });
+    expect(t.allNodes.get("convert")!.status).toBe("failed");
+    expect(d.submitClassic).not.toHaveBeenCalled();
+  });
+
+  it("stops before the merge on an exchange close, which can't receive the token", async () => {
+    const d = deps({ rebuildSorobanNode: rebuild });
+    d.submitSoroban.mockRejectedValue(new Error("submitSoroban: transaction H failed on-chain"));
+    const t = convertTree(true);
+    await expect(run(t, d)).rejects.toMatchObject({ kind: "position_open" });
+    // only the swap was ever signed; no transfer to a shared exchange address
+    expect(d.connector.signed).toHaveLength(1);
+    expect(d.submitClassic).not.toHaveBeenCalled();
+  });
+});
+
+describe("plain-object rpc errors keep their message", () => {
+  it("puts the rpc's message on the failed node, not [object Object]", async () => {
+    const pool = allowlisted("blend", "BlendPool::");
+    const node = {
+      id: "claim",
+      kind: "ClaimBlendEmissions",
+      dependencies: [],
+      description: "claim",
+      status: "simulated",
+      metadata: { kind: "ClaimBlendEmissions", poolId: pool, reserveTokenIds: [0] },
+    } as unknown as PlanNode;
+    const d = deps({
+      rebuildSorobanNode: async (n) => {
+        const args = [addr(USER), xdr.ScVal.scvVec([u32(0)]), addr(USER)];
+        (n.metadata as { transaction?: Transaction }).transaction = invokeTx(
+          new Account(USER, "1"),
+          pool,
+          "claim",
+          args,
+          [sourceAuth(inv(pool, "claim", args))],
+        );
+      },
+    });
+    d.submitSoroban.mockRejectedValue({ code: -32600, message: "transaction too large" });
+    await expect(run(tree(node), d)).rejects.toMatchObject({ message: "transaction too large" });
+    expect(node.error).toBe("transaction too large");
+  });
+});
+
+describe("the allowance revoke has a fee ceiling too", () => {
+  it("skips a revoke whose resource fee a hostile token inflated, without signing it", async () => {
+    const spender = allowlisted("soroswap", "SoroswapRouter");
+    const revoke = {
+      id: "revoke",
+      kind: "RevokeAllowance",
+      dependencies: [],
+      description: "revoke",
+      status: "simulated",
+      metadata: { kind: "RevokeAllowance", contractId: HOSTILE_TOKEN, spender },
+    } as PlanNode;
+    const d = deps({
+      rebuildSorobanNode: async (node) => {
+        const args = [addr(USER), addr(spender), i128(0n), u32(1000)];
+        (node.metadata as { transaction?: Transaction }).transaction = invokeTx(
+          new Account(USER, "1"),
+          HOSTILE_TOKEN,
+          "approve",
+          args,
+          [sourceAuth(inv(HOSTILE_TOKEN, "approve", args))],
+          "90000000",
+        );
+      },
+    });
+    const notes: string[] = [];
+    const t = tree(revoke, finalNode(["revoke"]));
+    await run(t, d, notes);
+    expect(revoke.status).toBe("skipped");
+    expect(revoke.error).toMatch(/above the 2000000 stroop limit/);
+    expect(d.submitSoroban).not.toHaveBeenCalled();
+    // only the merge was signed
+    expect(d.connector.signed).toHaveLength(1);
+  });
+});
+
+function addrMap(req: { address: string; amount: bigint; request_type: number }) {
+  // blend's Request struct as the pool reads it, fields in key order
+  return xdrVec([
+    xdrMap([
+      ["address", addr(req.address)],
+      ["amount", i128(req.amount)],
+      ["request_type", u32(req.request_type)],
+    ]),
+  ]);
+}
+
+function xdrMap(entries: [string, xdr.ScVal][]) {
+  return xdr.ScVal.scvMap(
+    entries.map(
+      ([k, v]) => new xdr.ScMapEntry({ key: nativeToScVal(k, { type: "symbol" }), val: v }),
+    ),
+  );
+}
+function xdrVec(items: xdr.ScVal[]) {
+  return xdr.ScVal.scvVec(items);
+}
