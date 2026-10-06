@@ -71,24 +71,60 @@ describe("soroban fee cap", () => {
     expect(() =>
       assertSorobanFeeWithinCap(prepared(167_250n, 12_184, 16), "defi-exit"),
     ).not.toThrow();
-    // 2026-10-06 measurements in the fee-cap.ts header: a revoke that has to
-    // restore the token's archived instance (mainnet CLPX), and a one-hop
-    // convert through idle testnet pairs whose entries were archived
+    // the largest cases in the fee-cap.ts header, each with the resources its
+    // simulation declared. a revoke that restores the token's archived instance
+    // (mainnet CLPX):
     expect(() =>
       assertSorobanFeeWithinCap(prepared(936_287n, 476, 1), "untrusted-token"),
     ).not.toThrow();
+    // a one-hop convert through archived testnet pairs, restoring 8 entries:
     expect(() =>
-      assertSorobanFeeWithinCap(prepared(5_299_881n, 2_264, 8), "untrusted-convert"),
+      assertSorobanFeeWithinCap(prepared(5_308_082n, 3_128, 10), "untrusted-convert"),
+    ).not.toThrow();
+    // a soroswap lp exit, which the executor classes as untrusted-convert because
+    // a pair can hold any token, through archived and idle mainnet pairs:
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(2_956_310n, 1_792, 8), "untrusted-convert"),
+    ).not.toThrow();
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(2_432_473n, 2_212, 9), "untrusted-convert"),
+    ).not.toThrow();
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(6_923_446n, 1_904, 9), "untrusted-convert"),
+    ).not.toThrow();
+    // allow-listed exits for idle mainnet accounts whose entries were archived:
+    // an aquarius stable-pool withdraw and claim that restore reward pages, and a
+    // blend withdraw
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(15_993_759n, 10_564, 12), "defi-exit"),
+    ).not.toThrow();
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(16_305_049n, 9_812, 9), "defi-exit"),
+    ).not.toThrow();
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(11_763_314n, 2_556, 9), "defi-exit"),
     ).not.toThrow();
   });
 
   it("keeps about a 2x margin over the largest measured legitimate fee per class", () => {
-    const largest = { "untrusted-token": 936_287n, "untrusted-convert": 5_299_881n };
+    const largest = {
+      "untrusted-token": 936_287n,
+      "untrusted-convert": 6_923_446n,
+      "defi-exit": 16_305_049n,
+    };
     for (const [cls, fee] of Object.entries(largest)) {
       const cap = SOROBAN_RESOURCE_FEE_CAPS[cls as keyof typeof largest];
       expect(cap, cls).toBeGreaterThanOrEqual(fee * 2n);
       expect(cap, cls).toBeLessThanOrEqual(fee * 3n);
     }
+  });
+
+  // a testnet lp exit that restores an archived token wasm: legitimate, but the
+  // same shape as a token pushing rent onto the signer, so it is refused
+  it("refuses an untrusted step that has to restore archived contract code", () => {
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(36_812_907n, 19_228, 10), "untrusted-convert"),
+    ).toThrow(SorobanFeeCapError);
   });
 
   it("bounds what an untrusted token may write during a convert too", () => {
@@ -107,7 +143,7 @@ describe("soroban fee cap", () => {
       }
     })();
     expect(err).toBeInstanceOf(SorobanFeeCapError);
-    expect((err as Error).message).toMatch(/0\.5100001 XLM/);
+    expect((err as Error).message).toMatch(/3\.3100001 XLM/);
   });
 
   it("bounds what an untrusted token may write, not only what it costs", () => {
