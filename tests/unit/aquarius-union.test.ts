@@ -25,12 +25,13 @@ function aqPool(poolIndex: string) {
   };
 }
 
-// A provider whose Aquarius primary (REST) / fallback (on-chain scan) return the
-// given pools (or throw). The other adapters are stubbed empty so only Aquarius
-// affects positions.aquarius. (Soroswap uses a real import against the dummy
-// server and errors out, but we only assert on the aquarius slice.)
+// a provider whose aquarius primary (REST) / fallback (on-chain scan) return the
+// given pools (or throw). the other adapters are stubbed empty so only aquarius
+// affects positions.aquarius.
 function provider(primary: () => unknown, fallback: () => unknown) {
-  return new DirectContractProvider({
+  // a plain variable rather than a literal, so the fxdao stub (which keeps the
+  // fxdao probe off the live rpc) still compiles once that dep is removed
+  const deps = {
     serverFactory: () => ({}) as never,
     aquariusFactory: (() => ({
       primary: { getUserPools: async () => primary() },
@@ -39,7 +40,10 @@ function provider(primary: () => unknown, fallback: () => unknown) {
     blendPoolIds: [],
     blendLoadUserPositions: (async () => ({ positions: [], errors: [] })) as never,
     blendLoadBackstopDeposits: (async () => ({ deposits: [], errors: [] })) as never,
-  });
+    soroswapDiscover: (async () => []) as never,
+    fxdaoGetUserVaults: (async () => []) as never,
+  };
+  return new DirectContractProvider(deps);
 }
 
 describe("Aquarius discovery union (SEC-05: a spoofed-empty API can't hide a pool)", () => {
