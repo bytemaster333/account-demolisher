@@ -13,7 +13,7 @@
 // script running in this page could just as well mint its own flow, so storing
 // it here adds no exposure beyond what a compromised page already has.
 
-import { resolveNetwork } from "@/lib/config/networks";
+import { parseNetworkId, type NetworkConfig } from "@/lib/config/networks";
 import {
   horizonFor,
   loadMediatorAccount,
@@ -25,6 +25,7 @@ import {
   type MediatorForwardDeps,
   type MediatorForwardResult,
 } from "@/lib/mediator/forward";
+import { isMediatorNetworkId } from "@/lib/mediator/forward-terms";
 import type { ClassicMemo } from "@/lib/types/plan";
 
 export interface PendingMediatorForward {
@@ -83,23 +84,45 @@ function isPendingForward(value: unknown): value is PendingMediatorForward {
 
 type RecordMap = Record<string, PendingMediatorForward>;
 
-function parseMap(raw: string | null): RecordMap {
-  if (raw === null) return {};
+// the network a record belongs to, or null when it names one the mediator does
+// not serve. never guessed: resuming on another network would sign for nothing.
+export function pendingForwardNetwork(pending: {
+  readonly networkId: string;
+}): NetworkConfig | null {
+  return isMediatorNetworkId(pending.networkId) ? parseNetworkId(pending.networkId) : null;
+}
+
+function parseMap(raw: string | null): { map: RecordMap; dropped: boolean } {
+  if (raw === null) return { map: {}, dropped: false };
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return {};
+    return { map: {}, dropped: false };
   }
-  if (typeof parsed !== "object" || parsed === null) return {};
-  const out: RecordMap = {};
+  if (typeof parsed !== "object" || parsed === null) return { map: {}, dropped: false };
+  const map: RecordMap = {};
+  let dropped = false;
   for (const value of Object.values(parsed as Record<string, unknown>)) {
-    if (isPendingForward(value)) out[keyOf(value)] = value;
+    if (!isPendingForward(value)) continue;
+    if (pendingForwardNetwork(value) === null) {
+      // no exchange forward ever ran there (futurenet is gone, anything else is
+      // corrupt), so there is no balance this record could lead back to
+      console.warn(
+        `Dropping an exchange-forward recovery record for mediator ${value.mediatorPublicKey}: ` +
+          `network "${value.networkId}" is not one the mediator serves.`,
+      );
+      dropped = true;
+      continue;
+    }
+    map[keyOf(value)] = value;
   }
-  return out;
+  return { map, dropped };
 }
 
-// read every record, folding in a legacy single-slot record so it is never lost
+// read every record, folding in a record from the single-slot layout earlier
+// builds wrote. such a record carries a flow token those builds minted, which
+// the routes no longer accept (see isLegacyFlowToken).
 function readAll(): RecordMap {
   let raw: string | null;
   let legacyRaw: string | null;
@@ -109,15 +132,23 @@ function readAll(): RecordMap {
   } catch (err) {
     throw new PendingForwardStorageError("read", err);
   }
-  const map = parseMap(raw);
-  if (legacyRaw === null) return map;
-  let legacy: unknown = null;
-  try {
-    legacy = JSON.parse(legacyRaw);
-  } catch {
-    legacy = null;
+  const { map, dropped } = parseMap(raw);
+  if (legacyRaw === null && !dropped) return map;
+  if (legacyRaw !== null) {
+    let legacy: unknown = null;
+    try {
+      legacy = JSON.parse(legacyRaw);
+    } catch {
+      legacy = null;
+    }
+    if (
+      isPendingForward(legacy) &&
+      pendingForwardNetwork(legacy) !== null &&
+      map[keyOf(legacy)] === undefined
+    ) {
+      map[keyOf(legacy)] = legacy;
+    }
   }
-  if (isPendingForward(legacy) && map[keyOf(legacy)] === undefined) map[keyOf(legacy)] = legacy;
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
     window.localStorage.removeItem(LEGACY_STORAGE_KEY);
@@ -125,6 +156,20 @@ function readAll(): RecordMap {
     throw new PendingForwardStorageError("migrate", err);
   }
   return map;
+}
+
+// flow tokens minted before the memo and network were bound into them had four
+// parts (nonce.expiry.destination.mac). the routes refuse them, and renewing
+// one would let whoever holds it pick the memo, so the app can't finish such a
+// forward. the operator can: the nonce (the first part) and MEDIATOR_SECRET
+// derive the mediator key.
+export function isLegacyFlowToken(flowToken: string): boolean {
+  const parts = flowToken.split(".");
+  return parts.length === 4 && /^[0-9a-f]{32}$/u.test(parts[0] ?? "");
+}
+
+export function legacyFlowId(flowToken: string): string | null {
+  return isLegacyFlowToken(flowToken) ? (flowToken.split(".")[0] ?? null) : null;
 }
 
 function writeAll(map: RecordMap): void {
@@ -139,6 +184,12 @@ function writeAll(map: RecordMap): void {
 // add or update this flow's record. Throws PendingForwardStorageError when it
 // can't be stored: a mediator close must not start without its recovery record.
 export function savePendingForward(forward: PendingMediatorForward): void {
+  if (pendingForwardNetwork(forward) === null) {
+    throw new PendingForwardStorageError(
+      "save",
+      new Error(`network "${forward.networkId}" is not one the mediator serves`),
+    );
+  }
   const map = readAll();
   map[keyOf(forward)] = forward;
   writeAll(map);
@@ -149,6 +200,17 @@ export function loadPendingForwards(publicKey: string): PendingMediatorForward[]
   return Object.values(readAll())
     .filter((r) => r.publicKey === publicKey)
     .sort((a, b) => a.savedAt - b.savedAt);
+}
+
+// the record the account's most recent exchange close on this network saved,
+// or null. a close that is retried looks here for the mediator it already
+// minted (and possibly funded) instead of starting over.
+export function latestPendingForward(
+  publicKey: string,
+  networkId: string,
+): PendingMediatorForward | null {
+  const own = loadPendingForwards(publicKey).filter((r) => r.networkId === networkId);
+  return own.at(-1) ?? null;
 }
 
 export function removePendingForward(target: PendingForwardKey): void {
@@ -191,7 +253,11 @@ export type PendingForwardStatus =
 export async function inspectPendingForward(
   pending: PendingMediatorForward,
 ): Promise<PendingForwardStatus> {
-  const server = horizonFor(resolveNetwork(pending.networkId));
+  const network = pendingForwardNetwork(pending);
+  if (network === null) {
+    throw new Error(`The recovery record names an unknown network "${pending.networkId}".`);
+  }
+  const server = horizonFor(network);
   const history = await readMediatorHistory(server, pending.mediatorPublicKey, pending.publicKey);
   if (history.mergedOut !== null) {
     return history.mergedOut.into === pending.ultimateDestination
@@ -213,12 +279,31 @@ export async function resumePendingForward(
   pending: PendingMediatorForward,
   deps: MediatorForwardDeps = {},
 ): Promise<MediatorForwardResult> {
+  const network = pendingForwardNetwork(pending);
+  if (network === null) {
+    return {
+      ok: false,
+      error: `The recovery record names an unknown network "${pending.networkId}".`,
+      flowToken: pending.flowToken,
+    };
+  }
+  const legacyId = legacyFlowId(pending.flowToken);
+  if (legacyId !== null) {
+    return {
+      ok: false,
+      error:
+        "This record was saved by an earlier version of the app, whose flow token can no longer " +
+        `be renewed. Contact the operator with the temporary account ${pending.mediatorPublicKey} ` +
+        `and flow id ${legacyId} to have the forward finished.`,
+      flowToken: pending.flowToken,
+    };
+  }
   const result = await submitMediatorForward(
     {
       mediatorPublicKey: pending.mediatorPublicKey,
       flowToken: pending.flowToken,
       destination: pending.ultimateDestination,
-      network: resolveNetwork(pending.networkId),
+      network,
       closedAccount: pending.publicKey,
       ...(pending.memo ? { memo: pending.memo } : {}),
     },

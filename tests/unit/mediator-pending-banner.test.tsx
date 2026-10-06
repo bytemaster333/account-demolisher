@@ -9,7 +9,10 @@ process.env.MEDIATOR_SECRET = Keypair.random().secret();
 
 import * as reissueRoute from "@/app/api/mediator/reissue/route";
 import * as signRoute from "@/app/api/mediator/sign/route";
-import { PendingForwardBanner } from "@/components/wallet/PendingForwardBanner";
+import {
+  PENDING_FORWARD_RECHECK_MS,
+  PendingForwardBanner,
+} from "@/components/wallet/PendingForwardBanner";
 import { startMediatorFlow } from "@/lib/mediator/client";
 import {
   isCloseInFlight,
@@ -176,6 +179,76 @@ describe("PendingForwardBanner", () => {
     expect(screen.getByText(/still holds 2\.0000000 XLM/u)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     await waitFor(() => expect(loadPendingForwards(user)).toEqual([]));
+  });
+
+  it("shows the resume action in the order a close really goes: save, merge, failed forward", async () => {
+    // only the recheck interval is faked; testing-library's own waits stay real
+    vi.useFakeTimers({ toFake: ["setInterval"] });
+    try {
+      render(<PendingForwardBanner publicKey={user} />);
+      // the close saves its record before anything is signed...
+      const record = await flowRecord();
+      fake.createAccount(record.mediatorPublicKey, 2n * XLM);
+      act(() => savePendingForward(record));
+      // waitFor polls with setInterval, which is faked here
+      for (let i = 0; i < 100; i++) {
+        if (fake.requests.includes(`GET /accounts/${record.mediatorPublicKey}`)) break;
+        await act(() => new Promise((r) => setTimeout(r, 10)));
+      }
+      expect(fake.requests).toContain(`GET /accounts/${record.mediatorPublicKey}`);
+      await act(() => new Promise((r) => setTimeout(r, 20)));
+      expect(screen.queryByRole("alert")).toBeNull();
+
+      // ...then the merge lands and the forward fails, which writes nothing
+      fake.mergeInto(user, record.mediatorPublicKey);
+      act(() => {
+        vi.advanceTimersByTime(PENDING_FORWARD_RECHECK_MS);
+      });
+      for (let i = 0; i < 100; i++) {
+        if (screen.queryByText("An exchange forward was interrupted") !== null) break;
+        await act(() => new Promise((r) => setTimeout(r, 10)));
+      }
+      expect(screen.getByText("An exchange forward was interrupted")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Resume the forward" })).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("speaks of the current close, shows only its flow and reports the resume", async () => {
+    const other = await flowRecord();
+    fake.createAccount(other.mediatorPublicKey, 2n * XLM);
+    const record = await flowRecord();
+    fake.createAccount(record.mediatorPublicKey, 2n * XLM);
+    fake.mergeInto(user, record.mediatorPublicKey);
+    savePendingForward({ ...other, savedAt: Date.now() - 60 * 60 * 1000 });
+    savePendingForward(record);
+    const resolved = vi.fn();
+    render(
+      <PendingForwardBanner
+        publicKey={user}
+        mediatorPublicKey={record.mediatorPublicKey}
+        current
+        onResolved={resolved}
+      />,
+    );
+    expect(await screen.findByText(/^This close merged your account/u)).toBeTruthy();
+    expect(screen.queryByText("An earlier exchange close stopped before the merge")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Resume the forward" }));
+    expect(await screen.findByText("Exchange forward delivered")).toBeTruthy();
+    expect(resolved).toHaveBeenCalledTimes(1);
+  });
+
+  it("points a record from an earlier build at the operator instead of offering a resume", async () => {
+    const record = await flowRecord();
+    fake.createAccount(record.mediatorPublicKey, 2n * XLM);
+    fake.mergeInto(user, record.mediatorPublicKey);
+    const nonce = "e".repeat(32);
+    savePendingForward({ ...record, flowToken: `${nonce}.1700000000000.${cex}.${"f".repeat(64)}` });
+    render(<PendingForwardBanner publicKey={user} />);
+    expect(await screen.findByText("An exchange forward was interrupted")).toBeTruthy();
+    expect(screen.getByText(new RegExp(`flow id ${nonce}`, "u"))).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Resume the forward" })).toBeNull();
   });
 
   it("stays hidden while a close for the account is running, then shows the failed forward", async () => {
