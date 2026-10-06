@@ -449,6 +449,52 @@ describe("worst-case bundle size (M-46)", () => {
   });
 });
 
+describe("verification cost per sign request (H-32)", () => {
+  // the stored envelope is public (GET /api/plan/[id]), so anyone can replay it
+  // to the sign route. each ed25519 check is about a millisecond of blocking
+  // cpu, so the relay must not check every signer against every signature.
+  const NEVER_MET = { low: 1, med: 1, high: 255 };
+
+  async function fullPlan(): Promise<{ id: string; tx: Transaction; a: AccountShape }> {
+    const a = newAccount(19);
+    loadAccount.mockResolvedValue(accountResponse({ ...a, thresholds: NEVER_MET }));
+    const tx = buildClose(a);
+    const res = await createPlan("testnet", signedBy(tx, a.kp));
+    const id = res.ok ? res.id : "";
+    for (let i = 0; i < 18; i++)
+      expect(addSignature(id, signedBy(tx, a.cosigners[i]!)).ok).toBe(true);
+    return { id, tx, a };
+  }
+
+  it("replaying the published envelope costs about one check per signature", async () => {
+    const { id } = await fullPlan();
+    const published = getPlan(id)!.xdr;
+    expect(TransactionBuilder.fromXdr(published, NET).signatures).toHaveLength(19);
+
+    const verify = vi.spyOn(Keypair.prototype, "verify");
+    try {
+      expect(addSignature(id, published).ok).toBe(true);
+      // 19 stored + 19 incoming signatures, each matched by its hint
+      expect(verify.mock.calls.length).toBeLessThanOrEqual(2 * 19);
+    } finally {
+      verify.mockRestore();
+    }
+    expect(getPlan(id)!.xdr).toBe(published);
+  });
+
+  it("adding one signature stays linear in the signature count", async () => {
+    const { id, tx, a } = await fullPlan();
+    const verify = vi.spyOn(Keypair.prototype, "verify");
+    try {
+      expect(addSignature(id, signedBy(tx, a.cosigners[18]!)).ok).toBe(true);
+      expect(verify.mock.calls.length).toBeLessThanOrEqual(3 * 20);
+    } finally {
+      verify.mockRestore();
+    }
+    expect(TransactionBuilder.fromXdr(getPlan(id)!.xdr, NET).signatures).toHaveLength(20);
+  });
+});
+
 describe("/api/plan rate limiting (H-35)", () => {
   it("one client exhausting its bucket does not throttle a different client", async () => {
     const hit = (ip: string): Promise<Response> =>

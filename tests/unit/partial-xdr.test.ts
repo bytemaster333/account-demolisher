@@ -284,3 +284,40 @@ describe("trimToThreshold (H-32)", () => {
     expect(Buffer.from(hint).equals(Buffer.from(a.signatureHint()))).toBe(true);
   });
 });
+
+describe("signer matching by hint", () => {
+  // a signature carried under another signer's hint, or under a hint no signer
+  // has, still belongs to the key that made it
+  function rehinted(kp: Keypair, source: string, hint: Buffer): xdr.DecoratedSignature {
+    const sig = TransactionBuilder.fromXdr(signPartial(source, "1", kp), NET).signatures[0]!;
+    return new xdr.DecoratedSignature({ hint, signature: sig.signature.toBytes() });
+  }
+
+  it("counts signers whose signatures carry a wrong or a borrowed hint", () => {
+    const a = Keypair.random();
+    const b = Keypair.random();
+    const c = Keypair.random();
+    const source = a.publicKey();
+    const tx = TransactionBuilder.fromXdr(buildTx(source, "1").toXdr(), NET);
+    tx.signatures.push(rehinted(a, source, Buffer.from(b.signatureHint())));
+    tx.signatures.push(rehinted(c, source, Buffer.from([9, 9, 9, 9])));
+    const keys = [a, b, c].map((k) => k.publicKey());
+    expect(signedSigners(tx.toXdr(), NET, keys)).toEqual([a.publicKey(), c.publicKey()]);
+    const res = trimToThreshold(
+      tx.toXdr(),
+      NET,
+      keys.map((key) => ({ key, weight: 1 })),
+      2,
+    );
+    expect(res.kept).toEqual([a.publicKey(), c.publicKey()]);
+    expect(res.met).toBe(true);
+    expect(canonicalizeSignatures(tx.toXdr(), NET, keys)).toBe(
+      (() => {
+        const want = TransactionBuilder.fromXdr(buildTx(source, "1").toXdr(), NET);
+        want.signatures.push(rehinted(a, source, Buffer.from(a.signatureHint())));
+        want.signatures.push(rehinted(c, source, Buffer.from(c.signatureHint())));
+        return want.toXdr();
+      })(),
+    );
+  });
+});
