@@ -6,6 +6,7 @@
 
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor, act } from "@testing-library/react";
+import { Account, TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
 import { fromPromise } from "xstate";
 
 import type { Connector } from "@/lib/wallet/connector";
@@ -40,6 +41,11 @@ interface Previewed {
 }
 
 const ctl = vi.hoisted(() => ({
+  // the network each delivered-amount read was made against
+  effectNetworks: [] as string[],
+  effects: [] as Record<string, unknown>[],
+  published: [] as { network: string; xdr: string }[],
+  relayXdr: null as string | null,
   preflightAudit: null as AccountAudit | null,
   discover: null as null | (() => Promise<Discovered>),
   preview: null as null | ((input: Record<string, unknown>) => Promise<Previewed>),
@@ -66,17 +72,65 @@ vi.mock("@/lib/metrics/beacon", () => ({
   trackFunnel: () => {},
   trackClose: () => {},
 }));
-vi.mock("@/lib/stellar/horizon-client", () => ({
-  getHorizon: () => ({
-    loadAccount: async () => ({}),
-    ledgers: () => ({
-      order: () => ({
-        limit: () => ({
-          call: async () => ({ records: [{ base_reserve_in_stroops: 5_000_000 }] }),
+vi.mock("@/lib/stellar/horizon-client", async () => {
+  const { Account: SdkAccount } = await import("@stellar/stellar-sdk");
+  return {
+    getHorizon: (network: { id: string }) => {
+      return {
+        // the signing request is built on this account's next sequence
+        loadAccount: async (id: string) => new SdkAccount(id, "4100"),
+        ledgers: () => ({
+          order: () => ({
+            limit: () => ({
+              call: async () => ({ records: [{ base_reserve_in_stroops: 5_000_000 }] }),
+            }),
+          }),
         }),
-      }),
-    }),
-  }),
+        effects: () => ({
+          forTransaction: () => {
+            ctl.effectNetworks.push(network.id);
+            return { limit: () => ({ call: async () => ({ records: ctl.effects }) }) };
+          },
+        }),
+      };
+    },
+  };
+});
+// the relay and the position re-probe are remote; the request built from the
+// reviewed plan is what's checked
+vi.mock("@/lib/multisig/plan-client", async () => {
+  const sdk = await import("@stellar/stellar-sdk");
+  const { resolveNetwork } = await import("@/lib/config/networks");
+  return {
+    publishPlan: async (network: string, xdr: string) => {
+      ctl.published.push({ network, xdr });
+      const tx = sdk.TransactionBuilder.fromXdr(
+        xdr,
+        resolveNetwork(network as "testnet").passphrase,
+      );
+      return Buffer.from(tx.hash()).toString("hex");
+    },
+    fetchPlan: async () => {
+      if (ctl.relayXdr === null) throw new Error("relay unreachable");
+      return { network: "testnet", xdr: ctl.relayXdr };
+    },
+  };
+});
+vi.mock("@/lib/adapters/positions/direct", async () => {
+  const fx = await import("./demolish-fixtures");
+  return {
+    DirectContractProvider: class {
+      async getPositions() {
+        return fx.emptyPositions();
+      }
+    },
+  };
+});
+// the live signature collector talks to the relay; here it only has to show up
+vi.mock("@/components/multisig/CollectSignatures", () => ({
+  CollectSignatures: ({ planId }: { planId: string }) => (
+    <div data-testid="collect-stub">{planId}</div>
+  ),
 }));
 vi.mock("@/lib/stellar/account-audit", async (importOriginal) => {
   const orig = await importOriginal<typeof import("@/lib/stellar/account-audit")>();
@@ -120,7 +174,9 @@ vi.mock("@/lib/orchestrator/page-flow-machine", async (importOriginal) => {
 });
 
 import { DemolishFlow } from "@/app/demolish/_components/DemolishFlow";
+import { TESTNET } from "@/lib/config/networks";
 import { setActiveConnector } from "@/lib/wallet/active-connector";
+import { useNetworkStore } from "@/stores/network";
 import { useWalletStore } from "@/stores/wallet";
 
 const connector: Connector = {
@@ -128,9 +184,8 @@ const connector: Connector = {
   connect: async () => ({ publicKey: ACC }),
   disconnect: async () => {},
   getPublicKey: async () => ACC,
-  signTransaction: async () => {
-    throw new Error("nothing is signed in these tests");
-  },
+  // the relay is mocked, so an unsigned envelope stands in for the signed one
+  signTransaction: async (tx) => ({ signedXdr: tx.toXdr(), signerPublicKey: ACC }),
   signAuthEntry: async () => {
     throw new Error("nothing is signed in these tests");
   },
@@ -159,6 +214,12 @@ async function configureAndStart(): Promise<void> {
 }
 
 beforeEach(() => {
+  useNetworkStore.getState().setNetwork("testnet");
+  window.localStorage.clear();
+  ctl.effectNetworks = [];
+  ctl.effects = [];
+  ctl.published = [];
+  ctl.relayXdr = null;
   ctl.preflightAudit = makeAudit();
   ctl.previewInputs = [];
   ctl.discover = async () => ({
@@ -281,4 +342,159 @@ describe("start over clears the token conversion choice (L-57)", () => {
     await waitFor(() => expect(ctl.previewInputs.length).toBeGreaterThanOrEqual(4));
     expect(ctl.previewInputs.at(-1)?.["convertHeldTokensToXLM"]).toBeUndefined();
   });
+});
+
+function sharedAudit(): AccountAudit {
+  return makeAudit({
+    requiresMultisig: true,
+    thresholds: { low: 2, medium: 2, high: 2, masterWeight: 1 },
+    signers: [
+      { key: ACC, type: "ed25519_public_key", weight: 1 },
+      { key: DEST, type: "ed25519_public_key", weight: 1 },
+    ],
+  });
+}
+
+function setUpSharedAccount(): void {
+  const shared = sharedAudit();
+  ctl.preflightAudit = shared;
+  ctl.discover = async () => ({ audit: shared, positions: emptyPositions(), heldTokens: [] });
+  ctl.preview = async () => ({
+    tree: makeTree({ audit: shared }),
+    unroutableCredits: [],
+  });
+}
+
+function state(): string {
+  return (screen.getByTestId("machine-state") as HTMLInputElement).value;
+}
+
+describe("Back returns to Configure with the form kept (L-62)", () => {
+  it("goes from Review to Configure without a cancelled screen", async () => {
+    connect();
+    render(<DemolishFlow />);
+    await configureAndStart();
+
+    fireEvent.click(await screen.findByTestId("review-back"));
+    await waitFor(() => expect(state()).toBe("idle"));
+    expect((screen.getByTestId("destination-input") as HTMLInputElement).value).toBe(DEST);
+    expect(screen.queryByTestId("demolish-cancelled-reset")).toBeNull();
+    expect(document.body.textContent).not.toMatch(/You cancelled/);
+  });
+});
+
+describe("a published signing request after a wallet change (L-52)", () => {
+  it("takes the collector down and says the request stays valid", async () => {
+    setUpSharedAccount();
+    connect();
+    render(<DemolishFlow />);
+    await configureAndStart();
+
+    fireEvent.click(await screen.findByTestId("review-create-request"));
+    await screen.findByTestId("collect-stub");
+    expect(ctl.published).toHaveLength(1);
+
+    act(() => useWalletStore.getState().disconnect());
+    await waitFor(() => expect(state()).toBe("cancelled"));
+    expect(screen.queryByTestId("collect-stub")).toBeNull();
+    expect(screen.getByTestId("cancelled-request-note").textContent).toMatch(/stays valid until/);
+    expect(screen.getByTestId("cancelled-request-note").textContent).toMatch(/bump sequence/);
+  });
+});
+
+describe("resuming a signing request after a reload (L-54)", () => {
+  async function publishThenReload(): Promise<string> {
+    setUpSharedAccount();
+    connect();
+    const first = render(<DemolishFlow />);
+    await configureAndStart();
+    fireEvent.click(await screen.findByTestId("review-create-request"));
+    const planId = (await screen.findByTestId("collect-stub")).textContent ?? "";
+    // a reload: the page mounts again with the same wallet session
+    first.unmount();
+    render(<DemolishFlow />);
+    await screen.findByTestId("resume-signing-request");
+    return planId;
+  }
+
+  it("refuses an envelope from the relay that isn't the published request", async () => {
+    await publishThenReload();
+    const other = new TransactionBuilder(new Account(ACC, "9"), {
+      fee: "100",
+      networkPassphrase: TESTNET.passphrase,
+    })
+      .addOperation(
+        (await import("@stellar/stellar-sdk")).Operation.accountMerge({ destination: DEST }),
+      )
+      .setTimeout(60)
+      .build() as Transaction;
+    ctl.relayXdr = other.toXdr();
+
+    fireEvent.click(screen.getByTestId("resume-request"));
+    expect(
+      (await screen.findByText(/different transaction from the request you published/)).textContent,
+    ).toBeTruthy();
+    expect(state()).toBe("idle");
+    expect(screen.queryByTestId("collect-stub")).toBeNull();
+  });
+
+  it("picks the request up again when the rebuilt close matches it", async () => {
+    await publishThenReload();
+    ctl.relayXdr = ctl.published[0]!.xdr;
+    const planId = Buffer.from(
+      (TransactionBuilder.fromXdr(ctl.relayXdr, TESTNET.passphrase) as Transaction).hash(),
+    ).toString("hex");
+
+    fireEvent.click(screen.getByTestId("resume-request"));
+    expect((await screen.findByTestId("collect-stub")).textContent).toBe(planId);
+    // nothing new was published
+    expect(ctl.published).toHaveLength(1);
+  });
+});
+
+describe("a run keeps its own network after a navbar switch (M-35)", () => {
+  it("links the proof and reads the delivered amount on the run's network", async () => {
+    const merge = "ab".repeat(32);
+    const gate = deferred<void>();
+    ctl.execute = async (tree) => {
+      await gate.promise;
+      const final = tree.allNodes.get("final-classic-tx")!;
+      final.status = "confirmed";
+      final.executed = { txHash: merge, ledger: 7 };
+      return { result: { ok: true, errors: [], mergedTxHash: merge }, tree };
+    };
+    ctl.effects = [
+      { type: "account_credited", account: DEST, asset_type: "native", amount: "99.9000000" },
+    ];
+    connect();
+    render(<DemolishFlow />);
+    await configureAndStart();
+
+    fireEvent.click(await screen.findByTestId("demolish-confirm"));
+    fireEvent.change(screen.getByTestId("typed-confirmation-input"), {
+      target: { value: DEST.slice(-4) },
+    });
+    const confirm = (await screen.findByTestId(
+      "typed-confirmation-confirm",
+      {},
+      { timeout: 6000 },
+    )) as HTMLButtonElement;
+    await waitFor(() => expect(confirm.disabled).toBe(false));
+    fireEvent.click(confirm);
+    await waitFor(() => expect(state()).toBe("executing"));
+
+    act(() => useNetworkStore.getState().setNetwork("mainnet"));
+    await act(async () => {
+      gate.resolve();
+      await gate.promise;
+    });
+    await waitFor(() => expect(state()).toBe("succeeded"));
+
+    const proof = (await screen.findByTitle(
+      /public record of this transaction/,
+    )) as HTMLAnchorElement;
+    expect(proof.href).toBe(`https://stellar.expert/explorer/testnet/tx/${merge}`);
+    await screen.findByText(/99\.9 XLM/);
+    expect(ctl.effectNetworks).toEqual(["testnet"]);
+  }, 20_000);
 });
