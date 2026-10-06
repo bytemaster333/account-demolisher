@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, type CSSProperties, type ReactNode } from "react";
-import { RADIUS } from "./tokens";
+import { useId, useState, type CSSProperties, type ReactNode } from "react";
+import { Spinner } from "./feedback";
+import { RADIUS, VISUALLY_HIDDEN } from "./tokens";
 
 type Variant = "primary" | "secondary" | "ghost" | "danger";
 type Size = "sm" | "md" | "lg";
@@ -13,7 +14,8 @@ export interface ButtonProps {
   readonly size?: Size;
   readonly disabled?: boolean;
   readonly loading?: boolean;
-  // reason shown as a tooltip when disabled; makes a blocked CTA legible
+  // why the button is disabled: a hover tooltip, and the button's accessible
+  // description for screen readers
   readonly disabledReason?: string | undefined;
   readonly iconLeft?: ReactNode;
   readonly iconRight?: ReactNode;
@@ -79,7 +81,9 @@ export function Button({
   "aria-label": ariaLabel,
 }: ButtonProps): React.JSX.Element {
   const [hover, setHover] = useState(false);
+  const reasonId = useId();
   const isDisabled = disabled || loading;
+  const showReason = isDisabled && disabledReason !== undefined && disabledReason.length > 0;
 
   return (
     <button
@@ -93,6 +97,7 @@ export function Button({
       title={isDisabled ? disabledReason : undefined}
       data-testid={testId}
       aria-label={ariaLabel}
+      aria-describedby={showReason ? reasonId : undefined}
       style={{
         display: "inline-flex",
         alignItems: "center",
@@ -116,25 +121,16 @@ export function Button({
         ...style,
       }}
     >
-      {loading ? <Spinner /> : iconLeft}
+      {loading ? <Spinner size={14} tone="current" /> : iconLeft}
       {children}
       {!loading ? iconRight : null}
+      {/* aria-hidden keeps the reason out of the button's name; being referenced
+          by aria-describedby still makes it the description */}
+      {showReason ? (
+        <span id={reasonId} aria-hidden style={VISUALLY_HIDDEN}>
+          {disabledReason}
+        </span>
+      ) : null}
     </button>
-  );
-}
-
-function Spinner(): React.JSX.Element {
-  return (
-    <span
-      aria-hidden
-      style={{
-        width: 14,
-        height: 14,
-        borderRadius: "50%",
-        border: "2px solid color-mix(in srgb, currentColor 30%, transparent)",
-        borderTopColor: "currentColor",
-        animation: "spin .8s linear infinite",
-      }}
-    />
   );
 }

@@ -9,6 +9,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { isActive } from "@/components/allowance-viewer/allowance-state";
 import { Button, Card, Notice, Progress, Spinner } from "@/components/ui";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
@@ -22,7 +23,8 @@ export interface BulkRevokeBarProps {
   readonly records: readonly AllowanceRecord[];
   readonly userAddress: string;
   readonly network: NetworkConfig;
-  // null = wallet can't sign here; the bar renders nothing. ref read only in handlers
+  // null = wallet can't sign here; an idle bar renders nothing, a running or
+  // finished sweep keeps its card. ref read only in handlers
   readonly connectorRef: React.RefObject<Connector | null> | null;
   // re-enumerate after the sweep so revoked (now-expired) rows drop out
   readonly onComplete: () => void;
@@ -44,7 +46,7 @@ export function BulkRevokeBar({
   onComplete,
   onRunningChange,
 }: BulkRevokeBarProps): React.JSX.Element | null {
-  const activeRevocable = useMemo(() => records.filter((r) => !r.expired), [records]);
+  const activeRevocable = useMemo(() => records.filter(isActive), [records]);
   const unknownActive = useMemo(
     () => activeRevocable.filter((r) => lookupSpender(r.spender, network) === null),
     [activeRevocable, network],
@@ -57,6 +59,8 @@ export function BulkRevokeBar({
   const [current, setCurrent] = useState<AllowanceRecord | null>(null);
   const [outcomes, setOutcomes] = useState<readonly Outcome[]>([]);
   const [stopping, setStopping] = useState(false);
+  // why the sweep ended early, when it wasn't the user's own stop
+  const [stopReason, setStopReason] = useState<string | null>(null);
   // read synchronously inside the loop; the state above only drives the label
   const stopRef = useRef(false);
 
@@ -116,14 +120,22 @@ export function BulkRevokeBar({
     setDoneCount(0);
     setOutcomes([]);
     setCurrent(null);
+    setStopReason(null);
 
     const acc: Outcome[] = [];
-    for (const record of list) {
+    for (const [i, record] of list.entries()) {
       if (stopRef.current) break;
+      const connector = connectorRef?.current ?? null;
+      if (connector === null) {
+        // every later revoke would fail the same way; stop once and say so
+        const left = list.length - i;
+        setStopReason(
+          `Stopped: wallet disconnected. ${left} approval${left === 1 ? " was" : "s were"} not attempted.`,
+        );
+        break;
+      }
       setCurrent(record);
       try {
-        const connector = connectorRef?.current ?? null;
-        if (connector === null) throw new Error("Wallet is no longer connected.");
         const hash = await submitRevoke(network, connector, record, userAddress);
         await confirmRevoke(network, hash);
         acc.push({ record, ok: true, hash });
@@ -139,12 +151,6 @@ export function BulkRevokeBar({
     setCurrent(null);
     setPhase("done");
   };
-
-  // bulk only earns its place for 2+ active approvals; one row's own button is enough
-  if (connectorRef === null || activeRevocable.length < 2) return null;
-
-  const hasUnknownSubset =
-    unknownActive.length > 0 && unknownActive.length < activeRevocable.length;
 
   if (phase === "running") {
     const succeeded = outcomes.filter((o) => o.ok).length;
@@ -223,6 +229,11 @@ export function BulkRevokeBar({
           Revoked {succeeded.length} of {outcomes.length}
           {failures.length > 0 ? ` · ${failures.length} failed` : ""}
         </div>
+        {stopReason !== null ? (
+          <p role="status" style={{ margin: "8px 0 0", fontSize: 12.5, color: "var(--warning)" }}>
+            {stopReason}
+          </p>
+        ) : null}
         {failures.length > 0 ? (
           <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 7 }}>
             {failures.map((f) => (
@@ -241,7 +252,7 @@ export function BulkRevokeBar({
           </div>
         ) : null}
         <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
-          {failures.length > 0 ? (
+          {failures.length > 0 && connectorRef !== null ? (
             <Button
               variant="secondary"
               size="sm"
@@ -266,6 +277,12 @@ export function BulkRevokeBar({
       </Card>
     );
   }
+
+  // bulk only earns its place for 2+ active approvals; one row's own button is enough
+  if (connectorRef === null || activeRevocable.length < 2) return null;
+
+  const hasUnknownSubset =
+    unknownActive.length > 0 && unknownActive.length < activeRevocable.length;
 
   if (phase === "confirm") {
     return (

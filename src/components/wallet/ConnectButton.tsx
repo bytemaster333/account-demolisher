@@ -4,13 +4,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { TESTNET, type NetworkConfig } from "@/lib/config/networks";
+import { describeConnectError } from "@/components/wallet/connect-error";
+import type { NetworkConfig } from "@/lib/config/networks";
 import { WalletKitConnector } from "@/lib/wallet/connector";
-import { setActiveConnector } from "@/lib/wallet/active-connector";
+import { disconnectSession, setActiveConnector } from "@/lib/wallet/active-connector";
 import { useWalletStore } from "@/stores/wallet";
 
 export interface ConnectButtonProps {
-  network?: NetworkConfig;
+  network: NetworkConfig;
   onConnector?: (connector: WalletKitConnector | null) => void;
 }
 
@@ -19,10 +20,7 @@ function truncate(publicKey: string): string {
   return `${publicKey.slice(0, 6)}…${publicKey.slice(-4)}`;
 }
 
-export function ConnectButton({
-  network = TESTNET,
-  onConnector,
-}: ConnectButtonProps): React.JSX.Element {
+export function ConnectButton({ network, onConnector }: ConnectButtonProps): React.JSX.Element {
   const publicKey = useWalletStore((s) => s.publicKey);
   const connectorKind = useWalletStore((s) => s.connectorKind);
   const setConnected = useWalletStore((s) => s.setConnected);
@@ -47,33 +45,27 @@ export function ConnectButton({
       // sign with it after a client-side navigation
       setActiveConnector(next);
       setConnected(address, "kit");
-    } catch {
-      // lead with a plain, actionable message rather than a raw library error;
-      // the underlying wallet failures aren't meaningful to a beginner
-      setError(
-        "Couldn't connect to your wallet. Make sure the wallet extension is installed and unlocked, then try again.",
-      );
+    } catch (e: unknown) {
+      // closing the picker is a cancel, not an error; anything else keeps the
+      // wallet's own reason (unsupported network, ledger app closed, declined)
+      setError(describeConnectError(e));
     } finally {
       setPending(false);
     }
   }, [network, setConnected]);
 
+  // every disconnect goes through disconnectSession so the connector, the store
+  // and the kit's persisted selection are torn down together
   const onDisconnect = useCallback(async () => {
     setError(null);
     setPending(true);
     try {
-      if (connector) {
-        await connector.disconnect();
-      }
-    } catch {
-      // disconnect may already be torn down (e.g. WalletConnect); clear local state regardless
+      await disconnectSession(disconnectStore);
     } finally {
       setConnectorLocal(null);
-      setActiveConnector(null);
-      disconnectStore();
       setPending(false);
     }
-  }, [connector, disconnectStore]);
+  }, [disconnectStore]);
 
   const isConnected = publicKey !== null && connectorKind === "kit";
   const label = pending

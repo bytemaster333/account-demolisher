@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { StrKey } from "@stellar/stellar-sdk";
 
 import { Button, Checkbox, Notice } from "@/components/ui";
@@ -13,12 +13,12 @@ function shortId(id: string): string {
   return id.length > 10 ? `${id.slice(0, 5)}…${id.slice(-5)}` : id;
 }
 
-// Standalone SEP-41 tokens the account holds directly (custom tokens someone
-// transferred to it). These live in each token contract's own storage, so unlike
-// classic balances they DON'T block the merge — they'd be silently left behind on
-// the deleted account. This card makes that explicit: it discloses the scan's
-// horizon, lists what was found, and lets the user OPT IN (nothing is swept
-// automatically) or add a token by contract id that the ~7-day scan couldn't see.
+// standalone SEP-41 tokens the account holds directly (custom tokens someone
+// transferred to it). they live in each token contract's own storage, so unlike
+// classic balances they don't block the merge and would be left behind on the
+// deleted account. the card says how far back the scan looked, lists what it
+// found, and lets the user opt in per token (nothing is swept automatically) or
+// add a token by contract id that the ~7-day scan couldn't see.
 export function StandaloneTokensCard({
   discovered,
   unreadable,
@@ -49,6 +49,8 @@ export function StandaloneTokensCard({
   const [manualId, setManualId] = useState("");
   const [manualError, setManualError] = useState<string | null>(null);
   const [probing, setProbing] = useState(false);
+  const manualInputId = useId();
+  const manualErrorId = useId();
 
   const isSelected = (id: string): boolean => selected.some((t) => t.contractId === id);
   // tokens the user added by contract id (selected but not in the scan results)
@@ -126,7 +128,7 @@ export function StandaloneTokensCard({
         />
       )}
       <span style={{ fontSize: 11.5, color: "var(--fg-3)", fontFamily: "'Geist Mono', monospace" }}>
-        {token.balance.toString()} raw
+        {token.balance.toString()} raw, at scan time
       </span>
     </div>
   );
@@ -163,14 +165,14 @@ export function StandaloneTokensCard({
       </div>
 
       <p style={{ margin: "8px 0 6px", fontSize: 13, lineHeight: 1.5, color: "var(--fg-2)" }}>
-        Custom tokens someone sent to this account live inside each token&apos;s own contract, so —
-        unlike normal balances — they don&apos;t block the close and would be{" "}
+        Custom tokens someone sent to this account live inside each token&apos;s own contract, so,
+        unlike normal balances, they don&apos;t block the close and would be{" "}
         <strong style={{ color: "var(--fg)" }}>left behind on the deleted account</strong> unless
         you move them. Nothing here is swept unless you tick it.
       </p>
       <p style={{ margin: "0 0 10px", fontSize: 12, lineHeight: 1.5, color: "var(--fg-3)" }}>
         This scan only sees about the last 7 days of activity. If someone sent you a token before
-        that, it won&apos;t appear — add it by contract address below.
+        that, it won&apos;t appear. Add it by contract address below.
       </p>
 
       {isCex ? (
@@ -217,12 +219,16 @@ export function StandaloneTokensCard({
       {!isCex ? (
         <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 14 }}>
           <label
+            htmlFor={manualInputId}
             style={{ fontSize: 12.5, color: "var(--fg-2)", display: "block", marginBottom: 6 }}
           >
             Add a token by contract address
           </label>
           <div style={{ display: "flex", gap: 8 }}>
             <input
+              id={manualInputId}
+              aria-invalid={manualError !== null}
+              aria-describedby={manualError !== null ? manualErrorId : undefined}
               value={manualId}
               onChange={(e) => setManualId(e.target.value)}
               placeholder="C…"
@@ -250,7 +256,13 @@ export function StandaloneTokensCard({
             </Button>
           </div>
           {manualError ? (
-            <div style={{ marginTop: 6, fontSize: 12, color: "var(--danger)" }}>{manualError}</div>
+            <div
+              id={manualErrorId}
+              role="alert"
+              style={{ marginTop: 6, fontSize: 12, color: "var(--danger)" }}
+            >
+              {manualError}
+            </div>
           ) : null}
         </div>
       ) : null}

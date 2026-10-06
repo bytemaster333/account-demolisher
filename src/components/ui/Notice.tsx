@@ -12,9 +12,7 @@ const ICONS: Record<Tone, string> = {
     "M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z",
 };
 
-// The app's signature semantic callout: tinted card, leading icon, title,
-// body, optional child rows/actions. Replaces the many hand-rolled notice
-// cards (scam tokens, discovery warnings, claimable, residue, etc.).
+// semantic callout: tone border, leading icon, title, body, optional footer
 export function Notice({
   tone = "neutral",
   title,

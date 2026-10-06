@@ -138,3 +138,87 @@ describe("BulkRevokeBar unmount guard", () => {
     expect(submitRevoke).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("BulkRevokeBar wallet disconnect", () => {
+  beforeEach(() => {
+    submitRevoke.mockReset();
+    confirmRevoke.mockReset();
+    confirmRevoke.mockResolvedValue(undefined);
+    useNetworkStore.setState({ networkId: "testnet" });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("stops at a disconnect, records it once and keeps showing the summary", async () => {
+    const first = deferred();
+    submitRevoke.mockReturnValueOnce(first.promise);
+    submitRevoke.mockResolvedValue("hash2");
+    const ref = { current: {} as Connector } as { current: Connector | null };
+
+    const { rerender } = render(
+      <BulkRevokeBar
+        records={records}
+        userAddress="GUSER"
+        network={network}
+        connectorRef={ref}
+        onComplete={() => {}}
+      />,
+    );
+    await startSweep();
+    expect(submitRevoke).toHaveBeenCalledTimes(1);
+
+    // the page drops the connector and stops passing a ref when the wallet disconnects
+    ref.current = null;
+    rerender(
+      <BulkRevokeBar
+        records={records}
+        userAddress="GUSER"
+        network={network}
+        connectorRef={null}
+        onComplete={() => {}}
+      />,
+    );
+    // the running card must not vanish mid-sweep
+    expect(screen.queryByTestId("bulk-revoke-running")).not.toBeNull();
+
+    await act(async () => {
+      first.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(submitRevoke).toHaveBeenCalledTimes(1);
+    const done = screen.getByTestId("bulk-revoke-done");
+    expect(done.textContent).toMatch(/Revoked 1 of 1/);
+    expect(done.textContent?.match(/wallet disconnected/gi)?.length).toBe(1);
+  });
+});
+
+describe("BulkRevokeBar active approvals", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("leaves out approvals the token already reports as zero", () => {
+    const zeroed: readonly AllowanceRecord[] = [
+      {
+        ...makeRecord("GAAA1111111111111111111111111111111111111111111111111AAAA"),
+        onChainAmount: 0n,
+      },
+      makeRecord("GBBB2222222222222222222222222222222222222222222222222BBBB"),
+      makeRecord("GCCC3333333333333333333333333333333333333333333333333CCCC"),
+    ];
+    render(
+      <BulkRevokeBar
+        records={zeroed}
+        userAddress="GUSER"
+        network={network}
+        connectorRef={connectorRef}
+        onComplete={() => {}}
+      />,
+    );
+    expect(screen.getByTestId("bulk-revoke-all").textContent).toBe("Revoke all 2");
+  });
+});

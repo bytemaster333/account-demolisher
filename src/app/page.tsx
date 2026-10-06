@@ -6,7 +6,14 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { AppShell } from "@/components/layout/AppShell";
+import { getPublicEnv } from "@/lib/config/env";
 import { trackVisit } from "@/lib/metrics/beacon";
+
+// walletconnect is only in the wallet picker when the build has a project id
+// (the same check the wallet kit setup makes), so the page only names it then
+function walletConnectEnabled(): boolean {
+  return getPublicEnv().NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID !== undefined;
+}
 
 type HeroRow = {
   readonly label: string;
@@ -195,11 +202,11 @@ const HANDLES: ReadonlyArray<Handle> = [
   },
 ];
 
-const STEPS: ReadonlyArray<Step> = [
+const stepsFor = (walletConnect: boolean): ReadonlyArray<Step> => [
   {
     num: "01",
     title: "Connect",
-    body: "Connect through Freighter, xBull, Albedo, Rabet, Lobstr, Hana, Ledger, WalletConnect, and more. No keys leave your device.",
+    body: `Connect through Freighter, xBull, Albedo, Rabet, Lobstr, Hana, Ledger${walletConnect ? ", WalletConnect" : ""}, and more. No keys leave your device.`,
     highlight: false,
   },
   {
@@ -211,7 +218,7 @@ const STEPS: ReadonlyArray<Step> = [
   {
     num: "03",
     title: "Review & sign",
-    body: "The full plan is simulated up front. You see real fees and real ops, then approve each transaction in your wallet. Nothing is auto-signed.",
+    body: "The full plan is built up front, with Soroban fees from a live simulation. With a wallet you approve each transaction there; with a pasted secret key the app signs in your browser only after your typed confirmation.",
     highlight: true,
   },
   {
@@ -234,19 +241,19 @@ const SECURITY: ReadonlyArray<SecurityRow> = [
   {
     num: "01",
     title: "Your keys never reach a server",
-    body: "All signing happens in your wallet. The app code is open source and you can verify it before connecting.",
+    body: "Your keys sign in your wallet, or in your browser if you paste a secret key. The only server-side signer is the exchange mediator, which signs its own forward and never sees your key. The app code is open source and you can verify it before connecting.",
     icon: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z",
   },
   {
     num: "02",
-    title: "Every contract is on a hardcoded allow-list",
-    body: "No unknown DeFi contract is ever invoked: only the hardcoded Blend, Aquarius, Soroswap, and FxDAO allow-list, re-verified before each signature.",
+    title: "Every DeFi call is on a hardcoded allow-list",
+    body: "DeFi exits call only the hardcoded Blend, Aquarius, Soroswap, and FxDAO allow-list, re-verified before each signature. Token revokes and transfers call the token's own contract and are shape-checked before signing.",
     icon: "M9 11l3 3L22 4",
   },
   {
     num: "03",
-    title: "Nothing is auto-signed",
-    body: "The full plan is built and simulated up front, with real fees displayed. You approve every transaction in your wallet, never by surprise.",
+    title: "No surprise signatures",
+    body: "The full plan is built up front and Soroban steps are simulated for real fees. With a wallet you approve every transaction there. With a pasted secret key the app signs locally, only after your typed confirmation.",
     icon: "M7 11V7a5 5 0 0 1 10 0v4",
   },
   {
@@ -264,7 +271,7 @@ const PROTOCOLS: ReadonlyArray<Protocol> = [
   { initial: "F", name: "FxDAO" },
 ];
 
-const WALLETS: ReadonlyArray<Wallet> = [
+const ALL_WALLETS: ReadonlyArray<Wallet> = [
   { initial: "F", name: "Freighter" },
   { initial: "X", name: "xBull" },
   { initial: "A", name: "Albedo" },
@@ -275,14 +282,14 @@ const WALLETS: ReadonlyArray<Wallet> = [
   { initial: "W", name: "WalletConnect" },
 ];
 
-const FAQS: ReadonlyArray<Faq> = [
+const faqsFor = (walletConnect: boolean): ReadonlyArray<Faq> => [
   {
     q: "Why can't I just send my balances to an exchange and walk away?",
-    a: "Exchanges accept the transfer, but they do not run ACCOUNT_MERGE. Your trustlines, signers, data entries, and the base reserve stay locked in a stranded account forever. Demolisher actually closes the account.",
+    a: "Exchanges accept the transfer, but they do not run ACCOUNT_MERGE. Your trustlines, signers, data entries, and the base reserve stay locked in the account until it is merged some other way. Demolisher actually closes the account.",
   },
   {
     q: "Does the app ever see my secret key?",
-    a: "No. The wallet integrations (Freighter, xBull, Albedo, Rabet, Lobstr, Hana and more via stellar-wallets-kit, plus Ledger hardware and WalletConnect mobile) keep the key on your device. The secret-key fallback is a last-resort option, entered locally in your browser, never sent to a server.",
+    a: `No. The wallet integrations (Freighter, xBull, Albedo, Rabet, Lobstr, Hana and more via stellar-wallets-kit, plus Ledger hardware${walletConnect ? " and WalletConnect mobile" : ""}) keep the key on your device. The secret-key fallback is a last-resort option, entered locally in your browser, never sent to a server.`,
   },
   {
     q: "What is the mediator account and why does it exist?",
@@ -294,7 +301,7 @@ const FAQS: ReadonlyArray<Faq> = [
   },
   {
     q: "What is the allowance viewer?",
-    a: "A standalone tool, at /allowances, that lists active SEP-41 token allowances for any account and lets you revoke them. Think of it as the Stellar analog of revoke.cash.",
+    a: "A standalone tool, at /allowances, that lists the SEP-41 token allowances any account set in the last 7 days of on-chain events, and lets you revoke them from the wallet that owns the account. Think of it as the Stellar analog of revoke.cash.",
   },
   {
     q: "Is it really open source?",
@@ -304,6 +311,10 @@ const FAQS: ReadonlyArray<Faq> = [
 
 export default function HomePage(): React.JSX.Element {
   const [openFaq, setOpenFaq] = useState<number | null>(0);
+  const walletConnect = walletConnectEnabled();
+  const steps = stepsFor(walletConnect);
+  const faqs = faqsFor(walletConnect);
+  const wallets = ALL_WALLETS.filter((w) => walletConnect || w.name !== "WalletConnect");
 
   useEffect(() => {
     trackVisit("landing");
@@ -314,7 +325,7 @@ export default function HomePage(): React.JSX.Element {
       {/* overflow-x: clip is a safety net for mobile: it stops any residual
           horizontal overflow from scrolling the page, without breaking the
           sticky header (clip, unlike hidden, sets up no scroll container) */}
-      <main style={{ overflowX: "clip" }}>
+      <div style={{ overflowX: "clip" }}>
         {/* hero */}
         <section style={{ borderBottom: "1px solid var(--border)" }}>
           <div style={{ maxWidth: 1180, margin: "0 auto", padding: "0 28px" }}>
@@ -743,8 +754,8 @@ export default function HomePage(): React.JSX.Element {
                 <span style={{ fontFamily: '"Geist Mono", monospace', fontSize: 13 }}>
                   ACCOUNT_MERGE
                 </span>
-                , so the account, and its reserve, stay frozen forever. Each gets a little further.
-                Only one finishes.
+                , so the account and its reserve stay locked until it is merged. Each gets a little
+                further. Only one finishes.
               </p>
             </div>
 
@@ -988,8 +999,8 @@ export default function HomePage(): React.JSX.Element {
                 color: "var(--fg-2)",
               }}
             >
-              Every entry discovered, sequenced, and checked against a hardcoded allow-list before
-              you sign.
+              Every entry discovered and sequenced, every DeFi call checked against a hardcoded
+              allow-list before you sign.
             </p>
           </div>
           <div
@@ -1000,7 +1011,14 @@ export default function HomePage(): React.JSX.Element {
             }}
           >
             {HANDLES.map((h) => (
-              <div key={h.num} className="cov-flip" tabIndex={0} style={{ height: 158 }}>
+              <div
+                key={h.num}
+                className="cov-flip"
+                tabIndex={0}
+                role="group"
+                aria-label={`${h.tag}: ${h.label}`}
+                style={{ height: 158 }}
+              >
                 <div
                   className="cov-inner"
                   style={{
@@ -1143,8 +1161,8 @@ export default function HomePage(): React.JSX.Element {
                 color: "var(--fg-2)",
               }}
             >
-              Nothing is auto-signed. You review the full simulated plan, then approve, the step
-              that separates this from a scam.
+              No surprise signatures. You review the full plan, then approve, the step that
+              separates this from a scam.
             </p>
 
             <div
@@ -1166,7 +1184,7 @@ export default function HomePage(): React.JSX.Element {
                   background: "linear-gradient(90deg, var(--accent-line), var(--accent-line))",
                 }}
               />
-              {STEPS.map((s) => (
+              {steps.map((s) => (
                 <div
                   key={s.num}
                   style={{
@@ -1299,8 +1317,8 @@ export default function HomePage(): React.JSX.Element {
                   color: "var(--fg-2)",
                 }}
               >
-                The full plan is built and simulated up front. Nothing crosses the line until you
-                approve each transaction.
+                The full plan is built up front, with Soroban steps simulated. Nothing is submitted
+                until you approve it.
               </p>
             </div>
 
@@ -1361,7 +1379,7 @@ export default function HomePage(): React.JSX.Element {
                         letterSpacing: "0.05em",
                       }}
                     >
-                      5 OPS · SIMULATED
+                      5 TRANSACTIONS · DRY RUN
                     </span>
                   </span>
                 </div>
@@ -1572,7 +1590,7 @@ export default function HomePage(): React.JSX.Element {
                   <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
                 </svg>
                 <div>
-                  <span style={{ fontWeight: 600, fontSize: 14 }}>Simulated up front</span>
+                  <span style={{ fontWeight: 600, fontSize: 14 }}>Built up front</span>
                   <span
                     style={{
                       display: "block",
@@ -1581,7 +1599,7 @@ export default function HomePage(): React.JSX.Element {
                       marginTop: 2,
                     }}
                   >
-                    Real fees from a live simulation, not estimates.
+                    Soroban fees from a live simulation, not estimates.
                   </span>
                 </div>
               </div>
@@ -1629,7 +1647,7 @@ export default function HomePage(): React.JSX.Element {
                   <rect x="5" y="11" width="14" height="10" rx="2" />
                 </svg>
                 <div>
-                  <span style={{ fontWeight: 600, fontSize: 14 }}>Never auto-signs</span>
+                  <span style={{ fontWeight: 600, fontSize: 14 }}>No surprise signatures</span>
                   <span
                     style={{
                       display: "block",
@@ -1638,7 +1656,8 @@ export default function HomePage(): React.JSX.Element {
                       marginTop: 2,
                     }}
                   >
-                    You approve every transaction in your wallet, never by surprise.
+                    A wallet asks you for every transaction. A pasted key signs only after your
+                    typed confirmation.
                   </span>
                 </div>
               </div>
@@ -1715,6 +1734,8 @@ export default function HomePage(): React.JSX.Element {
                   key={row.num}
                   className="never-row"
                   tabIndex={0}
+                  role="group"
+                  aria-label={row.title}
                   style={{
                     display: "grid",
                     gridTemplateColumns: "auto 1fr",
@@ -1724,7 +1745,6 @@ export default function HomePage(): React.JSX.Element {
                     borderTop: "1px solid var(--border)",
                     transition: "box-shadow .2s",
                     cursor: "default",
-                    outline: "none",
                   }}
                 >
                   <div
@@ -1888,8 +1908,8 @@ export default function HomePage(): React.JSX.Element {
                   color: "var(--fg-2)",
                 }}
               >
-                Soroban DeFi positions unwound alongside classic assets, every integration on a
-                hardcoded allow-list.
+                Soroban DeFi positions unwound alongside classic assets, every DeFi protocol call on
+                a hardcoded allow-list.
               </p>
             </div>
 
@@ -2003,7 +2023,7 @@ export default function HomePage(): React.JSX.Element {
                 </div>
                 <div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 9 }}>
-                    {WALLETS.map((w) => (
+                    {wallets.map((w) => (
                       <div
                         key={w.name}
                         style={{
@@ -2108,8 +2128,9 @@ export default function HomePage(): React.JSX.Element {
                     maxWidth: 440,
                   }}
                 >
-                  Paste any G… or C… address and list active SEP-41 token allowances. Revoke any of
-                  them with a single signed call. No closure required.
+                  Paste any G… or C… address and list the SEP-41 token allowances it set in the last
+                  7 days of on-chain events. Revoke them one by one or in a sweep from the wallet
+                  that owns the address. No closure required.
                 </p>
                 <Link
                   href="/allowances"
@@ -2265,7 +2286,7 @@ export default function HomePage(): React.JSX.Element {
                 works, and what it can&apos;t do.
               </p>
               <a
-                href="https://github.com/bytemaster333/account-demolisher#readme"
+                href="https://docs.demolisher.app/docs/developers/security/model"
                 target="_blank"
                 rel="noreferrer noopener"
                 style={{
@@ -2294,8 +2315,9 @@ export default function HomePage(): React.JSX.Element {
               </a>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {FAQS.map((f, i) => {
+              {faqs.map((f, i) => {
                 const isOpen = openFaq === i;
+                const answerId = `faq-${i}`;
                 return (
                   <div
                     key={f.q}
@@ -2308,6 +2330,8 @@ export default function HomePage(): React.JSX.Element {
                   >
                     <button
                       type="button"
+                      aria-expanded={isOpen}
+                      aria-controls={answerId}
                       onClick={() => setOpenFaq(isOpen ? null : i)}
                       style={{
                         width: "100%",
@@ -2361,6 +2385,8 @@ export default function HomePage(): React.JSX.Element {
                       </span>
                     </button>
                     <div
+                      id={answerId}
+                      inert={!isOpen}
                       style={{
                         display: "grid",
                         gridTemplateRows: isOpen ? "1fr" : "0fr",
@@ -2514,7 +2540,7 @@ export default function HomePage(): React.JSX.Element {
             </a>
           </div>
         </section>
-      </main>
+      </div>
     </AppShell>
   );
 }

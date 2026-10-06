@@ -64,7 +64,7 @@ function reasonFor(flag: ScamFlag): string {
     }
     case "suspicious_character": {
       const symbol = String(flag.detail?.symbol ?? "");
-      return `Symbol “${symbol}” contains characters outside A-Z and 0-9 (homoglyphs/accents), which legitimate issuers don’t use.`;
+      return `Symbol “${symbol}” contains characters outside A-Z, a-z and 0-9 (homoglyphs/accents), which legitimate issuers don’t use.`;
     }
     case "unknown_contract":
       return "We don’t recognize this token: it isn’t on our list of known, trusted tokens. That doesn’t prove it’s a scam, but make sure you recognize it.";

@@ -1,17 +1,22 @@
 "use client";
 
-// shown when audit.sponsorship.numSponsoring > 0
+// shown when the account sponsors ledger entries for other accounts, which
+// stellar won't let it merge away and the batcher can't revoke. the caller only
+// renders it when numSponsoring exceeds what the close releases on its own, so
+// there is no way to continue from here.
 
 import { useEffect, useId, useRef } from "react";
 
 export interface SponsoringBlockProps {
-  // audit.sponsorship.numSponsoring
+  // audit.sponsorship.numSponsoring: ledger entries this account pays the
+  // reserve for, its own included
   readonly numSponsoring: number;
-  // count the classic batcher can auto-revoke (self-sponsored entries on this account)
+  // the account's own sponsored entries the close releases by itself
   readonly coverable: number;
   readonly onDismiss: () => void;
-  // fires only when coverable === numSponsoring
-  readonly onProceed: () => void;
+  // ignored: this screen never continues. kept until the demolish page stops
+  // passing it.
+  readonly onProceed?: () => void;
   readonly className?: string;
 }
 
@@ -19,7 +24,6 @@ export function SponsoringBlock({
   numSponsoring,
   coverable,
   onDismiss,
-  onProceed,
   className,
 }: SponsoringBlockProps): React.JSX.Element {
   const titleId = useId();
@@ -30,17 +34,15 @@ export function SponsoringBlock({
     primaryRef.current?.focus();
   }, []);
 
-  const isSoft = coverable === numSponsoring;
-  const foreign = numSponsoring - coverable;
+  // entries, not accounts: sponsoring one account's creation alone counts 2
+  const foreign = Math.max(0, numSponsoring - coverable);
 
   return (
     <div
-      role="dialog"
-      aria-modal="true"
+      role="region"
       aria-labelledby={titleId}
       aria-describedby={descriptionId}
       data-testid="sponsoring-block"
-      data-mode={isSoft ? "soft" : "hard"}
       className={className}
       style={{
         maxWidth: 560,
@@ -56,39 +58,25 @@ export function SponsoringBlock({
           margin: "0 auto 24px",
           borderRadius: 20,
           background: "var(--surface-2)",
-          border: `1px solid color-mix(in srgb, var(${isSoft ? "--warning" : "--danger"}) 30%, transparent)`,
+          border: "1px solid color-mix(in srgb, var(--danger) 30%, transparent)",
           display: "grid",
           placeItems: "center",
         }}
       >
-        {isSoft ? (
-          <svg
-            width="34"
-            height="34"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="var(--warning)"
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
-          </svg>
-        ) : (
-          <svg
-            width="34"
-            height="34"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="var(--danger)"
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <circle cx="12" cy="12" r="9" />
-            <path d="M5.6 5.6l12.8 12.8" />
-          </svg>
-        )}
+        <svg
+          width="34"
+          height="34"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="var(--danger)"
+          strokeWidth={2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <circle cx="12" cy="12" r="9" />
+          <path d="M5.6 5.6l12.8 12.8" />
+        </svg>
       </div>
       <h1
         id={titleId}
@@ -100,9 +88,7 @@ export function SponsoringBlock({
           color: "var(--fg)",
         }}
       >
-        {isSoft
-          ? "This account covers a few network deposits"
-          : "This account is paying deposits for other accounts"}
+        This account is paying deposits for other accounts
       </h1>
       <p
         id={descriptionId}
@@ -114,36 +100,19 @@ export function SponsoringBlock({
           color: "var(--fg-2)",
         }}
       >
-        {isSoft ? (
-          <>
-            It&apos;s paying{" "}
-            <strong
-              data-testid="sponsoring-block-count"
-              style={{ color: "var(--fg)", fontFamily: "'Geist Mono', monospace" }}
-            >
-              {numSponsoring}
-            </strong>{" "}
-            small deposit{numSponsoring === 1 ? "" : "(s)"} to keep some of its own entries on the
-            network. We&apos;ll release {numSponsoring === 1 ? "it" : "them"} automatically while
-            closing, with nothing for you to do.
-          </>
-        ) : (
-          <>
-            This account is paying deposits (called{" "}
-            <em style={{ fontStyle: "normal", color: "var(--fg)" }}>sponsorships</em>, deposits your
-            account paid to keep something on the network for another account) to keep entries on{" "}
-            <strong
-              data-testid="sponsoring-block-count"
-              style={{ color: "var(--fg)", fontFamily: "'Geist Mono', monospace" }}
-            >
-              {foreign}
-            </strong>{" "}
-            OTHER account{foreign === 1 ? "" : "(s)"} on the network. Stellar won&apos;t let an
-            account close while it&apos;s doing that, so those must be removed first, and that has
-            to be done with another tool (for example the Stellar Laboratory), not here. Once
-            they&apos;re removed, come back and try again.
-          </>
-        )}
+        This account pays the reserve deposit (a{" "}
+        <em style={{ fontStyle: "normal", color: "var(--fg)" }}>sponsorship</em>) for{" "}
+        <strong
+          data-testid="sponsoring-block-count"
+          style={{ color: "var(--fg)", fontFamily: "'Geist Mono', monospace" }}
+        >
+          {foreign}
+        </strong>{" "}
+        {foreign === 1 ? "ledger entry" : "ledger entries"} that belong to other accounts (one
+        sponsored account can account for several entries). Stellar won&apos;t let an account close
+        while it does that, so those sponsorships must be removed first, with another tool (for
+        example the Stellar Laboratory), not here. Once they&apos;re removed, come back and try
+        again.
       </p>
       <div
         style={{
@@ -154,31 +123,8 @@ export function SponsoringBlock({
           gap: 10,
         }}
       >
-        {isSoft ? (
-          <button
-            ref={primaryRef}
-            type="button"
-            onClick={onProceed}
-            data-testid="sponsoring-block-proceed"
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 8,
-              padding: "12px 20px",
-              borderRadius: 11,
-              border: "1px solid var(--accent-line)",
-              background: "transparent",
-              color: "var(--accent)",
-              fontWeight: 600,
-              fontSize: 14,
-              cursor: "pointer",
-            }}
-          >
-            Continue
-          </button>
-        ) : null}
         <button
-          ref={isSoft ? undefined : primaryRef}
+          ref={primaryRef}
           type="button"
           onClick={onDismiss}
           data-testid="sponsoring-block-dismiss"
@@ -205,6 +151,7 @@ export function SponsoringBlock({
             strokeWidth={2.2}
             strokeLinecap="round"
             strokeLinejoin="round"
+            aria-hidden
           >
             <path d="M19 12H5M11 6l-6 6 6 6" />
           </svg>

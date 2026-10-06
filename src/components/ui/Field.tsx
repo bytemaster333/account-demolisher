@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { useId, useState, type CSSProperties, type ReactNode } from "react";
 import { MONO, RADIUS } from "./tokens";
 
 const inputBase: CSSProperties = {
@@ -47,10 +47,14 @@ export function Field({
   "data-testid": testId,
   right,
 }: FieldProps): React.JSX.Element {
+  const inputId = useId();
+  const noteId = useId();
+  const note = error ? error : hint ? hint : null;
   return (
     <div>
       {label ? (
         <label
+          htmlFor={inputId}
           style={{
             display: "block",
             fontSize: 12.5,
@@ -64,6 +68,7 @@ export function Field({
       ) : null}
       <div style={{ display: "flex", gap: 8 }}>
         <input
+          id={inputId}
           type={type}
           value={value}
           onChange={(e) => onChange(e.currentTarget.value)}
@@ -72,6 +77,8 @@ export function Field({
           autoComplete={autoComplete}
           spellCheck={spellCheck}
           aria-label={ariaLabel}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={note !== null ? noteId : undefined}
           data-testid={testId}
           style={{
             ...inputBase,
@@ -84,11 +91,17 @@ export function Field({
         {right}
       </div>
       {error ? (
-        <p role="alert" style={{ margin: "7px 0 0", fontSize: 12.5, color: "var(--danger)" }}>
+        <p
+          id={noteId}
+          role="alert"
+          style={{ margin: "7px 0 0", fontSize: 12.5, color: "var(--danger)" }}
+        >
           {error}
         </p>
       ) : hint ? (
-        <p style={{ margin: "7px 0 0", fontSize: 12, color: "var(--fg-3)" }}>{hint}</p>
+        <p id={noteId} style={{ margin: "7px 0 0", fontSize: 12, color: "var(--fg-3)" }}>
+          {hint}
+        </p>
       ) : null}
     </div>
   );

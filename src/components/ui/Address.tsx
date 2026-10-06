@@ -8,9 +8,8 @@ function middleTruncate(value: string, head = 6, tail = 6): string {
   return `${value.slice(0, head)}…${value.slice(-tail)}`;
 }
 
-// Truncated monospace address with an inline copy button and full-value title.
-// Fixes the /allowances gap where spender/contract were truncated with no way
-// to read or copy them.
+// truncated monospace address with an inline copy button; the full value is in
+// the title and the copy
 export function CopyableAddress({
   value,
   head = 6,

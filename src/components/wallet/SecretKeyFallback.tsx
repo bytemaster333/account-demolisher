@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 
+import { SEED_INPUT_ATTRS } from "@/components/wallet/seed-input";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
 import { setActiveConnector } from "@/lib/wallet/active-connector";
 import { useWalletStore } from "@/stores/wallet";
@@ -31,9 +32,10 @@ export function SecretKeyFallback({ onConnector }: SecretKeyFallbackProps): Reac
       setError(null);
       setPending(true);
 
-      // snapshot the seed locally so we can clear the input before any async runs
-      // after this line the seed only exists on the connector and the local `current` variable
-      const current = seed;
+      // snapshot the seed locally so the input can be cleared before any async
+      // work; after this the seed only lives in `current` and the connector.
+      // copied keys often carry spaces or a tab, which strkey rejects.
+      const current = seed.trim();
       setSeed("");
 
       try {
@@ -58,7 +60,7 @@ export function SecretKeyFallback({ onConnector }: SecretKeyFallbackProps): Reac
     [seed, setConnected, onConnector],
   );
 
-  const submitDisabled = pending || seed.length === 0;
+  const submitDisabled = pending || seed.trim().length === 0;
 
   return (
     <section
@@ -71,7 +73,8 @@ export function SecretKeyFallback({ onConnector }: SecretKeyFallbackProps): Reac
       }}
     >
       <div
-        role="alert"
+        role="note"
+        aria-labelledby="secret-key-fallback-heading"
         style={{
           borderRadius: 11,
           border: "1px solid color-mix(in srgb, var(--danger) 38%, transparent)",
@@ -110,18 +113,15 @@ export function SecretKeyFallback({ onConnector }: SecretKeyFallbackProps): Reac
           <code style={{ fontFamily: "'Geist Mono', ui-monospace, monospace" }}>S</code>)
         </label>
         <input
+          {...SEED_INPUT_ATTRS}
           id="secret-key-input"
           name="secret-key"
-          type="password"
           inputMode="text"
-          autoComplete="off"
-          autoCorrect="off"
-          autoCapitalize="off"
-          spellCheck={false}
           value={seed}
           onChange={(e) => setSeed(e.currentTarget.value)}
           placeholder="S…"
-          aria-describedby="secret-key-help"
+          aria-invalid={error !== null}
+          aria-describedby={error !== null ? "secret-key-help secret-key-error" : "secret-key-help"}
           data-testid="secret-key-input"
           style={{
             height: 40,
@@ -139,7 +139,11 @@ export function SecretKeyFallback({ onConnector }: SecretKeyFallbackProps): Reac
           We only check the format on your device, and the key is never uploaded.
         </p>
         {error !== null ? (
-          <p role="alert" style={{ margin: 0, fontSize: 12, color: "var(--danger)" }}>
+          <p
+            id="secret-key-error"
+            role="alert"
+            style={{ margin: 0, fontSize: 12, color: "var(--danger)" }}
+          >
             {error}
           </p>
         ) : null}

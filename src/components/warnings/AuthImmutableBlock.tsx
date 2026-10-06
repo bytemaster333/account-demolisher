@@ -1,7 +1,7 @@
 "use client";
 
-// full-screen takeover when audit.flags.authImmutable is true. no continue path
-// styled to match the dc design (lines 529-547): centered icon, headline, copy, back button
+// full-screen takeover when audit.flags.authImmutable is true; there is no way
+// to continue. inline page content, so a labelled region rather than a dialog.
 
 import { useEffect, useId, useRef } from "react";
 
@@ -25,8 +25,7 @@ export function AuthImmutableBlock({
 
   return (
     <div
-      role="dialog"
-      aria-modal="true"
+      role="region"
       aria-labelledby={titleId}
       aria-describedby={descriptionId}
       data-testid="auth-immutable-block"

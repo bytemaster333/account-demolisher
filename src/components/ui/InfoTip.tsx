@@ -1,15 +1,14 @@
 "use client";
 
-import { useId, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
-// A jargon term with a dotted underline that reveals a short plain-language
-// definition on hover, keyboard focus, or tap. Keyboard- and touch-reachable
-// (not a bare `title=` tooltip). Use sparingly, only for terms worth a gloss.
+// a jargon term with a dotted underline that reveals a short plain-language
+// definition on mouse hover, keyboard focus, or tap. Escape dismisses it.
 //
-// The popover is rendered in a portal with fixed positioning so it can't be
-// clipped by an ancestor's `overflow: hidden` (e.g. the rounded plan-list card
-// on the Review step) or lost behind a stacking context.
+// the popover is portalled with fixed positioning so an ancestor's overflow
+// can't clip it; while open it re-anchors on scroll and resize so it stays on
+// its term.
 export function InfoTip({
   children,
   tip,
@@ -22,15 +21,34 @@ export function InfoTip({
   const ref = useRef<HTMLButtonElement>(null);
   const tipId = useId();
 
-  const show = (): void => {
+  const place = useCallback((): void => {
     const el = ref.current;
     if (el) {
       const r = el.getBoundingClientRect();
       setAnchor({ top: r.top, left: r.left + r.width / 2 });
     }
+  }, []);
+  const show = (): void => {
+    place();
     setOpen(true);
   };
   const hide = (): void => setOpen(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    // capture, so scrolling any scroll container moves the tip too
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [open, place]);
 
   return (
     <span style={{ display: "inline-flex", alignItems: "center" }}>
@@ -47,8 +65,14 @@ export function InfoTip({
           if (open) hide();
           else show();
         }}
-        onMouseEnter={show}
-        onMouseLeave={hide}
+        // hover is mouse-only: on touch, a synthetic enter before the click
+        // would open the tip and the click would immediately close it again
+        onPointerEnter={(e) => {
+          if (e.pointerType === "mouse") show();
+        }}
+        onPointerLeave={(e) => {
+          if (e.pointerType === "mouse") hide();
+        }}
         onFocus={show}
         onBlur={hide}
         style={{

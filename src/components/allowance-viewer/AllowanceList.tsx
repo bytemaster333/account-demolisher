@@ -4,9 +4,15 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import {
+  addressExplorerUrl,
+  confirmationOf,
+  effectiveAmount,
+  isActive,
+} from "@/components/allowance-viewer/allowance-state";
 import { Badge, Card, CopyableAddress, Dot, InfoTip } from "@/components/ui";
 import { errorMessage } from "@/lib/errors";
-import { explorerAccountUrl, explorerContractUrl } from "@/lib/explorer";
+import { explorerContractUrl } from "@/lib/explorer";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { allowanceAmountMismatch, type AllowanceRecord } from "@/lib/soroban/allowances";
 import { getRpc } from "@/lib/soroban/rpc-client";
@@ -24,12 +30,17 @@ const GRID_COLS = "minmax(0, 1.5fr) minmax(0, 1.7fr) 0.9fr 0.8fr 118px";
 export interface AllowanceListProps {
   readonly records: readonly AllowanceRecord[];
   readonly userAddress: string;
+  // G-address used as the source of token metadata simulations (the same one
+  // the on-chain confirm uses). null when none exists, e.g. a C-address scan
+  // with no wallet connected, and then metadata isn't loaded.
+  readonly simulationSource: string | null;
   readonly network: NetworkConfig;
   readonly currentLedger: number;
   // null = revoke disabled. ref is only read inside the row click handler, never during render
   readonly connectorRef: React.RefObject<Connector | null> | null;
+  // also show rows that are no longer active (expired, or zero on chain)
   readonly showExpired: boolean;
-  // re-enumerate after a successful revoke
+  // fires after a revoke is confirmed on chain; the page drops that row
   readonly onRevoked?: ((record: AllowanceRecord, txHash: string) => void) | undefined;
   // a bulk sweep is running: disable the per-row revoke buttons
   readonly busy?: boolean;
@@ -41,16 +52,10 @@ const HEADER_CELL: React.CSSProperties = {
   letterSpacing: "0.06em",
 };
 
-// stellar.expert link for a stellar address: contract (C…) or account (G…)
-function addressExplorerUrl(network: NetworkConfig, addr: string): string {
-  return addr.startsWith("C")
-    ? explorerContractUrl(network, addr)
-    : explorerAccountUrl(network, addr);
-}
-
 export function AllowanceList({
   records,
   userAddress,
+  simulationSource,
   network,
   currentLedger,
   connectorRef,
@@ -59,10 +64,10 @@ export function AllowanceList({
   busy,
 }: AllowanceListProps): React.JSX.Element {
   const visible = useMemo(
-    () => (showExpired ? records : records.filter((r) => !r.expired)),
+    () => (showExpired ? records : records.filter(isActive)),
     [records, showExpired],
   );
-  const activeCount = useMemo(() => records.filter((r) => !r.expired).length, [records]);
+  const activeCount = useMemo(() => records.filter(isActive).length, [records]);
 
   return (
     <Card padding={0} style={{ overflow: "hidden" }} data-testid="allowance-list">
@@ -80,7 +85,7 @@ export function AllowanceList({
           {activeCount} active {activeCount === 1 ? "approval" : "approvals"}
         </span>
         <span style={{ fontSize: 12, color: "var(--fg-3)" }}>
-          <InfoTip tip="We looked back about the last 7 days of on-chain history (the RPC's event-retention limit). 'Active' approvals can still be used; the rest have already expired.">
+          <InfoTip tip="We looked back about the last 7 days of on-chain history (the RPC's event-retention limit). 'Active' approvals can still be used; the rest have expired or are already zero.">
             {records.length} found
           </InfoTip>
         </span>
@@ -93,8 +98,8 @@ export function AllowanceList({
         >
           <div style={{ fontWeight: 600, fontSize: 15 }}>No active allowances found</div>
           <div style={{ fontSize: 13, color: "var(--fg-2)", marginTop: 6 }}>
-            All allowances for this address are expired. Toggle {'"Show expired allowances"'} to
-            view them.
+            Every allowance found for this address has expired or is already zero. Toggle{" "}
+            {'"Show inactive allowances"'} to view them.
           </div>
         </div>
       ) : (
@@ -131,6 +136,7 @@ export function AllowanceList({
                 key={`${record.contractId}|${record.spender}`}
                 record={record}
                 userAddress={userAddress}
+                simulationSource={simulationSource}
                 network={network}
                 currentLedger={currentLedger}
                 connectorRef={connectorRef}
@@ -148,6 +154,7 @@ export function AllowanceList({
 interface AllowanceRowProps {
   readonly record: AllowanceRecord;
   readonly userAddress: string;
+  readonly simulationSource: string | null;
   readonly network: NetworkConfig;
   readonly currentLedger: number;
   readonly connectorRef: React.RefObject<Connector | null> | null;
@@ -158,6 +165,7 @@ interface AllowanceRowProps {
 function AllowanceRow({
   record,
   userAddress,
+  simulationSource,
   network,
   currentLedger,
   connectorRef,
@@ -168,15 +176,18 @@ function AllowanceRow({
   const [tokenDecimals, setTokenDecimals] = useState<number | null>(null);
   const [tokenError, setTokenError] = useState<string | null>(null);
 
-  // lazy per-row SEP-41 metadata fetch; sep41.ts caches per (server, contract)
+  // lazy per-row SEP-41 metadata fetch; sep41.ts caches per (server, contract).
+  // a simulation needs a G-address source, never the scanned address itself
+  // (which can be a contract)
   useEffect(() => {
+    if (simulationSource === null) return;
     let cancelled = false;
     (async () => {
       try {
         const rpc = getRpc(network);
         const [s, d] = await Promise.all([
-          sep41Symbol(rpc, record.contractId, userAddress, network),
-          sep41Decimals(rpc, record.contractId, userAddress, network),
+          sep41Symbol(rpc, record.contractId, simulationSource, network),
+          sep41Decimals(rpc, record.contractId, simulationSource, network),
         ]);
         if (!cancelled) {
           // SEP-41 symbol() is attacker-controlled on-chain text; strip bidi /
@@ -193,14 +204,21 @@ function AllowanceRow({
     return () => {
       cancelled = true;
     };
-  }, [network, record.contractId, userAddress]);
+  }, [network, record.contractId, simulationSource]);
 
   const spenderInfo: SpenderInfo | null = useMemo(
     () => lookupSpender(record.spender, network),
     [record.spender, network],
   );
 
-  const avatarText = tokenSymbol ? tokenSymbol.slice(0, 2).toUpperCase() : tokenError ? "?" : "…";
+  const noSource = simulationSource === null;
+  const avatarText = tokenSymbol
+    ? tokenSymbol.slice(0, 2).toUpperCase()
+    : tokenError || noSource
+      ? "?"
+      : "…";
+  const confirmation = confirmationOf(record);
+  const shownAmount = effectiveAmount(record);
   // reserve the accent avatar for a resolved token; a still-loading ("…") or
   // errored ("?") token gets a neutral chip so its state reads at a glance
   const avatarResolved = tokenSymbol !== null;
@@ -238,7 +256,7 @@ function AllowanceRow({
         </span>
         <div style={{ minWidth: 0 }}>
           <div data-testid="row-token-symbol" style={{ fontWeight: 600, fontSize: 14 }}>
-            {tokenSymbol ?? (tokenError ? "(unknown)" : "…")}
+            {tokenSymbol ?? (tokenError || noSource ? "(unknown)" : "…")}
           </div>
           <div style={{ marginTop: 2 }}>
             <CopyableAddress
@@ -253,6 +271,14 @@ function AllowanceRow({
               {tokenError}
             </div>
           )}
+          {noSource ? (
+            <div
+              data-testid="row-token-hint"
+              style={{ fontSize: 11, color: "var(--fg-3)", marginTop: 3 }}
+            >
+              Connect a wallet to load token details.
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -314,29 +340,42 @@ function AllowanceRow({
         )}
       </div>
 
-      {/* amount (spend limit) */}
+      {/* amount (spend limit): the token's own allowance() when it was read,
+          otherwise the event amount, marked unconfirmed. a hostile token can
+          emit a fabricated approve event, so the event value never leads when
+          the on-chain one is known. */}
       <div data-testid="row-amount" style={{ minWidth: 0 }}>
         <div
           style={{ display: "flex", alignItems: "baseline", gap: 5 }}
           title={tokenDecimals !== null ? `${tokenDecimals} decimals` : undefined}
         >
-          <span style={{ font: "600 13px/1 'Geist Mono', monospace" }}>
-            {formatAmount(record.amount, tokenDecimals)}
+          <span
+            data-testid="row-amount-primary"
+            style={{ font: "600 13px/1 'Geist Mono', monospace" }}
+          >
+            {formatAmount(shownAmount, tokenDecimals)}
           </span>
           {tokenSymbol !== null ? (
             <span style={{ fontSize: 11, color: "var(--fg-3)", fontWeight: 500 }}>
               {tokenSymbol}
             </span>
+          ) : tokenDecimals === null && shownAmount < UNLIMITED_ALLOWANCE_THRESHOLD ? (
+            <span style={{ fontSize: 11, color: "var(--fg-3)", fontWeight: 500 }}>base units</span>
           ) : null}
         </div>
-        {/* on-chain accuracy check: the amount above is event-derived and a
-            hostile token can emit a fabricated approve event; when the real
-            on-chain allowance disagrees, say so rather than showing a lie. */}
-        {allowanceAmountMismatch(record) ? (
+        {confirmation === "unconfirmed" ? (
+          <div data-testid="row-unconfirmed" style={{ marginTop: 4, fontSize: 10.5 }}>
+            <Badge tone="warning">
+              <InfoTip tip="This amount comes from approval events and could not be checked against the token's current allowance() (the read failed or wasn't possible). A token can emit a fabricated event, so treat it as unverified. Revoking is the safe choice if you don't recognize this spender.">
+                unconfirmed
+              </InfoTip>
+            </Badge>
+          </div>
+        ) : allowanceAmountMismatch(record) ? (
           <div data-testid="row-amount-mismatch" style={{ marginTop: 4, fontSize: 10.5 }}>
-            <InfoTip tip="The spend limit shown was read from on-chain approval EVENTS, but the token contract's current allowance() reports a different value. The event may be fabricated or stale. Trust the on-chain value; revoking is the safe choice if you don't recognize this spender.">
+            <InfoTip tip="The approval events reported a different amount than the token's current allowance(). The event may be fabricated or stale. The amount above is the on-chain value.">
               <span style={{ color: "var(--warning)", fontWeight: 600 }}>
-                ⚠ on-chain: {formatAmount(record.onChainAmount as bigint, tokenDecimals)}
+                ⚠ events: {formatAmount(record.amount, tokenDecimals)}
               </span>
             </InfoTip>
           </div>

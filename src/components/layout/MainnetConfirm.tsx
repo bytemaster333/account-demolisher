@@ -1,19 +1,27 @@
 "use client";
 
-// Deliberate gate before switching from Testnet to Mainnet. Account Demolisher
-// is a destructive tool, so moving onto the live network — where a merge is
-// permanent and irreversible — should never be a stray dropdown click. Matches
-// the destructive-action dialog language used by TypedConfirmation (same
-// overlay, panel, danger CTA, Escape/backdrop cancel, focus trap).
+// deliberate gate before working on mainnet, where a merge is permanent. it
+// shows when switching from testnet, and at startup when the app opens on
+// mainnet (build default or restored choice) without an acknowledgement. same
+// dialog language as TypedConfirmation: overlay, danger cta, escape and
+// backdrop cancel, focus trap.
 
 import { useEffect, useId, useRef, useState } from "react";
 
 export interface MainnetConfirmProps {
   readonly onConfirm: () => void;
+  // in startup mode, cancelling moves the app to testnet
   readonly onCancel: () => void;
+  // switch: picked from the network menu. startup: the app opened on mainnet.
+  readonly mode?: "switch" | "startup";
 }
 
-export function MainnetConfirm({ onConfirm, onCancel }: MainnetConfirmProps): React.JSX.Element {
+export function MainnetConfirm({
+  onConfirm,
+  onCancel,
+  mode = "switch",
+}: MainnetConfirmProps): React.JSX.Element {
+  const startup = mode === "startup";
   const titleId = useId();
   const bodyId = useId();
   const auditId = useId();
@@ -146,7 +154,7 @@ export function MainnetConfirm({ onConfirm, onCancel }: MainnetConfirmProps): Re
               color: "var(--fg)",
             }}
           >
-            Switch to Mainnet?
+            {startup ? "You're on Mainnet" : "Switch to Mainnet?"}
           </h2>
         </div>
 
@@ -159,8 +167,8 @@ export function MainnetConfirm({ onConfirm, onCancel }: MainnetConfirmProps): Re
             color: "var(--fg)",
           }}
         >
-          You&apos;re leaving Testnet. On Mainnet, every action moves{" "}
-          <span style={{ color: "var(--danger)" }}>real funds</span> and is permanent.
+          {startup ? "This app opened on Mainnet." : "You're leaving Testnet."} On Mainnet, every
+          action moves <span style={{ color: "var(--danger)" }}>real funds</span> and is permanent.
         </p>
         <p
           id={bodyId}
@@ -227,7 +235,7 @@ export function MainnetConfirm({ onConfirm, onCancel }: MainnetConfirmProps): Re
               cursor: "pointer",
             }}
           >
-            Stay on Testnet
+            {startup ? "Switch to Testnet" : "Stay on Testnet"}
           </button>
           <button
             type="button"
@@ -256,7 +264,7 @@ export function MainnetConfirm({ onConfirm, onCancel }: MainnetConfirmProps): Re
               aria-hidden
               style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--danger)" }}
             />
-            Switch to Mainnet
+            {startup ? "Continue on Mainnet" : "Switch to Mainnet"}
           </button>
         </div>
       </div>
