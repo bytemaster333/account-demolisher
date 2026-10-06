@@ -4,6 +4,7 @@
 
 import { Memo, xdr } from "@stellar/stellar-sdk";
 
+import { toSdkMemo } from "@/lib/stellar/memo";
 import type { ClassicMemo } from "@/lib/types/plan";
 
 // payment + accountMerge, nothing else
@@ -22,35 +23,11 @@ export function isMediatorNetworkId(value: unknown): value is MediatorNetworkId 
   return value === "mainnet" || value === "testnet";
 }
 
-// the sdk memo for a deposit memo as the app stores it. hash and return values
-// are accepted as 64 hex chars or as base64 of 32 bytes, the two forms the memo
-// field validation allows; the sdk itself only parses hex.
+// the sdk memo for a deposit memo as the app stores it, through the same
+// conversion the classic batches use, so a base64 hash memo that the memo field
+// accepts reaches the forward as the same 32 bytes. no memo is MemoNone.
 export function forwardMemoToSdk(memo: ClassicMemo | undefined): Memo {
-  if (memo === undefined) return Memo.none();
-  switch (memo.type) {
-    case "text":
-      return Memo.text(memo.value);
-    case "id":
-      return Memo.id(memo.value);
-    case "hash":
-      return Memo.hash(hashMemoBytes(memo.value));
-    case "return":
-      return Memo.return(hashMemoBytes(memo.value));
-  }
-}
-
-function hashMemoBytes(value: string): Uint8Array {
-  const v = value.trim();
-  if (/^[0-9a-fA-F]{64}$/u.test(v)) {
-    const out = new Uint8Array(32);
-    for (let i = 0; i < 32; i++) out[i] = Number.parseInt(v.slice(i * 2, i * 2 + 2), 16);
-    return out;
-  }
-  if (/^[A-Za-z0-9+/]{43}=$/u.test(v)) {
-    const bin = atob(v);
-    if (bin.length === 32) return Uint8Array.from(bin, (c) => c.charCodeAt(0));
-  }
-  throw new Error("A hash or return memo must be 32 bytes as 64 hex chars or 44 base64 chars.");
+  return memo === undefined ? Memo.none() : toSdkMemo(memo);
 }
 
 // canonical form of a memo: its xdr, base64. comparing these compares type and

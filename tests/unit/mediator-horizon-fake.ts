@@ -36,7 +36,9 @@ export type SubmitScript =
   | { readonly kind: "drop-504" }
   | { readonly kind: "reject"; readonly codes: { transaction: string; operations?: string[] } }
   // answer 200 without a hash, but apply it
-  | { readonly kind: "apply-no-hash" };
+  | { readonly kind: "apply-no-hash" }
+  // answer 200 without a hash and never include it
+  | { readonly kind: "drop-no-hash" };
 
 type RouteHandler = (req: Request) => Response | Promise<Response>;
 
@@ -48,6 +50,8 @@ export class FakeHorizon {
   // accounts that existed once, so their history answers 200 after a merge
   private readonly known = new Set<string>();
   feeChargedP90 = "100";
+  feeChargedMode = "100";
+  ledgerCapacityUsage = "0.1";
   // per-op inclusion fee the network currently demands
   surgeFeePerOp = 100n;
   readonly submitScript: SubmitScript[] = [];
@@ -136,7 +140,8 @@ export class FakeHorizon {
       return Response.json({
         last_ledger: String(this.ledger),
         last_ledger_base_fee: "100",
-        fee_charged: { p90: this.feeChargedP90 },
+        ledger_capacity_usage: this.ledgerCapacityUsage,
+        fee_charged: { p90: this.feeChargedP90, mode: this.feeChargedMode },
         max_fee: { p90: "1000000" },
       });
     }
@@ -189,6 +194,7 @@ export class FakeHorizon {
     const script = this.submitScript.shift() ?? { kind: "apply" };
     if (script.kind === "reject") return txFailed(script.codes);
     if (script.kind === "drop-504") return gatewayTimeout();
+    if (script.kind === "drop-no-hash") return Response.json({ successful: true });
 
     const outcome = this.apply(tx);
     if (outcome !== null) return txFailed(outcome);

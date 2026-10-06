@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Keypair, Memo } from "@stellar/stellar-sdk";
 
-import { reissueMediatorFlow, startMediatorFlow } from "@/lib/mediator/client";
+import {
+  reissueMediatorFlow,
+  requestMediatorSignature,
+  startMediatorFlow,
+} from "@/lib/mediator/client";
 import { encodeMemoCommitment } from "@/lib/mediator/forward-terms";
 
 const DEST = Keypair.random().publicKey();
@@ -30,11 +34,12 @@ afterEach(() => {
 });
 
 describe("startMediatorFlow (client)", () => {
-  it("refuses to start a flow without stated terms and sends nothing", async () => {
-    const fetchMock = answer({});
-    const result = await startMediatorFlow(DEST);
-    expect(result).toMatchObject({ ok: false, code: "FLOW_TERMS_MISSING" });
-    expect(fetchMock).not.toHaveBeenCalled();
+  it("can't be called without the flow terms", () => {
+    // never run: the point is that the compiler rejects the call
+    const omitted = () =>
+      // @ts-expect-error the network and deposit memo are required
+      startMediatorFlow(DEST);
+    expect(typeof omitted).toBe("function");
   });
 
   it("refuses a network other than mainnet or testnet", async () => {
@@ -126,6 +131,32 @@ describe("reissueMediatorFlow (client)", () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("/api/mediator/reissue");
     expect(JSON.parse(String(init.body))).toEqual({ flowToken: "old-token" });
+  });
+
+  it("hands back the server's retry-after on a 429", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          Response.json(
+            { ok: false, code: "RATE_LIMITED", reason: "Too many requests." },
+            { status: 429, headers: { "retry-after": "12" } },
+          ),
+        ),
+      ),
+    );
+    expect(await reissueMediatorFlow("t")).toEqual({
+      ok: false,
+      code: "RATE_LIMITED",
+      reason: "Too many requests.",
+      retryAfterSeconds: 12,
+    });
+    expect(await requestMediatorSignature("AAAA", "t", "testnet")).toEqual({
+      ok: false,
+      code: "RATE_LIMITED",
+      reason: "Too many requests.",
+      retryAfterSeconds: 12,
+    });
   });
 
   it("reports a network failure as NETWORK_ERROR", async () => {

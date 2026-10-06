@@ -20,7 +20,11 @@ import {
   type MediatorHistory,
   type MediatorMergedOut,
 } from "@/lib/mediator/chain-state";
-import { reissueMediatorFlow, requestMediatorSignature } from "@/lib/mediator/client";
+import {
+  reissueMediatorFlow,
+  requestMediatorSignature,
+  type MediatorFailure,
+} from "@/lib/mediator/client";
 import {
   FORWARD_OPERATION_COUNT,
   MAX_FORWARD_FEE_PER_OP,
@@ -71,6 +75,12 @@ const RECONCILE_POLL_DELAY_MS = 5_000;
 // how long past maxTime a tx may still show up in horizon's history
 const RECONCILE_GRACE_MS = 30_000;
 const READ_ATTEMPTS = 3;
+// below this share of a full ledger there is no classic surge to outbid
+const SURGE_CAPACITY_USAGE = 0.5;
+// retries of a rate-limited or unreachable mediator endpoint
+const ENDPOINT_RETRIES = 3;
+const ENDPOINT_BACKOFF_MS = 2_000;
+const MAX_RETRY_AFTER_MS = 60_000;
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -159,9 +169,15 @@ export async function submitMediatorForward(
 
       // 4. co-sign, renewing the token once if it has expired
       const unsignedXdr = unsigned.toEnvelope().toXdr("base64");
-      let signature = await requestMediatorSignature(unsignedXdr, flowToken, input.network.id);
+      const cosign = (token: string) =>
+        withEndpointRetry(
+          () => requestMediatorSignature(unsignedXdr, token, input.network.id),
+          sleep,
+        );
+      let signature = await cosign(flowToken);
       if (!signature.ok && signature.code === "FLOW_TOKEN_EXPIRED") {
-        const renewed = await reissueMediatorFlow(flowToken);
+        const current = flowToken;
+        const renewed = await withEndpointRetry(() => reissueMediatorFlow(current), sleep);
         if (!renewed.ok) {
           return fail(
             `Could not renew the expired flow token (${renewed.code}): ${renewed.reason}`,
@@ -175,7 +191,7 @@ export async function submitMediatorForward(
           );
         }
         flowToken = renewed.flowToken;
-        signature = await requestMediatorSignature(unsignedXdr, flowToken, input.network.id);
+        signature = await cosign(flowToken);
       }
       if (!signature.ok) {
         return fail(
@@ -198,7 +214,11 @@ export async function submitMediatorForward(
       }
       if (outcome.kind === "error") return fail(outcome.message);
       if (outcome.kind === "expired") {
+        // tx_insufficient_fee only means below the network minimum. under surge
+        // pricing an underpriced forward is queued or told to try again later
+        // and just never makes a ledger, so the rebuild bids higher
         lastProblem = `forward ${txHash} was not seen on chain before it expired`;
+        feePerOp = Math.min(feePerOp * 3, MAX_FORWARD_FEE_PER_OP);
         continue;
       }
       const codes = outcome.codes;
@@ -269,16 +289,48 @@ async function waitForAccountView(
 }
 
 // fee_charged is what recent transactions actually paid; max_fee is what other
-// submitters bid, which sits at the cap under any load
+// submitters bid, which sits at the cap under any load. fee_charged also counts
+// soroban transactions, whose resource fees push its upper percentiles far above
+// any classic surge price (testnet on 2026-10-06: capacity 0.1, mode 100, p90
+// 100791). While recent ledgers had room the classic price is the mode; p90 is
+// only used once they run near full. an underbid is raised on the rebuild, and
+// whatever the bid leaves unused travels in the uncredited merge leg.
 async function startingFeePerOp(server: Horizon.Server): Promise<number> {
   const stats = await server.feeStats();
-  const p90 = Number.parseInt(stats.fee_charged.p90, 10);
-  if (!Number.isFinite(p90)) {
+  const usage = Number.parseFloat(stats.ledger_capacity_usage);
+  const pick = usage < SURGE_CAPACITY_USAGE ? stats.fee_charged.mode : stats.fee_charged.p90;
+  if (!Number.isFinite(usage)) {
     throw new Error(
-      `Horizon fee_stats returned an unreadable fee_charged.p90 "${stats.fee_charged.p90}".`,
+      `Horizon fee_stats returned an unreadable ledger_capacity_usage "${stats.ledger_capacity_usage}".`,
     );
   }
-  return Math.min(Math.max(p90, NETWORK_MIN_FEE_PER_OP), MAX_FORWARD_FEE_PER_OP);
+  const fee = Number.parseInt(pick, 10);
+  if (!Number.isFinite(fee)) {
+    throw new Error(`Horizon fee_stats returned an unreadable fee_charged value "${pick}".`);
+  }
+  return Math.min(Math.max(fee, NETWORK_MIN_FEE_PER_OP), MAX_FORWARD_FEE_PER_OP);
+}
+
+// one call to a mediator endpoint, retried on a 429 (waiting what the server
+// asked, capped) or a transport failure. a refusal is never retried. this runs
+// after the user's balance is already in the mediator, so a busy endpoint must
+// not end the forward on its first answer.
+async function withEndpointRetry<T extends { ok: boolean }>(
+  call: () => Promise<T | MediatorFailure>,
+  sleep: (ms: number) => Promise<void>,
+): Promise<T | MediatorFailure> {
+  let result = await call();
+  for (let retry = 0; retry < ENDPOINT_RETRIES; retry++) {
+    if (result.ok) return result;
+    const failure = result as MediatorFailure;
+    if (failure.code !== "RATE_LIMITED" && failure.code !== "NETWORK_ERROR") return result;
+    const backoff = ENDPOINT_BACKOFF_MS * 2 ** retry;
+    const asked =
+      failure.retryAfterSeconds === undefined ? backoff : failure.retryAfterSeconds * 1000;
+    await sleep(Math.min(asked, MAX_RETRY_AFTER_MS));
+    result = await call();
+  }
+  return result;
 }
 
 async function baseReserveStroops(server: Horizon.Server): Promise<bigint> {

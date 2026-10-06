@@ -10,12 +10,18 @@ import {
 } from "@/lib/mediator/forward-terms";
 import type { ClassicMemo } from "@/lib/types/plan";
 
-export type MediatorSignatureResult =
-  { ok: true; signedXdr: string } | { ok: false; code: string; reason: string };
+export interface MediatorFailure {
+  ok: false;
+  code: string;
+  reason: string;
+  // set on a 429 when the server said how long to wait
+  retryAfterSeconds?: number;
+}
+
+export type MediatorSignatureResult = { ok: true; signedXdr: string } | MediatorFailure;
 
 export type MediatorFlowResult =
-  | { ok: true; flowToken: string; mediatorPublicKey: string; expiresAt: number }
-  | { ok: false; code: string; reason: string };
+  { ok: true; flowToken: string; mediatorPublicKey: string; expiresAt: number } | MediatorFailure;
 
 export interface MediatorEndpointOptions {
   readonly endpoint?: string;
@@ -91,13 +97,28 @@ function toFlowResult(
     };
   }
   if (typeof body.code === "string" && typeof body.reason === "string") {
-    return { ok: false, code: body.code, reason: body.reason };
+    return serverFailure(response, body.code, body.reason);
   }
   return {
     ok: false,
     code: "NETWORK_ERROR",
     reason: `Mediator returned an unexpected status ${String(response.status)}.`,
   };
+}
+
+// the routes send retry-after as whole seconds
+function retryAfterSeconds(response: Response): number | null {
+  if (response.status !== 429) return null;
+  const raw = response.headers.get("retry-after");
+  if (raw === null || !/^\d{1,6}$/u.test(raw.trim())) return null;
+  return Number.parseInt(raw.trim(), 10);
+}
+
+function serverFailure(response: Response, code: string, reason: string): MediatorFailure {
+  const wait = retryAfterSeconds(response);
+  return wait === null
+    ? { ok: false, code, reason }
+    : { ok: false, code, reason, retryAfterSeconds: wait };
 }
 
 // token layout: v2.nonce.expiry.network.destination.memo.mac. the client can't
@@ -116,21 +137,14 @@ function tokenCommitsTo(
 
 // GET the endpoint to start a flow: returns a flow token plus the ephemeral
 // mediator public key the plan should fund and merge into. Each call mints a
-// fresh, independent flow bound to `destination` and `terms`.
+// fresh, independent flow bound to `destination` and `terms`. An exchange
+// credits by memo, so the terms are required: a caller has to state the memo
+// (or null for none) and the network.
 export async function startMediatorFlow(
   destination: string,
-  terms?: MediatorFlowTerms,
+  terms: MediatorFlowTerms,
   options: MediatorEndpointOptions = {},
 ): Promise<MediatorFlowResult> {
-  // an exchange credits by memo, so a flow is never started without the caller
-  // stating the memo (or that there is none) and the network
-  if (terms === undefined) {
-    return {
-      ok: false,
-      code: "FLOW_TERMS_MISSING",
-      reason: "The network and deposit memo must be committed when the exchange flow starts.",
-    };
-  }
   if (!isMediatorNetworkId(terms.network)) {
     return {
       ok: false,
@@ -221,7 +235,7 @@ export async function requestMediatorSignature(
     return { ok: true, signedXdr: body.signedXdr };
   }
   if (body.ok === false && typeof body.code === "string" && typeof body.reason === "string") {
-    return { ok: false, code: body.code, reason: body.reason };
+    return serverFailure(response, body.code, body.reason);
   }
   return {
     ok: false,

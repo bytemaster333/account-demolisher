@@ -140,8 +140,9 @@ describe("submitMediatorForward", () => {
     expect(fake.submitted).toHaveLength(0);
   });
 
-  it("bids the per-op fee from fee_charged stats", async () => {
+  it("bids the per-op fee from fee_charged p90 while ledgers are near full", async () => {
     fake.feeChargedP90 = "5000";
+    fake.ledgerCapacityUsage = "0.95";
     const input = await mergedFlow();
     expect((await submitMediatorForward(input, deps)).ok).toBe(true);
     // per-op fee times two operations
@@ -149,8 +150,20 @@ describe("submitMediatorForward", () => {
     expect(fake.lastForward!.amount).toBe(102n * XLM - 2n * BASE_RESERVE - 10_000n);
   });
 
+  it("does not let soroban resource fees in the stats inflate the bid when ledgers have room", async () => {
+    // testnet on 2026-10-06: capacity 0.1, fee_charged mode 100, p90 100791
+    fake.ledgerCapacityUsage = "0.1";
+    fake.feeChargedMode = "100";
+    fake.feeChargedP90 = "100791";
+    const input = await mergedFlow();
+    expect((await submitMediatorForward(input, deps)).ok).toBe(true);
+    expect(fake.submitted[0]!.fee).toBe("200");
+    expect(fake.lastForward!.amount).toBe(102n * XLM - 2n * BASE_RESERVE - 200n);
+  });
+
   it("escalates the fee on tx_insufficient_fee and pays less only by the higher fee", async () => {
     fake.feeChargedP90 = "5000";
+    fake.ledgerCapacityUsage = "0.95";
     fake.surgeFeePerOp = 20_000n;
     const input = await mergedFlow();
     const result = await submitMediatorForward(input, deps);
@@ -193,13 +206,62 @@ describe("submitMediatorForward", () => {
       expect(result.txHash).toBe(Buffer.from(fake.submitted[0]!.hash()).toString("hex"));
   });
 
-  it("rebuilds after a dropped submission has expired, without double paying", async () => {
+  it("does not take a 200 without its hash as landed", async () => {
+    const input = await mergedFlow();
+    fake.submitScript.push({ kind: "drop-no-hash" });
+    const result = await submitMediatorForward(input, deps);
+    expect(result.ok).toBe(true);
+    // the first answer said nothing reliable and the ledger never had it
+    expect(fake.submitted).toHaveLength(2);
+    if (result.ok) {
+      expect(result.txHash).toBe(Buffer.from(fake.submitted[1]!.hash()).toString("hex"));
+    }
+  });
+
+  it("rebuilds after a dropped submission has expired with a higher bid, without double paying", async () => {
     const input = await mergedFlow();
     fake.submitScript.push({ kind: "drop-504" });
     const result = await submitMediatorForward(input, deps);
     expect(result.ok).toBe(true);
-    expect(fake.submitted).toHaveLength(2);
-    expect(fake.lastForward!.amount).toBe(102n * XLM - 2n * BASE_RESERVE - 200n);
+    // under surge pricing an underpriced forward is queued, not refused, and
+    // simply never makes a ledger; the rebuild bids three times as much
+    expect(fake.submitted.map((t) => t.fee)).toEqual(["200", "600"]);
+    expect(fake.lastForward!.amount).toBe(102n * XLM - 2n * BASE_RESERVE - 600n);
+  });
+
+  it("sends both the payment and the merge to the committed destination", async () => {
+    const input = await mergedFlow();
+    expect((await submitMediatorForward(input, deps)).ok).toBe(true);
+    const [pay, merge] = fake.submitted[0]!.operations;
+    expect(pay).toMatchObject({ type: "payment", destination: cex });
+    expect(merge).toMatchObject({ type: "accountMerge", destination: cex });
+  });
+
+  it("forwards a base64 hash memo as the same 32 bytes as its hex spelling", async () => {
+    const bytes = Uint8Array.from({ length: 32 }, (_, i) => i * 7);
+    const hex = Buffer.from(bytes).toString("hex");
+    const b64 = Buffer.from(bytes).toString("base64");
+    // minted with the hex spelling, forwarded with the base64 one
+    const flow = await startMediatorFlow(cex, {
+      network: "testnet",
+      memo: { type: "hash", value: hex },
+    });
+    if (!flow.ok) throw new Error(flow.reason);
+    fake.createAccount(flow.mediatorPublicKey, 2n * XLM);
+    fake.mergeInto(user, flow.mediatorPublicKey);
+    const result = await submitMediatorForward(
+      {
+        mediatorPublicKey: flow.mediatorPublicKey,
+        flowToken: flow.flowToken,
+        destination: cex,
+        memo: { type: "hash", value: b64 },
+        network: TESTNET,
+        closedAccount: user,
+      },
+      deps,
+    );
+    expect(result.ok).toBe(true);
+    expect(encodeMemoCommitment(fake.lastForward!.memo)).toBe(encodeMemoCommitment(Memo.hash(hex)));
   });
 
   it("reports a forward another tab already delivered as delivered", async () => {
@@ -259,5 +321,78 @@ describe("submitMediatorForward", () => {
       expect(result.flowToken).toBe(input.flowToken);
     }
     expect(fake.submitted).toHaveLength(0);
+  });
+});
+
+describe("submitMediatorForward against a busy or flaky mediator endpoint", () => {
+  // answers the first `times` co-sign posts with `reply` (or a transport error),
+  // then lets the real route handle them
+  function interruptSigning(times: number, reply: () => Response | Promise<Response>) {
+    let left = times;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (req: RequestInfo | URL, init?: RequestInit) => {
+        const raw = typeof req === "string" ? req : req instanceof URL ? req.href : req.url;
+        if (raw === "/api/mediator/sign" && init?.method === "POST" && left > 0) {
+          left -= 1;
+          return reply();
+        }
+        return fake.fetch(req, init);
+      }),
+    );
+  }
+
+  const rateLimited = (seconds: string) => () =>
+    Response.json(
+      { ok: false, code: "RATE_LIMITED", reason: "Too many requests." },
+      { status: 429, headers: { "retry-after": seconds } },
+    );
+
+  it("waits out a 429 for the time the server asks and then forwards", async () => {
+    const input = await mergedFlow();
+    interruptSigning(1, rateLimited("7"));
+    const result = await submitMediatorForward(input, deps);
+    expect(result.ok).toBe(true);
+    expect(sleeps).toContain(7_000);
+    expect(fake.submitted).toHaveLength(1);
+  });
+
+  it("caps a long retry-after", async () => {
+    const input = await mergedFlow();
+    interruptSigning(1, rateLimited("3600"));
+    expect((await submitMediatorForward(input, deps)).ok).toBe(true);
+    expect(sleeps).toContain(60_000);
+    expect(Math.max(...sleeps)).toBe(60_000);
+  });
+
+  it("retries a transport failure with a growing pause", async () => {
+    const input = await mergedFlow();
+    interruptSigning(2, () => Promise.reject(new TypeError("fetch failed")));
+    expect((await submitMediatorForward(input, deps)).ok).toBe(true);
+    expect(sleeps.slice(-2)).toEqual([2_000, 4_000]);
+  });
+
+  it("gives up after three retries and sends nothing", async () => {
+    const input = await mergedFlow();
+    interruptSigning(4, rateLimited("1"));
+    const result = await submitMediatorForward(input, deps);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("RATE_LIMITED");
+    expect(fake.submitted).toHaveLength(0);
+  });
+
+  it("does not retry a refusal", async () => {
+    const input = await mergedFlow();
+    let posts = 0;
+    interruptSigning(5, () => {
+      posts += 1;
+      return Response.json(
+        { ok: false, code: "FORWARD_MEMO_NOT_COMMITTED", reason: "memo" },
+        { status: 400 },
+      );
+    });
+    const result = await submitMediatorForward(input, deps);
+    expect(result.ok).toBe(false);
+    expect(posts).toBe(1);
   });
 });
