@@ -621,6 +621,16 @@ function MenuItem({
 
 const NETWORK_STORAGE_KEY = "demolisher.network";
 
+// the network this browser saved, read at render time; null on the server, when
+// nothing valid is stored, or when storage is blocked
+function readStoredNetwork(): StellarNetwork | null {
+  try {
+    return parseNetworkId(window.localStorage.getItem(NETWORK_STORAGE_KEY))?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function NetworkSwitcher() {
   const networkId = useNetworkStore((s) => s.networkId);
   const setNetwork = useNetworkStore((s) => s.setNetwork);
@@ -649,7 +659,13 @@ function NetworkSwitcher() {
   // choice, needs this browser to have acknowledged the unaudited notice. the
   // server snapshot says acknowledged so the dialog only renders on the client.
   const acknowledged = useSyncExternalStore(subscribeMainnetAck, hasMainnetAck, () => true);
-  const startupGate = networkId === "mainnet" && !acknowledged && !pendingMainnet;
+  // until the effect above moves the store to the saved choice, the store still
+  // holds the build default. a browser that saved testnet is about to leave
+  // mainnet, so it must not flash the dialog on a mainnet build. this only ever
+  // holds the dialog back for a saved testnet; it never raises it on its own.
+  const storedNetwork = useSyncExternalStore(noSubscription, readStoredNetwork, () => null);
+  const startupGate =
+    networkId === "mainnet" && storedNetwork !== "testnet" && !acknowledged && !pendingMainnet;
 
   const applySwitch = useCallback(
     (id: StellarNetwork): void => {
