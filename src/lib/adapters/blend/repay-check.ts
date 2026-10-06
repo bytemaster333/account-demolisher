@@ -2,9 +2,10 @@ import { Asset } from "@stellar/stellar-sdk";
 
 import type { BlendPositionSummary } from "@/lib/adapters/positions/interface";
 import type { NetworkConfig } from "@/lib/config/networks";
+import { decimalToStroops } from "@/lib/stellar/amount";
 import type { AccountAudit, AssetIdentifier } from "@/lib/types/account";
 
-import { decimalToStroops, nativeMinimumBalance } from "./spendable";
+import { nativeMinimumBalance } from "./spendable";
 
 // the close pays a Soroban fee for every exit step before it reaches a native
 // repay, so the XLM check keeps this much back on top of the reserve. a margin
@@ -47,12 +48,9 @@ export function blendRepayShortfallWarnings(
   for (const b of audit.balances) {
     const contractId = contractIdFor(b.asset, network);
     if (contractId === null) continue;
-    let free: bigint;
-    try {
-      free = decimalToStroops(b.amount) - decimalToStroops(b.sellingLiabilities);
-    } catch {
-      continue; // a malformed balance amount must not abort discovery
-    }
+    // horizon always sends 7-place decimals, so anything else is corrupt data
+    // and throws rather than being counted as nothing spendable
+    let free = decimalToStroops(b.amount) - decimalToStroops(b.sellingLiabilities);
     if (contractId === nativeContract) {
       free -=
         nativeMinimumBalance(
@@ -83,14 +81,12 @@ export function blendRepayShortfallWarnings(
 
 // the SAC (Stellar Asset Contract) id for a classic/native asset, matching how a
 // blend reserve keys its liabilities. pool-share balances cannot be a liability.
+// an invalid code or issuer throws: the audit came from horizon, so that is
+// corrupt data, not a balance to leave out of the count.
 function contractIdFor(asset: AssetIdentifier, network: NetworkConfig): string | null {
-  try {
-    if (asset.kind === "native") return Asset.native().contractId(network.passphrase);
-    if (asset.kind === "credit") {
-      return new Asset(asset.code, asset.issuer).contractId(network.passphrase);
-    }
-    return null;
-  } catch {
-    return null;
+  if (asset.kind === "native") return Asset.native().contractId(network.passphrase);
+  if (asset.kind === "credit") {
+    return new Asset(asset.code, asset.issuer).contractId(network.passphrase);
   }
+  return null;
 }

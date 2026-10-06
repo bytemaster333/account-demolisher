@@ -98,6 +98,26 @@ describe("blendRepayShortfallWarnings", () => {
   it("returns nothing when there are no Blend positions", () => {
     expect(blendRepayShortfallWarnings(auditWith([]), [], NETWORK)).toEqual([]);
   });
+
+  // one strict amount policy (L-32): a balance that is not a 7-place decimal is
+  // corrupt data, so it fails loudly instead of being skipped as if it were 0
+  it("throws on a malformed balance instead of skipping it", () => {
+    const audit = auditWith([
+      { asset: { kind: "credit", code: "USDC", issuer: ISSUER }, amount: "150.123456789" },
+    ]);
+    expect(() =>
+      blendRepayShortfallWarnings(audit, [pool(new Map([[USDC_SAC, 100_0000000n]]))], NETWORK),
+    ).toThrow(/malformed amount/);
+  });
+
+  it("throws on an audited asset that has no valid stellar asset contract id", () => {
+    const audit = auditWith([
+      { asset: { kind: "credit", code: "USDC", issuer: "not-an-issuer" }, amount: "150" },
+    ]);
+    expect(() =>
+      blendRepayShortfallWarnings(audit, [pool(new Map([[USDC_SAC, 100_0000000n]]))], NETWORK),
+    ).toThrow(/issuer/i);
+  });
 });
 
 // liabilities arrive in underlying units (discovery converts dTokens with the
