@@ -328,19 +328,30 @@ function sorobanRecoverableKind(err: unknown): "resequence" | "footprint" | "ref
 // starting per-op bid from what recent ledgers actually charged (horizon's
 // fee_charged is per operation). max_fee is what others offered, which sits at
 // the cap on mainnet and would price ordinary accounts out of their own close.
-// a failed or malformed fee_stats read starts at the network minimum; the fee
-// retry escalates from there.
+// soroban resource fees are counted in fee_charged too, so its p90 can sit far
+// above any classic surge while ledgers are mostly empty; below half capacity
+// there is no surge to outbid and the most common charge is the bid, as the
+// mediator forward does. a failed or malformed fee_stats read starts at the
+// network minimum; the fee retry escalates from there.
+const SURGE_CAPACITY_USAGE = 0.5;
+
 export async function surgeFeeBase(horizon: HorizonLike): Promise<number> {
   if (typeof horizon.feeStats !== "function") return DEFAULT_FEE_BASE;
-  let p90: number;
+  let bid: number;
   try {
     const stats = await horizon.feeStats();
-    p90 = Number.parseInt(stats.fee_charged?.p90 ?? "", 10);
+    const usage = Number.parseFloat(stats.ledger_capacity_usage ?? "");
+    // an unreadable usage keeps the higher p90 bid
+    const pick =
+      Number.isFinite(usage) && usage < SURGE_CAPACITY_USAGE
+        ? stats.fee_charged?.mode
+        : stats.fee_charged?.p90;
+    bid = Number.parseInt(pick ?? "", 10);
   } catch {
     return DEFAULT_FEE_BASE;
   }
-  if (!Number.isFinite(p90) || p90 <= 0) return DEFAULT_FEE_BASE;
-  return Math.min(Math.max(DEFAULT_FEE_BASE, p90), MAX_PER_OP_FEE);
+  if (!Number.isFinite(bid) || bid <= 0) return DEFAULT_FEE_BASE;
+  return Math.min(Math.max(DEFAULT_FEE_BASE, bid), MAX_PER_OP_FEE);
 }
 
 async function readBaseReserve(horizon: HorizonLike): Promise<bigint | null> {

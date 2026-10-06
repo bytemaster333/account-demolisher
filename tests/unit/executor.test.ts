@@ -268,6 +268,42 @@ describe("FinalClassicTx fee bid and in-call rebuilds", () => {
     expect(d.connector.signed[0]!.fee).toBe("6970");
   });
 
+  it("bids what most transactions paid while ledgers are not full", async () => {
+    // testnet on 2026-10-07: 12% of capacity used, while soroban resource fees
+    // pushed the p90 of fee_charged to 484829 stroops per operation
+    const table = accounts();
+    const d = deps(
+      {
+        horizon: fakeHorizon(table, {
+          feeStats: vi.fn(async () => ({
+            ledger_capacity_usage: "0.12",
+            fee_charged: { mode: "100", p90: "484829" },
+          })) as never,
+        }),
+      },
+      table,
+    );
+    await run(tree(finalNode()), d);
+    expect(d.connector.signed[0]!.fee).toBe("100");
+  });
+
+  it("bids the p90 once ledgers are at least half full", async () => {
+    const table = accounts();
+    const d = deps(
+      {
+        horizon: fakeHorizon(table, {
+          feeStats: vi.fn(async () => ({
+            ledger_capacity_usage: "0.53",
+            fee_charged: { mode: "100", p90: "17380" },
+          })) as never,
+        }),
+      },
+      table,
+    );
+    await run(tree(finalNode()), d);
+    expect(d.connector.signed[0]!.fee).toBe("17380");
+  });
+
   it("caps the bid at what the account can spend above its reserves", async () => {
     const table = accounts();
     // 1.0000500 XLM with a 0.5 XLM base reserve and no subentries: 500 stroops
