@@ -1,9 +1,9 @@
-// High-value safety gate. A close that moves a large value must require an
-// explicit acknowledgement before it can proceed, so a big irreversible merge is
-// never one careless click away. This module is the gate's pure logic (trigger +
-// acknowledgement bookkeeping), kept free of any wallet/UI imports so it is
-// unit-testable in isolation.
+// high-value safety gate: a close that moves a large value needs an explicit
+// acknowledgement, so a big irreversible merge is never one careless click away.
+// pure logic (trigger and acknowledgement bookkeeping), free of wallet and ui
+// imports.
 
+import { decimalToStroops, stroopsToDecimal } from "@/lib/stellar/amount";
 import type { AccountAudit } from "@/lib/types/account";
 import { pathKey } from "@/lib/types/plan";
 
@@ -13,8 +13,10 @@ export interface CloseValueInput {
   readonly audit: AccountAudit;
   // xlm quotes for credit balances, keyed by pathKey (resolveCreditPaths output)
   readonly creditQuotes: ReadonlyMap<string, { readonly destinationAmount: string }>;
-  // the user's claim selection; undefined claims every claimable balance
-  readonly claimableBalanceIds?: readonly string[];
+  // ids of the claimable balances the plan claims
+  // (planClaimableBalances(audit, selection).claimed), not the user's selection:
+  // the batcher also claims self-sponsored balances the user unticked
+  readonly claimedBalanceIds: readonly string[];
   // soroban positions and held tokens the close unwinds or moves, whose xlm
   // value is not estimated here
   readonly unpricedPositions: number;
@@ -41,24 +43,22 @@ export function assessCloseValue(
   for (const b of audit.balances) {
     if (!isPositive(b.amount)) continue;
     if (b.asset.kind === "native") {
-      stroops += toStroops(b.amount);
+      stroops += decimalToStroops(b.amount);
       continue;
     }
     const quote = b.asset.kind === "credit" ? creditQuotes.get(pathKey(b.asset)) : undefined;
-    if (quote) stroops += toStroops(quote.destinationAmount);
+    if (quote) stroops += decimalToStroops(quote.destinationAmount);
     else unpriced += 1;
   }
 
-  const selected =
-    input.claimableBalanceIds === undefined ? null : new Set(input.claimableBalanceIds);
+  const claimed = new Set(input.claimedBalanceIds);
   for (const cb of audit.claimableBalances) {
-    if (cb.claimableNow !== true || (selected !== null && !selected.has(cb.id))) continue;
-    if (!isPositive(cb.amount)) continue;
-    if (cb.asset.kind === "native") stroops += toStroops(cb.amount);
+    if (!claimed.has(cb.id) || !isPositive(cb.amount)) continue;
+    if (cb.asset.kind === "native") stroops += decimalToStroops(cb.amount);
     else unpriced += 1;
   }
 
-  const estimatedXlm = fromStroops(stroops);
+  const estimatedXlm = stroopsToDecimal(stroops);
   return {
     estimatedXlm,
     unpricedHoldings: unpriced,
@@ -71,21 +71,9 @@ function isPositive(amount: string): boolean {
   return false;
 }
 
-function toStroops(amount: string): bigint {
-  const v = amount.trim();
-  if (!/^\d+(\.\d{1,7})?$/.test(v)) {
-    throw new Error(`assessCloseValue: not a 7-decimal amount: "${amount}"`);
-  }
-  const [whole = "0", frac = ""] = v.split(".");
-  return BigInt(whole) * 10_000_000n + BigInt(frac.padEnd(7, "0"));
-}
-
-function fromStroops(stroops: bigint): string {
-  return `${stroops / 10_000_000n}.${(stroops % 10_000_000n).toString().padStart(7, "0")}`;
-}
-
-// The high-value gate's TRIGGER: true when the account's total XLM STRICTLY
-// exceeds the threshold. A non-numeric total never trips the gate.
+// true when the total strictly exceeds the threshold. a non-numeric total never
+// trips it, so callers pass assessCloseValue's estimatedXlm, which is always a
+// well-formed amount.
 export function isHighValueTotalXlm(
   totalXlm: string,
   threshold: number = HIGH_VALUE_THRESHOLD_XLM,
@@ -94,9 +82,8 @@ export function isHighValueTotalXlm(
   return Number.isFinite(n) && n > threshold;
 }
 
-// Which acknowledgement checkboxes the acknowledge step must collect before the
-// user can continue, given which advisory conditions are present. High value is
-// one of them.
+// which acknowledgement boxes the acknowledge step must collect before the user
+// can continue, given which advisory conditions are present
 export function requiredAcknowledgements(flags: {
   readonly hasScam: boolean;
   readonly hasDiscovery: boolean;
@@ -111,7 +98,7 @@ export function requiredAcknowledgements(flags: {
   ].filter((k): k is string => k !== null);
 }
 
-// The gate is cleared only when EVERY required acknowledgement is ticked.
+// cleared only when every required acknowledgement is ticked
 export function allAcknowledged(
   required: readonly string[],
   acks: Readonly<Record<string, boolean>>,

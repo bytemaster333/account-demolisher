@@ -1,15 +1,18 @@
-// Neutralize characters that can visually reorder, hide, or spoof rendered text.
+// strips characters that can visually reorder, hide or spoof rendered text.
 //
-// Token symbols and names read from a SEP-41 contract (`symbol()` / `name()`) are
-// attacker-controlled. React escapes HTML, but it does not strip Unicode bidi
-// overrides, isolates or invisible characters, so a crafted symbol can reverse or
-// hide the text around it (e.g. spoofing an amount or a destination).
+// token symbols and names read from a sep-41 contract (symbol() / name()) are
+// attacker-controlled. react escapes html but not unicode bidi overrides,
+// isolates or invisible characters, so a crafted symbol can reverse or hide the
+// text around it (for example to spoof an amount or a destination).
 //
-// Call sites: the allowance list (components/allowance-viewer/AllowanceList.tsx)
-// renders token symbols through safeDisplay, and the scam heuristics flag a held
-// token whose symbol or name contains any of these characters.
+// call sites: AllowanceList (components/allowance-viewer) renders sep-41
+// symbol() text through safeDisplay, and it is the only rendering call site.
+// the scam heuristics use safeDisplay for their messages and
+// hasHiddenCharacters to flag a held token's name, which takes effect only
+// where a page runs runHeldTokenScamHeuristics over the held tokens. other
+// on-chain strings are not routed through here.
 //
-// Removed (matched by Unicode property, so the source itself carries none of the
+// removed (matched by unicode property, so the source itself carries none of the
 // characters):
 //   Cc                            C0 / C1 control characters
 //   Cf                            format characters: bidi marks, embeddings,
@@ -23,8 +26,7 @@
 //                                 joiner and the Hangul fillers
 const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
 
-// Strip reordering/hiding characters from an attacker-controlled display string.
-// The u flag matches by code point, so astral characters survive intact.
+// the u flag matches by code point, so astral characters survive intact
 export function safeDisplay(value: string): string {
   return value.replace(HIDDEN, "");
 }
