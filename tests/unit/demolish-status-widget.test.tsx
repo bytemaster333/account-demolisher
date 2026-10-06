@@ -76,6 +76,16 @@ describe("failed state copy follows what actually ran (H-30)", () => {
     expect(screen.getByRole("button", { name: /Resume the forward/i })).toBeTruthy();
   });
 
+  it("doesn't point at a resume button that isn't there when no record was saved", () => {
+    // storage was blocked when the forward was recorded
+    renderWidget(mediatorTreeMergedForwardFailed());
+    const note = screen.getByTestId("demolish-failure-note").textContent ?? "";
+    expect(note).toMatch(/temporary forwarding account/i);
+    expect(note).not.toMatch(/Resume the forward now/);
+    expect(note).toMatch(/no saved record/i);
+    expect(screen.queryByRole("button", { name: /Resume the forward/i })).toBeNull();
+  });
+
   it("says steps already ran when a Soroban step confirmed", () => {
     const tree = makeTree({ positions: blendPositions() });
     const repay = [...tree.allNodes.values()].find((n) => n.kind === "RepayBlend")!;

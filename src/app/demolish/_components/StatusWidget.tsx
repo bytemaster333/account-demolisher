@@ -7,6 +7,7 @@ import { AddressActions } from "@/components/ui";
 import { PendingForwardBanner } from "@/components/wallet/PendingForwardBanner";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { explorerAccountUrl, explorerTxUrl } from "@/lib/explorer";
+import { loadPendingForward } from "@/lib/mediator/pending-flow";
 import type { PlanTree } from "@/lib/plan/tree";
 
 import { SR_ONLY } from "../_lib/a11y";
@@ -733,6 +734,8 @@ function FailureNoteView({
     ? "Press Retry to run the remaining steps again; steps marked done are not repeated."
     : "Retry re-checks the account and builds a fresh plan before anything else runs.";
   const warn = note.kind === "in-mediator" || note.kind === "partial" || note.kind === "closed";
+  // the resume action needs the forward record saved before the merge
+  const hasRecord = note.kind === "in-mediator" && loadPendingForward(closedAccount) !== null;
   return (
     <div
       role="note"
@@ -763,11 +766,23 @@ function FailureNoteView({
             {truncateHash(note.mergeHash)}
           </a>
           ) moved the whole balance into the helper account {shortKey(note.mediatorPublicKey)}, but
-          the delivery to {shortKey(destination)} didn&apos;t finish. Resume the forward now: it
-          sends that balance on to your destination with your memo.
-          <div style={{ marginTop: 10 }}>
-            <PendingForwardBanner publicKey={closedAccount} />
-          </div>
+          the delivery to {shortKey(destination)} didn&apos;t finish.{" "}
+          {hasRecord ? (
+            <>
+              Resume the forward now: it sends that balance on to your destination with your memo.
+              <div style={{ marginTop: 10 }}>
+                <PendingForwardBanner publicKey={closedAccount} />
+              </div>
+            </>
+          ) : (
+            // the record is written before the merge; without it (storage blocked)
+            // this page has nothing to resume from
+            <>
+              This browser has no saved record of the forward, so it can&apos;t be resumed from
+              here. Keep the merge link above and the helper account address:{" "}
+              <code style={{ wordBreak: "break-all" }}>{note.mediatorPublicKey}</code>.
+            </>
+          )}
           <div style={{ marginTop: 8 }}>{retryCopy}</div>
         </>
       ) : note.kind === "closed" ? (
