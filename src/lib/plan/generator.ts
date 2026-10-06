@@ -20,6 +20,7 @@ import type {
   SoroswapPositionSummary,
 } from "@/lib/adapters/positions/interface";
 import { NETWORKS, type NetworkConfig } from "@/lib/config/networks";
+import { stroopsToDecimal } from "@/lib/stellar/amount";
 import {
   batchClassicDemolition,
   closeMarkerPlanned,
@@ -845,9 +846,7 @@ function aquariusPoolLabel(pool: AquariusPositionSummary): string {
 
 // BLND has 7 decimals
 function formatBlnd(stroops: bigint): string {
-  const whole = stroops / 10_000_000n;
-  const frac = (stroops % 10_000_000n).toString().padStart(7, "0").replace(/0+$/, "");
-  return frac.length > 0 ? `${whole}.${frac}` : whole.toString();
+  return stroopsToDecimal(stroops).replace(/\.?0+$/, "");
 }
 
 // stable id format: lower-cased parts joined with ":"

@@ -97,8 +97,10 @@ export interface BatchOptions {
   // issuer. An explicit choice wins over a market path found later.
   readonly returnToIssuerAssetKeys?: readonly string[];
   // pathKey()s of credit assets the user chose to send to the merge destination.
-  // Only valid when the destination already holds a trustline for the asset
-  // (checked at preview time); otherwise the payment would fail with op_no_trust.
+  // The destination needs an authorized trustline with room for the amount, or
+  // the payment fails with op_no_trust / op_not_authorized / op_line_full. The
+  // preview checks it, but the line can be removed, deauthorized or filled after
+  // that, so the executor checks it again before every batch.
   // Refused on a mediator close: the payment would reach the exchange's shared
   // address without the deposit memo.
   readonly sendToDestinationAssetKeys?: readonly string[];
