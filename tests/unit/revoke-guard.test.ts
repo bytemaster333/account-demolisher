@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   Account,
   Address,
+  Asset,
   Operation,
   TransactionBuilder,
   xdr,
@@ -144,5 +145,85 @@ describe("assertSafeRevokeInvocation — rejects auth-entry smuggling", () => {
     const entry = addressAuth(invocation(CONTRACT, "approve", approveArgs()));
     const tx = buildTx(hostFn(), [entry]);
     expect(() => assertSafeRevokeInvocation(tx, EXPECTED)).toThrow(/credentials/);
+  });
+});
+
+// shapes a hostile or buggy build could produce around an otherwise valid approve
+const createSacFn = () =>
+  new xdr.CreateContractArgs({
+    contractIdPreimage: xdr.ContractIdPreimage.contractIdPreimageFromAsset(
+      xdr.Asset.assetTypeNative(),
+    ),
+    executable: xdr.ContractExecutable.contractExecutableStellarAsset(),
+  });
+
+describe("assertSafeRevokeInvocation — rejects the remaining structural branches", () => {
+  it("rejects a transaction with a second operation", () => {
+    const tx = new TransactionBuilder(new Account(USER, "0"), {
+      fee: "100",
+      networkPassphrase: TESTNET.passphrase,
+    })
+      .addOperation(Operation.invokeHostFunction({ func: hostFn(), auth: [okAuth()] }))
+      .addOperation(
+        Operation.payment({ destination: SPENDER, asset: Asset.native(), amount: "100" }),
+      )
+      .setTimeout(30)
+      .build();
+    expect(() => assertSafeRevokeInvocation(tx, EXPECTED)).toThrow(/exactly 1 operation, got 2/);
+  });
+
+  it("rejects an operation that is not invokeHostFunction", () => {
+    const tx = new TransactionBuilder(new Account(USER, "0"), {
+      fee: "100",
+      networkPassphrase: TESTNET.passphrase,
+    })
+      .addOperation(Operation.payment({ destination: SPENDER, asset: Asset.native(), amount: "1" }))
+      .setTimeout(30)
+      .build();
+    expect(() => assertSafeRevokeInvocation(tx, EXPECTED)).toThrow(/"payment"/);
+  });
+
+  it("rejects a createContract host function", () => {
+    const tx = buildTx(xdr.HostFunction.hostFunctionTypeCreateContract(createSacFn()));
+    expect(() => assertSafeRevokeInvocation(tx, EXPECTED)).toThrow(/expected invokeContract/);
+  });
+
+  it("rejects an approve with the wrong argument count", () => {
+    const tx = buildTx(hostFn(CONTRACT, "approve", approveArgs().slice(0, 3)), []);
+    expect(() => assertSafeRevokeInvocation(tx, EXPECTED)).toThrow(/has 3 args, expected 4/);
+  });
+
+  it("rejects an approve for a different spender than the one being revoked", () => {
+    const tx = buildTx(hostFn(CONTRACT, "approve", approveArgs(USER, USER, 0n)), []);
+    expect(() => assertSafeRevokeInvocation(tx, EXPECTED)).toThrow(/spender=/);
+  });
+
+  it("rejects an auth entry for a different spender even when the invocation is right", () => {
+    const entry = sourceAuth(invocation(CONTRACT, "approve", approveArgs(USER, USER, 0n)));
+    const tx = buildTx(hostFn(), [entry]);
+    expect(() => assertSafeRevokeInvocation(tx, EXPECTED)).toThrow(/auth\[0\] approve spender=/);
+  });
+
+  it("rejects an auth entry whose root is not a contract call", () => {
+    const entry = new xdr.SorobanAuthorizationEntry({
+      credentials: xdr.SorobanCredentials.sorobanCredentialsSourceAccount(),
+      rootInvocation: new xdr.SorobanAuthorizedInvocation({
+        function:
+          xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeCreateContractHostFn(
+            createSacFn(),
+          ),
+        subInvocations: [],
+      }),
+    });
+    const tx = buildTx(hostFn(), [entry]);
+    expect(() => assertSafeRevokeInvocation(tx, EXPECTED)).toThrow(/expected a contract call/);
+  });
+
+  it("rejects an auth entry with an extra approve argument", () => {
+    const entry = sourceAuth(
+      invocation(CONTRACT, "approve", [...approveArgs(), xdr.ScVal.scvVoid()]),
+    );
+    const tx = buildTx(hostFn(), [entry]);
+    expect(() => assertSafeRevokeInvocation(tx, EXPECTED)).toThrow(/auth\[0\] approve has 5 args/);
   });
 });
