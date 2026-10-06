@@ -4,13 +4,25 @@ import type { BlendPositionSummary } from "@/lib/adapters/positions/interface";
 import type { NetworkConfig } from "@/lib/config/networks";
 import type { AccountAudit, AssetIdentifier } from "@/lib/types/account";
 
+import { decimalToStroops, nativeMinimumBalance } from "./spendable";
+
+// the close pays a Soroban fee for every exit step before it reaches a native
+// repay, so the XLM check keeps this much back on top of the reserve. a margin
+// for the preview warning only; the repay builder uses the real fee.
+const NATIVE_FEE_ALLOWANCE_STROOPS = 1_0000000n;
+
 // Blend requires the BORROWED token on hand to repay a loan; there is no
 // automatic swap. Closing the account must first repay every Blend liability in
-// full (the repay drains the whole debt with i128::MAX), so if this account no
-// longer holds enough of a borrowed token, the repay step fails mid-close and the
-// position has to be cleared manually before the merge can proceed. This detects
-// that shortfall from the audited balances so it can be surfaced at PREVIEW,
-// rather than surprising the user with a failed step during execution.
+// full, so if this account cannot spend enough of a borrowed token, the repay
+// step fails mid-close and the position has to be cleared manually before the
+// merge can proceed. This detects that shortfall from the audited balances so it
+// can be surfaced at PREVIEW, rather than surprising the user with a failed step
+// during execution.
+//
+// liabilities arrive in underlying units (discovery converts dTokens with the
+// reserve's dRate). the debt is summed per asset across pools, and compared
+// with what the account can actually spend: balance minus selling liabilities,
+// and for XLM also minus the minimum reserve and a fee allowance.
 //
 // Returns a single warning string (or none): the action is identical no matter
 // how many liabilities are short, so one clear message beats repeating it.
@@ -21,32 +33,43 @@ export function blendRepayShortfallWarnings(
 ): string[] {
   if (blend.length === 0) return [];
 
-  // total held per underlying-token contract id (the key Blend liabilities use).
-  // A classic/native asset's SAC id is what a Blend reserve stores, so mapping
-  // each held balance to its SAC id lets us compare against the liability keys.
-  const heldByContract = new Map<string, bigint>();
-  for (const b of audit.balances) {
-    const contractId = contractIdFor(b.asset, network);
-    if (contractId === null) continue;
-    let held: bigint;
-    try {
-      held = decimalToStroops(b.amount);
-    } catch {
-      continue; // a malformed balance amount must not abort discovery
-    }
-    heldByContract.set(contractId, (heldByContract.get(contractId) ?? 0n) + held);
-  }
-
-  let short = false;
+  const owedByContract = new Map<string, bigint>();
   for (const pool of blend) {
     for (const [assetContract, owed] of pool.liabilities) {
       if (owed <= 0n) continue;
-      if ((heldByContract.get(assetContract) ?? 0n) < owed) {
-        short = true;
-        break;
-      }
+      owedByContract.set(assetContract, (owedByContract.get(assetContract) ?? 0n) + owed);
     }
-    if (short) break;
+  }
+  if (owedByContract.size === 0) return [];
+
+  const nativeContract = Asset.native().contractId(network.passphrase);
+  const spendableByContract = new Map<string, bigint>();
+  for (const b of audit.balances) {
+    const contractId = contractIdFor(b.asset, network);
+    if (contractId === null) continue;
+    let free: bigint;
+    try {
+      free = decimalToStroops(b.amount) - decimalToStroops(b.sellingLiabilities);
+    } catch {
+      continue; // a malformed balance amount must not abort discovery
+    }
+    if (contractId === nativeContract) {
+      free -=
+        nativeMinimumBalance(
+          audit.subentryCount,
+          audit.sponsorship.numSponsoring,
+          audit.sponsorship.numSponsored,
+        ) + NATIVE_FEE_ALLOWANCE_STROOPS;
+    }
+    spendableByContract.set(contractId, (spendableByContract.get(contractId) ?? 0n) + free);
+  }
+
+  let short = false;
+  for (const [assetContract, owed] of owedByContract) {
+    if ((spendableByContract.get(assetContract) ?? 0n) < owed) {
+      short = true;
+      break;
+    }
   }
   if (!short) return [];
 
@@ -70,14 +93,4 @@ function contractIdFor(asset: AssetIdentifier, network: NetworkConfig): string |
   } catch {
     return null;
   }
-}
-
-function decimalToStroops(s: string): bigint {
-  const trimmed = s.trim();
-  const negative = trimmed.startsWith("-");
-  const abs = negative ? trimmed.slice(1) : trimmed;
-  const [intPart = "0", fracPart = ""] = abs.split(".");
-  const fracPadded = (fracPart + "0000000").slice(0, 7);
-  const result = BigInt(intPart) * 10_000_000n + BigInt(fracPadded || "0");
-  return negative ? -result : result;
 }

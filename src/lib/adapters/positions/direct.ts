@@ -1,13 +1,13 @@
 // direct contract provider: always-available position discovery via in-process
+// reads of each protocol's contracts
 import {
   loadBackstopDeposits,
   loadUserPositions,
-  type LoadUserPositionsResult,
   type BlendPoolLoader,
-  type BlendUserPositions,
+  type BlendPoolSnapshot,
+  type LoadUserPositionsResult,
 } from "@/lib/adapters/blend/client";
-import { resolveBackstopId } from "@/lib/adapters/blend/constants";
-import { BLEND_MAINNET_POOL_IDS, BLEND_TESTNET_POOL_IDS } from "@/lib/adapters/blend/pools";
+import { blendPoolIdsForNetwork } from "@/lib/adapters/blend/pools";
 import {
   AquariusAPIPoolProvider,
   AquariusEventScanPoolProvider,
@@ -37,7 +37,7 @@ import {
   soroswapPositionSchema,
 } from "./schema";
 
-// default aquarius factory: try the REST provider first, fall back to event-scan
+// aquarius sources: the REST API (primary) and the on-chain event scan
 export interface AquariusProviderFactory {
   (
     server: rpc.Server,
@@ -53,41 +53,47 @@ const defaultAquariusFactory: AquariusProviderFactory = (server, network) => ({
   fallback: new AquariusEventScanPoolProvider({ server, network }),
 });
 
-// pluggable deps for testability. each external call site (blend SDK loader, aquarius
+// pluggable deps for testability, one per external call site
 export interface DirectContractProviderDeps {
   readonly blendPoolLoader?: BlendPoolLoader;
+  // explicit pool list; when absent the network's registry is scanned
   readonly blendPoolIds?: readonly string[];
   readonly blendLoadUserPositions?: typeof loadUserPositions;
   readonly blendLoadBackstopDeposits?: typeof loadBackstopDeposits;
   readonly aquariusFactory?: AquariusProviderFactory;
   readonly fxdaoGetUserVaults?: typeof getUserVaults;
+  readonly soroswapDiscover?: typeof discoverSoroswapPositions;
   readonly serverFactory?: (network: NetworkConfig) => rpc.Server;
 }
+
+type ProtocolError = { protocol: string; message: string };
 
 export class DirectContractProvider implements IDeFiPositionProvider {
   readonly name = "direct" as const;
   private readonly deps: Required<
     Pick<
       DirectContractProviderDeps,
-      | "blendPoolIds"
       | "blendLoadUserPositions"
       | "blendLoadBackstopDeposits"
       | "aquariusFactory"
       | "fxdaoGetUserVaults"
+      | "soroswapDiscover"
     >
   > & {
     readonly blendPoolLoader: BlendPoolLoader | undefined;
+    readonly blendPoolIds: readonly string[] | undefined;
     readonly serverFactory: (network: NetworkConfig) => rpc.Server;
   };
 
   constructor(deps: DirectContractProviderDeps = {}) {
     this.deps = {
       blendPoolLoader: deps.blendPoolLoader,
-      blendPoolIds: deps.blendPoolIds ?? BLEND_MAINNET_POOL_IDS,
+      blendPoolIds: deps.blendPoolIds,
       blendLoadUserPositions: deps.blendLoadUserPositions ?? loadUserPositions,
       blendLoadBackstopDeposits: deps.blendLoadBackstopDeposits ?? loadBackstopDeposits,
       aquariusFactory: deps.aquariusFactory ?? defaultAquariusFactory,
       fxdaoGetUserVaults: deps.fxdaoGetUserVaults ?? getUserVaults,
+      soroswapDiscover: deps.soroswapDiscover ?? discoverSoroswapPositions,
       serverFactory: deps.serverFactory ?? defaultServerFactory,
     };
   }
@@ -110,19 +116,17 @@ export class DirectContractProvider implements IDeFiPositionProvider {
       ],
     );
 
-    const errors: { protocol: string; message: string }[] = [];
+    const errors: ProtocolError[] = [];
 
     const blendResult = unwrap("blend", blendSettled, errors, {
       positions: [] as readonly BlendPositionSummary[],
       backstop: [] as readonly BlendBackstopSummary[],
       perPoolErrors: [] as readonly string[],
     });
-    const aquarius = unwrap(
-      "aquarius",
-      aquariusSettled,
-      errors,
-      [] as readonly AquariusPositionSummary[],
-    );
+    const aquariusResult = unwrap("aquarius", aquariusSettled, errors, {
+      positions: [] as readonly AquariusPositionSummary[],
+      sourceErrors: [] as readonly string[],
+    });
     const soroswap = unwrap(
       "soroswap",
       soroswapSettled,
@@ -131,15 +135,15 @@ export class DirectContractProvider implements IDeFiPositionProvider {
     );
     const fxdao = unwrap("fxdao", fxdaoSettled, errors, [] as readonly FxDAOPositionSummary[]);
 
-    // surface blend's per-pool failures as additional errors[] entries
-    for (const e of blendResult.perPoolErrors) {
-      errors.push({ protocol: "blend", message: e });
-    }
+    // per-pool and per-source failures are errors too: each one means a
+    // position may exist that discovery could not see
+    for (const e of blendResult.perPoolErrors) errors.push({ protocol: "blend", message: e });
+    for (const e of aquariusResult.sourceErrors) errors.push({ protocol: "aquarius", message: e });
 
     return {
       blend: blendResult.positions,
       backstop: blendResult.backstop,
-      aquarius,
+      aquarius: aquariusResult.positions,
       soroswap,
       fxdao,
       errors,
@@ -154,15 +158,7 @@ export class DirectContractProvider implements IDeFiPositionProvider {
     backstop: readonly BlendBackstopSummary[];
     perPoolErrors: readonly string[];
   }> {
-    // pick pool ids per network unless the caller injected an explicit override
-    const poolIds =
-      this.deps.blendPoolIds.length > 0 &&
-      this.deps.blendPoolIds !== BLEND_MAINNET_POOL_IDS &&
-      this.deps.blendPoolIds !== BLEND_TESTNET_POOL_IDS
-        ? this.deps.blendPoolIds
-        : network.id === "testnet"
-          ? BLEND_TESTNET_POOL_IDS
-          : BLEND_MAINNET_POOL_IDS;
+    const poolIds = this.deps.blendPoolIds ?? blendPoolIdsForNetwork(network);
     // omit the 4th arg so the SDK-backed loader default is used when no override is wired
     const result: LoadUserPositionsResult =
       this.deps.blendPoolLoader !== undefined
@@ -174,46 +170,40 @@ export class DirectContractProvider implements IDeFiPositionProvider {
           )
         : await this.deps.blendLoadUserPositions(network, userAddress, poolIds);
 
-    const positions = result.positions
-      .filter(hasAnyNonZeroBlendBalance)
-      .map(blendUserPositionsToSummary);
+    const positions = result.positions.filter(hasBlendPosition).map(blendSnapshotToSummary);
 
     const perPoolErrors = result.errors.map(
       (e) => `pool ${e.poolId} stage=${e.stage}: ${e.message}`,
     );
 
-    // Backstop shares are a SEPARATE Blend position class (a distinct contract).
-    // The close now QUEUES the 17-day withdrawal (a BackstopQueue plan node) and
-    // shows the unlock date, but cannot complete it in one session, so a detected
-    // backstop is surfaced as a structured position that also blocks the final
-    // merge (the account must survive to receive the withdrawal). Where no
-    // backstop contract is snapshotted (futurenet) resolveBackstopId returns null
-    // and the check is skipped. A read error is reported (never swallowed) so an
-    // unreadable backstop is never treated as "none".
+    // backstop deposits live in a separate contract, and each pool names its own
+    // backstop in its metadata (v1 pools use the v1 backstop), so every loaded
+    // pool is checked against that backstop. a pool that failed to load already
+    // carries an error above, which blocks the merge on its own.
     const backstopSummaries: BlendBackstopSummary[] = [];
-    const backstopId = resolveBackstopId(network);
-    if (backstopId !== null) {
-      try {
-        const backstop = await this.deps.blendLoadBackstopDeposits(
-          network,
-          userAddress,
-          poolIds,
-          backstopId,
-        );
-        for (const d of backstop.deposits) {
-          backstopSummaries.push({
-            poolId: d.poolId,
-            shares: d.shares,
-            queuedForWithdrawal: d.queuedForWithdrawal,
-          });
-        }
-        perPoolErrors.push(...backstop.errors);
-      } catch (e) {
-        perPoolErrors.push(
-          `Blend backstop check failed; could not confirm you have no backstop deposit ` +
-            `(${e instanceof Error ? e.message : String(e)}).`,
-        );
+    try {
+      const backstop = await this.deps.blendLoadBackstopDeposits(
+        network,
+        userAddress,
+        result.positions.map((p) => ({ poolId: p.poolId, backstopId: p.backstopId })),
+      );
+      for (const d of backstop.deposits) {
+        backstopSummaries.push({
+          poolId: d.poolId,
+          shares: d.shares,
+          queuedForWithdrawal: d.queuedForWithdrawal,
+          backstopId: d.backstopId,
+          unlockedQueuedForWithdrawal: d.unlockedQueuedForWithdrawal,
+          accruedEmissions: d.accruedEmissions,
+          queueDurationSeconds: d.queueDurationSeconds,
+        });
       }
+      perPoolErrors.push(...backstop.errors);
+    } catch (e) {
+      perPoolErrors.push(
+        `Blend backstop check failed; could not confirm you have no backstop deposit ` +
+          `(${e instanceof Error ? e.message : String(e)}).`,
+      );
     }
 
     // schema-validate before returning: a malformed balance / bad contract id
@@ -230,37 +220,59 @@ export class DirectContractProvider implements IDeFiPositionProvider {
     server: rpc.Server,
     network: NetworkConfig,
     userAddress: string,
-  ): Promise<readonly AquariusPositionSummary[]> {
+  ): Promise<{
+    positions: readonly AquariusPositionSummary[];
+    sourceErrors: readonly string[];
+  }> {
     const { primary, fallback } = this.deps.aquariusFactory(server, network);
 
-    // Union the REST API result with the on-chain event scan. The Aquarius REST
-    // backend is attacker-influenceable: a compromised/spoofed response can return
-    // a well-formed EMPTY or PARTIAL list to HIDE a held LP position. The old
-    // catch-only fallback (event-scan ran ONLY when the API THREW) never caught
-    // that — a hidden pool was merged around and stranded. So run both and merge
-    // by pool index; a pool that EITHER source finds is reported. Only when BOTH
-    // fail do we propagate a discovery error (which blocks a clean close).
+    // The REST API is the complete source. The on-chain event scan only sees
+    // router deposit/withdraw events inside the RPC's retention window (about the
+    // last 7 days) and never sees LP received by transfer, so an empty scan is not
+    // evidence of no position. It runs alongside REST as a check against a
+    // spoofed or partial REST answer, and the two are unioned. When REST fails,
+    // whatever the scan found (and any pools REST did read before failing) is
+    // kept AND an error is recorded, so preview warns and the merge-time reprobe
+    // refuses to merge around an older position.
     const [apiResult, scanResult] = await Promise.allSettled([
       primary.getUserPools(userAddress),
       fallback.getUserPools(userAddress),
     ]);
 
-    if (apiResult.status === "rejected" && scanResult.status === "rejected") {
-      const apiMsg =
-        apiResult.reason instanceof Error ? apiResult.reason.message : String(apiResult.reason);
-      const scanMsg =
-        scanResult.reason instanceof Error ? scanResult.reason.message : String(scanResult.reason);
-      throw new Error(`Aquarius discovery failed: REST=${apiMsg}; event-scan fallback=${scanMsg}`);
+    const sourceErrors: string[] = [];
+    if (apiResult.status === "rejected") {
+      const apiMsg = reasonMessage(apiResult.reason);
+      if (scanResult.status === "rejected") {
+        throw new Error(
+          `Aquarius discovery failed: REST=${apiMsg}; event-scan fallback=${reasonMessage(scanResult.reason)}`,
+        );
+      }
+      sourceErrors.push(
+        `Aquarius REST source failed (${apiMsg}); the on-chain scan only covers about the ` +
+          `last 7 days, so an older Aquarius position could not be ruled out`,
+      );
     }
 
-    const byIndex = new Map<string, AquariusPool>();
+    // pool_index is only unique within a token set (the router's get_pools(tokens)
+    // returns index -> pool), so the same index can name different pools for
+    // different pairs. key by the sorted token set plus the index.
+    const byPool = new Map<string, AquariusPool>();
+    if (apiResult.status === "rejected") {
+      for (const pool of partialPools(apiResult.reason)) byPool.set(aquariusPoolKey(pool), pool);
+    }
     for (const result of [apiResult, scanResult]) {
       if (result.status === "fulfilled") {
-        for (const pool of result.value) byIndex.set(pool.poolIndex, pool);
+        for (const pool of result.value) byPool.set(aquariusPoolKey(pool), pool);
       }
     }
 
-    return parsePositions(aquariusPositionSchema, [...byIndex.values()].map(aquariusPoolToSummary));
+    return {
+      positions: parsePositions(
+        aquariusPositionSchema,
+        [...byPool.values()].map(aquariusPoolToSummary),
+      ),
+      sourceErrors,
+    };
   }
 
   // our own on-chain Soroswap LP discovery: walks the factory's pair list and
@@ -272,7 +284,7 @@ export class DirectContractProvider implements IDeFiPositionProvider {
   ): Promise<readonly SoroswapPositionSummary[]> {
     return parsePositions(
       soroswapPositionSchema,
-      await discoverSoroswapPositions(server, network, userAddress),
+      await this.deps.soroswapDiscover(server, network, userAddress),
     );
   }
 
@@ -285,24 +297,34 @@ export class DirectContractProvider implements IDeFiPositionProvider {
   }
 }
 
-// drop a pool entry if every balance map is empty or all-zero
-function hasAnyNonZeroBlendBalance(p: BlendUserPositions): boolean {
+// keep a pool with any balance, and one whose only content is accrued emissions
+function hasBlendPosition(p: BlendPoolSnapshot): boolean {
   for (const v of p.liabilities.values()) if (v !== 0n) return true;
   for (const v of p.collateral.values()) if (v !== 0n) return true;
   for (const v of p.supply.values()) if (v !== 0n) return true;
-  return false;
+  return p.claimableEmissionTokenIds.length > 0;
 }
 
-function blendUserPositionsToSummary(p: BlendUserPositions): BlendPositionSummary {
+function blendSnapshotToSummary(p: BlendPoolSnapshot): BlendPositionSummary {
   return {
     poolId: p.poolId,
     liabilities: new Map(p.liabilities),
     collateral: new Map(p.collateral),
     supply: new Map(p.supply),
-    // the emissions map is keyed by reserve_token_id; those keys ARE the ids
-    // claim() expects. Sorted for deterministic plan output.
-    emissionReserveTokenIds: Array.from(p.emissions.keys()).sort((a, b) => a - b),
+    emissionReserveTokenIds: [...p.claimableEmissionTokenIds].sort((a, b) => a - b),
   };
+}
+
+// a REST failure partway through the per-pool balance reads carries the pools
+// that did read as partialPools. they still pass the schema check below.
+function partialPools(reason: unknown): readonly AquariusPool[] {
+  if (typeof reason !== "object" || reason === null || !("partialPools" in reason)) return [];
+  const pools: unknown = reason.partialPools;
+  return Array.isArray(pools) ? (pools as AquariusPool[]) : [];
+}
+
+function aquariusPoolKey(p: AquariusPool): string {
+  return `${[...p.tokens].sort().join(",")}|${p.poolIndex.toLowerCase().replace(/^0x/u, "")}`;
 }
 
 function aquariusPoolToSummary(p: AquariusPool): AquariusPositionSummary {
@@ -321,17 +343,19 @@ function fxdaoVaultToSummary(v: FxDAOVault): FxDAOPositionSummary {
   };
 }
 
+function reasonMessage(reason: unknown): string {
+  return reason instanceof Error ? reason.message : String(reason);
+}
+
 // generic allSettled unwrap: returns fulfilled value or fallback, stamping any rejection onto errors
 function unwrap<T>(
   protocol: string,
   settled: PromiseSettledResult<T>,
-  errors: { protocol: string; message: string }[],
+  errors: ProtocolError[],
   fallback: T,
 ): T {
   if (settled.status === "fulfilled") return settled.value;
-  const reason = settled.reason;
-  const message = reason instanceof Error ? reason.message : String(reason);
-  errors.push({ protocol, message });
+  errors.push({ protocol, message: reasonMessage(settled.reason) });
   return fallback;
 }
 

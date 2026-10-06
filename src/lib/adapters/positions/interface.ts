@@ -1,18 +1,22 @@
-// IDeFiPositionProvider: abstraction over the three position-discovery adapters
+// IDeFiPositionProvider: abstraction over position discovery
 import type { NetworkConfig } from "@/lib/config/networks";
 
 // all numeric balances are bigint in the protocol's smallest integer unit. no floats
 
-// one blend pool position. three balance maps because blend tracks them independently:
+// one blend pool position. three balance maps because blend tracks them
+// independently, keyed by asset contract id. amounts are in the asset's own
+// units: liabilities are the debt owed (not dTokens), collateral and supply what
+// a full withdraw returns (not bTokens). a pool whose only content is accrued
+// emissions is still reported, so its claim is planned and the merge-time
+// reprobe keeps counting it until it is claimed.
 export interface BlendPositionSummary {
   readonly poolId: string;
   readonly liabilities: ReadonlyMap<string, bigint>;
   readonly collateral: ReadonlyMap<string, bigint>;
   readonly supply: ReadonlyMap<string, bigint>;
-  // reserve_token_ids with accrued emissions for this user in this pool (the u32
+  // reserve_token_ids with emissions accrued to this user in this pool (the u32
   // keys Blend's claim(from, reserve_token_ids, to) expects). Empty when there is
-  // nothing to claim. Carried so the claim targets the user's ACTUAL emission
-  // reserves rather than a hardcoded [0].
+  // nothing to claim.
   readonly emissionReserveTokenIds: readonly number[];
 }
 
@@ -39,15 +43,25 @@ export interface FxDAOPositionSummary {
   readonly collateral: bigint;
 }
 
-// one Blend backstop deposit. The backstop is a SEPARATE contract from the lending
-// pool, and its withdrawal is a queued, 17-day-locked flow: a close can START the
-// withdrawal (queue_withdrawal) and show the unlock date, but cannot complete it
-// in one session, so an active/queued backstop blocks the final account merge
-// (the account must survive to receive the withdrawal after the lock).
+// one Blend backstop position. The backstop is a SEPARATE contract from the
+// lending pool (each pool names its own: v1 pools use the v1 backstop with a
+// 21-day queue, v2 pools the v2 backstop with a 17-day queue). Its withdrawal is
+// queued and locked, so a close can only START it (queue_withdrawal) and finish
+// it after the unlock; any entry here blocks the final account merge, including
+// one whose only content is accrued emissions (a claim pays them into new
+// backstop shares, which then need the same queue).
+//
+// discovery always sets the optional fields. they are optional only so a
+// summary built by hand without them still means "nothing beyond shares and
+// queue", which never weakens the merge guard because the guard counts entries.
 export interface BlendBackstopSummary {
   readonly poolId: string;
   readonly shares: bigint; // active shares not yet queued
-  readonly queuedForWithdrawal: bigint; // shares already in the 17-day Q4W queue
+  readonly queuedForWithdrawal: bigint; // every share in the Q4W queue, locked or not
+  readonly backstopId?: string;
+  readonly unlockedQueuedForWithdrawal?: bigint; // queued shares past their unlock time
+  readonly accruedEmissions?: bigint; // BLND (7 decimals) a backstop claim would add
+  readonly queueDurationSeconds?: number;
 }
 
 // aggregated DeFi positions for one user. each protocol independent; partial failures

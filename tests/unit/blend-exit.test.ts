@@ -1,164 +1,641 @@
 import { describe, it, expect } from "vitest";
 import {
-  Account,
+  Address,
+  Asset,
   FeeBumpTransaction,
+  Keypair,
   Transaction,
-  type Horizon,
+  TransactionBuilder,
+  scValToNative,
+  xdr,
   type rpc,
 } from "@stellar/stellar-sdk";
 
-import { buildExitSequence, type BlendExitStep } from "@/lib/adapters/blend/exit";
-import type { BlendUserPositions } from "@/lib/adapters/blend/client";
-import type { PoolUserEmissionData } from "@blend-capital/blend-sdk";
+import {
+  BlndTrustlineMissingError,
+  buildBackstopClaimTx,
+  buildBackstopQueueTx,
+  buildBackstopWithdrawTx,
+  buildBlendClaimTx,
+  buildBlendRepayTx,
+  buildBlendWithdrawTx,
+  buildExitSequence,
+  type BuildExitSequenceDeps,
+} from "@/lib/adapters/blend/exit";
+import type {
+  BackstopDepositLoader,
+  BackstopUserState,
+  BlendUserPositions,
+} from "@/lib/adapters/blend/client";
+import {
+  BACKSTOP_QUEUE_DURATION_SECONDS,
+  BACKSTOP_V1_QUEUE_DURATION_SECONDS,
+  BLEND_BACKSTOP_MAINNET_ID,
+  BLEND_BACKSTOP_V1_MAINNET_ID,
+  I128_MAX,
+  blndTokenForNetwork,
+} from "@/lib/adapters/blend/constants";
 import { MAINNET } from "@/lib/config/networks";
-import { BACKSTOP_QUEUE_DURATION_SECONDS } from "@/lib/adapters/blend/constants";
 
-// buildExitSequence orders the unwind steps for one pool and only emits an
-// acquire marker for liabilities the caller doesn't already hold. Both are
-// pure/DI-friendly (deps.assemble, deps.holdsAtLeast, deps.now, ...), so we
-// exercise them with a stubbed assemble, no RPC, and assert the step order,
-// marker gating, and backstop lock.
+import { horizonAccount, loaderFor, makePool, supplyEmissions } from "./blend-fixtures";
 
-const USER = "GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3";
+const USER = Keypair.random().publicKey();
+const USDC_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
+const XLM_SAC = Asset.native().contractId(MAINNET.passphrase);
+const USDC_SAC = new Asset("USDC", USDC_ISSUER).contractId(MAINNET.passphrase);
+const BLND = blndTokenForNetwork(MAINNET);
 
-// a mainnet-allow-listed pool id (blend FixedV2) so isAllowedContract and the
-// post-build assertTransactionAllowed both pass on the stubbed tx.
-const POOL_ID = "CAJJZSGMMM3PD7N33TAPHGBUGTB43OC73HVIK2L2G6BNGGGYOSSYBXBD";
+// registry pools: FixedV2 (v2, v2 backstop) and Fixed (v1, v1 backstop)
+const POOL_V2 = "CAJJZSGMMM3PD7N33TAPHGBUGTB43OC73HVIK2L2G6BNGGGYOSSYBXBD";
+const POOL_V1 = "CDVQVKOY2YSXS2IC7KN6MNASSHPAO7UN2UR2ON4OI2SKMFJNVAMDX6DP";
 
-// real mainnet SAC contract ids used as reserve asset addresses (they only need
-// to be valid C... strkeys, the allow-list checks the invoked pool, not args).
-const XLM_SAC = "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA";
-const USDC_SAC = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
-const BLND_SAC = "CD25MNVTZDL4Y3XBCPCJXGXATV5WUHHOWMYFF4YBEGU5FCPGMYTVG5JY";
+const V2_RATE_1 = 10n ** 12n;
+const V1_RATE_1 = 10n ** 9n;
 
-// TransactionBuilder only reads accountId()/sequenceNumber() off the source.
-function sourceAccount(): Horizon.AccountResponse {
-  return new Account(USER, "1") as unknown as Horizon.AccountResponse;
-}
-
-// assemble stub: prepareTransaction normally runs simulation and returns a real
-// Transaction; here we echo the input tx (a Transaction, never a FeeBump) so the
-// `"innerTransaction" in prepared` guard passes and no RPC is touched.
+// prepareTransaction stand-in: no RPC; returns the built tx unchanged
 const assemble = async (
   _server: rpc.Server,
   tx: Transaction | FeeBumpTransaction,
 ): Promise<Transaction | FeeBumpTransaction> => tx;
 
-function positions(overrides: Partial<BlendUserPositions> = {}): BlendUserPositions {
-  return {
-    poolId: POOL_ID,
-    poolName: "FixedV2",
-    poolVersion: "V2",
-    liabilities: new Map<string, bigint>(),
-    collateral: new Map<string, bigint>(),
-    supply: new Map<string, bigint>(),
-    emissions: new Map<number, PoolUserEmissionData>(),
-    ...overrides,
+// prepareTransaction stand-in that charges a resource fee like a real
+// simulation would, so the native-repay fee headroom is exercised
+function assembleWithFee(totalFee: string) {
+  return async (_server: rpc.Server, tx: Transaction | FeeBumpTransaction) => {
+    const inner = tx as Transaction;
+    return TransactionBuilder.cloneFrom(inner, { fee: totalFee }).build();
   };
 }
 
-function kinds(steps: readonly BlendExitStep[]): readonly string[] {
-  return steps.map((s) => s.kind);
+function account(balances: Parameters<typeof horizonAccount>[0]["balances"], subentryCount = 0) {
+  return horizonAccount({ accountId: USER, sequence: "1000", balances, subentryCount });
 }
 
-describe("buildExitSequence ordering", () => {
-  it("refuses to build against a non-allow-listed pool", async () => {
+function deps(extra: Partial<BuildExitSequenceDeps> = {}): BuildExitSequenceDeps {
+  return { assemble, server: {} as rpc.Server, ...extra };
+}
+
+// the shape hydration synthesizes for one plan node: every position is labelled
+// "V2" and carries a placeholder amount, so the builders must read the truth
+function hydrationPosition(
+  poolId: string,
+  buckets: { liabilities?: string; collateral?: string } = {},
+): BlendUserPositions {
+  return {
+    poolId,
+    poolName: poolId,
+    poolVersion: "V2",
+    liabilities: new Map(buckets.liabilities ? [[buckets.liabilities, 1n]] : []),
+    collateral: new Map(buckets.collateral ? [[buckets.collateral, 1n]] : []),
+    supply: new Map(),
+    emissions: new Map(),
+  };
+}
+
+interface DecodedRequest {
+  readonly address: string;
+  readonly amount: bigint;
+  readonly request_type: number;
+}
+
+function invocation(tx: Transaction): { contract: string; fn: string; args: xdr.ScVal[] } {
+  const op = tx.operations[0];
+  if (op?.type !== "invokeHostFunction") throw new Error("not a host function op");
+  const call = xdr.expectUnionVariant(op.func, "hostFunctionTypeInvokeContract").invokeContract;
+  return {
+    contract: Address.fromScAddress(call.contractAddress).toString(),
+    fn: call.functionName.toString(),
+    args: call.args,
+  };
+}
+
+function submitRequest(tx: Transaction): DecodedRequest {
+  const { fn, args } = invocation(tx);
+  expect(fn).toBe("submit");
+  const requests = scValToNative(args[3]!) as DecodedRequest[];
+  expect(requests).toHaveLength(1);
+  return requests[0]!;
+}
+
+describe("Blend repay amount (H-22)", () => {
+  const pool = () =>
+    makePool({
+      version: "V2",
+      poolId: POOL_V2,
+      backstop: BLEND_BACKSTOP_MAINNET_ID,
+      // dRate 1.2: 100 dTokens owe 120 underlying
+      reserves: [{ assetId: USDC_SAC, index: 0, dRate: (V2_RATE_1 * 12n) / 10n, bRate: V2_RATE_1 }],
+      user: { liabilities: [[0, 100_0000000n]] },
+    });
+
+  it("repays the buffered underlying debt, never i128::MAX", async () => {
+    const built = await buildBlendRepayTx(
+      MAINNET,
+      { poolId: POOL_V2, asset: USDC_SAC },
+      USER,
+      account([
+        { balance: "50.0000000" },
+        { code: "USDC", issuer: USDC_ISSUER, balance: "500.0000000" },
+      ]),
+      deps({ poolLoader: loaderFor(pool()) }),
+    );
+    expect(built.debt).toBe(120_0000000n);
+    const req = submitRequest(built.transaction);
+    expect(req.request_type).toBe(5);
+    expect(req.amount).toBe(built.amount);
+    // debt plus a 10 bps accrual buffer, rounded up
+    expect(req.amount).toBe(120_1200000n);
+    expect(req.amount).toBeLessThan(2n ** 63n);
+  });
+
+  it("buildExitSequence (the hydration entry point) repays a finite amount", async () => {
+    const steps = await buildExitSequence(
+      MAINNET,
+      hydrationPosition(POOL_V2, { liabilities: USDC_SAC }),
+      USER,
+      account([
+        { balance: "50.0000000" },
+        { code: "USDC", issuer: USDC_ISSUER, balance: "500.0000000" },
+      ]),
+      deps({ poolLoader: loaderFor(pool()) }),
+    );
+    const step = steps.find((s) => s.kind === "repay");
+    if (!step || step.kind !== "repay") throw new Error("missing repay step");
+    const amount = submitRequest(step.transaction).amount;
+    expect(amount).toBeLessThan(2n ** 63n);
+    expect(amount).toBe(120_1200000n);
+  });
+
+  it("caps the repay at the spendable balance of the borrowed asset", async () => {
+    const built = await buildBlendRepayTx(
+      MAINNET,
+      { poolId: POOL_V2, asset: USDC_SAC },
+      USER,
+      account([
+        { balance: "50.0000000" },
+        // 120.05 held, 0.01 locked in an open offer
+        {
+          code: "USDC",
+          issuer: USDC_ISSUER,
+          balance: "120.0500000",
+          sellingLiabilities: "0.0100000",
+        },
+      ]),
+      deps({ poolLoader: loaderFor(pool()) }),
+    );
+    expect(submitRequest(built.transaction).amount).toBe(120_0400000n);
+  });
+
+  it("refuses to build when the account holds none of the borrowed asset", async () => {
     await expect(
-      buildExitSequence(
+      buildBlendRepayTx(
         MAINNET,
-        positions({ poolId: "CCEBVDYM32YNYCVNRXQKDFFPISJJCV557CDZEIRBEE4NCV4KHPQ44HGF" }),
+        { poolId: POOL_V2, asset: USDC_SAC },
         USER,
-        sourceAccount(),
-        { assemble, server: {} as rpc.Server },
+        account([
+          { balance: "50.0000000" },
+          { code: "USDC", issuer: USDC_ISSUER, balance: "0.0000000" },
+        ]),
+        deps({ poolLoader: loaderFor(pool()) }),
       ),
-    ).rejects.toThrow(/not on the mainnet allow-list/);
+    ).rejects.toThrow(/no spendable/);
   });
 
-  it("emits acquire_repay_asset, repay, withdraw_collateral, withdraw_supply, claim_emissions in order", async () => {
-    const steps = await buildExitSequence(
+  it("keeps a native repay above the minimum reserve and the transaction fee", async () => {
+    const xlmPool = makePool({
+      version: "V2",
+      poolId: POOL_V2,
+      backstop: BLEND_BACKSTOP_MAINNET_ID,
+      reserves: [{ assetId: XLM_SAC, index: 0, dRate: V2_RATE_1, bRate: V2_RATE_1 }],
+      user: { liabilities: [[0, 120_0000000n]] },
+    });
+    // 121 XLM, no subentries: 1 XLM reserve, 0.5 XLM fee -> 119.5 can go to the pool
+    const source = account([{ balance: "121.0000000" }]);
+    const built = await buildBlendRepayTx(
       MAINNET,
-      positions({
-        liabilities: new Map([[USDC_SAC, 1_000_0000000n]]),
-        collateral: new Map([[XLM_SAC, 500_0000000n]]),
-        supply: new Map([[BLND_SAC, 250_0000000n]]),
-        emissions: new Map<number, PoolUserEmissionData>([[0, {} as PoolUserEmissionData]]),
-      }),
+      { poolId: POOL_V2, asset: XLM_SAC },
       USER,
-      sourceAccount(),
-      {
-        assemble,
-        server: {} as rpc.Server,
-        // user does not hold the liability asset -> acquire marker is emitted
-        holdsAtLeast: () => false,
-        // resolver keeps inferAssetIdentifier off the network passphrase path
-        resolveAssetIdentifier: () => ({ kind: "native" }),
-      },
+      source,
+      deps({ poolLoader: loaderFor(xlmPool), assemble: assembleWithFee("5000000") }),
     );
-
-    expect(kinds(steps)).toEqual([
-      "acquire_repay_asset",
-      "repay",
-      "withdraw_collateral",
-      "withdraw_supply",
-      "claim_emissions",
-    ]);
+    expect(submitRequest(built.transaction).amount).toBe(119_5000000n);
+    expect(built.transaction.fee).toBe("5000000");
+    // the caller's account is not advanced by the two builds
+    expect(source.sequenceNumber()).toBe("1000");
+    expect(built.transaction.sequence).toBe("1001");
   });
 
-  it("suppresses the acquire marker when the user already holds the liability asset", async () => {
-    const steps = await buildExitSequence(
+  it("subtracts the reserve for subentries and sponsorships", async () => {
+    const xlmPool = makePool({
+      version: "V2",
+      poolId: POOL_V2,
+      backstop: BLEND_BACKSTOP_MAINNET_ID,
+      reserves: [{ assetId: XLM_SAC, index: 0, dRate: V2_RATE_1, bRate: V2_RATE_1 }],
+      user: { liabilities: [[0, 200_0000000n]] },
+    });
+    const source = horizonAccount({
+      accountId: USER,
+      sequence: "7",
+      balances: [{ balance: "100.0000000", sellingLiabilities: "3.0000000" }],
+      subentryCount: 3,
+      numSponsoring: 1,
+      numSponsored: 2,
+    });
+    const built = await buildBlendRepayTx(
       MAINNET,
-      positions({ liabilities: new Map([[USDC_SAC, 1_000_0000000n]]) }),
+      { poolId: POOL_V2, asset: XLM_SAC },
       USER,
-      sourceAccount(),
-      { assemble, server: {} as rpc.Server, holdsAtLeast: () => true },
+      source,
+      deps({ poolLoader: loaderFor(xlmPool) }),
     );
-
-    expect(kinds(steps)).toEqual(["repay"]);
-    expect(steps.some((s) => s.kind === "acquire_repay_asset")).toBe(false);
-  });
-
-  it("skips zero-amount liabilities/collateral/supply buckets", async () => {
-    const steps = await buildExitSequence(
-      MAINNET,
-      positions({
-        liabilities: new Map([[USDC_SAC, 0n]]),
-        collateral: new Map([[XLM_SAC, 0n]]),
-        supply: new Map([[BLND_SAC, 0n]]),
-      }),
-      USER,
-      sourceAccount(),
-      { assemble, server: {} as rpc.Server, holdsAtLeast: () => false },
-    );
-
-    expect(steps).toHaveLength(0);
+    // reserve (2 + 3 + 1 - 2) * 0.5 = 2 XLM, liabilities 3 XLM, fee 0.01 XLM
+    expect(submitRequest(built.transaction).amount).toBe(94_9900000n);
   });
 });
 
-describe("buildExitSequence backstop queue withdrawal", () => {
-  it("emits no backstop step when backstopShares is 0", async () => {
-    const steps = await buildExitSequence(MAINNET, positions(), USER, sourceAccount(), {
-      assemble,
-      server: {} as rpc.Server,
-      backstopShares: 0n,
+describe("Blend v1 pools get finite request amounts (H-23)", () => {
+  const v1Pool = () =>
+    makePool({
+      version: "V1",
+      poolId: POOL_V1,
+      backstop: BLEND_BACKSTOP_V1_MAINNET_ID,
+      reserves: [
+        // bRate 1.05, dRate 1.1
+        {
+          assetId: XLM_SAC,
+          index: 0,
+          dRate: (V1_RATE_1 * 11n) / 10n,
+          bRate: (V1_RATE_1 * 105n) / 100n,
+        },
+        { assetId: USDC_SAC, index: 1, dRate: V1_RATE_1, bRate: V1_RATE_1 },
+      ],
+      user: {
+        collateral: [[0, 1000_0000000n]],
+        supply: [[1, 10_0000000n]],
+        liabilities: [[1, 5_0000000n]],
+      },
     });
 
-    expect(steps.some((s) => s.kind === "backstop_queue_withdrawal")).toBe(false);
+  it("withdraws collateral with the buffered underlying amount", async () => {
+    const built = await buildBlendWithdrawTx(
+      MAINNET,
+      { poolId: POOL_V1, asset: XLM_SAC, bucket: "collateral" },
+      USER,
+      account([{ balance: "10.0000000" }]),
+      deps({ poolLoader: loaderFor(v1Pool()) }),
+    );
+    const req = submitRequest(built.transaction);
+    expect(req.request_type).toBe(3);
+    // 1000 bTokens * 1.05 = 1050, plus 10 bps
+    expect(req.amount).toBe(1051_0500000n);
+    expect(req.amount).toBeLessThan(2n ** 63n);
   });
 
-  it("emits exactly one locked backstop step with queueEndsAt = now + queue duration", async () => {
-    const nowMs = Date.UTC(2026, 0, 1, 0, 0, 0);
-    const steps = await buildExitSequence(MAINNET, positions(), USER, sourceAccount(), {
-      assemble,
-      server: {} as rpc.Server,
-      backstopShares: 42n,
-      now: () => new Date(nowMs),
+  it("withdraws supply with a finite amount", async () => {
+    const built = await buildBlendWithdrawTx(
+      MAINNET,
+      { poolId: POOL_V1, asset: USDC_SAC, bucket: "supply" },
+      USER,
+      account([{ balance: "10.0000000" }]),
+      deps({ poolLoader: loaderFor(v1Pool()) }),
+    );
+    const req = submitRequest(built.transaction);
+    expect(req.request_type).toBe(1);
+    expect(req.amount).toBe(10_0100000n);
+  });
+
+  it("repays a v1 loan with a finite amount", async () => {
+    const built = await buildBlendRepayTx(
+      MAINNET,
+      { poolId: POOL_V1, asset: USDC_SAC },
+      USER,
+      account([
+        { balance: "10.0000000" },
+        { code: "USDC", issuer: USDC_ISSUER, balance: "100.0000000" },
+      ]),
+      deps({ poolLoader: loaderFor(v1Pool()) }),
+    );
+    expect(submitRequest(built.transaction).amount).toBe(5_0050000n);
+  });
+
+  it("keeps i128::MAX for v2 withdrawals, which the v2 pool caps", async () => {
+    const v2 = makePool({
+      version: "V2",
+      poolId: POOL_V2,
+      backstop: BLEND_BACKSTOP_MAINNET_ID,
+      reserves: [{ assetId: XLM_SAC, index: 0, dRate: V2_RATE_1, bRate: V2_RATE_1 }],
+      user: { collateral: [[0, 10n]] },
+    });
+    const built = await buildBlendWithdrawTx(
+      MAINNET,
+      { poolId: POOL_V2, asset: XLM_SAC, bucket: "collateral" },
+      USER,
+      account([{ balance: "10.0000000" }]),
+      deps({ poolLoader: loaderFor(v2) }),
+    );
+    expect(submitRequest(built.transaction).amount).toBe(I128_MAX);
+  });
+
+  it("buildExitSequence decides the version from chain, not from the caller's label", async () => {
+    // hydration labels every synthesized position "V2"; the pool on chain is v1
+    const steps = await buildExitSequence(
+      MAINNET,
+      hydrationPosition(POOL_V1, { collateral: XLM_SAC }),
+      USER,
+      account([{ balance: "10.0000000" }]),
+      deps({ poolLoader: loaderFor(v1Pool()) }),
+    );
+    expect(steps.map((s) => s.kind)).toEqual(["withdraw_collateral"]);
+    const step = steps[0]!;
+    if (step.kind !== "withdraw_collateral") throw new Error("unreachable");
+    expect(submitRequest(step.transaction).amount).toBe(1051_0500000n);
+  });
+});
+
+function backstopLoader(state: Partial<BackstopUserState>): BackstopDepositLoader {
+  return {
+    async loadUser() {
+      return {
+        shares: 0n,
+        totalQ4W: 0n,
+        unlockedQ4W: 0n,
+        accruedEmissions: 0n,
+        ...state,
+      };
+    },
+  };
+}
+
+describe("Blend backstop exits target the pool's own backstop (C-07)", () => {
+  const v1Pool = () =>
+    makePool({
+      version: "V1",
+      poolId: POOL_V1,
+      backstop: BLEND_BACKSTOP_V1_MAINNET_ID,
+      reserves: [{ assetId: XLM_SAC, index: 0, dRate: V1_RATE_1, bRate: V1_RATE_1 }],
     });
 
-    const backstop = steps.filter((s) => s.kind === "backstop_queue_withdrawal");
-    expect(backstop).toHaveLength(1);
-    const step = backstop[0]!;
-    if (step.kind !== "backstop_queue_withdrawal") throw new Error("unreachable");
-    expect(step.manualReturnRequired).toBe(true);
-    expect(step.queueEndsAt.getTime()).toBe(nowMs + BACKSTOP_QUEUE_DURATION_SECONDS * 1000);
+  it("queues every current share on the v1 backstop with the v1 21-day lock", async () => {
+    const now = new Date(Date.UTC(2026, 9, 2));
+    const built = await buildBackstopQueueTx(
+      MAINNET,
+      { poolId: POOL_V1 },
+      USER,
+      account([{ balance: "10.0000000" }]),
+      deps({
+        poolLoader: loaderFor(v1Pool()),
+        backstopLoader: backstopLoader({ shares: 35_126_739_517n }),
+        now: () => now,
+      }),
+    );
+    const { contract, fn, args } = invocation(built.transaction);
+    expect(contract).toBe(BLEND_BACKSTOP_V1_MAINNET_ID);
+    expect(fn).toBe("queue_withdrawal");
+    expect(scValToNative(args[1]!)).toBe(POOL_V1);
+    expect(scValToNative(args[2]!)).toBe(35_126_739_517n);
+    expect(built.backstop.version).toBe("V1");
+    expect(built.queueEndsAt.getTime()).toBe(
+      now.getTime() + BACKSTOP_V1_QUEUE_DURATION_SECONDS * 1000,
+    );
+    expect(BACKSTOP_V1_QUEUE_DURATION_SECONDS).toBe(21 * 24 * 60 * 60);
+  });
+
+  it("withdraws the unlocked queue from the pool's backstop", async () => {
+    const built = await buildBackstopWithdrawTx(
+      MAINNET,
+      { poolId: POOL_V1 },
+      USER,
+      account([{ balance: "10.0000000" }]),
+      deps({
+        poolLoader: loaderFor(v1Pool()),
+        backstopLoader: backstopLoader({ totalQ4W: 500n, unlockedQ4W: 300n }),
+      }),
+    );
+    const { contract, fn, args } = invocation(built.transaction);
+    expect(contract).toBe(BLEND_BACKSTOP_V1_MAINNET_ID);
+    expect(fn).toBe("withdraw");
+    expect(scValToNative(args[2]!)).toBe(300n);
+  });
+
+  it("refuses a pool whose metadata names an unknown backstop", async () => {
+    const rogue = makePool({
+      version: "V2",
+      poolId: POOL_V2,
+      backstop: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+      reserves: [{ assetId: XLM_SAC, index: 0, dRate: V2_RATE_1, bRate: V2_RATE_1 }],
+    });
+    await expect(
+      buildBackstopQueueTx(
+        MAINNET,
+        { poolId: POOL_V2 },
+        USER,
+        account([{ balance: "10.0000000" }]),
+        deps({ poolLoader: loaderFor(rogue), backstopLoader: backstopLoader({ shares: 5n }) }),
+      ),
+    ).rejects.toThrow(/not a known Blend backstop/);
+  });
+
+  it("buildExitSequence queues on the v1 backstop for a v1 pool", async () => {
+    const steps = await buildExitSequence(
+      MAINNET,
+      hydrationPosition(POOL_V1),
+      USER,
+      account([{ balance: "10.0000000" }]),
+      deps({
+        poolLoader: loaderFor(v1Pool()),
+        backstopLoader: backstopLoader({ shares: 42n }),
+        backstopShares: 42n,
+      }),
+    );
+    const step = steps.find((s) => s.kind === "backstop_queue_withdrawal");
+    if (!step || step.kind !== "backstop_queue_withdrawal") throw new Error("missing step");
+    expect(invocation(step.transaction).contract).toBe(BLEND_BACKSTOP_V1_MAINNET_ID);
+  });
+
+  it("uses the 17-day lock for the v2 backstop", async () => {
+    const now = new Date(Date.UTC(2026, 0, 1));
+    const v2 = makePool({
+      version: "V2",
+      poolId: POOL_V2,
+      backstop: BLEND_BACKSTOP_MAINNET_ID,
+      reserves: [{ assetId: XLM_SAC, index: 0, dRate: V2_RATE_1, bRate: V2_RATE_1 }],
+    });
+    const built = await buildBackstopQueueTx(
+      MAINNET,
+      { poolId: POOL_V2 },
+      USER,
+      account([{ balance: "10.0000000" }]),
+      deps({
+        poolLoader: loaderFor(v2),
+        backstopLoader: backstopLoader({ shares: 9n }),
+        now: () => now,
+      }),
+    );
+    expect(invocation(built.transaction).contract).toBe(BLEND_BACKSTOP_MAINNET_ID);
+    expect(built.queueEndsAt.getTime()).toBe(
+      now.getTime() + BACKSTOP_QUEUE_DURATION_SECONDS * 1000,
+    );
+  });
+});
+
+describe("Blend emissions claims (M-26, L-49)", () => {
+  // user index 0, reserve index 2e14 on 50 bTokens: 100 BLND accrued (7 decimals)
+  const emissionsPool = () =>
+    makePool({
+      version: "V2",
+      poolId: POOL_V2,
+      backstop: BLEND_BACKSTOP_MAINNET_ID,
+      reserves: [
+        {
+          assetId: XLM_SAC,
+          index: 0,
+          dRate: V2_RATE_1,
+          bRate: V2_RATE_1,
+          supplyEmissions: supplyEmissions(2n * 10n ** 14n),
+        },
+      ],
+      user: { supply: [[0, 50_0000000n]], emissions: [[1, 0n, 0n]] },
+    });
+
+  it("refuses to claim accrued BLND without a BLND trustline, naming the fix", async () => {
+    const err: unknown = await buildBlendClaimTx(
+      MAINNET,
+      { poolId: POOL_V2 },
+      USER,
+      account([{ balance: "10.0000000" }]),
+      deps({ poolLoader: loaderFor(emissionsPool()) }),
+    ).catch((e: unknown) => e);
+    // a typed error, so hydration can tell "trustline not opened yet" apart
+    // from a broken claim and build the node after the change_trust step
+    expect(err).toBeInstanceOf(BlndTrustlineMissingError);
+    expect((err as BlndTrustlineMissingError).reason).toBe("missing");
+    expect((err as BlndTrustlineMissingError).poolId).toBe(POOL_V2);
+    expect((err as Error).message).toMatch(/BLND trustline/);
+  });
+
+  it("refuses to claim into a BLND trustline the issuer has not authorized", async () => {
+    const err: unknown = await buildBlendClaimTx(
+      MAINNET,
+      { poolId: POOL_V2 },
+      USER,
+      account([
+        { balance: "10.0000000" },
+        { code: "BLND", issuer: BLND.issuer, balance: "0.0000000", authorized: false },
+      ]),
+      deps({ poolLoader: loaderFor(emissionsPool()) }),
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BlndTrustlineMissingError);
+    expect((err as BlndTrustlineMissingError).reason).toBe("unauthorized");
+  });
+
+  it("claims the reserve token ids that actually accrued when the trustline exists", async () => {
+    const built = await buildBlendClaimTx(
+      MAINNET,
+      { poolId: POOL_V2 },
+      USER,
+      account([
+        { balance: "10.0000000" },
+        { code: "BLND", issuer: BLND.issuer, balance: "0.0000000" },
+      ]),
+      deps({ poolLoader: loaderFor(emissionsPool()) }),
+    );
+    const { contract, fn, args } = invocation(built.transaction);
+    expect(contract).toBe(POOL_V2);
+    expect(fn).toBe("claim");
+    expect(scValToNative(args[1]!)).toEqual([1]);
+    expect(built.reserveTokenIds).toEqual([1]);
+  });
+
+  it("claims v1 backstop emissions to the user", async () => {
+    const v1 = makePool({
+      version: "V1",
+      poolId: POOL_V1,
+      backstop: BLEND_BACKSTOP_V1_MAINNET_ID,
+      reserves: [{ assetId: XLM_SAC, index: 0, dRate: V1_RATE_1, bRate: V1_RATE_1 }],
+    });
+    const built = await buildBackstopClaimTx(
+      MAINNET,
+      { poolId: POOL_V1 },
+      USER,
+      account([{ balance: "10.0000000" }]),
+      deps({ poolLoader: loaderFor(v1), backstopLoader: backstopLoader({ accruedEmissions: 7n }) }),
+    );
+    const { contract, fn, args } = invocation(built.transaction);
+    expect(contract).toBe(BLEND_BACKSTOP_V1_MAINNET_ID);
+    expect(fn).toBe("claim");
+    expect(scValToNative(args[1]!)).toEqual([POOL_V1]);
+    expect(scValToNative(args[2]!)).toBe(USER);
+  });
+
+  it("claims v2 backstop emissions with a slippage floor from the simulated LP mint", async () => {
+    const v2 = makePool({
+      version: "V2",
+      poolId: POOL_V2,
+      backstop: BLEND_BACKSTOP_MAINNET_ID,
+      reserves: [{ assetId: XLM_SAC, index: 0, dRate: V2_RATE_1, bRate: V2_RATE_1 }],
+    });
+    const mins: bigint[] = [];
+    const built = await buildBackstopClaimTx(
+      MAINNET,
+      { poolId: POOL_V2 },
+      USER,
+      account([{ balance: "10.0000000" }]),
+      deps({
+        poolLoader: loaderFor(v2),
+        backstopLoader: backstopLoader({ shares: 1n, accruedEmissions: 7n }),
+        simulate: async (_server, tx) => {
+          mins.push(scValToNative(invocation(tx as Transaction).args[2]!) as bigint);
+          return {
+            ok: true,
+            retval: xdr.ScVal.scvI128(new xdr.Int128Parts({ hi: 0n, lo: 1_000_000n })),
+            transactionData: undefined as never,
+            minResourceFee: "0",
+            auth: [],
+            latestLedger: 1,
+          };
+        },
+      }),
+    );
+    const { contract, args } = invocation(built.transaction);
+    expect(contract).toBe(BLEND_BACKSTOP_MAINNET_ID);
+    // probe with 0, then 1% default slippage below the simulated 1_000_000
+    expect(mins).toEqual([0n]);
+    expect(scValToNative(args[2]!)).toBe(990_000n);
+  });
+
+  it("refuses a backstop claim when nothing has accrued", async () => {
+    await expect(
+      buildBackstopClaimTx(
+        MAINNET,
+        { poolId: POOL_V2 },
+        USER,
+        account([{ balance: "10.0000000" }]),
+        deps({
+          poolLoader: loaderFor(
+            makePool({
+              version: "V2",
+              poolId: POOL_V2,
+              backstop: BLEND_BACKSTOP_MAINNET_ID,
+              reserves: [{ assetId: XLM_SAC, index: 0, dRate: V2_RATE_1, bRate: V2_RATE_1 }],
+            }),
+          ),
+          backstopLoader: backstopLoader({}),
+        }),
+      ),
+    ).rejects.toThrow(/no accrued backstop emissions/);
+  });
+});
+
+describe("allow-list gate", () => {
+  it("refuses to build against a non-allow-listed pool", async () => {
+    await expect(
+      buildBlendRepayTx(
+        MAINNET,
+        { poolId: "CCEBVDYM32YNYCVNRXQKDFFPISJJCV557CDZEIRBEE4NCV4KHPQ44HGF", asset: XLM_SAC },
+        USER,
+        account([{ balance: "10.0000000" }]),
+        deps(),
+      ),
+    ).rejects.toThrow(/not on the mainnet allow-list/);
   });
 });

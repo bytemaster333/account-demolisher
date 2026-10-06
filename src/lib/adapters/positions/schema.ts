@@ -43,6 +43,10 @@ export const blendBackstopSchema: z.ZodType<BlendBackstopSummary> = z.object({
   poolId: contractId,
   shares: nonNegBigInt,
   queuedForWithdrawal: nonNegBigInt,
+  backstopId: contractId.exactOptional(),
+  unlockedQueuedForWithdrawal: nonNegBigInt.exactOptional(),
+  accruedEmissions: nonNegBigInt.exactOptional(),
+  queueDurationSeconds: z.number().int().positive().exactOptional(),
 });
 
 export const aquariusPositionSchema: z.ZodType<AquariusPositionSummary> = z.object({
