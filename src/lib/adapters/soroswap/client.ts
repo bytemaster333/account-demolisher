@@ -1,10 +1,5 @@
 // browser-side typed client for the soroswap aggregator
-import type {
-  BuildQuoteResponse,
-  QuoteResponse,
-  SendTransactionResponse,
-  SupportedNetworks,
-} from "@soroswap/sdk";
+import type { BuildQuoteResponse, QuoteResponse, SupportedNetworks } from "@soroswap/sdk";
 
 const DEFAULT_PROXY_URL = "/api/soroswap";
 
@@ -28,7 +23,7 @@ export class SoroswapProxyError extends Error {
 }
 
 // mirrors the op set the proxy route accepts. keep in sync with src/app/api/soroswap/route.ts
-type Op = "getProtocols" | "quote" | "build" | "send";
+type Op = "quote" | "build";
 
 interface OpEnvelope {
   op: Op;
@@ -65,10 +60,8 @@ export interface SoroswapClientOptions {
 
 // public surface of the proxy-facing client
 export interface SoroswapClient {
-  getProtocols(network: SoroswapNetwork): Promise<string[]>;
   quote(req: ClientQuoteRequest): Promise<QuoteResponse>;
   build(req: ClientBuildRequest): Promise<BuildQuoteResponse>;
-  send(signedXdr: string, network?: SoroswapNetwork): Promise<SendTransactionResponse>;
 }
 
 // serialize values containing bigint to a JSON-safe form
@@ -77,9 +70,10 @@ function jsonSerializeWithBigInt(value: unknown): string {
 }
 
 // the SDK types amountOut/otherAmountThreshold as `bigint`, but the proxy JSON path never
-// materializes them as such. JSON.parse yields a string or (lossily) a Number. downstream the
-// slippage guard depends on exact integer stroops, so reject any value that isn't a faithful
-// non-negative integer instead of silently trusting rounded/exponential digits.
+// materializes them as such: JSON.parse yields a string or (lossily) a Number. reject any value
+// that isn't a faithful non-negative integer instead of handing a caller rounded or
+// exponential digits. nothing in this app compares the quote against the built transaction:
+// the only caller (the testnet demo) signs build()'s xdr as returned.
 function assertStroopField(v: unknown, field: string): void {
   if (typeof v === "bigint") {
     if (v < 0n)
@@ -184,11 +178,6 @@ export class SoroswapHttpClient implements SoroswapClient {
     return body as TResult;
   }
 
-  // GET /protocols
-  async getProtocols(network: SoroswapNetwork): Promise<string[]> {
-    return this.dispatch<string[]>({ op: "getProtocols", payload: { network } });
-  }
-
   // POST /quote. caller specifies protocols explicitly; proxy doesn't default it
   async quote(request: ClientQuoteRequest): Promise<QuoteResponse> {
     const payload = {
@@ -204,7 +193,7 @@ export class SoroswapHttpClient implements SoroswapClient {
       ...(request.network !== undefined ? { network: request.network } : {}),
     };
     const quote = await this.dispatch<QuoteResponse>({ op: "quote", payload });
-    // the response is cast from unchecked JSON; validate the two fields the slippage guard trusts
+    // the response is cast from unchecked JSON; check the two headline amounts are exact integers
     const raw = quote as unknown as Record<string, unknown>;
     assertStroopField(raw["amountOut"], "amountOut");
     assertStroopField(raw["otherAmountThreshold"], "otherAmountThreshold");
@@ -222,15 +211,6 @@ export class SoroswapHttpClient implements SoroswapClient {
       ...(request.network !== undefined ? { network: request.network } : {}),
     };
     return this.dispatch<BuildQuoteResponse>({ op: "build", payload });
-  }
-
-  // POST /send. caller signs the XDR elsewhere (wallet kit) and hands the base64 in here
-  async send(signedXdr: string, network?: SoroswapNetwork): Promise<SendTransactionResponse> {
-    const payload = {
-      xdr: signedXdr,
-      ...(network !== undefined ? { network } : {}),
-    };
-    return this.dispatch<SendTransactionResponse>({ op: "send", payload });
   }
 }
 

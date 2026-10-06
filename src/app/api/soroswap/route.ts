@@ -65,20 +65,52 @@ function jsonResponse(body: Record<string, unknown>, status: number): Response {
   });
 }
 
-// preserve upstream status. only content-type on the response; never echo auth headers
-// the amount fields whose full integer precision the slippage guard relies on
-const AMOUNT_FIELDS = ["amountOut", "otherAmountThreshold", "amountIn"];
-const UNQUOTED_AMOUNT_RE = new RegExp(
-  `("(?:${AMOUNT_FIELDS.join("|")})"\\s*:\\s*)(\\d+)(?=\\s*[,}\\]])`,
-  "g",
-);
+// an upstream that has not answered (headers and body) by then is abandoned, so a
+// slow host cannot pin handler connections for undici's 300s defaults
+export const UPSTREAM_TIMEOUT_MS = 15_000;
+// quote and build answers are a few KB; anything far past that is not one
+export const UPSTREAM_MAX_BODY_BYTES = 1_000_000;
 
-// quote any UNQUOTED integer value of a known amount field as a string, so
-// JSON.parse can't round it to a lossy Number. Already-quoted values (string
-// amounts) start with `"` after the colon and don't match, so they're left as-is.
-// exported for unit testing.
-export function preserveAmountPrecision(rawText: string): string {
-  return rawText.replace(UNQUOTED_AMOUNT_RE, '$1"$2"');
+// JSON.parse that keeps every integer exactly. quote/build answers carry stroop
+// amounts (amountOut, otherAmountThreshold, rawTrade.amountOutMin / amountInMax,
+// platformFee.feeAmount, ...) that the soroswap sdk types as bigint and that can
+// exceed 2^53; a plain parse would round them before we re-serialize. any integer
+// literal outside the safe range comes back as its exact digit string, whatever
+// field it is in. relies on the reviver's source-text argument (node 21+).
+export function parseUpstreamJson(rawText: string): unknown {
+  return JSON.parse(rawText, (_key, value: unknown, context?: { source?: string }) => {
+    if (
+      typeof value === "number" &&
+      !Number.isSafeInteger(value) &&
+      typeof context?.source === "string" &&
+      /^-?\d+$/.test(context.source)
+    ) {
+      return context.source;
+    }
+    return value;
+  });
+}
+
+class UpstreamTooLargeError extends Error {}
+class UpstreamTimeoutError extends Error {}
+
+// read the body as a stream and stop past the cap instead of buffering it whole
+async function readCappedText(body: ReadableStream<Uint8Array> | null): Promise<string> {
+  if (body === null) return "";
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > UPSTREAM_MAX_BODY_BYTES) {
+      await reader.cancel();
+      throw new UpstreamTooLargeError();
+    }
+    chunks.push(value);
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks));
 }
 
 function forwardUpstream(status: number, body: unknown): Response {
@@ -94,10 +126,12 @@ function sanitizeMessage(message: string, apiKey: string): string {
   return message.split(apiKey).join("[redacted]");
 }
 
-// allowed ops: anything else returns 400 so this never becomes an open relay
-type Op = "getProtocols" | "quote" | "build" | "send";
+// allowed ops: anything else returns 400 so this never becomes an open relay.
+// only the testnet demo's quote and build are used; relaying signed transactions
+// (send) or listing protocols would only spend the server's api quota for others
+type Op = "quote" | "build";
 
-const ALLOWED_OPS: ReadonlySet<Op> = new Set<Op>(["getProtocols", "quote", "build", "send"]);
+const ALLOWED_OPS: ReadonlySet<Op> = new Set<Op>(["quote", "build"]);
 
 interface OpRequest {
   op: Op;
@@ -129,14 +163,6 @@ interface UpstreamCall {
 // map an op + payload to an upstream HTTP call. minimal shape validation only
 function planUpstreamCall(req: OpRequest): UpstreamCall | { error: string } {
   switch (req.op) {
-    case "getProtocols": {
-      const payload = (req.payload ?? {}) as Record<string, unknown>;
-      const network = payload["network"];
-      if (typeof network !== "string" || network.length === 0) {
-        return { error: "`payload.network` must be a non-empty string." };
-      }
-      return { method: "GET", path: `/protocols?network=${encodeURIComponent(network)}` };
-    }
     case "quote": {
       if (typeof req.payload !== "object" || req.payload === null) {
         return { error: "`payload` must be an object for `quote`." };
@@ -168,26 +194,11 @@ function planUpstreamCall(req: OpRequest): UpstreamCall | { error: string } {
       delete body["network"];
       return { method: "POST", path, body };
     }
-    case "send": {
-      if (typeof req.payload !== "object" || req.payload === null) {
-        return { error: "`payload` must be an object for `send`." };
-      }
-      const payload = req.payload as Record<string, unknown>;
-      const xdr = payload["xdr"];
-      if (typeof xdr !== "string" || xdr.length === 0) {
-        return { error: "`payload.xdr` must be a non-empty base64 string." };
-      }
-      const network =
-        typeof payload["network"] === "string" ? (payload["network"] as string) : null;
-      const path =
-        network !== null && network.length > 0
-          ? `/send?network=${encodeURIComponent(network)}`
-          : "/send";
-      return { method: "POST", path, body: { xdr } };
-    }
   }
 }
 
+// local dev servers; never consulted in a production build, where a page on a
+// visitor's own localhost could otherwise drive this proxy
 const DEV_ALLOWED_ORIGINS = new Set<string>([
   "http://localhost:3000",
   "http://localhost:3001",
@@ -217,7 +228,7 @@ function isAllowedOrigin(request: Request): boolean {
   } catch {
     // request.url should always parse; fall through to the allow-list
   }
-  return DEV_ALLOWED_ORIGINS.has(origin);
+  return process.env.NODE_ENV !== "production" && DEV_ALLOWED_ORIGINS.has(origin);
 }
 
 // rate-limit, parse op envelope, plan the upstream call, attach authorization, forward verbatim
@@ -270,12 +281,11 @@ export async function POST(request: Request): Promise<Response> {
     baseUrl = getServerEnv().SOROSWAP_API_URL;
     apiKey = requireServerEnv("SOROSWAP_API_KEY");
   } catch (err) {
+    // the detail (which variable failed validation) is for the operator's log,
+    // not for whoever sent the request
+    console.error("[soroswap] server environment is not usable:", err);
     return jsonResponse(
-      {
-        ok: false,
-        code: "SOROSWAP_NOT_CONFIGURED",
-        reason: err instanceof Error ? err.message : "Soroswap is not configured.",
-      },
+      { ok: false, code: "SOROSWAP_NOT_CONFIGURED", reason: "Soroswap is not configured." },
       500,
     );
   }
@@ -285,6 +295,12 @@ export async function POST(request: Request): Promise<Response> {
   const upstreamUrl = `${normalizedBase}${plan.path}`;
 
   let upstreamResponse: Awaited<ReturnType<typeof undiciFetch>>;
+  let rawText: string;
+  const abort = new AbortController();
+  const deadline = setTimeout(
+    () => abort.abort(new UpstreamTimeoutError(`no answer within ${UPSTREAM_TIMEOUT_MS} ms`)),
+    UPSTREAM_TIMEOUT_MS,
+  );
   try {
     // undici fetch with a custom dispatcher that uses public DNS: bypasses
     // local DNS sinkholes that block finance-category domains
@@ -298,8 +314,32 @@ export async function POST(request: Request): Promise<Response> {
       },
       ...(plan.body !== undefined ? { body: JSON.stringify(plan.body) } : {}),
       dispatcher: getPublicDnsAgent(),
+      signal: abort.signal,
     });
+    // read body as text first so we can fall back when upstream returns non-JSON
+    // (e.g. an HTML error page); the abort signal above bounds this read too
+    rawText = await readCappedText(upstreamResponse.body as ReadableStream<Uint8Array> | null);
   } catch (err) {
+    if (err instanceof UpstreamTooLargeError) {
+      return jsonResponse(
+        {
+          ok: false,
+          code: "UPSTREAM_TOO_LARGE",
+          reason: `Soroswap upstream answered with more than ${UPSTREAM_MAX_BODY_BYTES} bytes.`,
+        },
+        502,
+      );
+    }
+    if (err instanceof UpstreamTimeoutError || abort.signal.aborted) {
+      return jsonResponse(
+        {
+          ok: false,
+          code: "UPSTREAM_TIMEOUT",
+          reason: `Soroswap upstream did not answer within ${UPSTREAM_TIMEOUT_MS} ms.`,
+        },
+        504,
+      );
+    }
     const raw = err instanceof Error ? err.message : "Upstream request failed.";
     return jsonResponse(
       {
@@ -309,21 +349,13 @@ export async function POST(request: Request): Promise<Response> {
       },
       502,
     );
+  } finally {
+    clearTimeout(deadline);
   }
 
-  // read body as text first so we can fall back when upstream returns non-JSON (e.g. an HTML error page)
-  const rawText = await upstreamResponse.text();
-  // quote/build responses carry stroop amounts that can exceed 2^53. A plain
-  // JSON.parse would round them to a lossy Number before we ever re-serialize,
-  // silently corrupting the value the browser's slippage guard depends on. Quote
-  // those fields as strings in the raw text FIRST so they survive as exact
-  // integers end-to-end (the SDK types them as bigint; the client accepts
-  // strings). See src/lib/adapters/soroswap/client.ts assertStroopField.
-  const preserve = opReq.op === "quote" || opReq.op === "build";
-  const textForParse = preserve ? preserveAmountPrecision(rawText) : rawText;
   let parsedBody: unknown;
   try {
-    parsedBody = rawText.length === 0 ? null : JSON.parse(textForParse);
+    parsedBody = rawText.length === 0 ? null : parseUpstreamJson(rawText);
   } catch {
     parsedBody = { message: rawText };
   }
