@@ -87,7 +87,7 @@ function buildTx(func: xdr.HostFunction, auth: xdr.SorobanAuthorizationEntry[] =
 
 const okAuth = () => sourceAuth(invocation(CONTRACT, "approve", approveArgs()));
 
-describe("assertSafeRevokeInvocation — accepts a legitimate revoke", () => {
+describe("assertSafeRevokeInvocation: accepts a legitimate revoke", () => {
   it("passes approve(0) with a matching source-account auth entry", () => {
     const tx = buildTx(hostFn(), [okAuth()]);
     expect(() => assertSafeRevokeInvocation(tx, EXPECTED)).not.toThrow();
@@ -99,7 +99,7 @@ describe("assertSafeRevokeInvocation — accepts a legitimate revoke", () => {
   });
 });
 
-describe("assertSafeRevokeInvocation — rejects tampered invocations", () => {
+describe("assertSafeRevokeInvocation: rejects tampered invocations", () => {
   it("rejects a non-approve function", () => {
     const tx = buildTx(hostFn(CONTRACT, "transfer", approveArgs()), [okAuth()]);
     expect(() => assertSafeRevokeInvocation(tx, EXPECTED)).toThrow(UnsafeRevokeError);
@@ -121,7 +121,7 @@ describe("assertSafeRevokeInvocation — rejects tampered invocations", () => {
   });
 });
 
-describe("assertSafeRevokeInvocation — rejects auth-entry smuggling", () => {
+describe("assertSafeRevokeInvocation: rejects auth-entry smuggling", () => {
   it("rejects an auth entry carrying a nested sub-invocation (smuggled transfer)", () => {
     const smuggledTransfer = invocation(OTHER, "transfer", [
       scvAddress(USER),
@@ -157,7 +157,7 @@ const createSacFn = () =>
     executable: xdr.ContractExecutable.contractExecutableStellarAsset(),
   });
 
-describe("assertSafeRevokeInvocation — rejects the remaining structural branches", () => {
+describe("assertSafeRevokeInvocation: rejects the remaining structural branches", () => {
   it("rejects a transaction with a second operation", () => {
     const tx = new TransactionBuilder(new Account(USER, "0"), {
       fee: "100",

@@ -87,7 +87,7 @@ function baseArgs(swapsChain: readonly SwapChainStep[]) {
   };
 }
 
-describe("aquarius swapChained — budget-bounded swap", () => {
+describe("aquarius swapChained: budget-bounded swap", () => {
   it("enforces the 4-hop budget cap (AquariusBudgetError), one hop over the limit", async () => {
     const { deps } = captureDeps();
     const tooMany = Array.from({ length: AQUARIUS_SWAP_CHAINED_MAX_HOPS + 1 }, oneHop);

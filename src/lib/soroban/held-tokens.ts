@@ -150,7 +150,7 @@ export async function discoverHeldTokens(
 
   // probe every candidate concurrently (bounded), each independently time-boxed.
   // balance() is a read-only simulation (no signed tx), so a hostile token can
-  // only make it fail — never smuggle auth. A token that reverts or stalls is
+  // only make it fail, never smuggle auth. A token that reverts or stalls is
   // recorded as UNREADABLE (not silently dropped): it can't be auto-drained, but
   // the user should know it exists and can target it manually.
   const probed = await mapConcurrent(candidates, PROBE_CONCURRENCY, async (contractId) => {
@@ -171,7 +171,7 @@ export async function discoverHeldTokens(
   for (const p of probed) {
     if (p.bal === null) unreadable.push(p.contractId);
     else if (p.bal > 0n) held.push({ contractId: p.contractId, balance: p.bal });
-    // p.bal === 0n: the account holds none of it — nothing to sweep, drop it
+    // p.bal === 0n: the account holds none of it; nothing to sweep, drop it
   }
   return { held, unreadable, incomplete };
 }

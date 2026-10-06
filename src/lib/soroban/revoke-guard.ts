@@ -1,13 +1,13 @@
 // Guard the standalone allowance-revoke path against Soroban auth-entry smuggling.
 //
 // A revoke calls approve(from, spender, 0, ledger) on a contract id taken from an
-// on-chain event scan — i.e. an ATTACKER-CONTROLLED contract (a hostile contract
+// on-chain event scan, i.e. an ATTACKER-CONTROLLED contract (a hostile contract
 // can emit a fake approve event naming the victim, so it shows up as a revocable
 // allowance). prepareTransaction then attaches whatever SorobanAuthorizationEntry
 // tree the attacker's simulation returns, and the standalone revoke path is exempt
 // from the DeFi allow-list. Without this guard a hostile token could smuggle an
 // over-broad auth entry (e.g. a nested transfer of the victim's OTHER balances)
-// that the victim's single signature would authorize — draining funds during what
+// that the victim's single signature would authorize, draining funds during what
 // the UI presents as a safety action.
 //
 // Before signing, we assert the built transaction is EXACTLY the intended
@@ -52,7 +52,7 @@ export function assertSafeRevokeInvocation(tx: Transaction, expected: ExpectedRe
 
   // 2) every auth entry must authorize ONLY that same approve. A hostile token
   //    that tries to move other balances must add either a sub-invocation or a
-  //    separate entry targeting a different contract/function — both rejected here.
+  //    separate entry targeting a different contract/function, both rejected here.
   const auth = ihf.auth ?? [];
   auth.forEach((entry, i) => {
     const cred = entry.credentials.type;

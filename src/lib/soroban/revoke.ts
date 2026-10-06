@@ -22,7 +22,7 @@ import type { Connector } from "@/lib/wallet/connector";
 // serialize revokes per source account so the next one only *builds* after the
 // previous one has landed in a ledger. This is the subtle part: submit-only
 // acceptance (PENDING) does NOT advance the account sequence, only ledger
-// inclusion does. So merely chaining the builds — as this used to — is not
+// inclusion does. So merely chaining the builds, as this used to, is not
 // enough: two rapid per-row revokes for the same source would both build at the
 // same sequence N+1 and the second loses to tx_bad_seq / TRY_AGAIN_LATER. The
 // per-source gate below only opens once the previous revoke is confirmed

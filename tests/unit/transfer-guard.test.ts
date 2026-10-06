@@ -92,7 +92,7 @@ function buildTx(func: xdr.HostFunction, auth: xdr.SorobanAuthorizationEntry[] =
 
 const okAuth = () => sourceAuth(invocation(CONTRACT, "transfer", transferArgs()));
 
-describe("assertSafeTransferInvocation — accepts a legitimate drain", () => {
+describe("assertSafeTransferInvocation: accepts a legitimate drain", () => {
   it("passes transfer(user, destination, amount) with a matching source-account auth entry", () => {
     const tx = buildTx(hostFn(), [okAuth()]);
     expect(() => assertSafeTransferInvocation(tx, EXPECTED)).not.toThrow();
@@ -104,7 +104,7 @@ describe("assertSafeTransferInvocation — accepts a legitimate drain", () => {
   });
 });
 
-describe("assertSafeTransferInvocation — rejects tampered invocations", () => {
+describe("assertSafeTransferInvocation: rejects tampered invocations", () => {
   it("rejects a non-transfer function", () => {
     const tx = buildTx(hostFn(CONTRACT, "approve", transferArgs()), [okAuth()]);
     expect(() => assertSafeTransferInvocation(tx, EXPECTED)).toThrow(UnsafeTransferError);
@@ -135,7 +135,7 @@ describe("assertSafeTransferInvocation — rejects tampered invocations", () => 
   });
 });
 
-describe("assertSafeTransferInvocation — rejects auth-entry smuggling", () => {
+describe("assertSafeTransferInvocation: rejects auth-entry smuggling", () => {
   it("rejects an auth entry carrying a nested sub-invocation (smuggled second transfer)", () => {
     const smuggled = invocation(OTHER, "transfer", [
       scvAddress(USER),
@@ -175,7 +175,7 @@ const createSacFn = () =>
     executable: xdr.ContractExecutable.contractExecutableStellarAsset(),
   });
 
-describe("assertSafeTransferInvocation — rejects the remaining structural branches", () => {
+describe("assertSafeTransferInvocation: rejects the remaining structural branches", () => {
   it("rejects a transaction with a second operation", () => {
     const tx = new TransactionBuilder(new Account(USER, "0"), {
       fee: "100",

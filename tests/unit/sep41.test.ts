@@ -51,7 +51,7 @@ function invokeCall(tx: Transaction): { contract: string; fn: string; args: read
   };
 }
 
-describe("sep41 decodeAllowance — SAC (bare i128) vs custom token (scvMap)", () => {
+describe("sep41 decodeAllowance: SAC (bare i128) vs custom token (scvMap)", () => {
   it("decodes a Stellar Asset Contract's bare-i128 allowance (no expiry ledger)", () => {
     expect(decodeAllowance(scvI128(500n))).toEqual({ amount: 500n, live_until_ledger: 0 });
   });

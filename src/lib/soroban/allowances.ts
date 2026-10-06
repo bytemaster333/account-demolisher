@@ -39,7 +39,7 @@ export interface ConfirmedAllowanceRecord extends AllowanceRecord {
 }
 
 // true when a confirmed record's event-derived amount disagrees with the on-chain
-// amount — the event was fabricated or is stale, so the displayed limit is a lie.
+// amount: the event was fabricated or is stale, so the displayed limit is a lie.
 export function allowanceAmountMismatch(r: AllowanceRecord): boolean {
   return typeof r.onChainAmount === "bigint" && r.onChainAmount !== r.amount;
 }
