@@ -46,6 +46,13 @@ jobs:
       - name: Format check
         run: pnpm format:check
 
+      # the project writes no em dashes in code, comments, copy or config. the
+      # character is spelled as its utf-8 bytes so this file does not match itself
+      # and the pattern does not depend on the runner's locale.
+      - name: No em dashes
+        run: |
+          ! git grep -n $'\xe2\x80\x94' -- src tests public '*.ts' '*.tsx' '*.yml' '*.mjs' '*.mts' '*.sh' Dockerfile Caddyfile .env.example .dockerignore .gitignore
+
       # unit tests include the property-based fuzzing (fast-check) and adversarial
       # cases; they are pure/mocked, so no network is required
       - name: Unit tests
@@ -94,8 +101,11 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # the mainnet discovery timing test measures public mainnet rpc speed, so a
+      # rate limit there says nothing about this change. it runs on its own
+      # schedule in mainnet-timing.yml instead of blocking here.
       - name: Integration tests
-        run: pnpm test:integration
+        run: pnpm test:integration --exclude tests/integration/mainnet-discovery-timing.test.ts
 
   # End-to-end + accessibility sweep against the built app. smoke/accessibility use
   # no wallet; secret-key-close and walletconnect-close drive real testnet closes
