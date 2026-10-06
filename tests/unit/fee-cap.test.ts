@@ -64,13 +64,37 @@ describe("soroban fee cap", () => {
     expect(b.resourceFee).toBe(167_250n);
   });
 
-  it("passes measured legitimate fees for both classes", () => {
+  it("passes measured legitimate fees for every class", () => {
     expect(() =>
       assertSorobanFeeWithinCap(prepared(454_439n, 368), "untrusted-token"),
     ).not.toThrow();
     expect(() =>
       assertSorobanFeeWithinCap(prepared(167_250n, 12_184, 16), "defi-exit"),
     ).not.toThrow();
+    // 2026-10-06 measurements in the fee-cap.ts header: a revoke that has to
+    // restore the token's archived instance (mainnet CLPX), and a one-hop
+    // convert through idle testnet pairs whose entries were archived
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(936_287n, 476, 1), "untrusted-token"),
+    ).not.toThrow();
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(5_299_881n, 2_264, 8), "untrusted-convert"),
+    ).not.toThrow();
+  });
+
+  it("keeps about a 2x margin over the largest measured legitimate fee per class", () => {
+    const largest = { "untrusted-token": 936_287n, "untrusted-convert": 5_299_881n };
+    for (const [cls, fee] of Object.entries(largest)) {
+      const cap = SOROBAN_RESOURCE_FEE_CAPS[cls as keyof typeof largest];
+      expect(cap, cls).toBeGreaterThanOrEqual(fee * 2n);
+      expect(cap, cls).toBeLessThanOrEqual(fee * 3n);
+    }
+  });
+
+  it("bounds what an untrusted token may write during a convert too", () => {
+    expect(() => assertSorobanFeeWithinCap(prepared(20_000n, 9_000), "untrusted-convert")).toThrow(
+      /write 9000 bytes/,
+    );
   });
 
   it("refuses a fee over the class cap, naming the amount", () => {

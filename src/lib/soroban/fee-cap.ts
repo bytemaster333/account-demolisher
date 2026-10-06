@@ -8,30 +8,41 @@
 // the numbers too. so every Soroban tx is checked against a cap for its class
 // right before signing, and refused with the fee spelled out when it is over.
 //
-// caps come from mainnet simulations on 2026-10-02 (resource fee, stroops):
-//   approve(0) revoke on the USDC SAC              15,929
-//   SAC transfer to an existing balance            24,106
-//   SAC transfer creating a new contract balance  454,439  (persistent entry rent)
-//   soroswap swap, direct pair                     43,275
-//   soroswap swap through one hop                 173,547
-//   blend FixedV2 submit withdraw_collateral       35,811
-//   aquarius router claim (concentrated pool)      66,448
-//   aquarius claim_all_position_fees              120,477
-//   aquarius withdraw_position                    167,250
-// untrusted-token cap: about twice the largest legitimate case (a transfer that
-// has to create the recipient's balance entry). defi-exit cap: three times the
-// largest measured exit, for allow-listed protocol code under heavier state.
-// declared write bytes and read-write entries are bounded for untrusted tokens as
-// well (largest measured: 2,176 bytes and 8 entries for the one-hop swap).
+// resource fees (stroops) measured on 2026-10-06 by simulating the app's own
+// builders through assembleSubmittable (with its instruction leeway), read-only:
+//                                                  testnet     mainnet
+//   approve(0) revoke, live token                   16,321      16,321
+//   approve(0) revoke, token instance archived     300,759     936,287  (restore)
+//   SAC transfer to an existing balance             23,660      24,505
+//   SAC transfer creating a contract balance       569,817     454,754
+//   soroswap convert, direct pair                   43,574      43,607
+//   soroswap convert, one hop, live pairs              -       111,002
+//   soroswap convert, one hop, idle pairs        1,347,990        -     (ttl rent)
+//   soroswap convert, one hop, archived pairs    5,299,881        -     (restore)
+//   aquarius router claim (concentrated pool)          -        55,529
+//   aquarius claim_all_position_fees                   -       137,855
+//   aquarius withdraw_position                         -       178,136
+//   blend FixedV2 submit withdraw_collateral           -        35,811  (2026-10-02)
+// an entry that has gone idle costs real rent to touch: the contract bumps its
+// ttl, or protocol 23 restores it from the archive inside the same call. so the
+// legitimate ceiling is set by that, not by the common case.
+// untrusted-token (revoke, held-token transfer): about twice the largest
+// measured case, the archived-instance revoke. untrusted-convert (a held token
+// sold through the router, which runs the token's own transfer): about twice
+// the archived-pair one-hop convert. defi-exit: allow-listed protocol code only;
+// kept at three times the largest exit measured on 2026-10-02 (167,250).
+// declared write bytes and read-write entries are bounded for both untrusted
+// classes (largest measured: 2,264 bytes and 8 entries for a one-hop convert).
 
 import type { FeeBumpTransaction, Transaction } from "@stellar/stellar-sdk";
 
 import { SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
 
-export type SorobanFeeClass = "untrusted-token" | "defi-exit";
+export type SorobanFeeClass = "untrusted-token" | "untrusted-convert" | "defi-exit";
 
 export const SOROBAN_RESOURCE_FEE_CAPS: Readonly<Record<SorobanFeeClass, bigint>> = {
-  "untrusted-token": 1_000_000n,
+  "untrusted-token": 2_000_000n,
+  "untrusted-convert": 11_000_000n,
   "defi-exit": 5_000_000n,
 };
 
@@ -106,7 +117,7 @@ export function assertSorobanFeeWithinCap(
       `total fee over the ${formatXlm(b.inclusionFee + cap)} XLM cap`,
     );
   }
-  if (feeClass === "untrusted-token") {
+  if (feeClass === "untrusted-token" || feeClass === "untrusted-convert") {
     if (b.writeBytes > UNTRUSTED_TOKEN_MAX_WRITE_BYTES) {
       throw new SorobanFeeCapError(
         feeClass,
