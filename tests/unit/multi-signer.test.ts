@@ -8,7 +8,7 @@ import {
   Operation,
   TransactionBuilder,
 } from "@stellar/stellar-sdk";
-import { MultiSignerConnector, type MultiSignerMember } from "@/lib/wallet/multi-signer";
+import { MultiSignerConnector, type MultiSignerMember } from "../helpers/multi-signer";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
 
 const NET = Networks.TESTNET;
@@ -53,6 +53,28 @@ describe("MultiSignerConnector", () => {
     }
     // the original tx is not mutated
     expect(tx.signatures).toHaveLength(0);
+  });
+
+  it("counts a signer listed twice once, in weight and in signatures", async () => {
+    const account = Keypair.random();
+    const conn = new MultiSignerConnector(account.publicKey(), [
+      member(account, 1),
+      member(account, 1),
+    ]);
+    expect(conn.totalWeight).toBe(1);
+    expect(conn.signerKeys).toEqual([account.publicKey()]);
+
+    const { signedXdr } = await conn.signTransaction(sampleTx(account.publicKey()), NET);
+    expect(TransactionBuilder.fromXdr(signedXdr, NET).signatures).toHaveLength(1);
+  });
+
+  it("refuses a fee-bump envelope, which it cannot merge", async () => {
+    const account = Keypair.random();
+    const conn = new MultiSignerConnector(account.publicKey(), [member(account, 1)]);
+    const inner = sampleTx(account.publicKey());
+    inner.sign(account);
+    const bump = TransactionBuilder.buildFeeBumpTransaction(account, "200", inner, NET);
+    await expect(conn.signTransaction(bump, NET)).rejects.toThrow(/fee-bump/);
   });
 
   it("throws when constructed with no signers", () => {

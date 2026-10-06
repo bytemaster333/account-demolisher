@@ -1,7 +1,15 @@
 // the in-house connector abstraction: the only signing surface anything
 import type { FeeBumpTransaction, Transaction } from "@stellar/stellar-sdk";
+import { LEDGER_ID, type LedgerModule } from "@creit.tech/stellar-wallets-kit/modules/ledger";
 
-import { ensureWalletConnectReady, getKit, type KitHandle } from "@/lib/wallet/kit";
+import {
+  getKit,
+  restoreKitSessionSnapshot,
+  snapshotKitSession,
+  type KitHandle,
+} from "@/lib/wallet/kit";
+import { toLedgerSigningError } from "@/lib/wallet/ledger-errors";
+import { verifySignedEnvelope } from "@/lib/wallet/signed-envelope";
 import type { NetworkConfig } from "@/lib/config/networks";
 
 export type ConnectorKind = "kit" | "secret";
@@ -36,9 +44,6 @@ export class WalletKitConnector implements Connector {
 
   // opens the kit's authModal, returns the picked wallet's public key
   async connect(): Promise<{ publicKey: string }> {
-    // make sure a configured WalletConnect has finished its relay handshake so it
-    // renders as connectable in the picker (see ensureWalletConnectReady)
-    await ensureWalletConnectReady();
     const { address } = await this.kit.authModal();
     this.cachedAddress = address;
     return { publicKey: address };
@@ -56,21 +61,34 @@ export class WalletKitConnector implements Connector {
     return address;
   }
 
-  // sep-43 sign. maps the kit's { signedTxXdr, signerAddress } to our
-  // { signedXdr, signerPublicKey } shape so callers don't import kit types
+  // sep-43 sign. the returned envelope is checked against the transaction we
+  // built (same hash, valid signature by the connected key) before it is handed
+  // back, because every pre-sign guard ran on `tx`, not on the wallet's bytes.
+  // signerPublicKey is the key whose signature verified, never the wallet's echo.
   async signTransaction(
     tx: Transaction | FeeBumpTransaction,
     networkPassphrase: string,
   ): Promise<{ signedXdr: string; signerPublicKey: string }> {
     const address = await this.getPublicKey();
-    const { signedTxXdr, signerAddress } = await this.kit.signTransaction(tx.toXdr(), {
+    const isLedger = this.kit.selectedModule.productId === LEDGER_ID;
+    // without nonBlindTx the ledger module signs tx.hash() (INS_SIGN_HASH): the
+    // device shows 32 opaque bytes instead of the operations and the merge
+    // destination, and its stellar app refuses that unless hash signing was
+    // switched on. the kit spreads opts into the module unchanged.
+    const opts: NonNullable<Parameters<LedgerModule["signTransaction"]>[1]> = {
       networkPassphrase,
       address,
-    });
-    return {
-      signedXdr: signedTxXdr,
-      signerPublicKey: signerAddress ?? address,
+      ...(isLedger ? { nonBlindTx: true } : {}),
     };
+    let signedTxXdr: unknown;
+    try {
+      ({ signedTxXdr } = await this.kit.signTransaction(tx.toXdr(), opts));
+    } catch (e) {
+      // a device refusal (too large, rejected, ...) gets an actionable message.
+      // there is deliberately no retry as a hash signature.
+      throw (isLedger ? toLedgerSigningError(e) : null) ?? e;
+    }
+    return verifySignedEnvelope(tx, signedTxXdr, networkPassphrase, address);
   }
 
   // sep-43 soroban auth-entry sign. let underlying wallet errors propagate
@@ -88,5 +106,24 @@ export class WalletKitConnector implements Connector {
       signedXdr: signedAuthEntry,
       signerAddress: signerAddress ?? address,
     };
+  }
+}
+
+// sign with a wallet picked just for this one signature (a co-signer on /sign)
+// without it becoming the app's connected wallet. the kit persists whatever the
+// picker selects, so without this a later page load would restore the
+// co-signer's account as the connected one. the session that existed before is
+// put back afterwards, or the kit is disconnected if there was none, whether the
+// signature succeeded or not.
+export async function withScopedKitSession<T>(
+  network: NetworkConfig,
+  run: (connector: WalletKitConnector) => Promise<T>,
+): Promise<T> {
+  getKit(network);
+  const before = snapshotKitSession();
+  try {
+    return await run(new WalletKitConnector(network));
+  } finally {
+    await restoreKitSessionSnapshot(before);
   }
 }

@@ -7,48 +7,107 @@ name: Release
 # Cut a GitHub Release (or push a v* tag and publish it) to trigger this. The
 # reference deployment then rsyncs the attested artifact rather than an ad-hoc
 # local build.
+#
+# Jobs are split by privilege. Everything that runs third-party code (install,
+# lint, tests, next build) holds a read-only token. Only the attest job can mint
+# an OIDC token, and only the publish job can write to the release; neither runs
+# any project or dependency code.
 on:
   release:
     types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag/label for the build artifact"
+        description: "Tag/label for the build artifact (v-prefixed, e.g. v1.2.3)"
         required: true
 
-permissions:
-  contents: write # attach the artifact to the release
-  id-token: write # required for keyless signing of the attestation
-  attestations: write # write the provenance attestation
+permissions: {}
 
 jobs:
-  build-and-attest:
+  # the tag becomes part of a file name and reaches shell scripts, so it is read
+  # from the environment (never spliced into the script text) and validated once
+  meta:
     runs-on: ubuntu-latest
+    outputs:
+      name: ${{ steps.meta.outputs.name }}
+    steps:
+      - name: Resolve artifact name
+        id: meta
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9A-Za-z._-]+$ ]]; then
+            echo "refusing tag '$TAG': expected v followed by letters, digits, '.', '_' or '-'" >&2
+            exit 1
+          fi
+          echo "name=account-demolisher-${TAG}.tar.gz" >> "$GITHUB_OUTPUT"
+
+  # the same gates ci.yml runs on main: nothing ships that main would reject. no
+  # job here restores a dependency cache, so a cache poisoned by another workflow
+  # can never end up inside an attested artifact.
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 12.8.1
-
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
-          cache: pnpm
+          package-manager-cache: false
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm format:check
+      - run: pnpm test
+      # release blocker: no high or critical advisory may ship in the production
+      # dependency tree of an attested artifact
+      - run: pnpm audit --prod --audit-level high
+      - run: pnpm test:integration
 
-      - name: Install (frozen)
-        run: pnpm install --frozen-lockfile
+  e2e:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: ${{ vars.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || '5e8254e53e856a4b90f676c51efea4d4' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 12.8.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
 
-      - name: Verify before release
-        run: |
-          pnpm typecheck
-          pnpm lint
-          pnpm test
-
-      # same release blocker as ci.yml: no high or critical advisory may ship in
-      # the production dependency tree of an attested artifact
-      - name: Dependency audit (high/critical gate)
-        run: pnpm audit --prod --audit-level high
+  build:
+    needs: [meta, verify, e2e]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 12.8.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - run: pnpm install --frozen-lockfile
 
       - name: Production build
         # NEXT_PUBLIC_* are inlined at build time, so the released artifact bakes
@@ -65,20 +124,47 @@ jobs:
           NEXT_PUBLIC_SITE_URL: ${{ vars.NEXT_PUBLIC_SITE_URL || 'https://demolisher.app' }}
         run: pnpm build
 
-      - name: Resolve artifact name
-        id: meta
-        run: echo "name=account-demolisher-${{ github.event.release.tag_name || inputs.tag }}.tar.gz" >> "$GITHUB_OUTPUT"
-
       - name: Package the built app
-        run: tar -czf "${{ steps.meta.outputs.name }}" .next public package.json next.config.ts pnpm-lock.yaml pnpm-workspace.yaml
+        env:
+          NAME: ${{ needs.meta.outputs.name }}
+        run: tar -czf "$NAME" .next public package.json next.config.ts pnpm-lock.yaml pnpm-workspace.yaml
 
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-artifact
+          path: ${{ needs.meta.outputs.name }}
+          if-no-files-found: error
+          retention-days: 7
+
+  attest:
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # keyless signing of the attestation
+      attestations: write # store the provenance attestation
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-artifact
       - name: Attest build provenance (SLSA)
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: ${{ steps.meta.outputs.name }}
+          subject-path: ${{ needs.meta.outputs.name }}
 
-      - name: Attach artifact to the release
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+  publish:
+    needs: [meta, attest]
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # attach the artifact to the release
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          files: ${{ steps.meta.outputs.name }}
+          name: release-artifact
+      - name: Attach artifact to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name }}
+          NAME: ${{ needs.meta.outputs.name }}
+        run: gh release upload "$TAG" "$NAME"

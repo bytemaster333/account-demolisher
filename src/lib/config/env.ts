@@ -3,9 +3,20 @@
 
 import { z } from "zod";
 
+// an unset docker build arg or compose ${VAR:-} arrives as "" rather than
+// undefined; treat blank as unset so the default applies instead of failing
+const blankToUndefined = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
+
 const PublicEnvSchema = z.object({
-  NEXT_PUBLIC_STELLAR_NETWORK: z.enum(["mainnet", "testnet", "futurenet"]).default("testnet"),
-  NEXT_PUBLIC_DEPLOYMENT_MODE: z.enum(["reference", "self-hosted"]).default("reference"),
+  // testnet and mainnet are the only supported targets
+  NEXT_PUBLIC_STELLAR_NETWORK: z.preprocess(
+    blankToUndefined,
+    z.enum(["mainnet", "testnet"]).default("testnet"),
+  ),
+  NEXT_PUBLIC_DEPLOYMENT_MODE: z.preprocess(
+    blankToUndefined,
+    z.enum(["reference", "self-hosted"]).default("reference"),
+  ),
   // WalletConnect/Reown project id (a public client-side identifier). When unset,
   // the WalletConnect wallet is simply left out of the picker; no placeholder.
   // optional: an empty string (a GitHub Actions secret that is not set injects

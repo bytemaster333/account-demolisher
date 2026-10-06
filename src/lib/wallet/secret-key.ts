@@ -8,6 +8,7 @@ import {
 } from "@stellar/stellar-sdk";
 
 import type { Connector, ConnectorKind } from "@/lib/wallet/connector";
+import { verifySignedEnvelope } from "@/lib/wallet/signed-envelope";
 
 export class SecretKeyConnector implements Connector {
   public readonly kind: ConnectorKind = "secret";
@@ -48,7 +49,9 @@ export class SecretKeyConnector implements Connector {
     return this.#publicKey;
   }
 
-  // sign and return the signed xdr
+  // sign a clone and return the signed xdr. the same envelope check the wallet
+  // path uses runs here too: a passphrase that differs from the one tx was built
+  // with would otherwise yield a valid-looking signature for the wrong network.
   async signTransaction(
     tx: Transaction | FeeBumpTransaction,
     networkPassphrase: string,
@@ -56,10 +59,7 @@ export class SecretKeyConnector implements Connector {
     const cloned = TransactionBuilder.fromXdr(tx.toXdr(), networkPassphrase);
     const keypair = Keypair.fromSecret(this.#seed);
     cloned.sign(keypair);
-    return {
-      signedXdr: cloned.toXdr(),
-      signerPublicKey: keypair.publicKey(),
-    };
+    return verifySignedEnvelope(tx, cloned.toXdr(), networkPassphrase, keypair.publicKey());
   }
 
   // sign a soroban auth-entry preimage xdr (sep-43).
@@ -68,8 +68,8 @@ export class SecretKeyConnector implements Connector {
   // not a valid network-bound Soroban auth signature: SEP-43 requires signing
   // the sha-256 hash of an xdr.HashIdPreimageSorobanAuthorization that binds the
   // network id, nonce, and signature-expiration ledger, none of which the single
-  // authEntryXdr string carries. No production caller reaches this method, so,
-  // like MultiSignerConnector.signAuthEntry, it refuses rather than sign wrongly.
+  // authEntryXdr string carries. No production caller reaches this method, so it
+  // refuses rather than sign wrongly.
   async signAuthEntry(
     _authEntryXdr: string,
     _address: string,

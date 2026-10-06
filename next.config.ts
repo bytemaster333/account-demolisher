@@ -1,10 +1,11 @@
 import type { NextConfig } from "next";
 
-// next.js configuration
-const isExport = process.env.OUTPUT === "export";
+// next.js configuration. the only supported target is the server build
+// (`next build` + `next start`): the api routes and the per-request CSP in
+// src/proxy.ts need a running server, so there is no static export variant.
 const isDev = process.env.NODE_ENV !== "production";
 
-// NOTE: the Content-Security-Policy is set per-request in `src/middleware.ts`
+// NOTE: the Content-Security-Policy is set per-request in `src/proxy.ts`
 // (source of truth: src/lib/config/csp.ts). script-src is 'self' + 'unsafe-inline'
 // rather than a per-request nonce: Next's inline hydration scripts are not
 // nonce-stamped here, and a nonce would also force every page out of static
@@ -14,9 +15,6 @@ const isDev = process.env.NODE_ENV !== "production";
 // every response.
 
 const config: NextConfig = {
-  // only set `output` for the static-export build; omitting it entirely (rather
-  // than assigning undefined) satisfies exactOptionalPropertyTypes
-  ...(isExport ? { output: "export" as const } : {}),
   reactStrictMode: true,
   poweredByHeader: false,
   // pin the workspace root to this directory. a parent-level lockfile (the docs
@@ -31,18 +29,11 @@ const config: NextConfig = {
     // and no remote image origin is allowed either way
     remotePatterns: [],
   },
-  // serve the SEP-1 stellar.toml at its canonical well-known path. rewrites do not
-  // run under static export, where the host must map the path itself.
+  // serve the SEP-1 stellar.toml at its canonical well-known path
   async rewrites() {
-    if (isExport) return [];
     return [{ source: "/.well-known/stellar.toml", destination: "/stellar.toml" }];
   },
   async headers() {
-    if (isExport) {
-      // static export hosts (IPFS / fleek) deliver their own headers, and
-      // middleware does not run under export, so there is no per-request CSP there
-      return [];
-    }
     return [
       {
         source: "/(.*)",
