@@ -3,11 +3,21 @@
 // close that claims pool emissions has to open that trustline first. backstop
 // emissions are not paid out (the backstop deposits them as LP shares), so only
 // pool claims count here.
+import {
+  Account,
+  Asset,
+  Operation,
+  TransactionBuilder,
+  type Horizon,
+  type Transaction,
+} from "@stellar/stellar-sdk";
+
 import type { BlendPositionSummary } from "@/lib/adapters/positions/interface";
 import type { NetworkConfig } from "@/lib/config/networks";
+import { SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
 import type { AccountAudit } from "@/lib/types/account";
 
-import { blndTokenForNetwork } from "./constants";
+import { blndTokenForNetwork, MAX_TIMEOUT_SECONDS } from "./constants";
 
 export interface BlndTrustlineRequirement {
   // missing: change_trust BLND before the claims. unauthorized: the line exists
@@ -45,4 +55,23 @@ export function blndTrustlineRequirement(
     contractId: blnd.contractId,
     poolIds,
   };
+}
+
+// change_trust BLND with the default (maximum) limit, so any claimed amount
+// fits. it bids the same per-op fee as the soroban exit steps; the network only
+// charges the ledger's clearing fee, so the bid just keeps it from being priced
+// out. built off a copy of the account so the caller's sequence never moves.
+export function buildBlndTrustlineTx(
+  network: NetworkConfig,
+  sourceAccount: Horizon.AccountResponse,
+): Transaction {
+  const blnd = blndTokenForNetwork(network);
+  const source = new Account(sourceAccount.accountId(), sourceAccount.sequenceNumber());
+  return new TransactionBuilder(source, {
+    fee: SOROBAN_INCLUSION_FEE,
+    networkPassphrase: network.passphrase,
+  })
+    .addOperation(Operation.changeTrust({ asset: new Asset(blnd.code, blnd.issuer) }))
+    .setTimeout(MAX_TIMEOUT_SECONDS)
+    .build();
 }
