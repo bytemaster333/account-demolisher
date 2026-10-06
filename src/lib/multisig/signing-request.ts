@@ -10,7 +10,6 @@
 // mergeSignatures.
 
 import {
-  Keypair,
   SignerKey,
   TransactionBuilder,
   type Horizon,
@@ -19,13 +18,13 @@ import {
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { CLOSE_MARKER_NAME } from "@/lib/metrics/close-marker";
-import { mergeSignatures } from "@/lib/multisig/partial-xdr";
+import { mergeSignatures, signedSigners, trimToThreshold } from "@/lib/multisig/partial-xdr";
 import { batchClassicDemolition } from "@/lib/plan/classic-batcher";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
 import type { AccountAudit } from "@/lib/types/account";
 import type { BatchOptions, ClassicMemo } from "@/lib/types/plan";
 
-export { mergeSignatures };
+export { mergeSignatures, signedSigners, trimToThreshold };
 
 // co-signers have this long to sign before the transaction's timebounds expire.
 // long enough for real-world coordination, short enough that a forgotten request
@@ -656,39 +655,8 @@ export function inspectClose(xdrStr: string, passphrase: string): CloseInspectio
 }
 
 // ── signature accounting (local, no server) ──────────────────────────────────
-// who among the required signers has already signed this envelope, derived from
-// the transaction's own decorated signatures. each candidate key is confirmed by
-// verifying its signature over the transaction hash, not just a hint match.
-
-export function signedSigners(
-  xdrStr: string,
-  passphrase: string,
-  signerKeys: readonly string[],
-): readonly string[] {
-  let tx: Transaction;
-  try {
-    tx = TransactionBuilder.fromXdr(xdrStr, passphrase) as Transaction;
-  } catch {
-    return [];
-  }
-  if (typeof tx.hash !== "function" || !Array.isArray(tx.signatures)) return [];
-  const hash = tx.hash();
-  const out: string[] = [];
-  for (const key of signerKeys) {
-    let kp: Keypair;
-    try {
-      kp = Keypair.fromPublicKey(key);
-    } catch {
-      continue;
-    }
-    // verify by signature, hint-agnostic, to match the relay's signer counting
-    // (a wallet with an unusual hint would otherwise be counted here but not
-    // there, or vice-versa). the hint is not authoritative; the signature is.
-    const signed = tx.signatures.some((ds) => kp.verify(hash, ds.signature.toBytes()));
-    if (signed) out.push(key);
-  }
-  return out;
-}
+// who has signed is read from the envelope's own signatures by signedSigners,
+// the same function the relay counts with.
 
 export function collectedWeight(signedKeys: readonly string[], audit: AccountAudit): number {
   const byKey = new Map(audit.signers.map((s) => [s.key, s.weight]));
