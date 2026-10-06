@@ -21,6 +21,7 @@ import type { NetworkConfig } from "@/lib/config/networks";
 import { CLOSE_MARKER_NAME } from "@/lib/metrics/close-marker";
 import { mergeSignatures, signedSigners, trimToThreshold } from "@/lib/multisig/partial-xdr";
 import { batchClassicDemolition } from "@/lib/plan/classic-batcher";
+import { stroopsToDecimal } from "@/lib/stellar/amount";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
 import type { AccountAudit, AssetIdentifier } from "@/lib/types/account";
 import { pathKey, type BatchOptions, type ClassicMemo } from "@/lib/types/plan";
@@ -665,13 +666,6 @@ function describePreconditions(tx: Transaction): ClosePreconditions | null {
   return Object.keys(out).length === 0 ? null : out;
 }
 
-function stroopsToXlm(stroops: string): string {
-  const n = BigInt(stroops);
-  const whole = n / 10_000_000n;
-  const frac = (n % 10_000_000n).toString().padStart(7, "0");
-  return `${whole}.${frac}`;
-}
-
 // decode a signing request's transaction into a plain-language summary. returns
 // null for anything that isn't a classic transaction (fee-bumps have no ops).
 export function inspectClose(xdrStr: string, passphrase: string): CloseInspection | null {
@@ -706,7 +700,7 @@ export function inspectClose(xdrStr: string, passphrase: string): CloseInspectio
     mergeDestination: ctx.mergeDestination,
     timeBounds,
     feeStroops: tx.fee,
-    feeXlm: stroopsToXlm(tx.fee),
+    feeXlm: stroopsToDecimal(BigInt(tx.fee)),
     memo: describeMemo(tx),
     sequence: tx.sequence,
     preconditions: describePreconditions(tx),
