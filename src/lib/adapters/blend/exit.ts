@@ -222,9 +222,29 @@ export async function buildBlendWithdrawTx(
   return { transaction, amount };
 }
 
+// the account cannot receive BLND yet. a typed error so hydration can tell a
+// claim that waits on the plan's change_trust step apart from a broken claim.
+export class BlndTrustlineMissingError extends Error {
+  readonly poolId: string;
+  readonly reason: "missing" | "unauthorized";
+  constructor(poolId: string, reason: "missing" | "unauthorized", asset: string) {
+    super(
+      reason === "missing"
+        ? `claiming the BLND emissions accrued in Blend pool ${poolId} needs a BLND ` +
+            `trustline (${asset}) on this account; add the trustline, then claim`
+        : `the BLND trustline (${asset}) on this account is not authorized by its issuer, ` +
+            `so the BLND emissions accrued in Blend pool ${poolId} cannot be paid to it`,
+    );
+    this.name = "BlndTrustlineMissingError";
+    this.poolId = poolId;
+    this.reason = reason;
+  }
+}
+
 // claim(from, reserve_token_ids, to). the pool pays BLND to the user with a SAC
-// transfer when anything accrued, which fails without a BLND trustline, so that
-// case is refused up front with the reason instead of a simulation error.
+// transfer when anything accrued, which fails without an authorized BLND
+// trustline, so that case is refused up front with the reason instead of a
+// simulation error.
 export async function buildBlendClaimTx(
   network: NetworkConfig,
   target: { readonly poolId: string; readonly reserveTokenIds?: readonly number[] },
@@ -249,14 +269,19 @@ export async function buildBlendClaimTx(
     throw new Error(`nothing to claim from Blend pool ${target.poolId}`);
   }
   const blnd = blndTokenForNetwork(network);
-  if (
-    estimate.emissions > 0 &&
-    spendableFromAccount(sourceAccount, blnd.contractId, network) === null
-  ) {
-    throw new Error(
-      `claiming the BLND emissions accrued in Blend pool ${target.poolId} needs a BLND ` +
-        `trustline (BLND:${blnd.issuer}) on this account; add the trustline, then claim`,
+  if (estimate.emissions > 0) {
+    const line = sourceAccount.balances.find(
+      (b) =>
+        (b.asset_type === "credit_alphanum4" || b.asset_type === "credit_alphanum12") &&
+        b.asset_code === blnd.code &&
+        b.asset_issuer === blnd.issuer,
     );
+    if (line === undefined) {
+      throw new BlndTrustlineMissingError(target.poolId, "missing", `BLND:${blnd.issuer}`);
+    }
+    if ("is_authorized" in line && line.is_authorized === false) {
+      throw new BlndTrustlineMissingError(target.poolId, "unauthorized", `BLND:${blnd.issuer}`);
+    }
   }
   const transaction = await buildCallTx(
     network,

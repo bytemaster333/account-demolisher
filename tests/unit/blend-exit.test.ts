@@ -12,6 +12,7 @@ import {
 } from "@stellar/stellar-sdk";
 
 import {
+  BlndTrustlineMissingError,
   buildBackstopClaimTx,
   buildBackstopQueueTx,
   buildBackstopWithdrawTx,
@@ -497,15 +498,34 @@ describe("Blend emissions claims (M-26, L-49)", () => {
     });
 
   it("refuses to claim accrued BLND without a BLND trustline, naming the fix", async () => {
-    await expect(
-      buildBlendClaimTx(
-        MAINNET,
-        { poolId: POOL_V2 },
-        USER,
-        account([{ balance: "10.0000000" }]),
-        deps({ poolLoader: loaderFor(emissionsPool()) }),
-      ),
-    ).rejects.toThrow(/BLND trustline/);
+    const err: unknown = await buildBlendClaimTx(
+      MAINNET,
+      { poolId: POOL_V2 },
+      USER,
+      account([{ balance: "10.0000000" }]),
+      deps({ poolLoader: loaderFor(emissionsPool()) }),
+    ).catch((e: unknown) => e);
+    // a typed error, so hydration can tell "trustline not opened yet" apart
+    // from a broken claim and build the node after the change_trust step
+    expect(err).toBeInstanceOf(BlndTrustlineMissingError);
+    expect((err as BlndTrustlineMissingError).reason).toBe("missing");
+    expect((err as BlndTrustlineMissingError).poolId).toBe(POOL_V2);
+    expect((err as Error).message).toMatch(/BLND trustline/);
+  });
+
+  it("refuses to claim into a BLND trustline the issuer has not authorized", async () => {
+    const err: unknown = await buildBlendClaimTx(
+      MAINNET,
+      { poolId: POOL_V2 },
+      USER,
+      account([
+        { balance: "10.0000000" },
+        { code: "BLND", issuer: BLND.issuer, balance: "0.0000000", authorized: false },
+      ]),
+      deps({ poolLoader: loaderFor(emissionsPool()) }),
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BlndTrustlineMissingError);
+    expect((err as BlndTrustlineMissingError).reason).toBe("unauthorized");
   });
 
   it("claims the reserve token ids that actually accrued when the trustline exists", async () => {

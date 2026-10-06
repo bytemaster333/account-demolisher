@@ -151,6 +151,7 @@ export interface BalanceSpec {
   readonly issuer?: string;
   readonly balance: string;
   readonly sellingLiabilities?: string;
+  readonly authorized?: boolean;
 }
 
 // a real Horizon AccountResponse built from a Horizon account record
@@ -179,7 +180,7 @@ export function horizonAccount(opts: {
           buying_liabilities: "0.0000000",
           selling_liabilities: b.sellingLiabilities ?? "0.0000000",
           last_modified_ledger: 1,
-          is_authorized: true,
+          is_authorized: b.authorized ?? true,
           is_authorized_to_maintain_liabilities: true,
           is_clawback_enabled: false,
         },
