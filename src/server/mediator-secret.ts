@@ -9,7 +9,7 @@ import {
   isMediatorNetworkId,
   type MediatorNetworkId,
 } from "@/lib/mediator/forward-terms";
-import { getServerEnv } from "@/server/server-env";
+import { getMediatorSecret } from "@/server/server-env";
 
 // Ephemeral per-flow mediator keys.
 //
@@ -46,8 +46,10 @@ let cachedMaster: Buffer | null = null;
 function getMasterSecret(): Buffer {
   if (cachedMaster !== null) return cachedMaster;
 
-  const seed = getServerEnv().MEDIATOR_SECRET;
-  if (typeof seed !== "string" || seed.length === 0) {
+  // only the mediator's own variable, so a bad value for another feature's
+  // setting can't take the mediator down with it
+  const seed = getMediatorSecret();
+  if (seed === undefined || seed.length === 0) {
     throw new Error(
       "MEDIATOR_SECRET is not set. The mediator flow is unavailable until the deployment configures a master seed.",
     );
@@ -93,16 +95,25 @@ export interface MediatorFlow {
 export interface ResolvedMediatorFlow extends MediatorFlowTerms {
   readonly keypair: Keypair;
   readonly expiresAt: number;
+  // the flow's nonce. only ever read from a token whose mac verified, so a
+  // route can key a rate limit on it without a stranger choosing the key
+  readonly flowId: string;
 }
 
 export type FlowTokenFailure = "malformed" | "forged" | "expired";
 
 export type FlowResolution =
   | { readonly ok: true; readonly flow: ResolvedMediatorFlow }
-  | { readonly ok: false; readonly reason: FlowTokenFailure };
+  | { readonly ok: false; readonly reason: "expired"; readonly flowId: string }
+  | { readonly ok: false; readonly reason: Exclude<FlowTokenFailure, "expired"> };
 
 export type FlowReissue =
-  | { readonly ok: true; readonly flow: MediatorFlow; readonly terms: MediatorFlowTerms }
+  | {
+      readonly ok: true;
+      readonly flow: MediatorFlow;
+      readonly terms: MediatorFlowTerms;
+      readonly flowId: string;
+    }
   | { readonly ok: false; readonly reason: Exclude<FlowTokenFailure, "expired"> };
 
 function assertTerms(terms: MediatorFlowTerms): void {
@@ -201,13 +212,14 @@ function verifyToken(flowToken: unknown): VerifiedToken {
 export function resolveMediatorFlow(flowToken: unknown, now: number = Date.now()): FlowResolution {
   const verified = verifyToken(flowToken);
   if (!verified.ok) return verified;
-  if (verified.expiry <= now) return { ok: false, reason: "expired" };
+  if (verified.expiry <= now) return { ok: false, reason: "expired", flowId: verified.nonceHex };
   return {
     ok: true,
     flow: {
       ...verified.terms,
       keypair: deriveFlowKeypair(verified.nonceHex),
       expiresAt: verified.expiry,
+      flowId: verified.nonceHex,
     },
   };
 }
@@ -223,6 +235,7 @@ export function reissueMediatorFlow(flowToken: unknown, now: number = Date.now()
     ok: true,
     flow: signToken(verified.nonceHex, now + MEDIATOR_FLOW_TTL_MS, verified.terms),
     terms: verified.terms,
+    flowId: verified.nonceHex,
   };
 }
 

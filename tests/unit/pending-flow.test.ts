@@ -12,6 +12,8 @@ import { startMediatorFlow } from "@/lib/mediator/client";
 import {
   clearPendingForward,
   inspectPendingForward,
+  isLegacyFlowToken,
+  latestPendingForward,
   loadPendingForwards,
   PENDING_FORWARDS_CHANGED_EVENT,
   PendingForwardStorageError,
@@ -148,6 +150,39 @@ describe("pending forward records", () => {
     expect(loadPendingForwards("GUSER")[0]?.memo).toEqual({ type: "id", value: "999" });
   });
 
+  it("drops a record bound to a network it does not serve, and says why", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const map = {
+      a: record({ networkId: "futurenet", mediatorPublicKey: "GFUT" }),
+      b: record({ networkId: "bogus", mediatorPublicKey: "GBOG" }),
+      c: record(),
+    };
+    window.localStorage.setItem(KEY, JSON.stringify(map));
+    expect(loadPendingForwards("GUSER")).toEqual([record()]);
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(String(warn.mock.calls[0]?.[0])).toContain("futurenet");
+    // gone from storage too, so it is not resumed on another network later
+    expect(Object.keys(JSON.parse(window.localStorage.getItem(KEY)!) as object)).toEqual([
+      "testnet:GUSER:GMED1",
+    ]);
+  });
+
+  it("finds the newest record of an account on one network", () => {
+    savePendingForward(record({ mediatorPublicKey: "GOLD", savedAt: 100 }));
+    savePendingForward(record({ mediatorPublicKey: "GNEW", savedAt: 300 }));
+    savePendingForward(record({ mediatorPublicKey: "GMAIN", savedAt: 500, networkId: "mainnet" }));
+    expect(latestPendingForward("GUSER", "testnet")?.mediatorPublicKey).toBe("GNEW");
+    expect(latestPendingForward("GUSER", "mainnet")?.mediatorPublicKey).toBe("GMAIN");
+    expect(latestPendingForward("GOTHER", "testnet")).toBeNull();
+  });
+
+  it("tells a token from an earlier build apart from a current one", () => {
+    expect(isLegacyFlowToken(`${"a".repeat(32)}.1700000000000.GDEST.${"b".repeat(64)}`)).toBe(true);
+    expect(
+      isLegacyFlowToken(`v2.${"a".repeat(32)}.1.testnet.GDEST.AAAAAA==.${"b".repeat(64)}`),
+    ).toBe(false);
+  });
+
   it("announces changes to listeners in this tab", () => {
     const seen = vi.fn();
     window.addEventListener(PENDING_FORWARDS_CHANGED_EVENT, seen);
@@ -235,6 +270,32 @@ describe("resume and inspect against chain state", () => {
     const again = await resumePendingForward(pending, deps);
     expect(again).toMatchObject({ ok: true, alreadyDelivered: true });
     expect(loadPendingForwards(user)).toEqual([]);
+  });
+
+  it("keeps the renewed token when the forward still fails after a renewal", async () => {
+    const pending = await pendingAfterMerge();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + MEDIATOR_FLOW_TTL_MS * 2);
+    fake.submitScript.push({ kind: "reject", codes: { transaction: "tx_bad_auth" } });
+    const result = await resumePendingForward(pending, deps);
+    expect(result.ok).toBe(false);
+    expect(result.flowToken).not.toBe(pending.flowToken);
+    expect(loadPendingForwards(user)).toEqual([{ ...pending, flowToken: result.flowToken }]);
+  });
+
+  it("does not send a token from an earlier build to the routes", async () => {
+    const pending = await pendingAfterMerge();
+    const legacy = {
+      ...pending,
+      flowToken: `${"c".repeat(32)}.1700000000000.${cex}.${"d".repeat(64)}`,
+    };
+    savePendingForward(legacy);
+    fake.requests.length = 0;
+    const result = await resumePendingForward(legacy, deps);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("earlier version");
+    expect(fake.requests).toEqual([]);
+    expect(loadPendingForwards(user)).toHaveLength(1);
   });
 
   it("recognises a close that stopped before the merge", async () => {

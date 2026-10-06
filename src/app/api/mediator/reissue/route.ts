@@ -3,9 +3,9 @@
 
 import { Horizon, NotFoundError } from "@stellar/stellar-sdk";
 
-import { resolveNetwork } from "@/lib/config/networks";
+import { requireNetwork } from "@/lib/config/networks";
 import { reissueMediatorFlow } from "@/server/mediator-secret";
-import { createLimiter, getRemoteIp } from "@/server/rate-limit";
+import { createLimiter, rateLimitByIp, rateLimitByKey } from "@/server/rate-limit";
 import { readJsonCapped, MAX_JSON_BODY_BYTES, BodyTooLargeError } from "@/server/read-body";
 
 import {
@@ -17,22 +17,47 @@ import {
   logMediatorError,
   methodNotAllowed,
   preflight,
-  rateLimited,
+  withMediatorHeaders,
 } from "../_shared/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// each call costs a horizon lookup, so keep it as tight as co-signing
-const limiter = createLimiter(5, 60_000);
+// each call costs a horizon lookup. authentic tokens are limited per flow and
+// everything else per address, as on the sign route, so junk can't stop a
+// stranded forward from being renewed.
+const ipLimiter = createLimiter(5, 60_000);
+const flowLimiter = createLimiter(5, 60_000);
 
-// test-only: reset the per-IP buckets
+// test-only: reset every bucket
 export function __resetRateLimiterForTests(): void {
-  limiter.reset();
+  ipLimiter.reset();
+  flowLimiter.reset();
 }
 
 export function OPTIONS(request: Request): Response {
   return preflight(request);
+}
+
+async function readFlowToken(
+  request: Request,
+  cors: Record<string, string>,
+): Promise<{ ok: true; flowToken: string } | { ok: false; response: Response }> {
+  let raw: unknown;
+  try {
+    raw = await readJsonCapped(request, MAX_JSON_BODY_BYTES);
+  } catch (e) {
+    if (e instanceof BodyTooLargeError) return { ok: false, response: bodyTooLarge(cors) };
+    return { ok: false, response: badRequest("Request body is not valid JSON.", cors) };
+  }
+  if (typeof raw !== "object" || raw === null) {
+    return { ok: false, response: badRequest("Request body must be a JSON object.", cors) };
+  }
+  const rec = raw as Record<string, unknown>;
+  if (typeof rec.flowToken !== "string" || rec.flowToken.length === 0) {
+    return { ok: false, response: badRequest("`flowToken` must be a non-empty string.", cors) };
+  }
+  return { ok: true, flowToken: rec.flowToken };
 }
 
 // body: { flowToken }. An authentic token (expired or not) is renewed for the
@@ -41,34 +66,28 @@ export function OPTIONS(request: Request): Response {
 // tokens for flows that never got funded are not kept alive for nothing.
 export async function POST(request: Request): Promise<Response> {
   const cors = buildCorsHeaders(request.headers.get("origin"));
-  if (!limiter.take(getRemoteIp(request))) return rateLimited(cors);
+  const limitByIp = (): Response | null => {
+    const limited = rateLimitByIp(ipLimiter, request);
+    return limited === null ? null : withMediatorHeaders(limited, cors);
+  };
 
-  let flowToken: string;
-  try {
-    const raw = (await readJsonCapped(request, MAX_JSON_BODY_BYTES)) as unknown;
-    if (typeof raw !== "object" || raw === null) {
-      return badRequest("Request body must be a JSON object.", cors);
-    }
-    const rec = raw as Record<string, unknown>;
-    if (typeof rec.flowToken !== "string" || rec.flowToken.length === 0) {
-      return badRequest("`flowToken` must be a non-empty string.", cors);
-    }
-    flowToken = rec.flowToken;
-  } catch (e) {
-    if (e instanceof BodyTooLargeError) return bodyTooLarge(cors);
-    return badRequest("Request body is not valid JSON.", cors);
-  }
+  const body = await readFlowToken(request, cors);
+  if (!body.ok) return limitByIp() ?? body.response;
 
   let reissue: ReturnType<typeof reissueMediatorFlow>;
   try {
-    reissue = reissueMediatorFlow(flowToken);
+    reissue = reissueMediatorFlow(body.flowToken);
   } catch (err) {
     logMediatorError("POST /api/mediator/reissue could not verify a flow token", err);
     return failure("MEDIATOR_NOT_CONFIGURED", "Mediator is not configured.", 500, cors);
   }
-  if (!reissue.ok) return failure("INVALID_FLOW_TOKEN", "Flow token is invalid.", 400, cors);
+  if (!reissue.ok) {
+    return limitByIp() ?? failure("INVALID_FLOW_TOKEN", "Flow token is invalid.", 400, cors);
+  }
+  const limited = rateLimitByKey(flowLimiter, `flow:${reissue.flowId}`);
+  if (limited !== null) return withMediatorHeaders(limited, cors);
 
-  const horizon = new Horizon.Server(resolveNetwork(reissue.terms.networkId).horizon);
+  const horizon = new Horizon.Server(requireNetwork(reissue.terms.networkId).horizon);
   try {
     await horizon.loadAccount(reissue.flow.mediatorPublicKey);
   } catch (err) {
