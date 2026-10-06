@@ -63,6 +63,8 @@ const ctl = vi.hoisted(() => ({
   destinationData: {} as Record<string, string>,
   // the last 4 the collector's confirmation hands back
   typedTail: "",
+  // the symbol a standalone token contract reports
+  tokenSymbol: "TKN",
 }));
 
 vi.mock("@/components/wallet/ConnectButton", () => ({
@@ -137,6 +139,15 @@ vi.mock("@/lib/multisig/plan-client", async () => {
         expiresAt: Date.now() + 3_600_000,
       };
     },
+  };
+});
+// a standalone token's symbol and name come from its own contract
+vi.mock("@/lib/soroban/sep41", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("@/lib/soroban/sep41")>();
+  return {
+    ...orig,
+    symbol: async () => ctl.tokenSymbol,
+    name: async () => "Some token",
   };
 });
 vi.mock("@/lib/adapters/positions/direct", async () => {
@@ -268,6 +279,7 @@ beforeEach(() => {
   ctl.probe = null;
   ctl.destinationData = {};
   ctl.typedTail = "";
+  ctl.tokenSymbol = "TKN";
 });
 
 afterEach(() => {
@@ -853,4 +865,21 @@ describe("a run that only prepares the close (M-25)", () => {
     expect((await screen.findByTestId("prepared-note")).textContent).toMatch(/still open/);
     expect(useWalletStore.getState().publicKey).toBe(ACC);
   }, 20_000);
+});
+
+describe("standalone tokens get the scam checks too (L-22)", () => {
+  it("flags a token whose own symbol uses a look-alike character and requires the acknowledgement", async () => {
+    // a Cyrillic "С" in place of the Latin C
+    ctl.tokenSymbol = "USDС";
+    ctl.discover = async () => ({
+      audit: makeAudit(),
+      positions: emptyPositions(),
+      heldTokens: [{ contractId: TOKEN_C, balance: 9n }],
+    });
+    connect();
+    render(<DemolishFlow />);
+    await configureAndStart();
+    await screen.findByTestId("ack-scam");
+    expect(screen.getByTestId("scam-token-notice").textContent).toMatch(/Hidden characters/);
+  });
 });

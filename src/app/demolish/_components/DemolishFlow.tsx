@@ -1328,9 +1328,9 @@ export function DemolishFlow(): React.JSX.Element {
                           />
                         )
                       }
-                      rebuildRequired={
-                        rebuildRequired ??
-                        (heldScam.pending ? "Checking the standalone tokens' names…" : null)
+                      rebuildRequired={rebuildRequired}
+                      waitReason={
+                        heldScam.pending ? "Checking the standalone tokens' names…" : null
                       }
                       onRebuild={onStart}
                       onBack={hasBlocker ? () => goToStage("resolve") : onBackToConfigure}

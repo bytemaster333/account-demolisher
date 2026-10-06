@@ -113,6 +113,7 @@ export function AcknowledgePanel({
   planNotes = [],
   tokensSlot,
   rebuildRequired,
+  waitReason = null,
   onRebuild,
   onBack,
   onContinue,
@@ -139,6 +140,8 @@ export function AcknowledgePanel({
   // set when choices made on this step (token sweep, convert) aren't in the built
   // plan yet: Continue stays off until the plan is rebuilt with them
   readonly rebuildRequired: string | null;
+  // set while a check this step relies on is still running
+  readonly waitReason?: string | null;
   readonly onRebuild: () => void;
   readonly onBack: () => void;
   readonly onContinue: () => void;
@@ -163,7 +166,6 @@ export function AcknowledgePanel({
       `Frees ${n} sponsored reserve${n === 1 ? "" : "s"}${each} this account had locked up for entries it sponsors, back into your balance.`,
     );
   }
-  const hasAutoHandled = autoParts.length > 0;
   const hasHighValue = highValue !== null;
   const hasLeftBehind = claimables.leftBehind.length > 0;
   const added = claimables.trustlineChanges.filter((t) => t.change === "add");
@@ -178,6 +180,7 @@ export function AcknowledgePanel({
         )}) so those payments can be collected. Each holds ${each} reserve, which comes back when the close removes the trustline.`,
     );
   }
+  const hasAutoHandled = autoParts.length > 0;
   const hasPlanNotes = planNotes.length > 0;
 
   const requiredAckKeys = [
@@ -191,9 +194,9 @@ export function AcknowledgePanel({
     ...(hasPlanNotes ? ["planNotes"] : []),
   ];
   const allAcked = allAcknowledged(requiredAckKeys, acks);
-  const canContinue = allAcked && rebuildRequired === null;
+  const canContinue = allAcked && rebuildRequired === null && waitReason === null;
   const blockedReason =
-    rebuildRequired ?? (allAcked ? undefined : "Tick every box above to continue");
+    rebuildRequired ?? waitReason ?? (allAcked ? undefined : "Tick every box above to continue");
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
