@@ -54,6 +54,12 @@ export interface EventScanOptions {
 // stellar-rpc's hard cap on getEvents pagination.limit
 export const RPC_EVENTS_MAX_LIMIT = 10_000;
 
+// stellar-rpc's LedgerScanLimit: one getEvents request scans at most this many
+// ledgers from startLedger and quietly stops there whatever endLedger says
+// (internal/methods/get_events.go), so a wider window would come back looking
+// covered while its older part was never read
+export const RPC_EVENTS_MAX_LEDGER_SPAN = 10_000;
+
 interface Window {
   readonly start: number;
   // exclusive, as getEvents reads endLedger
@@ -79,6 +85,11 @@ export async function scanEventWindows(
   }
   if (lookback < 1 || opts.windowLedgers < 1 || opts.minWindowLedgers < 1) {
     throw new RangeError("scanEventWindows: lookback and window sizes must be >= 1");
+  }
+  if (opts.windowLedgers > RPC_EVENTS_MAX_LEDGER_SPAN) {
+    throw new RangeError(
+      `scanEventWindows: windowLedgers ${opts.windowLedgers} is over the ${RPC_EVENTS_MAX_LEDGER_SPAN} ledgers one getEvents request scans`,
+    );
   }
   if (opts.concurrency < 1 || pageLimit < 1 || pageLimit > RPC_EVENTS_MAX_LIMIT) {
     throw new RangeError("scanEventWindows: concurrency and pageLimit out of range");
@@ -143,11 +154,32 @@ export async function scanEventWindows(
     }
   };
 
+  // a worker that finds the queue empty while other windows are still running
+  // waits for them instead of quitting: a split or a retention re-clamp queues
+  // more work, and without this it would all fall to the one worker left
+  let inFlight = 0;
+  let wake: () => void = () => {};
+  let changed = new Promise<void>((resolve) => (wake = resolve));
+  const notify = (): void => {
+    const wakeWaiting = wake;
+    changed = new Promise<void>((resolve) => (wake = resolve));
+    wakeWaiting();
+  };
+
   const worker = async (): Promise<void> => {
     while (!stopPulling && !budgetSpent) {
       const w = queue.shift();
-      if (w === undefined) return;
+      if (w === undefined) {
+        if (inFlight === 0) return;
+        if ((await Promise.race([changed, budgetHit])) === "budget") {
+          budgetSpent = true;
+          return;
+        }
+        continue;
+      }
+      inFlight += 1;
       const outcome = await Promise.race([runWindow(w), budgetHit]);
+      inFlight -= 1;
       if (outcome === "budget") {
         budgetSpent = true;
         return;
@@ -189,6 +221,7 @@ export async function scanEventWindows(
           if (outcome.reason === "rpc-error") stopPulling = true;
           break;
       }
+      notify();
     }
   };
 

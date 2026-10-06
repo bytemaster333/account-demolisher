@@ -159,6 +159,61 @@ describe("scanEventWindows", () => {
     ]);
   });
 
+  it("refuses a window wider than the rpc scans in one request", async () => {
+    // stellar-rpc caps one getEvents request at LedgerScanLimit = 10,000 ledgers
+    // and quietly ends the scan there, so a wider window would read as covered
+    // while its older part was never looked at
+    const { server, requests } = fakeEventsRpc({
+      oldestLedger: 1,
+      latestLedger: 50_000,
+      events: [],
+    });
+    await expect(
+      scanEventWindows(server, FILTERS, {
+        lastLedger: 50_000,
+        windowLedgers: 10_001,
+        minWindowLedgers: 100,
+        concurrency: 1,
+        budgetMs: 5_000,
+      }),
+    ).rejects.toThrow(/10000|10,000/);
+    expect(requests).toHaveLength(0);
+  });
+
+  it("keeps every worker busy after a window splits late", async () => {
+    const { server } = fakeEventsRpc({
+      oldestLedger: 1,
+      latestLedger: 8_000,
+      maxCheapWindow: 1_000,
+      latencyMs: 5,
+      events: [ping(7_999), ping(100)],
+    });
+    let inFlight = 0;
+    let peak = 0;
+    const real = server.getEvents.bind(server);
+    server.getEvents = (async (req: Parameters<typeof real>[0]) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      try {
+        return await real(req);
+      } finally {
+        inFlight -= 1;
+      }
+    }) as typeof server.getEvents;
+    // one 8,000-ledger window to start with: the other three workers find the
+    // queue empty until it splits
+    const res = await scanEventWindows(server, FILTERS, {
+      lastLedger: 8_000,
+      windowLedgers: 8_000,
+      minWindowLedgers: 100,
+      concurrency: 4,
+      budgetMs: 5_000,
+    });
+    expect(res.incomplete).toBeNull();
+    expect(res.events.map((e) => e.ledger)).toEqual([100, 7_999]);
+    expect(peak).toBe(4);
+  });
+
   it("stops and reports an rpc error, keeping earlier results", async () => {
     const { server } = fakeEventsRpc({
       oldestLedger: 1,
