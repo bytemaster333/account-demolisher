@@ -167,7 +167,6 @@ export interface FinalClassicTxMetadata {
   // reference quotes shown at review, per pathKey; a re-quote far below them is
   // refused rather than signed
   readonly reviewedReferenceQuotes?: Readonly<Record<string, ReferenceQuote>>;
-  readonly userFallbackAddress?: string;
   readonly mediatorPublicKey?: string;
   // deposit memo for a DIRECT (non-mediator) merge to a memo-required destination.
   // MUST be re-applied during execute-time re-batching or the signed merge drops

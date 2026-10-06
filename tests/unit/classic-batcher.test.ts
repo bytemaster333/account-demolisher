@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { Keypair } from "@stellar/stellar-sdk";
+import { Account, Keypair, type Horizon, type Transaction } from "@stellar/stellar-sdk";
 import {
   applySlippage,
   batchClassicDemolition,
+  closeMarkerPlanned,
   mediatorFundingCheck,
   MAX_OPS_PER_TX,
   planClaimableBalances,
@@ -16,6 +17,9 @@ import type {
   ClassicOpKind,
   PathResultRef,
 } from "@/lib/types/plan";
+import { TESTNET } from "@/lib/config/networks";
+import { CLOSE_MARKER_NAME, CLOSE_MARKER_VALUE } from "@/lib/metrics/close-marker";
+import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
 
 const ACC = Keypair.random().publicKey();
 const OTHER = Keypair.random().publicKey();
@@ -74,8 +78,10 @@ const PHASE: Record<ClassicOpKind, number> = {
   return_residue_to_issuer: 4,
   send_residue_to_destination: 4,
   change_trust_remove: 5,
+  change_trust_add: 3,
   manage_data_delete: 6,
   set_options_clear_signers: 8,
+  close_marker: 9,
   create_account_mediator: 9,
   account_merge: 10,
 };
@@ -178,13 +184,14 @@ describe("batchClassicDemolition, canonical ordering", () => {
     expect(ops[ops.length - 1]!.kind).toBe("account_merge");
   });
 
-  it("covers every phase exactly where expected", () => {
+  it("covers every phase where expected, with no return_residue or send_residue payment", () => {
     const kinds = ops.map((o) => o.kind);
     expect(kinds).toContain("liquidity_pool_withdraw");
     expect(kinds).toContain("manage_sell_offer_cancel");
     expect(kinds).toContain("claim_claimable_balance");
     expect(kinds).toContain("path_payment_strict_send"); // USDC converts via the supplied path
     expect(kinds).not.toContain("return_residue_to_issuer");
+    expect(kinds).not.toContain("send_residue_to_destination");
     expect(kinds.filter((k) => k === "change_trust_remove")).toHaveLength(2); // pool-share + USDC
     expect(kinds).toContain("manage_data_delete");
     expect(kinds).toContain("set_options_clear_signers");
@@ -651,16 +658,21 @@ describe("H-09: credit claimable balances the account can't receive are not clai
     expect(planClaimableBalances(audit, undefined).leftBehind[0]!.reason).toBe("not_authorized");
   });
 
-  it("claims only what fits under the trustline limit", () => {
+  it("raises the limit of a line that can't take every claim, instead of overfilling it", () => {
     const audit = makeAudit({
       balances: [usdcLine("5", { limit: "10" })],
       claimableBalances: [usdcCb("cbFits", "3"), usdcCb("cbOver", "3")],
     });
     const plan = planClaimableBalances(audit, undefined);
-    expect(plan.claimed.map((c) => c.id)).toEqual(["cbFits"]);
-    expect(plan.leftBehind.map((l) => [l.balance.id, l.reason])).toEqual([["cbOver", "line_full"]]);
-    const claims = allOps(batchClassicDemolition(audit, directOptions)).filter(isClaim);
-    expect(claims.map((c) => c.metadata.balanceId)).toEqual(["cbFits"]);
+    expect(plan.claimed.map((c) => c.id)).toEqual(["cbFits", "cbOver"]);
+    expect(plan.leftBehind).toEqual([]);
+    expect(plan.trustlineChanges).toEqual([{ asset: USDC, change: "raise" }]);
+    const ops = allOps(batchClassicDemolition(audit, directOptions));
+    const kinds = ops.map((o) => o.kind);
+    expect(kinds.indexOf("change_trust_add")).toBeLessThan(
+      kinds.indexOf("claim_claimable_balance"),
+    );
+    expect(ops.filter(isClaim).map((c) => c.metadata.balanceId)).toEqual(["cbFits", "cbOver"]);
   });
 });
 
@@ -847,7 +859,8 @@ describe("H-16: the mediator is funded right before the merge", () => {
     // 0.6 XLM of soroban fees ahead of the merge leaves less than 2 XLM free
     const check = mediatorFundingCheck(audit, batches, 100, 6_000_000n);
     expect(check?.sufficient).toBe(false);
-    expect(check?.availableStroops).toBe(35_000_000n - 200n - 10_000_000n - 6_000_000n);
+    // four ops at 100 stroops: the close marker pair, the funding and the merge
+    expect(check?.availableStroops).toBe(35_000_000n - 400n - 10_000_000n - 6_000_000n);
   });
 });
 
@@ -958,5 +971,232 @@ describe("L-32: amounts are parsed strictly", () => {
 
   it("rejects padded input", () => {
     expect(() => applySlippage(" 5")).toThrow(/malformed amount/);
+  });
+});
+
+// a real envelope for one batch, so the ops the batcher emits are proven to build
+function built(batch: ClassicBatch): Transaction {
+  return buildClassicTransaction(
+    batch,
+    new Account(ACC, "100") as unknown as Horizon.AccountResponse,
+    TESTNET,
+  ).transaction as Transaction;
+}
+
+const CB_ID = (n: number): string => "00000000" + n.toString(16).padStart(64, "0");
+
+describe("H-09: claimable balances of untrusted assets are collected with a new trustline", () => {
+  const untrusted = (over: Partial<ClaimableBalanceEntry> = {}): ClaimableBalanceEntry =>
+    usdcCb(CB_ID(1), "5", { issuerAuthRequired: false, ...over });
+
+  it("opens the trustline and claims in the leading phase, before the merge batch", () => {
+    const audit = makeAudit({ balances: [nativeLine("10")], claimableBalances: [untrusted()] });
+    const plan = planClaimableBalances(audit, undefined);
+    expect(plan.claimed.map((c) => c.id)).toEqual([CB_ID(1)]);
+    expect(plan.trustlineChanges).toEqual([{ asset: USDC, change: "add" }]);
+
+    const batches = batchClassicDemolition(audit, directOptions);
+    expect(batches.length).toBeGreaterThan(1);
+    const lead = batches[0]!.operations;
+    expect(lead.map((o) => o.kind)).toEqual(["change_trust_add", "claim_claimable_balance"]);
+    expect(lead[0]!.metadata.asset).toEqual(USDC);
+    expect(lead[0]!.metadata.limit).toBeUndefined();
+    // the merge batch is rebuilt after a re-audit sees the new balance
+    const final = batches[batches.length - 1]!.operations;
+    expect(final.some(isClaim)).toBe(false);
+    expect(final.some(isUsdcRemoval)).toBe(false);
+
+    const tx = built(batches[0]!);
+    expect(tx.operations.map((o) => o.type)).toEqual(["changeTrust", "claimClaimableBalance"]);
+    expect((tx.operations[0] as { limit: string }).limit).toBe("922337203685.4775807");
+  });
+
+  it("asks for a disposal of the collected asset at review", () => {
+    const audit = makeAudit({ balances: [nativeLine("10")], claimableBalances: [untrusted()] });
+    expect(unroutableCredits(audit, undefined)).toEqual([
+      expect.objectContaining({ key: USDC_KEY, amount: "5.0000000", reason: "no_path" }),
+    ]);
+    expect(unroutableCredits(audit, undefined, [USDC_KEY])).toEqual([]);
+  });
+
+  it("leaves the balance behind when the account can't fund the trustline reserve", () => {
+    // 1.4 XLM against a 1 XLM minimum: 0.4 free, short of the 0.5 XLM reserve
+    const audit = makeAudit({ balances: [nativeLine("1.4")], claimableBalances: [untrusted()] });
+    const plan = planClaimableBalances(audit, undefined);
+    expect(plan.claimed).toEqual([]);
+    expect(plan.leftBehind.map((l) => l.reason)).toEqual(["reserve"]);
+    const kinds = allOps(batchClassicDemolition(audit, directOptions)).map((o) => o.kind);
+    expect(kinds).not.toContain("change_trust_add");
+    expect(kinds).not.toContain("claim_claimable_balance");
+  });
+
+  it("counts the reserve once per asset and the fee of the ops it adds", () => {
+    const audit = makeAudit({
+      balances: [nativeLine("1.6")],
+      claimableBalances: [
+        untrusted({ id: CB_ID(1) }),
+        untrusted({ id: CB_ID(2) }),
+        usdcCb(CB_ID(3), "1", {
+          asset: { kind: "credit", code: "EURC", issuer: ISSUER },
+          issuerAuthRequired: false,
+        }),
+      ],
+    });
+    const plan = planClaimableBalances(audit, undefined, { feePerOpStroops: 100 });
+    expect(plan.claimed.map((c) => c.id)).toEqual([CB_ID(1), CB_ID(2)]);
+    expect(plan.leftBehind.map((l) => [l.balance.id, l.reason])).toEqual([[CB_ID(3), "reserve"]]);
+  });
+
+  it("leaves it behind when the issuer requires authorization or is unknown", () => {
+    for (const flag of [true, undefined]) {
+      const audit = makeAudit({
+        balances: [nativeLine("10")],
+        claimableBalances: [
+          usdcCb(CB_ID(1), "5", flag === undefined ? {} : { issuerAuthRequired: flag }),
+        ],
+      });
+      expect(planClaimableBalances(audit, undefined).leftBehind.map((l) => l.reason)).toEqual([
+        "no_trustline",
+      ]);
+    }
+  });
+
+  it("claims a balance of the account's own asset without opening a trustline", () => {
+    const own = { kind: "credit", code: "MINE", issuer: ACC } as const;
+    const audit = makeAudit({
+      balances: [nativeLine("10")],
+      // the audit tags the account's own auth_required flag; an issuer never
+      // needs a line, and change_trust on its own asset is op_malformed
+      claimableBalances: [usdcCb(CB_ID(4), "5", { asset: own, issuerAuthRequired: true })],
+    });
+    const plan = planClaimableBalances(audit, undefined);
+    expect(plan.claimed.map((c) => c.id)).toEqual([CB_ID(4)]);
+    expect(plan.trustlineChanges).toEqual([]);
+    const ops = allOps(batchClassicDemolition(audit, directOptions));
+    expect(ops.map((o) => o.kind)).not.toContain("change_trust_add");
+    expect(ops.some(isClaim)).toBe(true);
+    expect(unroutableCredits(audit, undefined)).toEqual([]);
+  });
+
+  it("raises a full trustline to the maximum limit before claiming into it", () => {
+    const audit = makeAudit({
+      balances: [nativeLine("10"), usdcLine("5", { limit: "6" })],
+      claimableBalances: [usdcCb(CB_ID(5), "3")],
+    });
+    const plan = planClaimableBalances(audit, undefined);
+    expect(plan.claimed.map((c) => c.id)).toEqual([CB_ID(5)]);
+    expect(plan.trustlineChanges).toEqual([{ asset: USDC, change: "raise" }]);
+    const ops = allOps(batchClassicDemolition(audit, directOptions)).map((o) => o.kind);
+    expect(ops.indexOf("change_trust_add")).toBeGreaterThanOrEqual(0);
+    expect(ops.indexOf("change_trust_add")).toBeLessThan(ops.indexOf("claim_claimable_balance"));
+  });
+});
+
+describe("H-13: a frozen balance blocks the classic close", () => {
+  it("throws on a positive balance on a deauthorized trustline", () => {
+    const audit = makeAudit({ balances: [usdcLine("7", { isAuthorized: false })] });
+    const paths = new Map([[USDC_KEY, pricedPath("7", "28")]]);
+    expect(() => batchClassicDemolition(audit, directOptions, paths)).toThrow(/FROZEN_TRUSTLINE/);
+  });
+
+  it("still removes a zero-balance deauthorized trustline", () => {
+    const audit = makeAudit({ balances: [usdcLine("0", { isAuthorized: false })] });
+    const ops = allOps(batchClassicDemolition(audit, directOptions));
+    expect(ops.some(isUsdcRemoval)).toBe(true);
+  });
+});
+
+describe("M-52: the merge transaction carries the close marker", () => {
+  it("sets then deletes the marker right before the merge, and it builds", () => {
+    const audit = makeAudit({ balances: [nativeLine("10")] });
+    const batches = batchClassicDemolition(audit, directOptions);
+    const final = batches[batches.length - 1]!;
+    expect(final.operations.map((o) => [o.kind, o.metadata.action])).toEqual([
+      ["close_marker", "set"],
+      ["close_marker", "delete"],
+      ["account_merge", undefined],
+    ]);
+    expect(closeMarkerPlanned(batches)).toBe(true);
+    const ops = built(final).operations as unknown as {
+      type: string;
+      name?: string;
+      value?: Uint8Array;
+    }[];
+    expect(ops.map((o) => o.type)).toEqual(["manageData", "manageData", "accountMerge"]);
+    expect(ops[0]!.name).toBe(CLOSE_MARKER_NAME);
+    expect(Buffer.from(ops[0]!.value!).toString()).toBe(CLOSE_MARKER_VALUE);
+    expect(ops[1]!.name).toBe(CLOSE_MARKER_NAME);
+    expect(ops[1]!.value).toBeUndefined();
+  });
+
+  it("puts the marker before the mediator funding on an exchange close", () => {
+    const audit = makeAudit({ balances: [nativeLine("10")] });
+    const batches = batchClassicDemolition(audit, {
+      destination: DEST,
+      useMediator: true,
+      mediatorPublicKey: MED,
+    });
+    expect(batches[batches.length - 1]!.operations.map((o) => o.kind)).toEqual([
+      "close_marker",
+      "close_marker",
+      "create_account_mediator",
+      "account_merge",
+    ]);
+  });
+
+  it("leaves the marker out, and says so, when the account can't spare the reserve", () => {
+    const audit = makeAudit({ balances: [nativeLine("1.2")] });
+    const batches = batchClassicDemolition(audit, directOptions);
+    expect(allOps(batches).map((o) => o.kind)).toEqual(["account_merge"]);
+    expect(closeMarkerPlanned(batches)).toBe(false);
+  });
+
+  it("counts the fee of every op at the bid it is given", () => {
+    const audit = makeAudit({ balances: [nativeLine("1.6")] });
+    // at the 0.1 XLM per-op ceiling three ops leave 0.3 XLM, short of 0.5
+    expect(closeMarkerPlanned(batchClassicDemolition(audit, directOptions))).toBe(false);
+    expect(
+      closeMarkerPlanned(batchClassicDemolition(audit, { ...directOptions, feePerOpStroops: 100 })),
+    ).toBe(true);
+  });
+});
+
+describe("M-18: a conversion is bound to the full-size quote the user reviewed", () => {
+  const audit = makeAudit({ balances: [usdcLine("1000000")] });
+  const reviewed = { [USDC_KEY]: { sourceAmount: "1000000", destinationAmount: "3694000" } };
+  const quoted = (destinationAmount: string): Map<string, PathResultRef> =>
+    new Map([
+      [
+        USDC_KEY,
+        {
+          sourceAmount: "1000000",
+          destinationAmount,
+          path: [],
+          reference: { sourceAmount: "100", destinationAmount: "441.6" },
+        },
+      ],
+    ]);
+  const opts: BatchOptions = {
+    ...directOptions,
+    acceptedPriceImpactAssetKeys: [USDC_KEY],
+    reviewedConversionQuotes: reviewed,
+  };
+
+  it("refuses an accepted conversion whose full-size quote collapsed after review", () => {
+    // the reference is unchanged, but selling the whole balance now returns 3%
+    const paths = quoted("110820");
+    const kinds = allOps(batchClassicDemolition(audit, opts, paths)).map((o) => o.kind);
+    expect(kinds).not.toContain("path_payment_strict_send");
+    expect(
+      unroutableCredits(audit, paths, undefined, undefined, {
+        acceptedPriceImpactAssetKeys: [USDC_KEY],
+        reviewedConversionQuotes: reviewed,
+      })[0]?.reason,
+    ).toBe("requote_worse");
+  });
+
+  it("still sells within the slippage tolerance of the reviewed quote", () => {
+    const kinds = allOps(batchClassicDemolition(audit, opts, quoted("3680000"))).map((o) => o.kind);
+    expect(kinds).toContain("path_payment_strict_send");
   });
 });

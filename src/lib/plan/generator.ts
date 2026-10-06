@@ -45,8 +45,6 @@ export interface GeneratePlanOptions {
   // confirmed selling although over the price-impact cap or unpriced
   readonly acceptedPriceImpactAssetKeys?: readonly string[];
   readonly memo?: ClassicMemo;
-  // fallback address if the CEX rejects the deposit
-  readonly userFallbackAddress?: string;
   // standalone SEP-41 tokens the account holds directly, swept to the destination
   // before the merge (SEP-41 auto-include). Emitted only on a DIRECT close: an
   // exchange (mediator) destination can't be credited with a raw contract token.
@@ -387,7 +385,6 @@ export function generatePlan(
     ...(opts.acceptedPriceImpactAssetKeys
       ? { acceptedPriceImpactAssetKeys: opts.acceptedPriceImpactAssetKeys }
       : {}),
-    ...(opts.userFallbackAddress ? { userFallbackAddress: opts.userFallbackAddress } : {}),
     ...(opts.memo ? { memo: opts.memo } : {}),
   };
   const batches: readonly ClassicBatch[] = batchClassicDemolition(audit, batchOptions, opts.paths);
@@ -419,7 +416,6 @@ export function generatePlan(
         ? { acceptedPriceImpactAssetKeys: opts.acceptedPriceImpactAssetKeys }
         : {}),
       ...(reviewedReferenceQuotes ? { reviewedReferenceQuotes } : {}),
-      ...(opts.userFallbackAddress ? { userFallbackAddress: opts.userFallbackAddress } : {}),
       ...(useMediator && opts.mediatorPublicKey
         ? { mediatorPublicKey: opts.mediatorPublicKey }
         : {}),

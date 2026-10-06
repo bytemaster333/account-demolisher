@@ -11,8 +11,15 @@ export type ClassicOpKind =
   | "return_residue_to_issuer"
   | "send_residue_to_destination"
   | "change_trust_remove"
+  // opens a trustline (metadata.asset, credit) so a claimable balance of an
+  // untrusted asset can be claimed, or raises a full one; no metadata.limit
+  // means the maximum limit
+  | "change_trust_add"
   | "manage_data_delete"
   | "set_options_clear_signers"
+  // the on-chain close marker: metadata.action "set" then "delete", right
+  // before the merge (see @/lib/metrics/close-marker)
+  | "close_marker"
   | "account_merge"
   | "create_account_mediator";
 
@@ -80,6 +87,10 @@ export interface BatchOptions {
   // worse by more than the slippage tolerance blocks the conversion until the
   // user reviews the new price.
   readonly reviewedReferenceQuotes?: Readonly<Record<string, ReferenceQuote>>;
+  // the full-size quotes the user reviewed, per pathKey. A fresh full-size rate
+  // worse than the reviewed one by more than the slippage tolerance blocks the
+  // conversion, confirmed or not, so a confirmation covers only the price shown.
+  readonly reviewedConversionQuotes?: Readonly<Record<string, ReferenceQuote>>;
   // pathKey()s of credit assets the user has explicitly consented to send back
   // to their issuer. Without consent, a balance that can't be converted is left
   // in place (and blocks the merge) rather than being silently paid to the
@@ -91,9 +102,11 @@ export interface BatchOptions {
   // Refused on a mediator close: the payment would reach the exchange's shared
   // address without the deposit memo.
   readonly sendToDestinationAssetKeys?: readonly string[];
-  // forwarded into the plan summary; the actual forward tx lives in the orchestrator
-  readonly userFallbackAddress?: string;
   readonly memo?: ClassicMemo;
+  // per-operation fee (stroops) the classic batches are bid at. The reserve
+  // checks for a new trustline and the close marker take fees off the spendable
+  // XLM at this rate; left unset, the executor's per-op ceiling is assumed.
+  readonly feePerOpStroops?: number;
 }
 
 export interface TransactionBuildResult {
