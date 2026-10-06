@@ -431,7 +431,6 @@ export async function executePlanTreeOnChain(
   };
 
   for (const node of topologicalOrder(input.tree)) {
-    throwIfInterrupted(deps.signal);
     const prior = receipts[node.id];
     if (prior !== undefined) {
       node.status = "confirmed";
@@ -446,6 +445,9 @@ export async function executePlanTreeOnChain(
       continue;
     }
     if (node.status === "skipped" || node.status === "failed") continue;
+    // the forward signs nothing for the user and is what moves the balance out
+    // of the temporary account, so a stop request lets it finish
+    if (node.kind !== "MediatorForward") throwIfInterrupted(deps.signal);
 
     // a node runs only once what it depends on is done. a skipped best-effort
     // step counts as done (it leaves something behind by design); anything else
@@ -513,9 +515,14 @@ export async function executePlanTreeOnChain(
           node.error = `Allowance revoke skipped: ${errorMessage(err)}`;
           run.notify(node);
           run.note(
-            `The allowance for spender ${short(md.spender)} on token ${short(md.contractId)} was not ` +
-              `revoked (${errorMessage(err)}). Closing the account does not remove it: any balance of ` +
-              "that token held at this address stays spendable by that spender.",
+            (err instanceof AmbiguousSubmitError
+              ? `The revoke of the allowance for spender ${short(md.spender)} on token ` +
+                `${short(md.contractId)} was submitted as ${err.txHash}, but the network has not ` +
+                "confirmed whether it landed. If it did not, "
+              : `The allowance for spender ${short(md.spender)} on token ${short(md.contractId)} was not ` +
+                `revoked (${errorMessage(err)}). `) +
+              "Closing the account does not remove it: any balance of that token held at this " +
+              "address stays spendable by that spender.",
           );
         }
         continue;
@@ -578,7 +585,11 @@ async function runBestEffortTransfer(node: TransferAsIsNode, run: Run): Promise<
     node.error = `Token drain skipped: ${errorMessage(err)}`;
     run.notify(node);
     run.note(
-      `Token ${tokenLabel(node.metadata.asset)} was not moved (${errorMessage(err)}); it stays on the closed account.`,
+      err instanceof AmbiguousSubmitError
+        ? `The transfer of token ${tokenLabel(node.metadata.asset)} was submitted as ${err.txHash}, ` +
+            "but the network has not confirmed whether it landed. If it did not, the token stays " +
+            "on the closed account."
+        : `Token ${tokenLabel(node.metadata.asset)} was not moved (${errorMessage(err)}); it stays on the closed account.`,
     );
   }
 }
@@ -1220,7 +1231,6 @@ async function runForward(node: MediatorForwardNode, run: Run): Promise<void> {
   const { deps } = run;
   const md = node.metadata;
   const control = deps.mediatorFlow;
-  throwIfInterrupted(deps.signal);
 
   // the forward's own merge removes the mediator, so a mediator that is gone
   // after the merge into it landed means a forward already ran (its reply may

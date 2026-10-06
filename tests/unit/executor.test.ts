@@ -983,6 +983,71 @@ describe("a close can be stopped at a step boundary", () => {
   });
 });
 
+describe("a stop request never strands the balance in the temporary account", () => {
+  it("still runs the forward when the stop comes after the merge landed", async () => {
+    const stop = new AbortController();
+    submitMediatorForward.mockResolvedValue({ ok: true, txHash: "FWD" });
+    const table = accounts();
+    table.set(ATTACKER, { seq: 1n, balances: [] });
+    const final = finalNode([], { useMediator: true });
+    final.status = "confirmed";
+    final.executed = { txHash: "MERGE", ledger: 1 };
+    const forward = {
+      id: "mediator-forward",
+      kind: "MediatorForward",
+      dependencies: ["final-classic-tx"],
+      description: "forward",
+      status: "pending",
+      metadata: {
+        kind: "MediatorForward",
+        mediatorPublicKey: ATTACKER,
+        flowToken: "TOKEN",
+        ultimateDestination: DEST,
+      },
+    } as PlanNode;
+    stop.abort();
+    const t = tree(final, forward);
+    await run(t, deps({ signal: stop.signal }, table));
+    expect(forward.status).toBe("confirmed");
+    expect(submitMediatorForward).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a best-effort step with an unknown outcome is reported as unknown", () => {
+  it("does not claim a token stayed behind when its transfer may have landed", async () => {
+    const drain = {
+      id: "drain",
+      kind: "TransferAsIs",
+      dependencies: [],
+      description: "drain",
+      status: "simulated",
+      metadata: {
+        kind: "TransferAsIs",
+        asset: { kind: "contract", contractId: HOSTILE_TOKEN },
+        amount: 1n,
+        destination: DEST,
+      },
+    } as PlanNode;
+    const d = deps({
+      rebuildSorobanNode: async (node) => {
+        (node.metadata as { transaction?: Transaction }).transaction = transferTx(
+          new Account(USER, "1"),
+          HOSTILE_TOKEN,
+          DEST,
+          1n,
+        );
+      },
+    });
+    d.submitSoroban.mockRejectedValue(
+      new AmbiguousSubmitError("DRAINHASH", null, "still pending after polling"),
+    );
+    const notes: string[] = [];
+    await run(tree(drain, finalNode(["drain"])), d, notes);
+    expect(notes.join(" ")).toMatch(/submitted as DRAINHASH, but the network has not confirmed/);
+    expect(notes.join(" ")).not.toMatch(/was not moved/);
+  });
+});
+
 describe("wallet refusals are typed", () => {
   it("classifies a wallet rejection as signing", async () => {
     const d = deps();
