@@ -268,3 +268,61 @@ describe("executing copy matches how steps are signed (L-58)", () => {
     expect(document.body.textContent ?? "").toMatch(/wallet will pop up/i);
   });
 });
+
+describe("the failed view says what landed and what Retry does (L-17)", () => {
+  it("lists the close's landed transactions with explorer links", () => {
+    const hash = "d".repeat(64);
+    renderWidget(makeTree(), { landedPhases: [{ txHash: hash, ledger: 41 }] });
+    const landed = screen.getByTestId("landed-phases");
+    expect(landed.textContent).toMatch(/partially applied/);
+    expect(landed.querySelector("a")?.getAttribute("href")).toBe(
+      `https://stellar.expert/explorer/testnet/tx/${hash}`,
+    );
+  });
+
+  it("says nothing was applied when no transaction landed", () => {
+    renderWidget(makeTree(), { landedPhases: [] });
+    expect(screen.getByTestId("landed-phases").textContent).toMatch(/None of the close/);
+  });
+
+  it("explains each kind Retry handles differently", () => {
+    renderWidget(makeTree(), { failureKind: "bundle_stale", retryResumes: false });
+    expect(screen.getByTestId("failure-kind-note").textContent).toMatch(/new signing request/);
+    cleanup();
+    renderWidget(makeTree(), { failureKind: "conversion_refused", retryResumes: false });
+    expect(screen.getByTestId("failure-kind-note").textContent).toMatch(/price moved/);
+  });
+
+  it("shows what best-effort steps left undone, on success too", () => {
+    renderWidget(makeTree(), {
+      state: "succeeded",
+      error: null,
+      executionNotes: ["Token CABC was sent as-is: the swap had no route."],
+    });
+    expect(screen.getByTestId("execution-notes").textContent).toMatch(/sent as-is/);
+  });
+
+  it("keeps the discovery diagnostics in a collapsed section", () => {
+    renderWidget(makeTree(), { discoveryDiagnostics: ["aquarius: rpc -32001 after 10s"] });
+    const details = screen.getByTestId("discovery-diagnostics");
+    expect(details.tagName).toBe("DETAILS");
+    expect(details.textContent).toMatch(/-32001/);
+  });
+});
+
+describe("a run that only prepared the close (M-25)", () => {
+  it("doesn't call the account closed", () => {
+    const tree: PlanTree = {
+      ...makeTree(),
+      prepareOnly: {
+        unlocksAt: new Date("2026-10-24T00:00:00Z"),
+        reason: "A Blend backstop withdrawal stays locked after this run.",
+      },
+    };
+    renderWidget(tree, { state: "succeeded", error: null });
+    const text = document.body.textContent ?? "";
+    expect(text).not.toMatch(/Account closed/);
+    expect(text).not.toMatch(/permanently closed/);
+    expect(screen.getByTestId("prepared-note").textContent).toMatch(/still open/);
+  });
+});
