@@ -15,7 +15,7 @@ import {
 import { RequestType, type Pool, type Reserve } from "@blend-capital/blend-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
-import { isAllowedContract } from "@/lib/config/contracts";
+import { isAllowedRootTarget } from "@/lib/config/contracts";
 import { applySlippageMin, resolveConfiguredSlippageBps } from "@/lib/safety/slippage";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { balance as sep41Balance } from "@/lib/soroban/sep41";
@@ -452,10 +452,25 @@ export type BlendExitStep =
       readonly transaction: Transaction;
     }
   | {
+      // pays the accrued backstop BLND into new backstop shares, so it runs
+      // before the queue and the queue's rebuild picks those shares up
+      readonly kind: "backstop_claim_emissions";
+      readonly transaction: Transaction;
+    }
+  | {
       readonly kind: "backstop_queue_withdrawal";
+      // the shares this transaction queues, read on chain when it was built
+      readonly shares: bigint;
       readonly queueEndsAt: Date;
       readonly transaction: Transaction;
       readonly manualReturnRequired: true;
+    }
+  | {
+      readonly kind: "backstop_withdraw";
+      // the unlocked queued shares this transaction withdraws, read on chain
+      // when it was built
+      readonly amount: bigint;
+      readonly transaction: Transaction;
     };
 
 export interface BuildExitSequenceDeps extends BlendExitDeps {
@@ -463,6 +478,11 @@ export interface BuildExitSequenceDeps extends BlendExitDeps {
   readonly backstopShares?: bigint;
   // when set, claim emissions for these reserve token ids
   readonly claimReserveIds?: readonly number[];
+  // when true, claim the backstop emissions ahead of the queue
+  readonly claimBackstopEmissions?: boolean;
+  // when > 0, withdraw the unlocked part of the queue. the amount withdrawn is
+  // whatever is unlocked on chain at build time, which is returned in the step.
+  readonly backstopWithdrawAmount?: bigint;
 }
 
 // the assets to unwind in one pool. only the keys of entries with a positive
@@ -474,7 +494,8 @@ export type BlendExitPosition = Pick<
 >;
 
 // ordered unwind for one pool: repays, collateral and supply withdraws, the
-// emissions claim, then the backstop queue
+// pool emissions claim, the backstop emissions claim, the backstop queue, then
+// the withdraw of an already unlocked queue
 export async function buildExitSequence(
   network: NetworkConfig,
   position: BlendExitPosition,
@@ -529,6 +550,16 @@ export async function buildExitSequence(
     );
     steps.push({ kind: "claim_emissions", transaction: built.transaction });
   }
+  if (deps.claimBackstopEmissions === true) {
+    const built = await buildBackstopClaimTx(
+      network,
+      { poolId: position.poolId },
+      userPublicKey,
+      sourceAccount,
+      deps,
+    );
+    steps.push({ kind: "backstop_claim_emissions", transaction: built.transaction });
+  }
   if (deps.backstopShares !== undefined && deps.backstopShares > 0n) {
     const built = await buildBackstopQueueTx(
       network,
@@ -539,16 +570,27 @@ export async function buildExitSequence(
     );
     steps.push({
       kind: "backstop_queue_withdrawal",
+      shares: built.shares,
       queueEndsAt: built.queueEndsAt,
       transaction: built.transaction,
       manualReturnRequired: true,
     });
   }
+  if (deps.backstopWithdrawAmount !== undefined && deps.backstopWithdrawAmount > 0n) {
+    const built = await buildBackstopWithdrawTx(
+      network,
+      { poolId: position.poolId },
+      userPublicKey,
+      sourceAccount,
+      deps,
+    );
+    steps.push({ kind: "backstop_withdraw", amount: built.shares, transaction: built.transaction });
+  }
   return steps;
 }
 
 function requireAllowedPool(network: NetworkConfig, poolId: string): void {
-  if (!isAllowedContract(poolId, network)) {
+  if (!isAllowedRootTarget(poolId, network)) {
     throw new Error(
       `Blend pool ${poolId} is not on the ${network.id} allow-list; refusing to build exit transactions`,
     );
