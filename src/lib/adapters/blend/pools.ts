@@ -258,16 +258,3 @@ export function blendPoolIdsForNetwork(network: NetworkConfig): readonly string[
       throw new Error(`Blend has no supported pools on network "${network.id}"`);
   }
 }
-
-export function blendInfrastructureForNetwork(
-  network: NetworkConfig,
-): readonly BlendInfrastructureEntry[] {
-  switch (network.id) {
-    case "mainnet":
-      return BLEND_MAINNET_INFRASTRUCTURE;
-    case "testnet":
-      return BLEND_TESTNET_INFRASTRUCTURE;
-    default:
-      throw new Error(`Blend has no supported deployment on network "${network.id}"`);
-  }
-}

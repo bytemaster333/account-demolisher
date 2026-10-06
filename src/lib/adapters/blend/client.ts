@@ -104,7 +104,7 @@ export async function withBlendFailover<T>(
 }
 
 // an error that remembers whether the pool or the user read failed
-export class BlendLoadStageError extends Error {
+class BlendLoadStageError extends Error {
   readonly stage: "pool" | "user";
   constructor(stage: "pool" | "user", cause: unknown) {
     super(cause instanceof Error ? cause.message : String(cause));
@@ -158,7 +158,7 @@ function toUnderlyingByAsset(
   return out;
 }
 
-export function snapshotFromPoolUser(pool: Pool, user: PoolUser): BlendPoolSnapshot {
+function snapshotFromPoolUser(pool: Pool, user: PoolUser): BlendPoolSnapshot {
   const { claimedTokens } = user.estimateEmissions(Array.from(pool.reserves.values()));
   return {
     poolId: pool.id,
