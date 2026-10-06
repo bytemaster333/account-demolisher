@@ -78,6 +78,10 @@ export async function POST(request: Request): Promise<Response> {
   try {
     reissue = reissueMediatorFlow(body.flowToken);
   } catch (err) {
+    // no token can be authenticated without the secret; charge the address
+    // before logging so junk can't flood the log
+    const limited = limitByIp();
+    if (limited !== null) return limited;
     logMediatorError("POST /api/mediator/reissue could not verify a flow token", err);
     return failure("MEDIATOR_NOT_CONFIGURED", "Mediator is not configured.", 500, cors);
   }

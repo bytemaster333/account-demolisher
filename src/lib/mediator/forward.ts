@@ -30,6 +30,7 @@ import {
   MAX_FORWARD_FEE_PER_OP,
   forwardMemoToSdk,
 } from "@/lib/mediator/forward-terms";
+import { decimalToStroops, stroopsToDecimal } from "@/lib/stellar/amount";
 import type { ClassicMemo } from "@/lib/types/plan";
 
 export interface MediatorForwardInput {
@@ -160,7 +161,7 @@ export async function submitMediatorForward(
           Operation.payment({
             destination: input.destination,
             asset: Asset.native(),
-            amount: stroopsToAmount(amount),
+            amount: stroopsToDecimal(amount),
           }),
         )
         .addOperation(Operation.accountMerge({ destination: input.destination }))
@@ -360,7 +361,10 @@ function forwardableStroops(
   const minimum = entries * baseReserve;
   const fee = BigInt(feePerOp) * BigInt(FORWARD_OPERATION_COUNT);
   return (
-    amountToStroops(line.balance) - amountToStroops(line.selling_liabilities ?? "0") - minimum - fee
+    decimalToStroops(line.balance) -
+    decimalToStroops(line.selling_liabilities ?? "0") -
+    minimum -
+    fee
   );
 }
 
@@ -470,17 +474,4 @@ async function read<T>(fn: () => Promise<T>): Promise<T> {
 
 function toHex(bytes: Uint8Array): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-// stroop-precision (7 decimal) helpers; avoids pulling in a decimal lib
-function amountToStroops(amount: string): bigint {
-  const [whole, frac = ""] = amount.split(".");
-  const fracPadded = (frac + "0000000").slice(0, 7);
-  return BigInt(whole ?? "0") * 10_000_000n + BigInt(fracPadded || "0");
-}
-
-function stroopsToAmount(stroops: bigint): string {
-  const whole = stroops / 10_000_000n;
-  const frac = stroops % 10_000_000n;
-  return `${whole.toString()}.${frac.toString().padStart(7, "0")}`;
 }

@@ -61,6 +61,8 @@ export class FakeHorizon {
   readonly requests: string[] = [];
   // runs once, right before the next submission is applied
   beforeNextSubmit: (() => void) | null = null;
+  // native balance text served for an account in place of its real balance
+  readonly balanceText = new Map<string, string>();
   private opCounter = 1;
 
   constructor(
@@ -174,7 +176,7 @@ export class FakeHorizon {
       balances: [
         {
           asset_type: "native",
-          balance: fromStroops(view.balance),
+          balance: this.balanceText.get(id) ?? fromStroops(view.balance),
           buying_liabilities: "0.0000000",
           selling_liabilities: "0.0000000",
         },

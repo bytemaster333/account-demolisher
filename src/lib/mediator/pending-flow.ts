@@ -5,8 +5,9 @@
 //
 // One record per flow, keyed by network, account and mediator, so a later close
 // never overwrites or clears another close's record. A record only goes away
-// when the chain shows its forward was delivered, or when the user dismisses one
-// whose merge never happened.
+// when the chain shows its forward was delivered, when the user dismisses one
+// whose merge never happened, or when it names a network the mediator does not
+// serve (no forward can have run there, so it leads back to no balance).
 //
 // The flow token is a bearer credential in localStorage. Anyone who can read it
 // can only get a forward co-signed to the destination and memo bound into it;
@@ -14,6 +15,7 @@
 // it here adds no exposure beyond what a compromised page already has.
 
 import { parseNetworkId, type NetworkConfig } from "@/lib/config/networks";
+import { errorMessage } from "@/lib/errors";
 import {
   horizonFor,
   loadMediatorAccount,
@@ -49,9 +51,7 @@ export interface PendingForwardKey {
 export class PendingForwardStorageError extends Error {
   constructor(action: string, cause: unknown) {
     super(
-      `Could not ${action} the exchange-forward recovery record in browser storage: ${
-        cause instanceof Error ? cause.message : String(cause)
-      }`,
+      `Could not ${action} the exchange-forward recovery record in browser storage: ${errorMessage(cause)}`,
     );
     this.name = "PendingForwardStorageError";
   }

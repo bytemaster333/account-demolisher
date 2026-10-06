@@ -108,11 +108,14 @@ export async function POST(request: Request): Promise<Response> {
 
   // resolve THIS flow's ephemeral keypair and terms from the token. A thrown
   // error means the master seed is unset or malformed: logged for the operator,
-  // scrubbed for the client.
+  // scrubbed for the client. No token can be authenticated then, so the request
+  // is charged to its address first and junk can't flood the log.
   let resolution: ReturnType<typeof resolveMediatorFlow>;
   try {
     resolution = resolveMediatorFlow(body.flowToken);
   } catch (err) {
+    const limited = limitByIp();
+    if (limited !== null) return limited;
     logMediatorError("POST /api/mediator/sign could not resolve a flow token", err);
     return failure("MEDIATOR_NOT_CONFIGURED", "Mediator is not configured.", 500, cors);
   }
