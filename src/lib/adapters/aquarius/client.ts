@@ -1,12 +1,12 @@
-// aquarius client: router calls (withdraw, claim, swap_chained) and direct calls on
-// pinned concentrated pools (withdraw_position, claim_all_position_fees)
+// aquarius client: router calls (withdraw, claim) and direct calls on pinned
+// concentrated pools (withdraw_position, claim_all_position_fees)
 import {
   Contract,
   TransactionBuilder,
   rpc,
   xdr,
-  type Horizon,
   type Transaction,
+  type TransactionSource,
 } from "@stellar/stellar-sdk";
 
 import {
@@ -23,25 +23,7 @@ import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
 // five-minute timeout
 const MAX_TIMEOUT_SECONDS = 300;
 
-// soroban budget cap on swap_chained hops
-export const AQUARIUS_SWAP_CHAINED_MAX_HOPS = 4;
-
 const POOL_INDEX_LENGTH_BYTES = 32;
-
-// thrown when a chain exceeds the 4-hop cap
-export class AquariusBudgetError extends Error {
-  readonly hops: number;
-  readonly limit: number;
-  constructor(hops: number) {
-    super(
-      `Aquarius swap_chained: chain length ${hops} exceeds the ${AQUARIUS_SWAP_CHAINED_MAX_HOPS}-hop Soroban budget cap. ` +
-        `Re-route via a shorter chain or skip Aquarius for this leg.`,
-    );
-    this.name = "AquariusBudgetError";
-    this.hops = hops;
-    this.limit = AQUARIUS_SWAP_CHAINED_MAX_HOPS;
-  }
-}
 
 export interface WithdrawArgs {
   readonly user: string;
@@ -49,7 +31,7 @@ export interface WithdrawArgs {
   readonly poolIndex: Uint8Array;
   readonly shareAmount: bigint;
   readonly minAmounts: readonly bigint[];
-  readonly sourceAccount: Horizon.AccountResponse;
+  readonly sourceAccount: TransactionSource;
   readonly network: NetworkConfig;
 }
 
@@ -61,24 +43,7 @@ export interface ClaimArgs {
   // claim without it is refused rather than sent as a call that can never work.
   readonly tokens?: readonly string[];
   readonly poolIndex: Uint8Array;
-  readonly sourceAccount: Horizon.AccountResponse;
-  readonly network: NetworkConfig;
-}
-
-// one hop in swap_chained, matches the router's SwapChainStep struct
-export interface SwapChainStep {
-  readonly poolIndex: Uint8Array;
-  readonly tokens: readonly string[];
-  readonly tokenOut: string;
-}
-
-export interface SwapChainedArgs {
-  readonly user: string;
-  readonly swapsChain: readonly SwapChainStep[];
-  readonly tokenIn: string;
-  readonly inAmount: bigint;
-  readonly outMin: bigint;
-  readonly sourceAccount: Horizon.AccountResponse;
+  readonly sourceAccount: TransactionSource;
   readonly network: NetworkConfig;
 }
 
@@ -107,7 +72,7 @@ export async function withdraw(args: WithdrawArgs, deps: AquariusClientDeps): Pr
   const callArgs: xdr.ScVal[] = [
     scvAddress(args.user),
     scvVec(args.tokens.map((t) => scvAddress(t))),
-    u128Bytes(args.poolIndex),
+    bytesN32(args.poolIndex),
     u128(args.shareAmount),
     scvVec(args.minAmounts.map((m) => u128(m))),
   ];
@@ -134,7 +99,7 @@ export async function claim(args: ClaimArgs, deps: AquariusClientDeps): Promise<
   const callArgs: xdr.ScVal[] = [
     scvAddress(args.user),
     scvVec(args.tokens.map((t) => scvAddress(t))),
-    u128Bytes(args.poolIndex),
+    bytesN32(args.poolIndex),
   ];
 
   return buildAndAssemble(routerId, "claim", callArgs, args.sourceAccount, args.network, deps);
@@ -159,7 +124,7 @@ export async function getUserReward(
     [
       scvAddress(args.user),
       scvVec(args.tokens.map((t) => scvAddress(t))),
-      u128Bytes(args.poolIndex),
+      bytesN32(args.poolIndex),
     ],
     args.user,
     args.network,
@@ -176,7 +141,7 @@ export interface WithdrawConcentratedArgs {
   readonly liquidity: bigint;
   // per-token floors in the pool's token order
   readonly minAmounts: readonly bigint[];
-  readonly sourceAccount: Horizon.AccountResponse;
+  readonly sourceAccount: TransactionSource;
   readonly network: NetworkConfig;
 }
 
@@ -230,7 +195,7 @@ export async function claimConcentratedFees(
   args: {
     readonly user: string;
     readonly poolAddress: string;
-    readonly sourceAccount: Horizon.AccountResponse;
+    readonly sourceAccount: TransactionSource;
     readonly network: NetworkConfig;
   },
   deps: AquariusClientDeps,
@@ -256,64 +221,6 @@ function requirePinnedConcentratedPool(address: string, network: NetworkConfig) 
   return pool;
 }
 
-// build an unsigned swap_chained tx. throws AquariusBudgetError when too many hops
-export async function swapChained(
-  args: SwapChainedArgs,
-  deps: AquariusClientDeps,
-): Promise<Transaction> {
-  if (args.swapsChain.length === 0) {
-    throw new RangeError("Aquarius swap_chained: swapsChain must contain at least one hop");
-  }
-  if (args.swapsChain.length > AQUARIUS_SWAP_CHAINED_MAX_HOPS) {
-    throw new AquariusBudgetError(args.swapsChain.length);
-  }
-
-  const routerId = getAquariusRouterId(args.network);
-  if (!isAllowedRootTarget(routerId, args.network)) {
-    throw new Error(
-      `AquariusAmmRouter ${routerId} is not on the ${args.network.id} allow-list, refusing to build swap_chained`,
-    );
-  }
-  args.swapsChain.forEach((step, i) => {
-    validatePoolIndex(step.poolIndex, `swapsChain[${i}].poolIndex`);
-    if (step.tokens.length === 0) {
-      throw new RangeError(`Aquarius swap_chained: swapsChain[${i}].tokens must not be empty`);
-    }
-  });
-  validateNonNegativeU128("inAmount", args.inAmount);
-  validateNonNegativeU128("outMin", args.outMin);
-
-  // the deployed router's spec types swaps_chain as
-  // Vec<(Vec<Address>, BytesN<32>, Address)>; a tuple encodes as a plain vec in
-  // field order, not a symbol-keyed map
-  const chainScVal = scvVec(
-    args.swapsChain.map((step) =>
-      scvVec([
-        scvVec(step.tokens.map((t) => scvAddress(t))),
-        u128Bytes(step.poolIndex),
-        scvAddress(step.tokenOut),
-      ]),
-    ),
-  );
-
-  const callArgs: xdr.ScVal[] = [
-    scvAddress(args.user),
-    chainScVal,
-    scvAddress(args.tokenIn),
-    u128(args.inAmount),
-    u128(args.outMin),
-  ];
-
-  return buildAndAssemble(
-    routerId,
-    "swap_chained",
-    callArgs,
-    args.sourceAccount,
-    args.network,
-    deps,
-  );
-}
-
 // resolve router id from the network's allow-list
 export function getAquariusRouterId(network: NetworkConfig): string {
   const list = getAllowlistForNetwork(network);
@@ -330,7 +237,7 @@ async function buildAndAssemble(
   contractId: string,
   fnName: string,
   callArgs: xdr.ScVal[],
-  sourceAccount: Horizon.AccountResponse,
+  sourceAccount: TransactionSource,
   network: NetworkConfig,
   deps: AquariusClientDeps,
 ): Promise<Transaction> {
@@ -354,13 +261,13 @@ async function buildAndAssemble(
   return prepared;
 }
 
-function validatePoolIndex(buf: Uint8Array, label: string = "poolIndex"): void {
+function validatePoolIndex(buf: Uint8Array): void {
   if (!(buf instanceof Uint8Array)) {
-    throw new TypeError(`Aquarius ${label}: expected Uint8Array, got ${typeof buf}`);
+    throw new TypeError(`Aquarius poolIndex: expected Uint8Array, got ${typeof buf}`);
   }
   if (buf.length !== POOL_INDEX_LENGTH_BYTES) {
     throw new RangeError(
-      `Aquarius ${label}: expected ${POOL_INDEX_LENGTH_BYTES}-byte BytesN<32>, got ${buf.length}`,
+      `Aquarius poolIndex: expected ${POOL_INDEX_LENGTH_BYTES}-byte BytesN<32>, got ${buf.length}`,
     );
   }
 }
@@ -380,8 +287,8 @@ function validateTick(label: string, v: number): void {
   }
 }
 
-// encode a BytesN<32> ScVal via buffer for node-side serializer compat
-function u128Bytes(buf: Uint8Array): xdr.ScVal {
+// a BytesN<32> argument is an ScBytes value; callers check the length first
+function bytesN32(buf: Uint8Array): xdr.ScVal {
   const asBuffer = Buffer.from(buf);
   return xdr.ScVal.scvBytes(asBuffer);
 }
