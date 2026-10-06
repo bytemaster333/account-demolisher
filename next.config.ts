@@ -1,3 +1,7 @@
+import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
+import path from "node:path";
+
 import type { NextConfig } from "next";
 
 // next.js configuration. the only supported target is the server build
@@ -5,18 +9,30 @@ import type { NextConfig } from "next";
 // src/proxy.ts need a running server, so there is no static export variant.
 const isDev = process.env.NODE_ENV !== "production";
 
-// NOTE: the Content-Security-Policy is set per-request in `src/proxy.ts`
-// (source of truth: src/lib/config/csp.ts). script-src is 'self' + 'unsafe-inline'
-// rather than a per-request nonce: Next's inline hydration scripts are not
-// nonce-stamped here, and a nonce would also force every page out of static
-// prerendering (undesirable for CDN serving). The policy loads NO third-party
-// script origin and locks default-src/object-src/frame-ancestors/base-uri, so the
-// residual risk of 'unsafe-inline' is bounded. The static headers below apply to
-// every response.
+// the content-security-policy is set per request in src/proxy.ts (built in
+// src/lib/config/csp.ts). script-src is 'self' plus 'unsafe-inline' rather than
+// a nonce: next's inline hydration scripts are not nonce-stamped here, and a
+// nonce would force every page out of static prerendering. the policy loads no
+// third-party script origin, but an injected inline script could still reach
+// every origin connect-src allows (horizon, soroban rpc, the walletconnect
+// relay), so 'unsafe-inline' only limits where scripts load from, not where data
+// can go. the static headers below apply to every response.
+//
+// the demolish page runs its close in an xstate actor whose execute step must
+// not run twice at once. enabling cacheComponents or react <Activity> here lets
+// an actor stop and restart re-invoke that step while the first run continues,
+// so it needs the execute in-flight guard in
+// src/lib/orchestrator/page-flow-machine.ts to be in place first.
 
 const config: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  experimental: {
+    // /api is outside the proxy matcher, so the route handlers' own body caps
+    // apply there. this bounds what next buffers for the proxy on every other
+    // path (default 10 MB), a second limit behind caddy's request_body cap.
+    proxyClientMaxBodySize: "32kb",
+  },
   // pin the workspace root to this directory. a parent-level lockfile (the docs
   // app / a monorepo checkout) would otherwise make Next infer the parent as the
   // root and mis-resolve file tracing.
@@ -69,5 +85,19 @@ const config: NextConfig = {
     ];
   },
 };
+
+// the slippage settings are inlined into the bundle at build time, so a bad
+// value has to stop `next build` and `next dev` here, before anything compiles.
+// a built server (the docker runner, the release tarball) ships without src/
+// and its values are already baked into the bundle, so there is nothing left to
+// check when the parser is not there.
+const slippageSource = path.join(import.meta.dirname, "src/lib/safety/slippage.ts");
+if (existsSync(slippageSource)) {
+  const slippage = createRequire(import.meta.url)(
+    slippageSource,
+  ) as typeof import("./src/lib/safety/slippage");
+  slippage.parseSlippageBpsEnv(process.env.NEXT_PUBLIC_SLIPPAGE_BPS);
+  slippage.parseMinMarketOutEnv(process.env.NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS);
+}
 
 export default config;
