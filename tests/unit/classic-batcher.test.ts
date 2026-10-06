@@ -839,6 +839,16 @@ describe("H-16: the mediator is funded right before the merge", () => {
     // 1.5 + 1 (claim) + 0.99 (destMin) - fees - 1 reserve >= 2
     expect(check?.sufficient).toBe(true);
   });
+
+  it("subtracts what the steps before the classic batches spend", () => {
+    const audit = makeAudit({ balances: [nativeLine("3.5")] });
+    const batches = batchClassicDemolition(audit, opts);
+    expect(mediatorFundingCheck(audit, batches, 100)?.sufficient).toBe(true);
+    // 0.6 XLM of soroban fees ahead of the merge leaves less than 2 XLM free
+    const check = mediatorFundingCheck(audit, batches, 100, 6_000_000n);
+    expect(check?.sufficient).toBe(false);
+    expect(check?.availableStroops).toBe(35_000_000n - 200n - 10_000_000n - 6_000_000n);
+  });
 });
 
 describe("L-18: threshold reset, signer removals and merge share the final batch", () => {

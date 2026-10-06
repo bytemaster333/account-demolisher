@@ -564,14 +564,17 @@ export interface MediatorFundingCheck {
 // whether the account can fund the mediator once these batches have run. Counts
 // the native balance plus only guaranteed inflows (native claims, path payment
 // floors, the native side of LP withdraw floors), minus every batch's fee at
-// feePerOpStroops and the account's own reserve, which stays locked until the
-// merge. Null when the batches fund no mediator. Proceeds of Soroban exits that
-// run before the classic batches are not in the audit, so before those run this
-// is a lower bound.
+// feePerOpStroops, the account's own reserve (locked until the merge) and
+// spentBeforeStroops, the XLM the steps ahead of the classic batches can spend
+// (the soroban steps' maximum fees, plus any XLM debt they repay). Null when the
+// batches fund no mediator. XLM those steps pay out is not counted, so run
+// against a preview audit this errs on the side of refusing; the executor's
+// fresh audit before the merge batch sees the real balance.
 export function mediatorFundingCheck(
   audit: AccountAudit,
   batches: readonly ClassicBatch[],
   feePerOpStroops: number,
+  spentBeforeStroops: bigint = 0n,
 ): MediatorFundingCheck | null {
   const ops = batches.flatMap((b) => b.operations);
   if (!ops.some((o) => o.kind === "create_account_mediator")) return null;
@@ -592,6 +595,7 @@ export function mediatorFundingCheck(
   }
   available -= BigInt(feePerOpStroops) * BigInt(ops.length);
   available -= BARE_ACCOUNT_RESERVE_STROOPS;
+  available -= spentBeforeStroops;
   return {
     sufficient: available >= MEDIATOR_FUNDING_STROOPS,
     availableStroops: available,
