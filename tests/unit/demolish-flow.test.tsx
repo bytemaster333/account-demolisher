@@ -1,0 +1,284 @@
+// @vitest-environment happy-dom
+
+// the demolish page as a whole: the real DemolishFlow and page-flow machine,
+// with only the machine's network-bound actors (discover, preview, execute) and
+// the remote reads (horizon, account audit, metrics) replaced
+
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { render, screen, cleanup, fireEvent, waitFor, act } from "@testing-library/react";
+import { fromPromise } from "xstate";
+
+import type { Connector } from "@/lib/wallet/connector";
+import type { PlanTree } from "@/lib/plan/tree";
+import type { AccountAudit } from "@/lib/types/account";
+import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
+import type { HeldToken } from "@/lib/soroban/held-tokens";
+
+import {
+  ACC,
+  DEST,
+  TOKEN_C,
+  blendPositions,
+  emptyPositions,
+  makeAudit,
+  makeTree,
+} from "./demolish-fixtures";
+
+interface Discovered {
+  readonly audit: AccountAudit;
+  readonly positions: ProtocolPositions;
+  readonly heldTokens: readonly HeldToken[];
+}
+interface Previewed {
+  readonly tree: PlanTree;
+  readonly unroutableCredits: readonly {
+    readonly key: string;
+    readonly code: string;
+    readonly issuer: string;
+    readonly amount: string;
+  }[];
+}
+
+const ctl = vi.hoisted(() => ({
+  preflightAudit: null as AccountAudit | null,
+  discover: null as null | (() => Promise<Discovered>),
+  preview: null as null | ((input: Record<string, unknown>) => Promise<Previewed>),
+  execute: null as null | ((tree: PlanTree) => Promise<unknown>),
+  previewInputs: [] as Record<string, unknown>[],
+}));
+
+vi.mock("@/components/wallet/ConnectButton", () => ({
+  ConnectButton: () => <button type="button">connect-wallet</button>,
+}));
+vi.mock("@/components/wallet/SecretKeyFallback", () => ({ SecretKeyFallback: () => null }));
+vi.mock("@/components/wallet/CreateTestAccountButton", () => ({
+  CreateTestAccountButton: () => null,
+}));
+// the wallets kit doesn't load in this environment; nothing here signs through it
+vi.mock("@/lib/wallet/kit", () => ({
+  getKit: () => ({}),
+  ensureWalletConnectReady: async () => {},
+  disconnectKit: async () => {},
+  restoreKitSession: async () => null,
+}));
+vi.mock("@/lib/metrics/beacon", () => ({
+  trackVisit: () => {},
+  trackFunnel: () => {},
+  trackClose: () => {},
+}));
+vi.mock("@/lib/stellar/horizon-client", () => ({
+  getHorizon: () => ({
+    loadAccount: async () => ({}),
+    ledgers: () => ({
+      order: () => ({
+        limit: () => ({
+          call: async () => ({ records: [{ base_reserve_in_stroops: 5_000_000 }] }),
+        }),
+      }),
+    }),
+  }),
+}));
+vi.mock("@/lib/stellar/account-audit", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("@/lib/stellar/account-audit")>();
+  return {
+    ...orig,
+    auditAccount: async () => {
+      if (ctl.preflightAudit === null) throw new Error("no audit set");
+      return ctl.preflightAudit;
+    },
+  };
+});
+vi.mock("@/lib/orchestrator/page-flow-machine", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("@/lib/orchestrator/page-flow-machine")>();
+  return {
+    ...orig,
+    pageFlowMachine: orig.pageFlowMachine.provide({
+      actors: {
+        discover: fromPromise(async () => {
+          const d = await ctl.discover!();
+          return {
+            audit: d.audit,
+            positions: d.positions,
+            allowances: [],
+            heldTokens: d.heldTokens,
+            unreadableHeldTokens: [],
+            heldTokenScanFailed: false,
+            discoveryWarnings: [],
+          };
+        }) as never,
+        preview: fromPromise(async ({ input }: { input: Record<string, unknown> }) => {
+          ctl.previewInputs.push(input);
+          const p = await ctl.preview!(input);
+          return { ...p, heldTokenWarnings: [] };
+        }) as never,
+        execute: fromPromise(async ({ input }: { input: { tree: PlanTree } }) =>
+          ctl.execute!(input.tree),
+        ) as never,
+      },
+    }),
+  };
+});
+
+import { DemolishFlow } from "@/app/demolish/_components/DemolishFlow";
+import { setActiveConnector } from "@/lib/wallet/active-connector";
+import { useWalletStore } from "@/stores/wallet";
+
+const connector: Connector = {
+  kind: "secret",
+  connect: async () => ({ publicKey: ACC }),
+  disconnect: async () => {},
+  getPublicKey: async () => ACC,
+  signTransaction: async () => {
+    throw new Error("nothing is signed in these tests");
+  },
+  signAuthEntry: async () => {
+    throw new Error("nothing is signed in these tests");
+  },
+};
+
+function connect(): void {
+  setActiveConnector(connector);
+  useWalletStore.getState().setConnected(ACC, "secret");
+}
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+async function configureAndStart(): Promise<void> {
+  const input = await screen.findByTestId("destination-input");
+  fireEvent.change(input, { target: { value: DEST } });
+  // the destination existence check is debounced
+  const start = (): HTMLButtonElement => screen.getByTestId("demolish-start") as HTMLButtonElement;
+  await waitFor(() => expect(start().disabled).toBe(false), { timeout: 3000 });
+  fireEvent.click(start());
+}
+
+beforeEach(() => {
+  ctl.preflightAudit = makeAudit();
+  ctl.previewInputs = [];
+  ctl.discover = async () => ({
+    audit: makeAudit(),
+    positions: emptyPositions(),
+    heldTokens: [],
+  });
+  ctl.preview = async () => ({ tree: makeTree(), unroutableCredits: [] });
+  ctl.execute = null;
+});
+
+afterEach(() => {
+  cleanup();
+  act(() => useWalletStore.getState().disconnect());
+  setActiveConnector(null);
+});
+
+describe("retry after a non-retryable failure (M-36)", () => {
+  it("shows the loading card while it rediscovers, not a blank page", async () => {
+    ctl.execute = async (tree) => ({
+      result: { ok: false, errors: ["WithdrawBlend failed on-chain: contract reverted"] },
+      tree,
+    });
+    connect();
+    render(<DemolishFlow />);
+    await configureAndStart();
+
+    fireEvent.click(await screen.findByTestId("demolish-confirm"));
+    fireEvent.change(screen.getByTestId("typed-confirmation-input"), {
+      target: { value: DEST.slice(-4) },
+    });
+    // the confirm button only appears once the dialog's delay has run out
+    const confirm = (await screen.findByTestId(
+      "typed-confirmation-confirm",
+      {},
+      { timeout: 6000 },
+    )) as HTMLButtonElement;
+    await waitFor(() => expect(confirm.disabled).toBe(false));
+    fireEvent.click(confirm);
+    await screen.findByTestId("demolish-retry");
+
+    // the rediscovery stays pending so the screen can be checked mid-way
+    const gate = deferred<Discovered>();
+    ctl.discover = () => gate.promise;
+    fireEvent.click(screen.getByTestId("demolish-retry"));
+
+    expect((screen.getByTestId("machine-state") as HTMLInputElement).value).toBe("discovering");
+    expect(screen.getByText("Auditing account…")).toBeTruthy();
+    expect(screen.queryByTestId("demolish-status-widget")).toBeNull();
+  }, 20_000);
+});
+
+describe("a refused rebuild says why (M-37)", () => {
+  it("shows the refusal from Resolve when the shared close can't be bundled", async () => {
+    const shared = makeAudit({
+      requiresMultisig: true,
+      thresholds: { low: 2, medium: 2, high: 2, masterWeight: 1 },
+      signers: [
+        { key: ACC, type: "ed25519_public_key", weight: 1 },
+        { key: DEST, type: "ed25519_public_key", weight: 1 },
+      ],
+    });
+    ctl.preflightAudit = shared;
+    ctl.discover = async () => ({ audit: shared, positions: blendPositions(), heldTokens: [] });
+    ctl.preview = async () => ({
+      tree: makeTree({ audit: shared }),
+      unroutableCredits: [
+        { key: "USDC:GISSUER", code: "USDC", issuer: "GISSUER", amount: "5.0000000" },
+      ],
+    });
+    connect();
+    render(<DemolishFlow />);
+    await configureAndStart();
+
+    fireEvent.click(await screen.findByTestId("resolve-rebuild"));
+    const alert = await screen.findByTestId("flow-error");
+    expect(alert.getAttribute("role")).toBe("alert");
+    expect(alert.textContent).toMatch(/signing request/i);
+    // nothing was restarted
+    expect((screen.getByTestId("machine-state") as HTMLInputElement).value).toBe(
+      "awaiting_confirmation",
+    );
+  });
+});
+
+describe("start over clears the token conversion choice (L-57)", () => {
+  it("does not carry convert-to-XLM into the next close", async () => {
+    const token: HeldToken = { contractId: TOKEN_C, balance: 50n };
+    ctl.discover = async () => ({
+      audit: makeAudit(),
+      positions: emptyPositions(),
+      heldTokens: [token],
+    });
+    connect();
+    render(<DemolishFlow />);
+    await configureAndStart();
+
+    // pick the token, opt in to converting it, then rebuild; that rebuild fails
+    // before a plan exists, which offers Start over
+    fireEvent.click(await screen.findByTestId(`held-token-${TOKEN_C}`));
+    fireEvent.click(await screen.findByTestId("held-token-convert-toggle"));
+    ctl.preview = async () => {
+      throw new Error("preview broke");
+    };
+    fireEvent.click(screen.getByTestId("acknowledge-rebuild"));
+    await waitFor(() => expect(ctl.previewInputs).toHaveLength(2));
+    expect(ctl.previewInputs.at(-1)?.["convertHeldTokensToXLM"]).toBe(true);
+    fireEvent.click(await screen.findByTestId("preflight-reset"));
+
+    // a fresh close on a reconnected account, picking the same token
+    ctl.preview = async () => ({ tree: makeTree(), unroutableCredits: [] });
+    connect();
+    await configureAndStart();
+    fireEvent.click(await screen.findByTestId(`held-token-${TOKEN_C}`));
+    const toggle = await screen.findByTestId("held-token-convert-toggle");
+    expect((toggle as HTMLInputElement).checked ?? toggle.getAttribute("aria-checked")).not.toBe(
+      true,
+    );
+    fireEvent.click(screen.getByTestId("acknowledge-rebuild"));
+    await waitFor(() => expect(ctl.previewInputs.length).toBeGreaterThanOrEqual(4));
+    expect(ctl.previewInputs.at(-1)?.["convertHeldTokensToXLM"]).toBeUndefined();
+  });
+});

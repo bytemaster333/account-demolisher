@@ -43,6 +43,7 @@ import { useRunGuard } from "../_hooks/use-run-guard";
 import { useSigningRequest } from "../_hooks/use-signing-request";
 import { SR_ONLY } from "../_lib/a11y";
 import { claimableSplit } from "../_lib/claimables";
+import { failureNoteFor } from "../_lib/failure-note";
 import { buildFlowSteps, flowPhaseFor, type ConfirmStage } from "../_lib/flow-steps";
 import { FORM_SCHEMA, G_ADDRESS, INITIAL_FORM, parseMemo, type FormState } from "../_lib/form";
 import { heldSelectionDirty } from "../_lib/held-selection";
@@ -774,6 +775,7 @@ export function DemolishFlow(): React.JSX.Element {
   const doneCount = orderedNodes.filter(
     (n) => n.status === "confirmed" || n.status === "skipped",
   ).length;
+  const failedInMediator = isFailed && failureNoteFor(tree).kind === "in-mediator";
   const finalNode = tree?.allNodes.get("final-classic-tx");
   const mergeHash = finalNode?.executed?.txHash;
 
@@ -843,8 +845,9 @@ export function DemolishFlow(): React.JSX.Element {
   return (
     <main style={{ maxWidth: 1080, margin: "0 auto", padding: "40px 24px 96px" }}>
       {/* SEC-01 part B: offer to resume an interrupted exchange forward, if any.
-          A failed run shows its own resume inside the status widget instead. */}
-      {!(isFailed && tree !== null) ? <PendingForwardBanner publicKey={publicKey} /> : null}
+          A run that failed inside the helper account shows its own resume in the
+          status widget, so this one steps aside to avoid two resume buttons. */}
+      {!failedInMediator ? <PendingForwardBanner publicKey={publicKey} /> : null}
 
       {/* IDLE, connect. Keyed by network so a switch starts it fresh. */}
       {isIdle ? (
@@ -1021,76 +1024,57 @@ export function DemolishFlow(): React.JSX.Element {
                   ) : null}
 
                   {isConfiguring ? (
-                    multisigRequired ? (
-                      /* shared account: configure the close here (no signer keys
-                         asked at this step). After Review it's published as a
-                         signing request and the other signatures are collected in
-                         the dedicated Signatures step. */
-                      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                        <MultisigContextBar
-                          threshold={effectiveMultisig?.threshold ?? 0}
-                          have={primaryWeight}
-                          signers={effectiveMultisig?.signers ?? []}
-                        />
-                        <p
-                          style={{
-                            margin: 0,
-                            fontSize: 12.5,
-                            lineHeight: 1.5,
-                            color: "var(--fg-3)",
-                          }}
-                        >
-                          You&apos;ll gather the other signatures after you review the close, no
-                          signer keys needed here.
-                        </p>
-                        {audit && numCoverable > 0 ? (
-                          <SponsorshipAutoRevokeNotice count={numCoverable} />
-                        ) : null}
-                        <ConfigurePanel
-                          {...configureCommon}
-                          deterministic
-                          canStart={
-                            publicKey !== null &&
-                            hasConnector &&
-                            destinationGate.ready &&
-                            destExistsGate.ready &&
-                            configureGate.ok &&
-                            memoGate.ready
-                          }
-                          startHint={
-                            publicKey === null || !hasConnector
-                              ? "Connect a wallet to continue."
-                              : !configureGate.ok
-                                ? (configureGate.reason ??
-                                  "This shared account's close can't be gathered into one signing request.")
-                                : (destinationGate.hint ?? destExistsGate.hint ?? memoGate.hint)
-                          }
-                        />
-                      </div>
-                    ) : (
-                      /* single-signer account */
-                      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                        {audit && numCoverable > 0 ? (
-                          <SponsorshipAutoRevokeNotice count={numCoverable} />
-                        ) : null}
-                        <ConfigurePanel
-                          {...configureCommon}
-                          deterministic={false}
-                          canStart={
-                            publicKey !== null &&
-                            hasConnector &&
-                            destinationGate.ready &&
-                            destExistsGate.ready &&
-                            memoGate.ready
-                          }
-                          startHint={
-                            publicKey === null || !hasConnector
-                              ? "Connect a wallet to continue."
+                    /* one panel for both account kinds, so it isn't remounted (and
+                       the focused input lost) when the shared-account check lands */
+                    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                      {multisigRequired ? (
+                        /* shared account: configure the close here (no signer keys
+                           asked at this step). After Review it's published as a
+                           signing request and the other signatures are collected in
+                           the dedicated Signatures step. */
+                        <>
+                          <MultisigContextBar
+                            threshold={effectiveMultisig?.threshold ?? 0}
+                            have={primaryWeight}
+                            signers={effectiveMultisig?.signers ?? []}
+                          />
+                          <p
+                            style={{
+                              margin: 0,
+                              fontSize: 12.5,
+                              lineHeight: 1.5,
+                              color: "var(--fg-3)",
+                            }}
+                          >
+                            You&apos;ll gather the other signatures after you review the close, no
+                            signer keys needed here.
+                          </p>
+                        </>
+                      ) : null}
+                      {audit && numCoverable > 0 ? (
+                        <SponsorshipAutoRevokeNotice count={numCoverable} />
+                      ) : null}
+                      <ConfigurePanel
+                        {...configureCommon}
+                        deterministic={multisigRequired}
+                        canStart={
+                          publicKey !== null &&
+                          hasConnector &&
+                          destinationGate.ready &&
+                          destExistsGate.ready &&
+                          memoGate.ready &&
+                          (!multisigRequired || configureGate.ok)
+                        }
+                        startHint={
+                          publicKey === null || !hasConnector
+                            ? "Connect a wallet to continue."
+                            : multisigRequired && !configureGate.ok
+                              ? (configureGate.reason ??
+                                "This shared account's close can't be gathered into one signing request.")
                               : (destinationGate.hint ?? destExistsGate.hint ?? memoGate.hint)
-                          }
-                        />
-                      </div>
-                    )
+                        }
+                      />
+                    </div>
                   ) : null}
 
                   {isAwaitingConfirmation && signing.resumeMismatch !== null ? (
