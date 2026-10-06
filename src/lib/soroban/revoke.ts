@@ -20,21 +20,21 @@ import { getRpc } from "@/lib/soroban/rpc-client";
 import type { Connector } from "@/lib/wallet/connector";
 
 // serialize revokes per source account so the next one only *builds* after the
-// previous one has landed in a ledger. This is the subtle part: submit-only
+// previous one has landed in a ledger. this is the subtle part: submit-only
 // acceptance (PENDING) does NOT advance the account sequence, only ledger
-// inclusion does. So merely chaining the builds, as this used to, is not
+// inclusion does. so merely chaining the builds, as this used to, is not
 // enough: two rapid per-row revokes for the same source would both build at the
-// same sequence N+1 and the second loses to tx_bad_seq / TRY_AGAIN_LATER. The
+// same sequence N+1 and the second loses to tx_bad_seq / TRY_AGAIN_LATER. the
 // per-source gate below only opens once the previous revoke is confirmed
 // included by the soroban rpc, and the next build reads the account from that
 // same rpc, so it sees the advanced sequence (horizon ingests separately and can
 // lag the rpc's SUCCESS). RevokeButton's disabled state is per-instance (no
 // cross-row lock), so this shared gate is what keeps rapid clicks across
-// different rows correct. The bulk sweep is already inclusion-serialized by its
+// different rows correct. the bulk sweep is already inclusion-serialized by its
 // own loop; the extra confirm here is a fast no-op for it.
 //
 // value = a promise that resolves when it is safe to build the NEXT revoke for
-// that source. A best-effort confirm opens it even on poll failure, and a timer
+// that source. a best-effort confirm opens it even on poll failure, and a timer
 // opens it if the confirm never settles, so a tx that never lands can't deadlock
 // the queue (worst case the next build hits tx_bad_seq and the user retries).
 const sourceGate = new Map<string, Promise<void>>();
@@ -98,10 +98,10 @@ async function submitRevokeImpl(
   userAddress: string,
 ): Promise<string> {
   // guard against the wallet's active account drifting from the one this revoke
-  // is built for. A kit connector signs with whatever account the extension
+  // is built for. a kit connector signs with whatever account the extension
   // currently holds, so a user switching accounts inside the wallet after
   // connecting would otherwise sign as the wrong key; SEP-41 requires
-  // source == from, so it would fail opaquely at submit. Assert up front and
+  // source == from, so it would fail opaquely at submit. assert up front and
   // refuse with a clear message. (A pasted-seed connector's key is fixed, so
   // this is a no-op for it.)
   const signerKey = await connector.getPublicKey();
@@ -128,9 +128,9 @@ async function submitRevokeImpl(
     sourceAccount,
   );
 
-  // The contract id came from an attacker-influenceable event scan and the revoke
+  // the contract id came from an attacker-influenceable event scan and the revoke
   // path is exempt from the DeFi allow-list, so the simulation-supplied auth tree
-  // is untrusted. Refuse to sign unless the built tx is exactly approve(0) and its
+  // is untrusted. refuse to sign unless the built tx is exactly approve(0) and its
   // auth authorizes nothing else (blocks auth-entry smuggling by a hostile token).
   assertSafeRevokeInvocation(tx, {
     contractId: record.contractId,

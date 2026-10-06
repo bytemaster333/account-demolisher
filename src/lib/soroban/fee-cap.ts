@@ -1,6 +1,6 @@
 // ceiling on what a prepared Soroban transaction may cost before anyone signs it.
 //
-// prepareTransaction takes the resource fee and the declared resources from the
+// assembleSubmittable takes the resource fee and the declared resources from the
 // simulation, and the simulation runs whatever the invoked contracts do. for an
 // untrusted token (revoke, held-token transfer, held-token convert) that is
 // attacker code: its transfer/approve can write large persistent entries with a
@@ -8,31 +8,49 @@
 // the numbers too. so every Soroban tx is checked against a cap for its class
 // right before signing, and refused with the fee spelled out when it is over.
 //
-// resource fees (stroops) measured on 2026-10-06 by simulating the app's own
-// builders through assembleSubmittable (with its instruction leeway), read-only:
+// resource fees (stroops) measured by simulating the app's own builders through
+// assembleSubmittable (with its instruction leeway), read-only. "archived" means
+// the call restores entries from the archive (protocol 23 does that inside the
+// call), "idle" that it pays rent to bump entries close to expiry.
 //                                                  testnet     mainnet
 //   approve(0) revoke, live token                   16,321      16,321
-//   approve(0) revoke, token instance archived     300,759     936,287  (restore)
+//   approve(0) revoke, token instance archived     300,759     936,287
 //   SAC transfer to an existing balance             23,660      24,505
 //   SAC transfer creating a contract balance       569,817     454,754
 //   soroswap convert, direct pair                   43,574      43,607
 //   soroswap convert, one hop, live pairs              -       111,002
-//   soroswap convert, one hop, idle pairs        1,347,990        -     (ttl rent)
-//   soroswap convert, one hop, archived pairs    5,299,881        -     (restore)
-//   aquarius router claim (concentrated pool)          -        55,529
+//   soroswap convert, one hop, idle pairs        1,347,990        -
+//   soroswap convert, one hop, archived pairs    5,308,082   2,825,629
+//   soroswap remove_liquidity, archived pair     6,923,446   2,956,310
+//   aquarius router withdraw, live state               -        65,319
+//   aquarius router withdraw, archived user state      -    15,993,759
+//   aquarius router claim, archived user state         -    16,305,049
+//   aquarius withdraw_position (concentrated)          -       178,136
 //   aquarius claim_all_position_fees                   -       137,855
-//   aquarius withdraw_position                         -       178,136
-//   blend FixedV2 submit withdraw_collateral           -        35,811  (2026-10-02)
-// an entry that has gone idle costs real rent to touch: the contract bumps its
-// ttl, or protocol 23 restores it from the archive inside the same call. so the
-// legitimate ceiling is set by that, not by the common case.
+//   blend submit withdraw_collateral, live             -        35,811
+//   blend submit withdraw, archived Positions          -    11,763,314
+//   blend backstop queue_withdrawal, archived          -     2,524,898
+// the archived rows come from sweeps on 2026-10-06 and 2026-10-07: lp holders of
+// every archived mainnet soroswap pair (16) and of 70 archived testnet pairs,
+// every aquarius standard and stable pool (318) for a holder whose share balance
+// is archived, and archived blend Positions and backstop balances in every pinned
+// pool. the aquarius worst cases restore the pool's reward pages (one
+// RewardInvData page is 3,316 bytes), the blend ones up to 8 entries. idle state
+// sets the legitimate ceiling, not the common case.
+// 17 of the 71 testnet remove_liquidity runs cost 36,812,907 to 174,326,303 and
+// declared 14,700 to 53,284 write bytes: those checked restore an archived
+// contract code entry (the token's or an old pair's wasm, 17 to 24 KB each). that
+// is the same shape a hostile token would use to push rent onto the signer, so
+// the untrusted classes refuse it rather than pay for it; the step fails with the
+// fee spelled out. no mainnet pair needed that in the sweep.
 // untrusted-token (revoke, held-token transfer): about twice the largest
 // measured case, the archived-instance revoke. untrusted-convert (a held token
-// sold through the router, which runs the token's own transfer): about twice
-// the archived-pair one-hop convert. defi-exit: allow-listed protocol code only;
-// kept at three times the largest exit measured on 2026-10-02 (167,250).
+// sold through the router, or a soroswap lp exit, both of which run token code
+// nobody vetted): about twice the archived-pair remove_liquidity. defi-exit
+// (allow-listed protocol code only): about twice the archived aquarius claim.
 // declared write bytes and read-write entries are bounded for both untrusted
-// classes (largest measured: 2,264 bytes and 8 entries for a one-hop convert).
+// classes (largest measured without a code restore: 3,128 bytes for the
+// archived one-hop convert, 10 entries).
 
 import type { FeeBumpTransaction, Transaction } from "@stellar/stellar-sdk";
 
@@ -42,8 +60,8 @@ export type SorobanFeeClass = "untrusted-token" | "untrusted-convert" | "defi-ex
 
 export const SOROBAN_RESOURCE_FEE_CAPS: Readonly<Record<SorobanFeeClass, bigint>> = {
   "untrusted-token": 2_000_000n,
-  "untrusted-convert": 11_000_000n,
-  "defi-exit": 5_000_000n,
+  "untrusted-convert": 14_000_000n,
+  "defi-exit": 33_000_000n,
 };
 
 export const UNTRUSTED_TOKEN_MAX_WRITE_BYTES = 8_192;

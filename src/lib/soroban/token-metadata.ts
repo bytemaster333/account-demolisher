@@ -43,11 +43,8 @@ export async function readTokenMetadata(
   const { signal } = opts;
   if (signal?.aborted) throw abortReason(signal);
 
-  let perServer = entries.get(server);
-  if (perServer === undefined) {
-    perServer = new Map();
-    entries.set(server, perServer);
-  }
+  const perServer = entries.get(server) ?? new Map<string, Entry>();
+  entries.set(server, perServer);
   let entry = perServer.get(contractId);
   if (entry === undefined) {
     const controller = new AbortController();
@@ -57,10 +54,9 @@ export async function readTokenMetadata(
       return { symbol, decimals };
     }, controller.signal);
     const created: Entry = { promise, controller, interested: 0 };
-    const cache = perServer;
     // a failed or dropped read is forgotten, so the next caller tries again
     promise.catch(() => {
-      if (cache.get(contractId) === created) cache.delete(contractId);
+      if (perServer.get(contractId) === created) perServer.delete(contractId);
     });
     perServer.set(contractId, created);
     entry = created;
@@ -72,7 +68,13 @@ export async function readTokenMetadata(
   return new Promise<TokenMetadata>((resolve, reject) => {
     const onAbort = (): void => {
       shared.interested -= 1;
-      if (shared.interested === 0) shared.controller.abort();
+      if (shared.interested === 0) {
+        // forget the entry now rather than in its rejection handler a microtask
+        // later, so a row that unmounts and mounts again in the same tick gets a
+        // fresh read instead of this abandoned one
+        if (perServer.get(contractId) === shared) perServer.delete(contractId);
+        shared.controller.abort();
+      }
       reject(abortReason(signal));
     };
     signal.addEventListener("abort", onAbort, { once: true });

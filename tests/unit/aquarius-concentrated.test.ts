@@ -159,6 +159,16 @@ describe("discoverConcentratedPositions", () => {
     ).rejects.toThrow(new RegExp(`${POOL_A.address}: rpc 503`));
   });
 
+  it("keeps the text of a plain-object rpc rejection in the pool failure", async () => {
+    const { server } = ledgerWith([concentratedUserKey(POOL_A.address, USER, "User")]);
+    const throwsPlain = (async () => {
+      throw { code: -32001, message: "request exceeded processing limit threshold" };
+    }) as unknown as typeof simulateRead;
+    await expect(
+      discoverConcentratedPositions(server, MAINNET, USER, { simulateRead: throwsPlain }),
+    ).rejects.toThrow(new RegExp(`${POOL_A.address}: request exceeded processing limit threshold`));
+  });
+
   it("makes no contract reads when no pool holds state for the user", async () => {
     const { server } = ledgerWith([]);
     const positions = await discoverConcentratedPositions(server, MAINNET, USER, {

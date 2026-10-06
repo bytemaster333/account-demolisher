@@ -17,6 +17,7 @@
 import { Address, xdr, type rpc } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
+import { errorMessage } from "@/lib/errors";
 import {
   address as scvAddress,
   fromScValI32,
@@ -108,7 +109,7 @@ export async function discoverConcentratedPositions(
         positions.push(position);
       }
     } catch (e) {
-      failures.push(`${pool.address}: ${e instanceof Error ? e.message : String(e)}`);
+      failures.push(`${pool.address}: ${errorMessage(e)}`);
     }
   }
   if (failures.length > 0) {

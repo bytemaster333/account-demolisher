@@ -26,24 +26,25 @@ function aqPool(poolIndex: string) {
 }
 
 // a provider whose aquarius primary (REST) / fallback (on-chain scan) return the
-// given pools (or throw). the other adapters are stubbed empty so only aquarius
-// affects positions.aquarius.
+// given pools (or throw). every other source is stubbed empty, so any error in
+// the result comes from the aquarius path under test.
 function provider(primary: () => unknown, fallback: () => unknown) {
-  // a plain variable rather than a literal, so the fxdao stub (which keeps the
-  // fxdao probe off the live rpc) still compiles once that dep is removed
-  const deps = {
+  return new DirectContractProvider({
     serverFactory: () => ({}) as never,
     aquariusFactory: (() => ({
       primary: { getUserPools: async () => primary() },
       fallback: { getUserPools: async () => fallback() },
     })) as never,
+    aquariusDiscoverConcentrated: async () => [],
     blendPoolIds: [],
     blendLoadUserPositions: (async () => ({ positions: [], errors: [] })) as never,
-    blendLoadBackstopDeposits: (async () => ({ deposits: [], errors: [] })) as never,
+    blendLoadBackstopDeposits: (async () => ({
+      deposits: [],
+      unclaimedEmissions: [],
+      errors: [],
+    })) as never,
     soroswapDiscover: (async () => []) as never,
-    fxdaoGetUserVaults: (async () => []) as never,
-  };
-  return new DirectContractProvider(deps);
+  });
 }
 
 describe("Aquarius discovery union (SEC-05: a spoofed-empty API can't hide a pool)", () => {
@@ -53,6 +54,7 @@ describe("Aquarius discovery union (SEC-05: a spoofed-empty API can't hide a poo
       () => [aqPool(IDX_HIDDEN)],
     ).getPositions(USER, TESTNET);
     expect(positions.aquarius.map((x) => x.poolIndex)).toEqual([IDX_HIDDEN]);
+    expect(positions.errors).toEqual([]);
   });
 
   it("unions distinct pools from both sources and dedups shared ones", async () => {
@@ -61,6 +63,7 @@ describe("Aquarius discovery union (SEC-05: a spoofed-empty API can't hide a poo
       () => [aqPool(IDX_A), aqPool(IDX_B)],
     ).getPositions(USER, TESTNET);
     expect(new Set(positions.aquarius.map((x) => x.poolIndex))).toEqual(new Set([IDX_A, IDX_B]));
+    expect(positions.errors).toEqual([]);
   });
 
   it("records an aquarius error when both sources fail (fail-closed)", async () => {
@@ -69,7 +72,8 @@ describe("Aquarius discovery union (SEC-05: a spoofed-empty API can't hide a poo
     };
     const positions = await provider(boom, boom).getPositions(USER, TESTNET);
     expect(positions.aquarius).toEqual([]);
-    expect(positions.errors.some((e) => e.protocol === "aquarius")).toBe(true);
+    expect(positions.errors.length).toBeGreaterThan(0);
+    expect(positions.errors.every((e) => e.protocol === "aquarius")).toBe(true);
   });
 
   it("records an error when only the REST source fails, keeping the pools it did read", async () => {
@@ -83,8 +87,8 @@ describe("Aquarius discovery union (SEC-05: a spoofed-empty API can't hide a poo
       () => [aqPool(IDX_B)],
     ).getPositions(USER, TESTNET);
     expect(new Set(positions.aquarius.map((x) => x.poolIndex))).toEqual(new Set([IDX_A, IDX_B]));
-    const err = positions.errors.find((e) => e.protocol === "aquarius");
-    expect(err?.message).toMatch(/CPOOL/);
+    expect(positions.errors.map((e) => e.protocol)).toEqual(["aquarius"]);
+    expect(positions.errors[0]?.message).toMatch(/CPOOL/);
   });
 
   it("still returns the API result when only the on-chain scan fails", async () => {
@@ -95,7 +99,7 @@ describe("Aquarius discovery union (SEC-05: a spoofed-empty API can't hide a poo
       },
     ).getPositions(USER, TESTNET);
     expect(positions.aquarius.map((x) => x.poolIndex)).toEqual([IDX_A]);
-    expect(positions.errors.some((e) => e.protocol === "aquarius")).toBe(false);
+    expect(positions.errors).toEqual([]);
   });
 
   it("rejects a malformed pool (bad poolIndex) as an aquarius discovery error (schema fail-closed)", async () => {
@@ -106,6 +110,7 @@ describe("Aquarius discovery union (SEC-05: a spoofed-empty API can't hide a poo
     // schema validation throws -> aquarius slice empty + a recorded error, so a
     // malformed position can't be silently carried into the plan
     expect(positions.aquarius).toEqual([]);
-    expect(positions.errors.some((e) => e.protocol === "aquarius")).toBe(true);
+    expect(positions.errors.length).toBeGreaterThan(0);
+    expect(positions.errors.every((e) => e.protocol === "aquarius")).toBe(true);
   });
 });

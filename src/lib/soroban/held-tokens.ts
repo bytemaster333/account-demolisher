@@ -43,7 +43,7 @@ export interface HeldTokenScan {
   // token contracts crediting the account with a readable, positive balance
   readonly held: readonly HeldToken[];
   // token contracts that credited the account but whose balance() could not be
-  // read (a hostile/broken token, or a reverting probe). Surfaced rather than
+  // read (a hostile/broken token, or a reverting probe). surfaced rather than
   // silently dropped: the account may hold value we can't confirm or auto-move.
   readonly unreadable: readonly string[];
   // set when the event scan did not cover the whole retention window; tokens
@@ -150,7 +150,7 @@ export async function discoverHeldTokens(
 
   // probe every candidate concurrently (bounded), each independently time-boxed.
   // balance() is a read-only simulation (no signed tx), so a hostile token can
-  // only make it fail, never smuggle auth. A token that reverts or stalls is
+  // only make it fail, never smuggle auth. a token that reverts or stalls is
   // recorded as UNREADABLE (not silently dropped): it can't be auto-drained, but
   // the user should know it exists and can target it manually.
   const probed = await mapConcurrent(candidates, PROBE_CONCURRENCY, async (contractId) => {

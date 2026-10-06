@@ -121,6 +121,36 @@ describe("Aquarius REST provider", () => {
     ]);
   });
 
+  it("keeps the text of a plain-object rpc rejection in the failed entry", async () => {
+    const ok = restServer();
+    // stellar-sdk's json-rpc client rejects with the response's error object
+    const server = {
+      simulateTransaction: async (tx: Transaction) => {
+        const op = tx.operations[0] as Operation.InvokeHostFunction;
+        const call = xdr.expectUnionVariant(
+          op.func,
+          "hostFunctionTypeInvokeContract",
+        ).invokeContract;
+        const idx =
+          call.functionName.toString() === "share_id"
+            ? Buffer.from(scValToNative(call.args[1]!) as Uint8Array).toString("hex")
+            : null;
+        if (idx === IDX_BROKEN) {
+          throw { code: -32001, message: "request exceeded processing limit threshold" };
+        }
+        return ok.simulateTransaction(tx);
+      },
+    } as unknown as rpc.Server;
+    const scan = await restProvider(
+      [entry(IDX_BROKEN, POOL_BROKEN, "constant_product"), entry(IDX_OK, POOL_OK, "stable")],
+      server,
+    ).scanUserPools(USER);
+    expect(scan.standard.map((p) => p.poolAddress)).toEqual([POOL_OK]);
+    expect(scan.errors).toEqual([
+      `could not read shares in pool ${POOL_BROKEN} (request exceeded processing limit threshold)`,
+    ]);
+  });
+
   it("reports a concentrated pool that is not pinned (no in-app exit for it)", async () => {
     const scan = await restProvider([entry(IDX_OK, UNPINNED_CONC, "concentrated")]).scanUserPools(
       USER,

@@ -77,7 +77,7 @@ export interface SwapToXLMDeps {
 }
 
 // build a router swap_exact_tokens_for_tokens converting assetIn -> XLM along
-// `path`. Allow-list-gated on build AND after assembly, like the LP-removal builder.
+// `path`. allow-list-gated on build AND after assembly, like the LP-removal builder.
 export async function buildSwapToXLM(
   args: SwapToXLMArgs,
   deps: SwapToXLMDeps,
@@ -125,7 +125,7 @@ export async function buildSwapToXLM(
   const prepared = await assemble(deps.server, tx);
   if ("innerTransaction" in prepared) {
     throw new Error(
-      "buildSwapToXLM: prepareTransaction returned a FeeBumpTransaction unexpectedly",
+      "buildSwapToXLM: assembling the simulation returned a FeeBumpTransaction unexpectedly",
     );
   }
   assertTransactionAllowed(prepared, args.network);

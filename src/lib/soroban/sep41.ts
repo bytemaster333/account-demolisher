@@ -66,7 +66,7 @@ export async function allowance(
 
 export function decodeAllowance(v: xdr.ScVal): { amount: bigint; live_until_ledger: number } {
   // the Stellar Asset Contract (and some tokens) return allowance() as a bare
-  // i128 amount, with no expiry ledger. Tolerate that shape rather than throwing:
+  // i128 amount, with no expiry ledger. tolerate that shape rather than throwing:
   // report the amount and 0 for live_until_ledger, which callers read as "expiry
   // unknown from this call" (event enumeration is the source of truth for expiry).
   if (v.type === "scvI128") {
@@ -228,7 +228,9 @@ async function buildInvoke(
   // narrow off FeeBumpTransaction via innerTransaction. fee-bump wrapping
   // happens in the orchestrator, not here
   if ("innerTransaction" in prepared) {
-    throw new Error("buildInvoke: prepareTransaction returned a FeeBumpTransaction unexpectedly");
+    throw new Error(
+      "buildInvoke: assembling the simulation returned a FeeBumpTransaction unexpectedly",
+    );
   }
   return prepared;
 }
