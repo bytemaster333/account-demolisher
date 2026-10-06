@@ -1,7 +1,7 @@
 // scam-token heuristics
 
 import { Asset } from "@stellar/stellar-sdk";
-import { isAllowedContract } from "@/lib/config/contracts";
+import { isKnownContract } from "@/lib/config/contracts";
 import { NETWORKS, type StellarNetwork } from "@/lib/config/networks";
 import { hasHiddenCharacters, safeDisplay } from "@/lib/safe-display";
 import type { AssetIdentifier, AuditBalance } from "@/lib/types/account";
@@ -43,12 +43,16 @@ export interface Tier1Asset {
   readonly native?: true;
 }
 
-// Canonical issuers, per network. Every non-null address below was verified
-// against the issuer's official source (Circle's contract-address docs for
-// USDC/EURC; Aquarius's stellar.toml for AQUA; Blend's mainnet deployments page,
-// docs.blend.capital/mainnet-deployments, for BLND). null = no canonical issuer
-// we can vouch for on that network, so the collision check abstains rather than
-// compare against the wrong address (e.g. AQUA has no official testnet issuer).
+// canonical issuers, per network, each re-read from its source on 2026-10-06.
+// USDC and EURC: Circle's usdc- and eurc-contract-addresses pages
+// (developers.circle.com). AQUA: aqua.network/.well-known/stellar.toml. BLND:
+// blend-capital/blend-utils mainnet.contracts.json lists the BLND token as
+// CD25MNVTZDL4Y3XBCPCJXGXATV5WUHHOWMYFF4YBEGU5FCPGMYTVG5JY, which is the asset
+// contract derived from BLND:GDJEHT... on the public network, and mainnet
+// horizon's record for BLND:GDJEHT... reports the same contract_id.
+// null = no canonical issuer we can vouch for on that network, so the collision
+// check abstains rather than compare against the wrong address (e.g. AQUA has no
+// official testnet issuer).
 export const TIER1_MAINNET: readonly Tier1Asset[] = [
   { symbol: "XLM", issuer: null, native: true },
   { symbol: "USDC", issuer: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN" },
@@ -65,21 +69,25 @@ export const TIER1_TESTNET: readonly Tier1Asset[] = [
   { symbol: "BLND", issuer: null },
 ];
 
-// mainnet is the default reference set (kept as TIER1_ASSETS for compatibility)
-export const TIER1_ASSETS = TIER1_MAINNET;
-
 function tier1For(network: StellarNetwork): readonly Tier1Asset[] {
-  return network === "mainnet" ? TIER1_MAINNET : network === "testnet" ? TIER1_TESTNET : [];
+  switch (network) {
+    case "mainnet":
+      return TIER1_MAINNET;
+    case "testnet":
+      return TIER1_TESTNET;
+    default:
+      throw new Error(`no tier-1 reference list for network "${String(network)}"`);
+  }
 }
 
 // edit distance <= this (and > 0) counts as suspicious
 const LOOKALIKE_DISTANCE_THRESHOLD = 2;
 
-// run all heuristics against the subject, using the canonical issuer set for the
-// given network (defaults to mainnet)
+// run all heuristics against the subject, using the canonical issuer set and
+// the curated contracts of the given network
 export function evaluateScamHeuristics(
   subject: TokenSubject,
-  network: StellarNetwork = "mainnet",
+  network: StellarNetwork,
 ): readonly ScamFlag[] {
   const flags: ScamFlag[] = [];
   const tier1List = tier1For(network);
@@ -116,11 +124,11 @@ export function evaluateScamHeuristics(
       }
     }
 
-    // suspicious character class, flags non-ASCII-alphanumeric symbols
-    // (homoglyphs, cyrillic, accents). Lowercase ASCII is a valid (if unusual)
-    // Stellar asset code, so it must NOT trip this. otherwise every lowercase
-    // code is a false positive. Case impersonation is caught by the collision /
-    // lookalike checks above, which compare upper-cased.
+    // flags symbols outside ascii letters and digits (homoglyphs, cyrillic,
+    // accents). lowercase ascii is a valid if unusual asset code, so it must not
+    // trip this; case impersonation is caught by the collision and lookalike
+    // checks above, which compare upper-cased. classic asset codes are ascii
+    // alphanumeric by protocol, so in practice this fires on sep-41 symbols.
     if (!/^[A-Za-z0-9]+$/.test(rawSymbol)) {
       flags.push({
         id: "suspicious_character",
@@ -142,8 +150,14 @@ export function evaluateScamHeuristics(
     });
   }
 
-  // soroban contract not on this network's allow-list
-  if (contractId !== null && !isAllowedContract(contractId, NETWORKS[network])) {
+  // a sep-41 contract this app has not curated for the network. curated covers
+  // tokens and infrastructure as well as entry points, and the canonical asset
+  // contract of a tier-1 asset is known by derivation
+  if (
+    contractId !== null &&
+    !isKnownContract(contractId, NETWORKS[network]) &&
+    !isCanonicalTier1Contract(contractId, tier1List, network)
+  ) {
     flags.push({
       id: "unknown_contract",
       severity: "warning",
@@ -153,6 +167,21 @@ export function evaluateScamHeuristics(
   }
 
   return flags;
+}
+
+function canonicalContract(tier1: Tier1Asset, network: StellarNetwork): string | null {
+  const passphrase = NETWORKS[network].passphrase;
+  if (tier1.native === true) return Asset.native().contractId(passphrase);
+  if (tier1.issuer !== null) return new Asset(tier1.symbol, tier1.issuer).contractId(passphrase);
+  return null;
+}
+
+function isCanonicalTier1Contract(
+  contractId: string,
+  tier1List: readonly Tier1Asset[],
+  network: StellarNetwork,
+): boolean {
+  return tier1List.some((t) => canonicalContract(t, network) === contractId);
 }
 
 // classic trustline with a tier-1 code. a credit asset coded XLM is never native
@@ -191,13 +220,8 @@ function contractCollision(
   contractId: string,
   network: StellarNetwork,
 ): ScamFlag | null {
-  const passphrase = NETWORKS[network].passphrase;
-  let canonical: string;
-  if (tier1.native === true) canonical = Asset.native().contractId(passphrase);
-  else if (tier1.issuer !== null) {
-    canonical = new Asset(tier1.symbol, tier1.issuer).contractId(passphrase);
-  } else return null;
-  if (contractId === canonical) return null;
+  const canonical = canonicalContract(tier1, network);
+  if (canonical === null || contractId === canonical) return null;
   return {
     id: "exact_symbol_collision",
     severity: "critical",
@@ -268,7 +292,7 @@ export function levenshtein(a: string, b: string): number {
 // per (asset, flag) hit
 export function runScamHeuristics(
   balances: readonly AuditBalance[],
-  network: StellarNetwork = "mainnet",
+  network: StellarNetwork,
 ): readonly ScamFinding[] {
   const findings: ScamFinding[] = [];
   for (const balance of balances) {
@@ -299,7 +323,7 @@ export interface HeldTokenSubject {
 // impersonation checks actually matter
 export function runHeldTokenScamHeuristics(
   tokens: readonly HeldTokenSubject[],
-  network: StellarNetwork = "mainnet",
+  network: StellarNetwork,
 ): readonly ScamFinding[] {
   const findings: ScamFinding[] = [];
   for (const token of tokens) {

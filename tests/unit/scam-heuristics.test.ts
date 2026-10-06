@@ -6,7 +6,6 @@ import {
   levenshtein,
   runHeldTokenScamHeuristics,
   runScamHeuristics,
-  TIER1_ASSETS,
   TIER1_MAINNET,
   TIER1_TESTNET,
   type ScamFlag,
@@ -20,8 +19,8 @@ import type { AuditBalance } from "@/lib/types/account";
 
 // canonical tier-1 issuers, pulled from the module's own reference list so the
 // tests track the source of truth rather than a hard-coded copy.
-const USDC = TIER1_ASSETS.find((a) => a.symbol === "USDC");
-const AQUA = TIER1_ASSETS.find((a) => a.symbol === "AQUA");
+const USDC = TIER1_MAINNET.find((a) => a.symbol === "USDC");
+const AQUA = TIER1_MAINNET.find((a) => a.symbol === "AQUA");
 if (USDC === undefined || USDC.issuer === null) throw new Error("fixture: USDC issuer expected");
 if (AQUA === undefined || AQUA.issuer === null) throw new Error("fixture: AQUA issuer expected");
 const USDC_ISSUER = USDC.issuer;
@@ -65,19 +64,19 @@ describe("levenshtein", () => {
 
 describe("evaluateScamHeuristics, clean tokens", () => {
   it("scores a legit tier-1 asset with its canonical issuer clean", () => {
-    expect(evaluateScamHeuristics({ symbol: "USDC", issuer: USDC_ISSUER })).toEqual([]);
+    expect(evaluateScamHeuristics({ symbol: "USDC", issuer: USDC_ISSUER }, "mainnet")).toEqual([]);
   });
 
   it("scores a distinct off-list token (far from every tier-1) clean", () => {
     // DOGE is edit distance 4 from the nearest tier-1 (XLM), well past the
     // lookalike threshold of 2.
-    expect(evaluateScamHeuristics({ symbol: "DOGE", issuer: IMPOSTOR })).toEqual([]);
+    expect(evaluateScamHeuristics({ symbol: "DOGE", issuer: IMPOSTOR }, "mainnet")).toEqual([]);
   });
 
   it("does not flag an empty / whitespace-only symbol", () => {
-    expect(evaluateScamHeuristics({ symbol: "" })).toEqual([]);
-    expect(evaluateScamHeuristics({ symbol: "   " })).toEqual([]);
-    expect(evaluateScamHeuristics({})).toEqual([]);
+    expect(evaluateScamHeuristics({ symbol: "" }, "mainnet")).toEqual([]);
+    expect(evaluateScamHeuristics({ symbol: "   " }, "mainnet")).toEqual([]);
+    expect(evaluateScamHeuristics({}, "mainnet")).toEqual([]);
   });
 
   it("abstains on a tier-1 symbol with no canonical issuer on that network", () => {
@@ -86,13 +85,13 @@ describe("evaluateScamHeuristics, clean tokens", () => {
   });
 
   it("does not treat a matching canonical issuer as a collision", () => {
-    expect(evaluateScamHeuristics({ symbol: "USDC", issuer: USDC_ISSUER })).toEqual([]);
+    expect(evaluateScamHeuristics({ symbol: "USDC", issuer: USDC_ISSUER }, "mainnet")).toEqual([]);
   });
 });
 
 describe("evaluateScamHeuristics, exact_symbol_collision", () => {
   it("flags critical when a tier-1 symbol carries a non-canonical issuer", () => {
-    const flags = evaluateScamHeuristics({ symbol: "USDC", issuer: IMPOSTOR });
+    const flags = evaluateScamHeuristics({ symbol: "USDC", issuer: IMPOSTOR }, "mainnet");
     const collision = flag(flags, "exact_symbol_collision");
     expect(collision.severity).toBe("critical");
     expect(collision.detail).toMatchObject({
@@ -105,16 +104,16 @@ describe("evaluateScamHeuristics, exact_symbol_collision", () => {
   it("is case-insensitive on the symbol match (uppercases before lookup)", () => {
     // lowercase symbol still resolves to the USDC tier-1 entry for the
     // collision check; it additionally trips suspicious_character (see below).
-    const flags = evaluateScamHeuristics({ symbol: "usdc", issuer: IMPOSTOR });
+    const flags = evaluateScamHeuristics({ symbol: "usdc", issuer: IMPOSTOR }, "mainnet");
     expect(ids(flags)).toContain("exact_symbol_collision");
   });
 
   it("abstains when the subject omits an issuer (classic native-less case)", () => {
-    expect(evaluateScamHeuristics({ symbol: "USDC" })).toEqual([]);
+    expect(evaluateScamHeuristics({ symbol: "USDC" }, "mainnet")).toEqual([]);
   });
 
   it("does not emit a lookalike flag for an exact tier-1 match", () => {
-    const flags = evaluateScamHeuristics({ symbol: "AQUA", issuer: IMPOSTOR });
+    const flags = evaluateScamHeuristics({ symbol: "AQUA", issuer: IMPOSTOR }, "mainnet");
     // AQUA is an exact match, so only the collision path runs, never lookalike.
     expect(ids(flags)).not.toContain("lookalike_symbol");
   });
@@ -122,14 +121,14 @@ describe("evaluateScamHeuristics, exact_symbol_collision", () => {
 
 describe("evaluateScamHeuristics, lookalike_symbol", () => {
   it("flags edit-distance 1 as a warning", () => {
-    const flags = evaluateScamHeuristics({ symbol: "USDT" });
+    const flags = evaluateScamHeuristics({ symbol: "USDT" }, "mainnet");
     const look = flag(flags, "lookalike_symbol");
     expect(look.severity).toBe("warning");
     expect(look.detail).toMatchObject({ symbol: "USDT", lookalikeOf: "USDC", distance: 1 });
   });
 
   it("flags edit-distance 2 as info (boundary of the threshold)", () => {
-    const flags = evaluateScamHeuristics({ symbol: "USTX" });
+    const flags = evaluateScamHeuristics({ symbol: "USTX" }, "mainnet");
     const look = flag(flags, "lookalike_symbol");
     expect(look.severity).toBe("info");
     expect(look.detail).toMatchObject({ lookalikeOf: "USDC", distance: 2 });
@@ -137,11 +136,13 @@ describe("evaluateScamHeuristics, lookalike_symbol", () => {
 
   it("does NOT flag edit-distance 3+ (past the threshold)", () => {
     // DOGE is distance 4 from the nearest tier-1.
-    expect(ids(evaluateScamHeuristics({ symbol: "DOGE" }))).not.toContain("lookalike_symbol");
+    expect(ids(evaluateScamHeuristics({ symbol: "DOGE" }, "mainnet"))).not.toContain(
+      "lookalike_symbol",
+    );
   });
 
   it("picks the nearest tier-1 as the lookalike target", () => {
-    const flags = evaluateScamHeuristics({ symbol: "AQUX" });
+    const flags = evaluateScamHeuristics({ symbol: "AQUX" }, "mainnet");
     const look = flag(flags, "lookalike_symbol");
     expect(look.detail).toMatchObject({ lookalikeOf: "AQUA", distance: 1 });
   });
@@ -150,7 +151,7 @@ describe("evaluateScamHeuristics, lookalike_symbol", () => {
 describe("evaluateScamHeuristics, suspicious_character", () => {
   it("flags critical for a confusable/homoglyph (cyrillic) character", () => {
     // trailing char is cyrillic 'с' (U+0441), not latin 'C'.
-    const flags = evaluateScamHeuristics({ symbol: "USDс" });
+    const flags = evaluateScamHeuristics({ symbol: "USDс" }, "mainnet");
     expect(flag(flags, "suspicious_character").severity).toBe("critical");
   });
 
@@ -158,41 +159,47 @@ describe("evaluateScamHeuristics, suspicious_character", () => {
     // lowercase ASCII is a valid (if unusual) Stellar asset code and must NOT
     // trip suspicious_character, case impersonation is caught by the lookalike
     // / collision checks instead.
-    const flags = evaluateScamHeuristics({ symbol: "usdt" });
+    const flags = evaluateScamHeuristics({ symbol: "usdt" }, "mainnet");
     expect(ids(flags)).not.toContain("suspicious_character");
   });
 
   it("flags punctuation / whitespace inside a non-empty symbol", () => {
-    expect(ids(evaluateScamHeuristics({ symbol: "US-DC" }))).toContain("suspicious_character");
-    expect(ids(evaluateScamHeuristics({ symbol: "A B" }))).toContain("suspicious_character");
+    expect(ids(evaluateScamHeuristics({ symbol: "US-DC" }, "mainnet"))).toContain(
+      "suspicious_character",
+    );
+    expect(ids(evaluateScamHeuristics({ symbol: "A B" }, "mainnet"))).toContain(
+      "suspicious_character",
+    );
   });
 
   it("does not flag a clean uppercase-alphanumeric symbol", () => {
-    expect(ids(evaluateScamHeuristics({ symbol: "DOGE2" }))).not.toContain("suspicious_character");
+    expect(ids(evaluateScamHeuristics({ symbol: "DOGE2" }, "mainnet"))).not.toContain(
+      "suspicious_character",
+    );
   });
 
   it("stacks a lookalike with a suspicious character when a homoglyph impersonates a tier-1 symbol", () => {
     // 'AQUА' with a cyrillic 'А' does not match the tier-1 map (different
     // codepoint) so it takes the lookalike path AND the suspicious char path.
-    const flags = evaluateScamHeuristics({ symbol: "AQUА", issuer: IMPOSTOR });
+    const flags = evaluateScamHeuristics({ symbol: "AQUА", issuer: IMPOSTOR }, "mainnet");
     expect(ids(flags)).toEqual(["lookalike_symbol", "suspicious_character"]);
   });
 });
 
 describe("evaluateScamHeuristics, unknown_contract", () => {
   it("flags a soroban contract that is not on the allow-list (warning)", () => {
-    const flags = evaluateScamHeuristics({ contractId: UNKNOWN_CONTRACT });
+    const flags = evaluateScamHeuristics({ contractId: UNKNOWN_CONTRACT }, "mainnet");
     const unknown = flag(flags, "unknown_contract");
     expect(unknown.severity).toBe("warning");
     expect(unknown.detail).toMatchObject({ contractId: UNKNOWN_CONTRACT });
   });
 
   it("does not flag a mainnet allow-listed contract", () => {
-    expect(evaluateScamHeuristics({ contractId: ALLOWED_CONTRACT })).toEqual([]);
+    expect(evaluateScamHeuristics({ contractId: ALLOWED_CONTRACT }, "mainnet")).toEqual([]);
   });
 
   it("ignores an empty contractId", () => {
-    expect(evaluateScamHeuristics({ contractId: "" })).toEqual([]);
+    expect(evaluateScamHeuristics({ contractId: "" }, "mainnet")).toEqual([]);
   });
 });
 
@@ -216,13 +223,13 @@ describe("runScamHeuristics", () => {
         sellingLiabilities: "0",
       },
     ];
-    expect(runScamHeuristics(balances)).toEqual([]);
+    expect(runScamHeuristics(balances, "mainnet")).toEqual([]);
   });
 
   it("produces one finding per (asset, flag) hit across credit balances", () => {
     const impostorUsdc = credit("USDC", IMPOSTOR); // collision
     const legit = credit("USDC", USDC_ISSUER); // clean
-    const findings = runScamHeuristics([impostorUsdc, legit]);
+    const findings = runScamHeuristics([impostorUsdc, legit], "mainnet");
     expect(findings).toHaveLength(1);
     const first = findings[0];
     expect(first).toBeDefined();
@@ -234,7 +241,7 @@ describe("runScamHeuristics", () => {
   it("emits multiple findings for a single asset that trips several heuristics", () => {
     // "USD" + cyrillic С (U+0421): a homoglyph (suspicious_character) that is
     // also one edit away from USDC (lookalike_symbol).
-    const findings = runScamHeuristics([credit("USDС", IMPOSTOR)]);
+    const findings = runScamHeuristics([credit("USDС", IMPOSTOR)], "mainnet");
     const flagIds = findings.map((f) => f.flag.id);
     expect(flagIds).toContain("suspicious_character");
     expect(flagIds).toContain("lookalike_symbol");
@@ -277,7 +284,8 @@ describe("evaluateScamHeuristics, network gating", () => {
 });
 
 // a classic credit asset coded XLM is never native lumens, and BLND has a
-// canonical mainnet issuer (docs.blend.capital/mainnet-deployments)
+// canonical mainnet issuer (its asset contract is the BLND id in
+// blend-capital/blend-utils mainnet.contracts.json)
 describe("evaluateScamHeuristics, XLM and BLND impersonation", () => {
   it("flags any credit asset coded XLM, in any case, on every network", () => {
     for (const network of ["mainnet", "testnet"] as const) {
@@ -316,15 +324,29 @@ describe("evaluateScamHeuristics, SEP-41 tokens", () => {
   const TESTNET_ALLOWED = TESTNET_ALLOWLIST[0]!.id;
 
   it("flags a tier-1 symbol from a contract that is not the asset's own contract", () => {
-    const flags = evaluateScamHeuristics({ symbol: "USDC", contractId: UNKNOWN_CONTRACT });
+    const flags = evaluateScamHeuristics(
+      { symbol: "USDC", contractId: UNKNOWN_CONTRACT },
+      "mainnet",
+    );
     expect(flag(flags, "exact_symbol_collision").severity).toBe("critical");
     expect(ids(flags)).toContain("unknown_contract");
   });
 
-  it("clears the canonical USDC asset contract", () => {
+  it("clears the canonical USDC asset contract entirely", () => {
     const sac = new Asset("USDC", USDC_ISSUER).contractId(Networks.PUBLIC);
-    expect(ids(evaluateScamHeuristics({ symbol: "USDC", contractId: sac }))).not.toContain(
-      "exact_symbol_collision",
+    expect(evaluateScamHeuristics({ symbol: "USDC", contractId: sac }, "mainnet")).toEqual([]);
+  });
+
+  // token contracts are curated for labelling, not as call targets, so the
+  // labelling check must not treat them as unknown
+  it("does not call a curated token contract unknown", () => {
+    const aquaSac = new Asset("AQUA", AQUA.issuer!).contractId(Networks.PUBLIC);
+    expect(ids(evaluateScamHeuristics({ symbol: "AQUA", contractId: aquaSac }, "mainnet"))).toEqual(
+      [],
+    );
+    const nativeSac = Asset.native().contractId(Networks.TESTNET);
+    expect(evaluateScamHeuristics({ symbol: "native", contractId: nativeSac }, "testnet")).toEqual(
+      [],
     );
   });
 
@@ -349,11 +371,14 @@ describe("evaluateScamHeuristics, SEP-41 tokens", () => {
 
   it("flags a homoglyph symbol and a name with hidden characters", () => {
     const rlo = String.fromCodePoint(0x202e);
-    const flags = evaluateScamHeuristics({
-      symbol: "USDС",
-      name: `USD Coin${rlo}`,
-      contractId: UNKNOWN_CONTRACT,
-    });
+    const flags = evaluateScamHeuristics(
+      {
+        symbol: "USDС",
+        name: `USD Coin${rlo}`,
+        contractId: UNKNOWN_CONTRACT,
+      },
+      "mainnet",
+    );
     expect(ids(flags).filter((id) => id === "suspicious_character")).toHaveLength(2);
     for (const f of flags) expect(f.message).not.toContain(rlo);
   });
