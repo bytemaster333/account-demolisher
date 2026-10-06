@@ -180,6 +180,22 @@ describe("GET /api/metrics (admin)", () => {
     ).toBe(401);
   });
 
+  it("answers a logged 503 when the store can't be read (M-53)", async () => {
+    // a data dir under a regular file can't be created, like a read-only volume
+    const blocker = path.join(dir, "not-a-dir");
+    await fs.writeFile(blocker, "x");
+    process.env.METRICS_DB_DIR = path.join(blocker, "data");
+    __resetMetricsStoreForTests();
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await GET(
+      new Request("http://x/api/metrics", { headers: { authorization: `Bearer ${TOKEN}` } }),
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ ok: false, reason: "Metrics store unavailable." });
+    expect(err).toHaveBeenCalledWith("metrics snapshot failed", expect.any(Error));
+    err.mockRestore();
+  });
+
   it("returns the aggregate snapshot with the right token", async () => {
     const snap = await snapshot();
     expect(snap).toHaveProperty("closes");

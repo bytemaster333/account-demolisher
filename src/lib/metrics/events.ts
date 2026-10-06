@@ -17,12 +17,13 @@
 
 import { z } from "zod";
 
-import { NETWORKS, type StellarNetwork } from "@/lib/config/networks";
+import type { StellarNetwork } from "@/lib/config/networks";
 
-// the networks the app is built for. derived from NETWORKS so a network dropped
-// from the config can no longer be reported (resolveNetwork would otherwise map
-// an unknown id to testnet and verify the close there)
-export const METRIC_NETWORKS = Object.keys(NETWORKS) as [StellarNetwork, ...StellarNetwork[]];
+// the networks the app is built for. futurenet was dropped as a target, so an
+// event naming it is refused here rather than verified anywhere. the type stays
+// StellarNetwork so callers holding a network id need no narrowing; the schema
+// below is what rejects anything else.
+export const METRIC_NETWORKS = ["mainnet", "testnet"] as const satisfies readonly StellarNetwork[];
 export type MetricNetwork = StellarNetwork;
 
 export const METRIC_PAGES = ["landing", "demolish", "allowances", "sign"] as const;
