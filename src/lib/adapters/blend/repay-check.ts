@@ -11,12 +11,12 @@ import { decimalToStroops, nativeMinimumBalance } from "./spendable";
 // for the preview warning only; the repay builder uses the real fee.
 const NATIVE_FEE_ALLOWANCE_STROOPS = 1_0000000n;
 
-// Blend requires the BORROWED token on hand to repay a loan; there is no
-// automatic swap. Closing the account must first repay every Blend liability in
+// blend requires the borrowed token on hand to repay a loan; there is no
+// automatic swap. closing the account must first repay every blend liability in
 // full, so if this account cannot spend enough of a borrowed token, the repay
 // step fails mid-close and the position has to be cleared manually before the
-// merge can proceed. This detects that shortfall from the audited balances so it
-// can be surfaced at PREVIEW, rather than surprising the user with a failed step
+// merge can proceed. this detects that shortfall from the audited balances so it
+// can be surfaced at preview, rather than surprising the user with a failed step
 // during execution.
 //
 // liabilities arrive in underlying units (discovery converts dTokens with the
@@ -24,7 +24,7 @@ const NATIVE_FEE_ALLOWANCE_STROOPS = 1_0000000n;
 // with what the account can actually spend: balance minus selling liabilities,
 // and for XLM also minus the minimum reserve and a fee allowance.
 //
-// Returns a single warning string (or none): the action is identical no matter
+// returns a single warning string (or none): the action is identical no matter
 // how many liabilities are short, so one clear message beats repeating it.
 export function blendRepayShortfallWarnings(
   audit: AccountAudit,
@@ -82,7 +82,7 @@ export function blendRepayShortfallWarnings(
 }
 
 // the SAC (Stellar Asset Contract) id for a classic/native asset, matching how a
-// Blend reserve keys its liabilities. Pool-share balances can't be a liability.
+// blend reserve keys its liabilities. pool-share balances cannot be a liability.
 function contractIdFor(asset: AssetIdentifier, network: NetworkConfig): string | null {
   try {
     if (asset.kind === "native") return Asset.native().contractId(network.passphrase);

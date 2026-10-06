@@ -67,6 +67,8 @@ export const BLEND_MAINNET_POOLS: readonly BlendPoolEntry[] = Object.freeze([
     verified_at: V1_REWARD_ZONE_VERIFIED_AT,
     source: V1_REWARD_ZONE_SOURCE,
   } satisfies BlendPoolEntry),
+  // a blend lending pool that happens to carry fxdao's name; it is not the
+  // fxdao vaults protocol (no longer supported) and still holds blend deposits
   Object.freeze({
     pool_id: "CDE65QK2ROZ32V2LVLBOKYPX47TYMYO37Z6ASQTBRTBNK53C7C6QF4Y7",
     name: "FxDAO",
