@@ -213,6 +213,9 @@ export interface ClaimBackstopEmissionsMetadata {
   readonly poolId: string;
   // BLND (7 decimals) accrued at discovery, shown when the claim can't run
   readonly accruedEmissions: bigint;
+  // the pool's backstop contract. set from discovery or the first build; a build
+  // against any other backstop is refused, and the auth-tree guard pins it
+  readonly backstopId?: string;
   readonly transaction?: Transaction;
 }
 
@@ -223,6 +226,8 @@ export interface BackstopQueueMetadata {
   // built transaction queues
   readonly shares: bigint;
   readonly queueEndsAt: Date;
+  // see ClaimBackstopEmissionsMetadata.backstopId
+  readonly backstopId?: string;
   readonly transaction?: Transaction;
 }
 
@@ -234,6 +239,8 @@ export interface BackstopWithdrawMetadata {
   readonly amount: bigint;
   // the BLND-USDC comet LP token the withdraw pays out
   readonly lpToken: string;
+  // see ClaimBackstopEmissionsMetadata.backstopId
+  readonly backstopId?: string;
   readonly transaction?: Transaction;
 }
 

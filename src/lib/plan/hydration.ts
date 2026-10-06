@@ -7,11 +7,16 @@ import type { NetworkConfig } from "@/lib/config/networks";
 import { blndTokenForNetwork } from "@/lib/adapters/blend/constants";
 import { buildBlndTrustlineTx } from "@/lib/adapters/blend/emissions-check";
 import {
+  BackstopClaimUnavailableError,
   BlndTrustlineMissingError,
+  buildBackstopClaimTx,
+  buildBackstopQueueTx,
+  buildBackstopWithdrawTx,
   buildExitSequence,
   type BlendExitPosition,
   type BlendExitStep,
 } from "@/lib/adapters/blend/exit";
+import { BASE_RESERVE_STROOPS, spendableFromAccount } from "@/lib/adapters/blend/spendable";
 import {
   claim as aquariusClaim,
   claimConcentratedFees,
@@ -29,7 +34,8 @@ import {
 import { errorMessage } from "@/lib/errors";
 import { buildRevoke } from "@/lib/soroban/allowances";
 import { balance as readTokenBalance, buildTransfer } from "@/lib/soroban/sep41";
-import { simulate } from "@/lib/soroban/simulate";
+import { simulate, SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
+import { stroopsToDecimal } from "@/lib/stellar/amount";
 import { applySlippageMin, resolveConfiguredSlippageBps } from "@/lib/safety/slippage";
 import type { AssetIdentifier } from "@/lib/types/account";
 import {
@@ -47,6 +53,14 @@ export interface HydrationFailure {
   // the node runs after other steps, so this failure against today's state is
   // not final: the node stays pending and is built at execute time
   readonly deferred: boolean;
+  // the failures that wait on the user's answer, so the review can ask instead
+  // of reading the reason text. a held-token conversion refused for its price
+  // (PriceImpactRefusedError) or with no route to XLM (NoSoroswapRouteError)
+  // asks accept, send as-is or leave; a backstop emissions claim that traps
+  // (BackstopEmissionsClaimError) asks for the forfeit acknowledgement
+  readonly priceImpactRefused: boolean;
+  readonly noSoroswapRoute: boolean;
+  readonly backstopClaimUnavailable: boolean;
 }
 
 export interface HydrationDeps {
@@ -62,6 +76,9 @@ export interface HydrationDeps {
 export interface HydrationAdapterOverrides {
   readonly buildRevoke?: typeof buildRevoke;
   readonly buildExitSequence?: typeof buildExitSequence;
+  readonly buildBackstopClaimTx?: typeof buildBackstopClaimTx;
+  readonly buildBackstopQueueTx?: typeof buildBackstopQueueTx;
+  readonly buildBackstopWithdrawTx?: typeof buildBackstopWithdrawTx;
   readonly aquariusWithdraw?: typeof aquariusWithdraw;
   readonly aquariusClaim?: typeof aquariusClaim;
   readonly withdrawConcentratedPosition?: typeof withdrawConcentratedPosition;
@@ -108,7 +125,14 @@ export async function hydratePlanTransactions(
     } catch (err) {
       const reason = errorMessage(err);
       const deferred = node.dependencies.length > 0 && !needsUserAnswer(err);
-      failures.push({ nodeId: node.id, reason, deferred });
+      failures.push({
+        nodeId: node.id,
+        reason,
+        deferred,
+        priceImpactRefused: err instanceof PriceImpactRefusedError,
+        noSoroswapRoute: err instanceof NoSoroswapRouteError,
+        backstopClaimUnavailable: err instanceof BackstopEmissionsClaimError,
+      });
       if (deferred) {
         node.deferred = { after: node.dependencies, reason };
       } else {
@@ -254,7 +278,9 @@ async function hydrateNode(
           `AddBlndTrustline: the plan's BLND issuer ${node.metadata.issuer} is not ${blnd.issuer} on ${deps.network.id}`,
         );
       }
-      setTransaction(node, buildBlndTrustlineTx(deps.network, await getSourceAccount()));
+      const account = await getSourceAccount();
+      assertTrustlineReserve(account, deps.network);
+      setTransaction(node, buildBlndTrustlineTx(deps.network, account));
       return;
     }
 
@@ -287,60 +313,59 @@ async function hydrateNode(
     }
 
     case "ClaimBackstopEmissions": {
-      let steps: readonly BlendExitStep[];
+      let built: Awaited<ReturnType<typeof buildBackstopClaimTx>>;
       try {
-        steps = await exitSteps(blendPosition(node.metadata.poolId, {}), {
-          claimBackstopEmissions: true,
-        });
+        built = await (a.buildBackstopClaimTx ?? buildBackstopClaimTx)(
+          deps.network,
+          { poolId: node.metadata.poolId },
+          userPublicKey,
+          await getSourceAccount(),
+          { server: deps.rpc },
+        );
       } catch (err) {
-        throw new BackstopEmissionsClaimError(
-          node.metadata.poolId,
-          node.metadata.accruedEmissions,
-          errorMessage(err),
-        );
+        // only a claim the network refuses in simulation is a forfeit question;
+        // a failed account read or rpc call is an ordinary failure
+        if (err instanceof BackstopClaimUnavailableError) {
+          throw new BackstopEmissionsClaimError(err);
+        }
+        throw err;
       }
-      const step = steps.find((s) => s.kind === "backstop_claim_emissions");
-      if (step === undefined) {
-        throw new Error(
-          `ClaimBackstopEmissions: buildExitSequence did not produce a "backstop_claim_emissions" step`,
-        );
-      }
-      setTransaction(node, step.transaction);
+      pinBackstop(node, built.backstop.id);
+      setTransaction(node, built.transaction);
       return;
     }
 
     case "BackstopQueue": {
       // the builder queues every share held when it runs, including shares a
       // backstop emissions claim just minted
-      const steps = await exitSteps(blendPosition(node.metadata.poolId, {}), {
-        backstopShares: node.metadata.shares > 0n ? node.metadata.shares : 1n,
-      });
-      const step = steps.find((s) => s.kind === "backstop_queue_withdrawal");
-      if (step?.kind !== "backstop_queue_withdrawal") {
-        throw new Error(
-          `BackstopQueue: buildExitSequence did not produce a "backstop_queue_withdrawal" step`,
-        );
-      }
+      const built = await (a.buildBackstopQueueTx ?? buildBackstopQueueTx)(
+        deps.network,
+        { poolId: node.metadata.poolId },
+        userPublicKey,
+        await getSourceAccount(),
+        { server: deps.rpc },
+      );
+      pinBackstop(node, built.backstop.id);
       // the shares and unlock date of the built tx, read on chain at build time
       const md = node.metadata as { shares: bigint; queueEndsAt: Date };
-      md.shares = step.shares;
-      md.queueEndsAt = step.queueEndsAt;
-      setTransaction(node, step.transaction);
+      md.shares = built.shares;
+      md.queueEndsAt = built.queueEndsAt;
+      setTransaction(node, built.transaction);
       return;
     }
 
     case "BackstopWithdraw": {
-      const steps = await exitSteps(blendPosition(node.metadata.poolId, {}), {
-        backstopWithdrawAmount: node.metadata.amount > 0n ? node.metadata.amount : 1n,
-      });
-      const step = steps.find((s) => s.kind === "backstop_withdraw");
-      if (step?.kind !== "backstop_withdraw") {
-        throw new Error(
-          `BackstopWithdraw: buildExitSequence did not produce a "backstop_withdraw" step`,
-        );
-      }
-      (node.metadata as { amount: bigint }).amount = step.amount;
-      setTransaction(node, step.transaction);
+      // withdraws whatever part of the queue has unlocked when it is built
+      const built = await (a.buildBackstopWithdrawTx ?? buildBackstopWithdrawTx)(
+        deps.network,
+        { poolId: node.metadata.poolId },
+        userPublicKey,
+        await getSourceAccount(),
+        { server: deps.rpc },
+      );
+      pinBackstop(node, built.backstop.id);
+      (node.metadata as { amount: bigint }).amount = built.shares;
+      setTransaction(node, built.transaction);
       return;
     }
 
@@ -675,6 +700,42 @@ function setTransaction(node: PlanNode, tx: Transaction): void {
   (node.metadata as { transaction?: Transaction }).transaction = tx;
 }
 
+// a backstop step names the backstop its pool uses. the first build records it
+// (unless discovery already did) and every later build must target the same one,
+// since the auth-tree guard pins the call to it
+function pinBackstop(
+  node: Extract<
+    PlanNode,
+    { kind: "ClaimBackstopEmissions" | "BackstopQueue" | "BackstopWithdraw" }
+  >,
+  built: string,
+): void {
+  const planned = node.metadata.backstopId;
+  if (planned !== undefined && planned !== built) {
+    throw new Error(
+      `${node.kind}: the pool's backstop is now ${built}, not the backstop ${planned} the plan named`,
+    );
+  }
+  (node.metadata as { backstopId?: string }).backstopId = built;
+}
+
+// a new trustline locks one base reserve, and the change_trust pays its fee bid
+// out of the same free XLM. checked when the step is built (at review and again
+// right before signing), so a short account learns how much to add instead of
+// failing the step on chain with op_low_reserve.
+function assertTrustlineReserve(account: Horizon.AccountResponse, network: NetworkConfig): void {
+  const native = Asset.native().contractId(network.passphrase);
+  const free = spendableFromAccount(account, native, network)?.spendable ?? 0n;
+  const needed = BASE_RESERVE_STROOPS + BigInt(SOROBAN_INCLUSION_FEE);
+  if (free < needed) {
+    throw new Error(
+      `AddBlndTrustline: opening the BLND trustline needs ${stroopsToDecimal(needed)} XLM free ` +
+        `(0.5 XLM reserve plus the fee), and the account has ${stroopsToDecimal(free)}; add XLM ` +
+        `to claim the Blend emissions`,
+    );
+  }
+}
+
 export function resolveContractIdForAsset(asset: AssetIdentifier, network: NetworkConfig): string {
   switch (asset.kind) {
     case "native":
@@ -742,20 +803,29 @@ export class PriceImpactRefusedError extends Error {
   }
 }
 
-// the backstop emissions claim can't be built (on mainnet the BLND-USDC comet
-// deposit it makes currently traps). the review shows the accrued BLND and asks
-// the user to forfeit it, and the plan is regenerated without the claim.
+// the backstop emissions claim fails in simulation (on mainnet the BLND-USDC
+// comet deposit it makes currently traps). the review shows the accrued BLND and
+// asks the user to forfeit it, then the queue runs without the claim. the message
+// is one line for the review; the simulation's diagnostic log stays in
+// simulationError.
 export class BackstopEmissionsClaimError extends Error {
   readonly poolId: string;
+  readonly backstopId: string;
+  // BLND, 7 decimals, read on chain when the claim was simulated
   readonly accruedEmissions: bigint;
-  constructor(poolId: string, accruedEmissions: bigint, cause: string) {
+  readonly simulationError: string;
+  constructor(cause: BackstopClaimUnavailableError) {
     super(
-      `ClaimBackstopEmissions: the backstop emissions claim for pool ${poolId} can't run ` +
-        `(${cause}); the accrued BLND can be forfeited to queue the withdrawal without it`,
+      `ClaimBackstopEmissions: the ${stroopsToDecimal(cause.accruedEmissions)} BLND of backstop ` +
+        `emissions accrued for pool ${cause.poolId} can't be claimed right now (the claim fails ` +
+        `in simulation); forfeit them to queue the withdrawal without the claim`,
+      { cause },
     );
     this.name = "BackstopEmissionsClaimError";
-    this.poolId = poolId;
-    this.accruedEmissions = accruedEmissions;
+    this.poolId = cause.poolId;
+    this.backstopId = cause.backstopId;
+    this.accruedEmissions = cause.accruedEmissions;
+    this.simulationError = cause.simulationError;
   }
 }
 
