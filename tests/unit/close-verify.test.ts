@@ -84,7 +84,25 @@ describe("xlmToStroops", () => {
     expect(xlmToStroops("12.3456789")).toBe(123_456_789n);
     expect(xlmToStroops("0.0000001")).toBe(1n);
     expect(xlmToStroops("0")).toBe(0n);
-    expect(xlmToStroops("nonsense")).toBe(0n);
+  });
+
+  it("throws on anything that isn't a plain amount with at most 7 decimals", () => {
+    for (const bad of ["nonsense", "", "1.12345678", "-1", "1e7", "1."]) {
+      expect(() => xlmToStroops(bad)).toThrow(/amount/);
+    }
+  });
+});
+
+describe("verifyCloseTx amount parsing", () => {
+  it("refuses a close whose merge credit Horizon reports unreadably, instead of counting 0", async () => {
+    const { fetchImpl } = horizon({
+      effects: [{ type: "account_credited", account: DEST, asset_type: "native", amount: "n/a" }],
+    });
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await verifyCloseTx(TESTNET, HASH, { fetchImpl });
+    expect(res).toMatchObject({ ok: false, retryable: false });
+    expect(err).toHaveBeenCalled();
+    err.mockRestore();
   });
 });
 

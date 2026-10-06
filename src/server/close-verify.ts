@@ -82,14 +82,13 @@ interface Page<T> {
   _links?: { next?: { href?: string } };
 }
 
-// convert a Horizon decimal XLM amount ("12.3456789") to stroops (1e7). robust to
-// missing or extra fractional digits; anything unparseable is 0n.
+// convert a Horizon decimal XLM amount ("12.3456789") to stroops (1e7). Horizon
+// always sends a non-negative amount with up to 7 decimals; anything else throws
+// rather than being counted as some other number.
 export function xlmToStroops(amount: string): bigint {
-  const m = /^(\d+)(?:\.(\d{0,7}))?\d*$/.exec(amount.trim());
-  if (!m) return 0n;
-  const whole = BigInt(m[1]!);
-  const frac = (m[2] ?? "").padEnd(7, "0");
-  return whole * 10_000_000n + BigInt(frac || "0");
+  const m = /^(\d+)(?:\.(\d{1,7}))?$/.exec(amount);
+  if (!m) throw new Error(`close-verify: unreadable amount "${amount}"`);
+  return BigInt(m[1]!) * 10_000_000n + BigInt((m[2] ?? "").padEnd(7, "0"));
 }
 
 function countOps(ops: readonly HorizonOp[]): CloseOpCounts {
@@ -245,7 +244,12 @@ export async function verifyCloseTx(
       eff.account === merge.into &&
       typeof eff.amount === "string"
     ) {
-      reclaimed += xlmToStroops(eff.amount);
+      try {
+        reclaimed += xlmToStroops(eff.amount);
+      } catch (e) {
+        console.error(`close-verify: ${txHash}`, e);
+        return { ok: false, reason: "the merge amount could not be read", retryable: false };
+      }
     }
   }
 
