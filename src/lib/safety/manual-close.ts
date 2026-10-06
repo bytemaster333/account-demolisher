@@ -1,17 +1,17 @@
-// "Manual close required" advisory for protocols this tool cannot auto-unwind.
+// "manual close required" advisory for protocols this tool cannot auto-unwind.
 //
-// Automated unwinding covers exactly Blend, Aquarius, Soroswap, and FxDAO. Any
-// OTHER on-chain position (a pool share, a loan/vault receipt, or a staked
-// balance in a protocol we don't support) can't be detected or unwound here.
-// There is no general "what protocols has this account used" scan, but a held
-// SEP-41 token from an UNRECOGNIZED contract is the visible fingerprint of one:
-// protocols hand out receipt/share/staked tokens, and those surface as standalone
-// tokens the account holds directly. So when the account holds standalone tokens
-// we don't recognize, we advise a manual close of any such position before the
-// account is deleted, rather than silently moving a receipt token as-is (which
-// would strand the underlying value in the unsupported protocol).
+// automated unwinding covers exactly Blend, Aquarius and Soroswap (FxDAO shut
+// down on chain and was removed; its stablecoins are ordinary credit balances).
+// any other on-chain position (a pool share, a loan or vault receipt, a staked
+// balance) can't be detected or unwound here. there is no general "what
+// protocols has this account used" scan, but a held sep-41 token from an
+// unrecognized contract is the visible fingerprint of one: protocols hand out
+// receipt, share and staked tokens, and those show up as tokens the account
+// holds directly. so when it holds tokens we don't recognize, we advise a manual
+// close of any such position first, rather than silently moving a receipt token
+// as-is (which would strand the underlying value in that protocol).
 
-export const SUPPORTED_DEFI_PROTOCOLS = ["Blend", "Aquarius", "Soroswap", "FxDAO"] as const;
+export const SUPPORTED_DEFI_PROTOCOLS = ["Blend", "Aquarius", "Soroswap"] as const;
 
 // Returns a "manual close required" notice when the account holds standalone
 // tokens (readable or unreadable) that could be positions in an unsupported
