@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { RADIUS } from "./tokens";
+import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { RADIUS, VISUALLY_HIDDEN } from "./tokens";
 
 export interface SelectOption {
   readonly value: string;
@@ -17,6 +17,8 @@ export function Select({
   ariaLabel,
   size = "md",
   minWidth,
+  disabled = false,
+  disabledReason,
   "data-testid": testId,
 }: {
   readonly value: string;
@@ -25,13 +27,26 @@ export function Select({
   readonly ariaLabel?: string;
   readonly size?: "sm" | "md";
   readonly minWidth?: number;
+  readonly disabled?: boolean;
+  // why it is disabled: a hover tooltip and the trigger's accessible description
+  readonly disabledReason?: string | undefined;
   readonly "data-testid"?: string;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
+  const reasonId = useId();
+  const showReason = disabled && disabledReason !== undefined && disabledReason.length > 0;
   const [hovered, setHovered] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+
+  // a menu left open when the control gets disabled must not stay usable. this
+  // adjusts state during render (react's pattern for following a prop change)
+  const [wasDisabled, setWasDisabled] = useState(disabled);
+  if (disabled !== wasDisabled) {
+    setWasDisabled(disabled);
+    if (disabled) setOpen(false);
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -102,9 +117,10 @@ export function Select({
     borderRadius: RADIUS.md,
     border: `1px solid ${open ? "var(--fg-3)" : "var(--border-2)"}`,
     background: "transparent",
-    color: "var(--fg)",
+    color: disabled ? "var(--fg-3)" : "var(--fg)",
     font: `500 ${size === "sm" ? 13 : 14}px/1 Geist, sans-serif`,
-    cursor: "pointer",
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.7 : 1,
     whiteSpace: "nowrap",
   };
 
@@ -113,10 +129,15 @@ export function Select({
       <button
         ref={triggerRef}
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => {
+          if (!disabled) setOpen((o) => !o);
+        }}
+        disabled={disabled}
+        title={disabled ? disabledReason : undefined}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={ariaLabel}
+        aria-describedby={showReason ? reasonId : undefined}
         style={trigger}
       >
         <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{current?.label}</span>
@@ -137,6 +158,11 @@ export function Select({
         >
           <path d="M6 9l6 6 6-6" />
         </svg>
+        {showReason ? (
+          <span id={reasonId} aria-hidden style={VISUALLY_HIDDEN}>
+            {disabledReason}
+          </span>
+        ) : null}
       </button>
 
       {open ? (
