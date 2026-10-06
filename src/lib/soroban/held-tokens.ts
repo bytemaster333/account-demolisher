@@ -1,26 +1,26 @@
-// Discover standalone SEP-41 token balances an account holds directly (custom
-// tokens someone transferred or minted to it), which the DeFi-position and
+// discover standalone SEP-41 token balances an account holds directly (custom
+// tokens someone transferred or minted to it), which the defi-position and
 // allowance paths do not surface.
 //
-// Soroban has no native "list every token an address holds": balances live in
-// each token contract's own storage. So we scan the RPC event log for SEP-41
+// soroban has no native "list every token an address holds": balances live in
+// each token contract's own storage. so we scan the rpc event log for SEP-41
 // events crediting the address, collect the emitting token contracts, then probe
-// balance(address) on each and keep the positive ones. The credit events, per
+// balance(address) on each and keep the positive ones. the credit events, per
 // SEP-41 (stellar-protocol ecosystem/sep-0041.md v0.5.2):
 //   transfer  [Symbol("transfer"), Address from, Address to]
 //   mint      [Symbol("mint"), Address to]
 //   mint      [Symbol("mint"), Address admin, Address to]  (soroban-token-sdk up to v22)
-// A topic filter matches only events with exactly that many topics, so the
+// a topic filter matches only events with exactly that many topics, so the
 // stellar asset contract's events (CAP-67: transfer carries a fourth topic, the
-// asset name, and mint is [mint, to, asset]) never match. That is on purpose:
+// asset name, and mint is [mint, to, asset]) never match. that is on purpose:
 // SAC balances are classic trustline assets, which the classic close path handles.
-// The same rule misses a token that adds topics of its own (SEP-41 v0.5.2 allows
+// the same rule misses a token that adds topics of its own (SEP-41 v0.5.2 allows
 // it); such a token is found only through the manual add.
 //
-// The public RPC only retains a rolling window of events (~7 days), so tokens
+// the public rpc only retains a rolling window of events (~7 days), so tokens
 // received before that window are missed, and on mainnet the wildcard-sender
 // filter is costly enough that the scan rarely covers the whole window inside
-// its budget. The result says how much was covered; it is paired with a manual
+// its budget. the result says how much was covered; it is paired with a manual
 // "enter a token contract" affordance, never treated as an exhaustive list.
 
 import { Address, xdr, type rpc } from "@stellar/stellar-sdk";
@@ -95,7 +95,7 @@ export function heldTokenCreditFilter(toAddress: string): rpc.Api.EventFilter {
   };
 }
 
-// Scan SEP-41 credit events to `toAddress` and return the distinct emitting
+// scan SEP-41 credit events to `toAddress` and return the distinct emitting
 // token contract ids (candidates to probe for a balance), with how much of the
 // retention window the scan covered.
 export async function scanTokensCreditedTo(
@@ -130,8 +130,8 @@ export function heldTokenScanWarning(incomplete: EventScanIncomplete): string {
   );
 }
 
-// Discover the SEP-41 tokens the account currently holds a positive balance of.
-// Returns BOTH the readable positive-balance tokens AND the contracts whose
+// discover the SEP-41 tokens the account currently holds a positive balance of.
+// returns both the readable positive-balance tokens and the contracts whose
 // balance could not be read, so a caller can surface the latter instead of
 // pretending the account was fully accounted for.
 export async function discoverHeldTokens(

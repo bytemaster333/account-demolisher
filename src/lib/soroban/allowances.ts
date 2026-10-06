@@ -87,16 +87,12 @@ export function withoutConfirmedZero<T extends AllowanceRecord>(records: readonl
   return records.filter((r) => r.onChainAmount !== 0n);
 }
 
-// Soroban RPC only retains events for ~7 days, so a wider window is not just
+// soroban rpc only retains events for ~7 days, so a wider window is not just
 // wasted work: it is dishonest, since anything older simply cannot be found via
-// getEvents. NOTE: an allowance whose last approve is older than this window is
-// not discoverable by event scan alone; the UI surfaces this ~7-day caveat so the
+// getEvents. an allowance whose last approve is older than this window is not
+// discoverable by event scan alone; the ui surfaces this ~7-day caveat so the
 // empty/partial result isn't mistaken for "no allowances exist".
 export const DEFAULT_SCAN_WINDOW_LEDGERS = EVENT_RETENTION_WINDOW_LEDGERS;
-
-// human-facing description of the scan window, kept next to the constant so copy
-// and behavior can't drift. update both together.
-export const SCAN_WINDOW_DESCRIPTION = "about the last 7 days";
 
 // the rpc reads at most 10,000 ledgers per getEvents call, so the window is cut
 // into slices of that size and a few run at once instead of 13 in a row. the

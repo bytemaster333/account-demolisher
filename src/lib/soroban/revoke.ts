@@ -1,13 +1,13 @@
-// shared revoke primitive: build → sign → submit an approve(amount=0) tx for a
+// shared revoke primitive: build, sign and submit an approve(amount=0) tx for a
 // single SEP-41 allowance, plus a confirmation poller.
 //
-// used by two callers:
-//   - the per-row RevokeButton: submitRevoke only (enqueue-and-go, it treats
-//     RPC acceptance as success and lets the user reload for finality)
-//   - bulk revoke: submitRevoke + confirmRevoke, so each tx lands in a ledger
-//     before the next reloads the source account's sequence number. submitting
-//     the next revoke before the previous confirmed would reuse a stale sequence
-//     and get rejected as tx_bad_seq.
+// both callers submit and then wait for confirmRevoke:
+//   - the per-row RevokeButton shows "Revoked" only on SUCCESS from the ledger,
+//     and a "not confirmed" warning with the tx link otherwise, since a dropped
+//     approve(0) leaves the allowance live
+//   - bulk revoke confirms each tx before the next one reloads the source
+//     account's sequence number; submitting the next revoke before the previous
+//     confirmed would reuse a stale sequence and get rejected as tx_bad_seq
 
 import { TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
 
