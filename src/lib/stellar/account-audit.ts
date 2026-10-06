@@ -1,6 +1,8 @@
 import { Horizon } from "@stellar/stellar-sdk";
 import { getHorizon } from "@/lib/stellar/horizon-client";
+import { decimalToStroops } from "@/lib/stellar/amount";
 import { filterClaimableNow } from "@/lib/stellar/claimable-balances";
+import { mapWithConcurrency } from "@/lib/stellar/concurrency";
 import {
   DEFAULT_TX_VALIDITY_SECONDS,
   fetchLedgerClock,
@@ -22,9 +24,18 @@ import type {
   SponsorshipInfo,
 } from "@/lib/types/account";
 
+export interface AuditedClaimableBalance extends ClaimableBalanceEntry {
+  // set only on a claimable-now credit balance whose asset has no trustline on the
+  // account: the issuer's auth_required flag. false means change_trust can add the
+  // line and the claim then succeeds. left unset when the issuer account does not
+  // exist (change_trust would fail op_no_issuer).
+  readonly issuerAuthRequired?: boolean;
+}
+
 // the audit plus the ledger it was evaluated against, so later checks (merge
 // sequence ceiling, transaction time bounds) use the same network clock
 export interface AccountAuditResult extends AccountAudit {
+  readonly claimableBalances: readonly AuditedClaimableBalance[];
   readonly ledger: LedgerClock;
 }
 
@@ -79,18 +90,24 @@ export async function auditAccount(
       options.claimWindowSeconds ?? DEFAULT_TX_VALIDITY_SECONDS,
     ).map((c) => c.id),
   );
-  const claimableBalances: readonly ClaimableBalanceEntry[] = rawClaimableBalances.map((cb) => ({
+  const evaluated: readonly ClaimableBalanceEntry[] = rawClaimableBalances.map((cb) => ({
     ...cb,
     claimableNow: claimableIds.has(cb.id),
   }));
+  const claimableBalances = await withIssuerAuthRequired(server, evaluated, balances);
 
   // the only sponsorships the close releases itself are claimable balances this
   // account created with itself as a claimant. everything else in num_sponsoring
   // is a reserve it pays for another account's entry, which blocks the merge
-  // until the user resolves it. this counts every claimable one; the user's
-  // actual claim selection is applied in assessMergeability.
+  // until the user resolves it. the stored count assumes every balance the audit
+  // sees as collectable is claimed; assessMergeability takes the plan's real
+  // claims.
   const accountId = account.account_id;
-  const coverableSponsorships = computeCoverableSponsorships(accountId, claimableBalances);
+  const coverableSponsorships = computeCoverableSponsorships(
+    accountId,
+    claimableBalances,
+    collectableClaimableBalanceIds(balances, claimableBalances),
+  );
 
   const sponsorship: SponsorshipInfo = {
     numSponsoring: account.num_sponsoring,
@@ -313,6 +330,55 @@ async function loadPoolShares(
   return settled.map((r) => (r as PromiseFulfilledResult<PoolShareEntry>).value);
 }
 
+// spam claimable balances can name hundreds of issuers; look them up a few at a
+// time so public horizon does not rate-limit the audit
+const ISSUER_LOOKUP_CONCURRENCY = 8;
+
+// tags each claimable-now credit balance the account has no trustline for with
+// its issuer's auth_required flag, one lookup per distinct issuer. a missing
+// issuer leaves the flag unset; any other failure propagates.
+async function withIssuerAuthRequired(
+  server: Horizon.Server,
+  claimableBalances: readonly ClaimableBalanceEntry[],
+  balances: readonly AuditBalance[],
+): Promise<readonly AuditedClaimableBalance[]> {
+  const trusted = new Set(balances.map((b) => assetKey(b.asset)));
+  const untrusted = (cb: ClaimableBalanceEntry): string | null =>
+    cb.claimableNow === true && cb.asset.kind === "credit" && !trusted.has(assetKey(cb.asset))
+      ? cb.asset.issuer
+      : null;
+  const issuers = [
+    ...new Set(claimableBalances.map(untrusted).filter((i): i is string => i !== null)),
+  ];
+  const flags = new Map<string, boolean>();
+  await mapWithConcurrency(issuers, ISSUER_LOOKUP_CONCURRENCY, async (issuer) => {
+    try {
+      const account = await server.loadAccount(issuer);
+      flags.set(issuer, account.flags.auth_required);
+    } catch (err) {
+      if (!isHorizonNotFound(err)) throw err;
+    }
+  });
+  return claimableBalances.map((cb) => {
+    const issuer = untrusted(cb);
+    const flag = issuer === null ? undefined : flags.get(issuer);
+    return flag === undefined ? cb : { ...cb, issuerAuthRequired: flag };
+  });
+}
+
+function assetKey(asset: AssetIdentifier): string {
+  switch (asset.kind) {
+    case "native":
+      return "native";
+    case "credit":
+      return `${asset.code}:${asset.issuer}`;
+    case "liquidity_pool_shares":
+      return `pool:${asset.poolId}`;
+    case "contract":
+      return `contract:${asset.contractId}`;
+  }
+}
+
 // horizon serializes assets either as an object or as "CODE:ISSUER"/"native"
 function serverAssetToIdentifier(asset: {
   asset_type: string;
@@ -346,25 +412,65 @@ export function computeRequiresMultisig(thresholds: AuditThresholds): boolean {
 // trustlines, offers, signers or data entries (begin_sponsoring with itself as
 // the sponsored id is op_malformed), so the only entries in num_sponsoring the
 // close frees are claimable balances this account created with itself as a
-// claimant, and only those it can claim and actually claims. claimableBalanceIds
-// is the user's claim selection with the batcher's meaning: undefined claims
-// every claimable balance.
+// claimant, and only those the close actually claims (claimedBalanceIds).
 export function computeCoverableSponsorships(
   accountId: string,
   claimableBalances: readonly ClaimableBalanceEntry[],
-  claimableBalanceIds?: readonly string[],
+  claimedBalanceIds: readonly string[],
 ): number {
-  const selected = claimableBalanceIds === undefined ? null : new Set(claimableBalanceIds);
+  const claimed = new Set(claimedBalanceIds);
   return claimableBalances.filter(
-    (cb) =>
-      cb.sponsor === accountId &&
-      cb.claimableNow === true &&
-      (selected === null || selected.has(cb.id)),
+    (cb) => cb.sponsor === accountId && cb.claimableNow === true && claimed.has(cb.id),
   ).length;
 }
 
+// the claimable balances a claim would succeed for, judged from the audit alone:
+// claimable now, and for a credit either an authorized trustline with room left
+// for it (claims of one asset share that room) or no trustline and an issuer
+// that does not require authorization, so the plan can add the line first. the
+// plan can still leave one behind (for example when the account cannot fund the
+// new trustline's reserve), so this only feeds the stored audit verdict;
+// assessMergeability takes the plan's own list.
+export function collectableClaimableBalanceIds(
+  balances: readonly AuditBalance[],
+  claimableBalances: readonly AuditedClaimableBalance[],
+): string[] {
+  const room = new Map<string, bigint | null>();
+  for (const b of balances) {
+    if (b.asset.kind !== "credit") continue;
+    const key = assetKey(b.asset);
+    if (b.isAuthorized === false) room.set(key, 0n);
+    else if (b.limit === undefined) room.set(key, null);
+    else room.set(key, decimalToStroops(b.limit) - decimalToStroops(b.amount));
+  }
+  const out: string[] = [];
+  for (const cb of claimableBalances) {
+    if (cb.claimableNow !== true) continue;
+    if (cb.asset.kind !== "credit") {
+      out.push(cb.id);
+      continue;
+    }
+    const key = assetKey(cb.asset);
+    if (!room.has(key)) {
+      if (cb.issuerAuthRequired === false) out.push(cb.id);
+      continue;
+    }
+    const left = room.get(key) ?? null;
+    if (left === null) {
+      out.push(cb.id);
+      continue;
+    }
+    const amount = decimalToStroops(cb.amount);
+    if (amount > left) continue;
+    room.set(key, left - amount);
+    out.push(cb.id);
+  }
+  return out;
+}
+
 // flag and sponsorship check stored on the audit record, assuming every
-// claimable balance is claimed. assessMergeability is the full pre-merge check.
+// collectable claimable balance is claimed. assessMergeability is the full
+// pre-merge check.
 export function computeMergeability(flags: AuditFlags, sponsorship: SponsorshipInfo): Mergeability {
   if (flags.authImmutable) {
     return { mergeable: false, reason: "AUTH_IMMUTABLE" };
@@ -392,10 +498,15 @@ export type MergeAssessment =
 export interface MergeAssessmentOptions {
   // the ledger the audit was read against (AccountAuditResult.ledger)
   readonly ledger: LedgerClock;
-  // the user's claim selection; undefined claims every claimable balance
-  readonly claimableBalanceIds?: readonly string[];
-  // classic transactions this account submits up to and including the one that
-  // carries account_merge. each consumes one sequence number.
+  // ids of the claimable balances the plan claims, i.e.
+  // planClaimableBalances(audit, selection).claimed. not the user's selection:
+  // the batcher claims self-sponsored balances regardless of it, and leaves
+  // behind ones it cannot claim
+  readonly claimedBalanceIds: readonly string[];
+  // every transaction sourced from this account that is still to be submitted,
+  // up to and including the one that carries account_merge: soroban exits,
+  // revokes and swaps as well as classic batches. each consumes one sequence
+  // number.
   readonly transactionsBeforeMerge: number;
 }
 
@@ -448,7 +559,7 @@ export function assessMergeability(
     computeCoverableSponsorships(
       audit.accountId,
       audit.claimableBalances,
-      options.claimableBalanceIds,
+      options.claimedBalanceIds,
     ),
     audit.sponsorship.numSponsoring,
   );

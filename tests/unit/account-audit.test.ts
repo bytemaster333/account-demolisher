@@ -6,10 +6,22 @@ const fakeHorizon = {
   account: null as unknown,
   ledger: { sequence: 1000, closed_at: "2020-01-01T00:00:00Z" } as unknown,
   claimable: [] as unknown[],
+  // other accounts by id (asset issuers); an Error value is thrown on load
+  others: {} as Record<string, unknown>,
+  loads: [] as string[],
 };
 vi.mock("@/lib/stellar/horizon-client", () => ({
   getHorizon: () => ({
-    loadAccount: async () => fakeHorizon.account,
+    loadAccount: async (id: string) => {
+      fakeHorizon.loads.push(id);
+      if (id === (fakeHorizon.account as { account_id: string }).account_id) {
+        return fakeHorizon.account;
+      }
+      const other = fakeHorizon.others[id];
+      if (other instanceof Error) throw other;
+      if (other === undefined) throw new NotFoundError("Not Found", { status: 404 });
+      return other;
+    },
     offers: () => ({
       forAccount: () => ({ limit: () => ({ call: async () => ({ records: [] }) }) }),
     }),
@@ -26,9 +38,11 @@ vi.mock("@/lib/stellar/horizon-client", () => ({
   }),
 }));
 
+import { NetworkError, NotFoundError } from "@stellar/stellar-sdk";
 import {
   assessMergeability,
   auditAccount,
+  collectableClaimableBalanceIds,
   computeCoverableSponsorships,
   computeMergeability,
   computeRequiresMultisig,
@@ -134,23 +148,84 @@ function cb(
 }
 
 describe("computeCoverableSponsorships", () => {
-  it("counts only claimable balances the account sponsors itself", () => {
-    expect(computeCoverableSponsorships(ACC, [cb("a", ACC), cb("b", OTHER)])).toBe(1);
+  it("counts only claimed balances the account sponsors itself", () => {
+    expect(computeCoverableSponsorships(ACC, [cb("a", ACC), cb("b", OTHER)], ["a", "b"])).toBe(1);
   });
 
   it("does not count a self-sponsored CB that is not claimable now", () => {
-    expect(computeCoverableSponsorships(ACC, [cb("a", ACC, false), cb("b", ACC, true)])).toBe(1);
+    const cbs = [cb("a", ACC, false), cb("b", ACC, true)];
+    expect(computeCoverableSponsorships(ACC, cbs, ["a", "b"])).toBe(1);
   });
 
   it("does not count a CB whose claimability was never evaluated", () => {
-    expect(computeCoverableSponsorships(ACC, [cb("a", ACC, "unset")])).toBe(0);
+    expect(computeCoverableSponsorships(ACC, [cb("a", ACC, "unset")], ["a"])).toBe(0);
   });
 
-  it("does not count a self-sponsored CB the user left out of the claim selection", () => {
+  it("does not count a self-sponsored CB the plan does not claim", () => {
     const cbs = [cb("a", ACC), cb("b", ACC)];
     expect(computeCoverableSponsorships(ACC, cbs, ["b"])).toBe(1);
     expect(computeCoverableSponsorships(ACC, cbs, [])).toBe(0);
-    expect(computeCoverableSponsorships(ACC, cbs)).toBe(2);
+  });
+});
+
+function creditCb(
+  id: string,
+  code: string,
+  amount: string,
+  extra: Partial<ClaimableBalanceEntry> & { issuerAuthRequired?: boolean } = {},
+): ClaimableBalanceEntry {
+  return { ...cb(id, ACC), asset: { kind: "credit", code, issuer: OTHER }, amount, ...extra };
+}
+
+// what the audit can tell on its own about whether a claim would succeed; the
+// stored coverable count must not credit a self-sponsored CB the close cannot
+// claim, or the merge fails with op_is_sponsor after mergeability said yes
+describe("collectableClaimableBalanceIds", () => {
+  const line = (
+    code: string,
+    amount: string,
+    limit: string,
+    isAuthorized = true,
+  ): AuditBalance => ({
+    ...credit(code, amount, isAuthorized),
+    limit,
+  });
+
+  it("collects native balances and credits on an authorized trustline with room", () => {
+    const ids = collectableClaimableBalanceIds(
+      [line("USD", "1", "100")],
+      [cb("xlm", ACC), creditCb("usd", "USD", "50")],
+    );
+    expect(ids).toEqual(["xlm", "usd"]);
+  });
+
+  it("skips a credit the account does not trust unless the issuer lets anyone hold it", () => {
+    const ids = collectableClaimableBalanceIds(
+      [],
+      [
+        creditCb("open", "OPEN", "5", { issuerAuthRequired: false }),
+        creditCb("gated", "GATED", "5", { issuerAuthRequired: true }),
+        creditCb("unknown", "GONE", "5"),
+      ],
+    );
+    expect(ids).toEqual(["open"]);
+  });
+
+  it("skips a deauthorized trustline and a claim that overflows the limit", () => {
+    const ids = collectableClaimableBalanceIds(
+      [line("FRZ", "0", "100", false), line("CAP", "90", "100")],
+      [
+        creditCb("frozen", "FRZ", "1"),
+        creditCb("fits", "CAP", "6"),
+        // the first claim already used 6 of the 10 left
+        creditCb("overflow", "CAP", "5"),
+      ],
+    );
+    expect(ids).toEqual(["fits"]);
+  });
+
+  it("skips balances that are not claimable now", () => {
+    expect(collectableClaimableBalanceIds([], [cb("later", ACC, false)])).toEqual([]);
   });
 });
 
@@ -188,7 +263,7 @@ function credit(code: string, amount: string, isAuthorized: boolean): AuditBalan
 }
 
 describe("assessMergeability", () => {
-  const opts = { ledger: LEDGER, transactionsBeforeMerge: 1 };
+  const opts = { ledger: LEDGER, claimedBalanceIds: [] as string[], transactionsBeforeMerge: 1 };
 
   it("is mergeable for a plain account", () => {
     expect(assessMergeability(baseAudit(), opts)).toEqual({ mergeable: true });
@@ -216,16 +291,17 @@ describe("assessMergeability", () => {
     });
   });
 
-  it("counts a self-sponsored CB as released only when it is in the claim selection", () => {
+  it("counts a self-sponsored CB as released only when the plan claims it", () => {
     const audit = baseAudit({
       claimableBalances: [cb("self", ACC)],
       sponsorship: { numSponsoring: 1, numSponsored: 0, coverable: 1 },
     });
-    expect(assessMergeability(audit, opts)).toEqual({ mergeable: true });
-    expect(assessMergeability(audit, { ...opts, claimableBalanceIds: ["self"] })).toEqual({
+    expect(assessMergeability(audit, { ...opts, claimedBalanceIds: ["self"] })).toEqual({
       mergeable: true,
     });
-    expect(assessMergeability(audit, { ...opts, claimableBalanceIds: [] })).toMatchObject({
+    // left behind by the plan (for example no trustline and the issuer requires
+    // authorization): the stored coverable count does not override that
+    expect(assessMergeability(audit, { ...opts, claimedBalanceIds: [] })).toMatchObject({
       mergeable: false,
       reason: "IS_SPONSOR",
     });
@@ -286,6 +362,8 @@ describe("auditAccount", () => {
   beforeEach(() => {
     fakeHorizon.ledger = { sequence: 1000, closed_at: "2020-01-01T00:00:00Z" };
     fakeHorizon.claimable = [];
+    fakeHorizon.others = {};
+    fakeHorizon.loads = [];
   });
 
   function horizonAccount(extra: Record<string, unknown> = {}): unknown {
@@ -351,5 +429,112 @@ describe("auditAccount", () => {
 
     const wide = await auditAccount(ACC, TESTNET, { claimWindowSeconds: 7200 });
     expect(wide.claimableBalances.find((c) => c.id === "later")?.claimableNow).toBe(false);
+  });
+
+  const ISSUER_OPEN = "GISSUEROPEN";
+  const ISSUER_GATED = "GISSUERGATED";
+  const ISSUER_GONE = "GISSUERGONE";
+  const issuerAccount = (id: string, authRequired: boolean) => ({
+    account_id: id,
+    flags: {
+      auth_required: authRequired,
+      auth_revocable: false,
+      auth_immutable: false,
+      auth_clawback_enabled: false,
+    },
+  });
+  const cbRecord = (id: string, asset: string, sponsor = OTHER) => ({
+    id,
+    asset,
+    amount: "5.0000000",
+    sponsor,
+    claimants: [{ destination: ACC, predicate: { unconditional: true } }],
+  });
+
+  // a claimable balance of an asset the account does not trust can only be
+  // collected by adding the trustline first, which works only when the issuer
+  // does not require authorization
+  it("reads the issuer's auth_required flag for credits the account does not trust", async () => {
+    fakeHorizon.account = horizonAccount({ num_sponsoring: 0 });
+    fakeHorizon.others = {
+      [ISSUER_OPEN]: issuerAccount(ISSUER_OPEN, false),
+      [ISSUER_GATED]: issuerAccount(ISSUER_GATED, true),
+    };
+    fakeHorizon.claimable = [
+      cbRecord("open-1", `OPEN:${ISSUER_OPEN}`),
+      cbRecord("open-2", `OPEN2:${ISSUER_OPEN}`),
+      cbRecord("gated", `GATED:${ISSUER_GATED}`),
+      cbRecord("gone", `GONE:${ISSUER_GONE}`),
+      cbRecord("xlm", "native"),
+    ];
+    fakeHorizon.loads = [];
+    const audit = await auditAccount(ACC, TESTNET);
+    const byId = new Map(
+      audit.claimableBalances.map((c) => [c.id, c as { issuerAuthRequired?: boolean }]),
+    );
+    expect(byId.get("open-1")?.issuerAuthRequired).toBe(false);
+    expect(byId.get("open-2")?.issuerAuthRequired).toBe(false);
+    expect(byId.get("gated")?.issuerAuthRequired).toBe(true);
+    // a missing issuer cannot back a new trustline (op_no_issuer), so it stays unknown
+    expect(byId.get("gone")).not.toHaveProperty("issuerAuthRequired");
+    expect(byId.get("xlm")).not.toHaveProperty("issuerAuthRequired");
+    // one lookup per distinct issuer
+    expect(fakeHorizon.loads.filter((id) => id === ISSUER_OPEN)).toHaveLength(1);
+  });
+
+  it("does not look up issuers of trusted credits or of balances not claimable now", async () => {
+    fakeHorizon.account = horizonAccount({
+      num_sponsoring: 0,
+      balances: [
+        ...(horizonAccount() as { balances: unknown[] }).balances,
+        {
+          asset_type: "credit_alphanum4",
+          asset_code: "USD",
+          asset_issuer: ISSUER_GATED,
+          balance: "0.0000000",
+          limit: "1000.0000000",
+          buying_liabilities: "0",
+          selling_liabilities: "0",
+          is_authorized: true,
+        },
+      ],
+    });
+    fakeHorizon.others = {};
+    fakeHorizon.claimable = [
+      cbRecord("trusted", `USD:${ISSUER_GATED}`),
+      {
+        ...cbRecord("later", `OPEN:${ISSUER_OPEN}`),
+        claimants: [{ destination: ACC, predicate: { not: { unconditional: true } } }],
+      },
+    ];
+    fakeHorizon.loads = [];
+    const audit = await auditAccount(ACC, TESTNET);
+    expect(fakeHorizon.loads).toEqual([ACC]);
+    expect(audit.claimableBalances.find((c) => c.id === "trusted")).not.toHaveProperty(
+      "issuerAuthRequired",
+    );
+  });
+
+  it("surfaces an issuer lookup failure other than not-found", async () => {
+    fakeHorizon.account = horizonAccount({ num_sponsoring: 0 });
+    fakeHorizon.others = { [ISSUER_OPEN]: new NetworkError("Bad Gateway", { status: 502 }) };
+    fakeHorizon.claimable = [cbRecord("open", `OPEN:${ISSUER_OPEN}`)];
+    await expect(auditAccount(ACC, TESTNET)).rejects.toThrow("Bad Gateway");
+  });
+
+  // a self-sponsored CB the close cannot claim keeps num_sponsoring above zero
+  it("does not count a self-sponsored CB of an asset it cannot trust as coverable", async () => {
+    fakeHorizon.account = horizonAccount({ num_sponsoring: 2 });
+    fakeHorizon.others = {
+      [ISSUER_OPEN]: issuerAccount(ISSUER_OPEN, false),
+      [ISSUER_GATED]: issuerAccount(ISSUER_GATED, true),
+    };
+    fakeHorizon.claimable = [
+      cbRecord("open", `OPEN:${ISSUER_OPEN}`, ACC),
+      cbRecord("gated", `GATED:${ISSUER_GATED}`, ACC),
+    ];
+    const audit = await auditAccount(ACC, TESTNET);
+    expect(audit.sponsorship.coverable).toBe(1);
+    expect(audit.mergeability).toMatchObject({ mergeable: false, reason: "IS_SPONSOR" });
   });
 });

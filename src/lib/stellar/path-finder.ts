@@ -4,6 +4,7 @@ import { Asset, BadRequestError, NetworkError, NotFoundError } from "@stellar/st
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { isFrozenBalance } from "@/lib/stellar/account-audit";
 import { decimalToStroops, stroopsToDecimal } from "@/lib/stellar/amount";
+import { mapWithConcurrency } from "@/lib/stellar/concurrency";
 import { referenceTradeAmount } from "@/lib/plan/price-impact";
 import type { NetworkConfig } from "@/lib/config/networks";
 import type { AccountAudit, AssetIdentifier } from "@/lib/types/account";
@@ -119,23 +120,6 @@ export async function resolveCreditPaths(
 export const PATH_REQUEST_CONCURRENCY = 8;
 export const PATH_REQUEST_ATTEMPTS = 4;
 const RETRY_BASE_DELAY_MS = 250;
-
-async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
-  const worker = async (): Promise<void> => {
-    while (next < items.length) {
-      const i = next++;
-      results[i] = await fn(items[i]!);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return results;
-}
 
 // 429, 5xx and connection failures are transient; anything else (a 400 on a
 // malformed asset, a 404) is a real answer and is thrown at once. the last
