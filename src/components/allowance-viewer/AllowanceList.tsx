@@ -16,8 +16,9 @@ import { explorerContractUrl } from "@/lib/explorer";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { allowanceAmountMismatch, type AllowanceRecord } from "@/lib/soroban/allowances";
 import { getRpc } from "@/lib/soroban/rpc-client";
-import { decimals as sep41Decimals, symbol as sep41Symbol } from "@/lib/soroban/sep41";
-import { safeDisplay } from "@/lib/safe-display";
+import { MAX_TOKEN_DECIMALS } from "@/lib/soroban/sep41";
+import { readTokenMetadata } from "@/lib/soroban/token-metadata";
+import { hasNonAscii, safeDisplay } from "@/lib/safe-display";
 import { lookupSpender, type SpenderInfo } from "@/lib/soroban/spender-registry";
 import type { Connector } from "@/lib/wallet/connector";
 
@@ -176,33 +177,37 @@ function AllowanceRow({
   const [tokenDecimals, setTokenDecimals] = useState<number | null>(null);
   const [tokenError, setTokenError] = useState<string | null>(null);
 
-  // lazy per-row SEP-41 metadata fetch; sep41.ts caches per (server, contract).
-  // a simulation needs a G-address source, never the scanned address itself
+  // per-row SEP-41 metadata through one shared, bounded queue: any contract can
+  // put rows on this list, so rows must not each fire their own simulations. a
+  // simulation needs a G-address source, never the scanned address itself
   // (which can be a contract)
   useEffect(() => {
     if (simulationSource === null) return;
-    let cancelled = false;
+    const controller = new AbortController();
     (async () => {
       try {
-        const rpc = getRpc(network);
-        const [s, d] = await Promise.all([
-          sep41Symbol(rpc, record.contractId, simulationSource, network),
-          sep41Decimals(rpc, record.contractId, simulationSource, network),
-        ]);
-        if (!cancelled) {
+        const { symbol, decimals } = await readTokenMetadata(
+          getRpc(network),
+          record.contractId,
+          simulationSource,
+          network,
+          { signal: controller.signal },
+        );
+        if (!controller.signal.aborted) {
           // SEP-41 symbol() is attacker-controlled on-chain text; strip bidi /
           // control characters so a crafted symbol can't reorder or spoof the row
-          setTokenSymbol(safeDisplay(s));
-          setTokenDecimals(d);
+          setTokenSymbol(safeDisplay(symbol));
+          setTokenDecimals(decimals);
         }
       } catch (e: unknown) {
-        if (!cancelled) {
+        // an aborted read belongs to a row that is gone; it is not a token error
+        if (!controller.signal.aborted) {
           setTokenError(errorMessage(e, "Failed to load token metadata"));
         }
       }
     })();
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [network, record.contractId, simulationSource]);
 
@@ -255,8 +260,19 @@ function AllowanceRow({
           {avatarText}
         </span>
         <div style={{ minWidth: 0 }}>
-          <div data-testid="row-token-symbol" style={{ fontWeight: 600, fontSize: 14 }}>
-            {tokenSymbol ?? (tokenError || noSource ? "(unknown)" : "…")}
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span data-testid="row-token-symbol" style={{ fontWeight: 600, fontSize: 14 }}>
+              {tokenSymbol ?? (tokenError || noSource ? "(unknown)" : "…")}
+            </span>
+            {tokenSymbol !== null && hasNonAscii(tokenSymbol) ? (
+              <span data-testid="row-token-nonascii" style={{ fontSize: 10.5 }}>
+                <Badge tone="warning">
+                  <InfoTip tip="This symbol uses characters outside plain ASCII. Some look exactly like Latin letters (a Cyrillic С next to a Latin C), so a token can pose as a familiar one. Check the token contract address, not the symbol.">
+                    non-ASCII
+                  </InfoTip>
+                </Badge>
+              </span>
+            ) : null}
           </div>
           <div style={{ marginTop: 2 }}>
             <CopyableAddress
@@ -416,15 +432,28 @@ function groupThousands(digits: string): string {
   return digits.replace(/\B(?=(\d{3})+(?!\d))/gu, ",");
 }
 
+// decimals come from the token contract, so the formatter takes nothing on
+// trust: anything an i128 can't need is shown as raw base units
 function formatAmount(amount: bigint, decimals: number | null): string {
   if (amount >= UNLIMITED_ALLOWANCE_THRESHOLD) return "Unlimited";
   const sign = amount < 0n ? "-" : "";
   const abs = amount < 0n ? -amount : amount;
-  if (decimals === null || decimals === 0) return `${sign}${groupThousands(abs.toString())}`;
+  if (
+    decimals === null ||
+    !Number.isInteger(decimals) ||
+    decimals <= 0 ||
+    decimals > MAX_TOKEN_DECIMALS
+  ) {
+    return `${sign}${groupThousands(abs.toString())}`;
+  }
   // bigint-safe fixed-point formatting
   const divisor = 10n ** BigInt(decimals);
   const whole = groupThousands((abs / divisor).toString());
-  const fracStr = (abs % divisor).toString().padStart(decimals, "0").replace(/0+$/u, "");
+  const frac = (abs % divisor).toString().padStart(decimals, "0");
+  // a plain scan instead of a /0+$/ regex, which backtracks quadratically
+  let end = frac.length;
+  while (end > 0 && frac[end - 1] === "0") end -= 1;
+  const fracStr = frac.slice(0, end);
   return fracStr.length === 0 ? `${sign}${whole}` : `${sign}${whole}.${fracStr}`;
 }
 
