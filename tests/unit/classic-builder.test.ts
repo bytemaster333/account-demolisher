@@ -9,6 +9,11 @@ import {
   type Transaction,
 } from "@stellar/stellar-sdk";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
+import {
+  CLOSE_MARKER_NAME,
+  CLOSE_MARKER_VALUE,
+  closeMarkerOperations,
+} from "@/lib/metrics/close-marker";
 import type { NetworkConfig } from "@/lib/config/networks";
 import type { BatchedOperation, ClassicBatch, ClassicMemo } from "@/lib/types/plan";
 
@@ -278,4 +283,113 @@ describe("buildClassicTransaction time bounds", () => {
       buildClassicTransaction(singleOpBatch(), newSource(), TEST_NET, 100, 300, Number.NaN),
     ).toThrow(/ledger close time/);
   });
+});
+
+// op kinds the plan emits once ClassicOpKind carries them; cast through unknown so
+// these tests compile before and after that type change
+function op(kind: string, metadata: Record<string, unknown>, source?: string): BatchedOperation {
+  return {
+    kind,
+    summary: kind,
+    metadata,
+    ...(source ? { source } : {}),
+  } as unknown as BatchedOperation;
+}
+
+const ISSUER = "GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3";
+const SPAM = { kind: "credit", code: "SPAM", issuer: ISSUER };
+
+// collecting a claimable balance of an asset the account does not trust needs
+// the trustline first, or the claim fails op_no_trust
+describe("buildClassicTransaction change_trust_add", () => {
+  it("adds a trustline at the maximum limit when no limit is given", () => {
+    const built = firstOp(batchOf(op("change_trust_add", { asset: SPAM })));
+    expect(built["type"]).toBe("changeTrust");
+    expect((built["line"] as { code: string; issuer: string }).code).toBe("SPAM");
+    expect((built["line"] as { code: string; issuer: string }).issuer).toBe(ISSUER);
+    expect(built["limit"]).toBe("922337203685.4775807");
+  });
+
+  it("passes an explicit limit and an op source through", () => {
+    const source = Keypair.random().publicKey();
+    const built = firstOp(batchOf(op("change_trust_add", { asset: SPAM, limit: "500" }, source)));
+    expect(built["limit"]).toBe("500.0000000");
+    expect(built["source"]).toBe(source);
+  });
+
+  it("refuses a zero, malformed or non-string limit, which would not add a line", () => {
+    for (const limit of ["0", "-1", "1.23456789", 5]) {
+      expect(() => firstOp(batchOf(op("change_trust_add", { asset: SPAM, limit })))).toThrow(
+        /limit must be a positive amount|malformed amount/,
+      );
+    }
+  });
+
+  it("refuses native, pool-share and missing assets", () => {
+    expect(() => firstOp(batchOf(op("change_trust_add", { asset: { kind: "native" } })))).toThrow(
+      /credit asset/,
+    );
+    expect(() =>
+      firstOp(
+        batchOf(
+          op("change_trust_add", {
+            asset: { kind: "liquidity_pool_shares", poolId: "ab".repeat(32) },
+          }),
+        ),
+      ),
+    ).toThrow(/credit asset/);
+    expect(() => firstOp(batchOf(op("change_trust_add", {})))).toThrow(/asset/);
+  });
+});
+
+// the on-chain close marker: set then delete the same data entry right before the
+// merge, so the account ends with no extra subentry
+describe("buildClassicTransaction close_marker", () => {
+  it("builds the set and the delete from the shared marker operations", () => {
+    const source = Keypair.random().publicKey();
+    const batch: ClassicBatch = {
+      operations: [
+        op("close_marker", { action: "set" }, source),
+        op("close_marker", { action: "delete" }, source),
+        {
+          kind: "account_merge",
+          summary: "merge",
+          metadata: { destination: Keypair.random().publicKey() },
+          source,
+        },
+      ],
+      destination: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+    };
+    const tx = buildClassicTransaction(batch, newSource(), TEST_NET, 100)
+      .transaction as Transaction;
+    const [set, del] = closeMarkerOperations(source);
+    expect(tx.operations[0]!.type).toBe("manageData");
+    expect(tx.operations[1]!.type).toBe("manageData");
+    expect(tx.operations[2]!.type).toBe("accountMerge");
+    const env = tx.toEnvelope();
+    if (env.type !== "envelopeTypeTx") throw new Error("expected a v1 envelope");
+    const built = env.v1.tx.operations.map((o) => o.toXdr("base64"));
+    expect(built.slice(0, 2)).toEqual([set.toXdr("base64"), del.toXdr("base64")]);
+    const decodedSet = tx.operations[0] as { name: string; value?: Uint8Array; source?: string };
+    expect(decodedSet.name).toBe(CLOSE_MARKER_NAME);
+    expect(Buffer.from(decodedSet.value!).toString()).toBe(CLOSE_MARKER_VALUE);
+    expect(decodedSet.source).toBe(source);
+    expect((tx.operations[1] as { value?: unknown }).value).toBeUndefined();
+  });
+
+  it("omits the op source when the batched op has none", () => {
+    const built = firstOp(batchOf(op("close_marker", { action: "set" })));
+    expect(built["source"]).toBeUndefined();
+  });
+
+  it("refuses an unknown or missing action", () => {
+    expect(() => firstOp(batchOf(op("close_marker", { action: "toggle" })))).toThrow(/action/);
+    expect(() => firstOp(batchOf(op("close_marker", {})))).toThrow(/action/);
+  });
+});
+
+it("refuses an operation kind the builder does not know", () => {
+  expect(() => firstOp(batchOf(op("bump_sequence", {})))).toThrow(
+    /Unsupported classic operation kind: bump_sequence/,
+  );
 });

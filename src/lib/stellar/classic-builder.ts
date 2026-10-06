@@ -11,10 +11,17 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import type { NetworkConfig } from "@/lib/config/networks";
+import { closeMarkerOperations } from "@/lib/metrics/close-marker";
+import { decimalToStroops } from "@/lib/stellar/amount";
 import { DEFAULT_TX_VALIDITY_SECONDS } from "@/lib/stellar/ledger-clock";
 import { toSdkMemo } from "@/lib/stellar/memo";
 import type { AssetIdentifier } from "@/lib/types/account";
-import type { BatchedOperation, ClassicBatch, TransactionBuildResult } from "@/lib/types/plan";
+import type {
+  BatchedOperation,
+  ClassicBatch,
+  ClassicOpKind,
+  TransactionBuildResult,
+} from "@/lib/types/plan";
 
 export function buildClassicTransaction(
   batch: ClassicBatch,
@@ -90,8 +97,14 @@ function computeFee(base: number, opCount: number): string {
   return total.toString();
 }
 
+// change_trust_add and close_marker are spelled out here so the builder is ready
+// before ClassicOpKind lists them; once it does, this is just ClassicOpKind
+type BuildableOpKind = ClassicOpKind | "change_trust_add" | "close_marker";
+
 function addOperation(op: BatchedOperation): xdr.Operation {
-  switch (op.kind) {
+  // widened with `as` so control flow does not narrow it back to ClassicOpKind
+  const kind = op.kind as BuildableOpKind;
+  switch (kind) {
     case "create_account_mediator":
       return Operation.createAccount({
         destination: requireString(op.metadata, "destination"),
@@ -171,12 +184,41 @@ function addOperation(op: BatchedOperation): xdr.Operation {
       });
     }
 
+    // a trustline added so a claimable balance of an untrusted asset can be
+    // claimed in the same transaction. no limit means the maximum limit
+    case "change_trust_add": {
+      const asset = requireAsset(op.metadata, "asset");
+      if (asset.kind !== "credit") {
+        throw new Error(`change_trust_add needs a credit asset; got ${asset.kind}`);
+      }
+      const limit = op.metadata["limit"];
+      // a malformed string throws in decimalToStroops; zero would remove the line
+      if (limit !== undefined && (typeof limit !== "string" || decimalToStroops(limit) <= 0n)) {
+        throw new Error(`change_trust_add limit must be a positive amount; got ${String(limit)}`);
+      }
+      return Operation.changeTrust({
+        asset: toAsset(asset),
+        ...(limit !== undefined ? { limit } : {}),
+        ...(op.source ? { source: op.source } : {}),
+      });
+    }
+
     case "manage_data_delete":
       return Operation.manageData({
         name: requireString(op.metadata, "name"),
         value: null,
         ...(op.source ? { source: op.source } : {}),
       });
+
+    // the marker pair goes immediately before the merge; the operations come from
+    // the one module close verification matches against
+    case "close_marker": {
+      const action = op.metadata["action"];
+      const [set, del] = closeMarkerOperations(op.source);
+      if (action === "set") return set;
+      if (action === "delete") return del;
+      throw new Error(`close_marker action must be "set" or "delete"; got ${String(action)}`);
+    }
 
     case "set_options_clear_signers":
       return buildSetOptions(op);
@@ -186,6 +228,13 @@ function addOperation(op: BatchedOperation): xdr.Operation {
         destination: requireString(op.metadata, "destination"),
         ...(op.source ? { source: op.source } : {}),
       });
+
+    default: {
+      // metadata can come back from storage, so an unknown kind is refused here
+      // instead of handing the sdk an undefined operation
+      const unknownKind: never = kind;
+      throw new Error(`Unsupported classic operation kind: ${String(unknownKind)}`);
+    }
   }
 }
 

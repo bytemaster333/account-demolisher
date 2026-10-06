@@ -108,7 +108,11 @@ describe("resolveCreditPaths: frozen trustlines", () => {
     } as unknown as AccountAudit;
     const map = await resolveCreditPaths(audit, TESTNET);
     expect([...map.keys()]).toEqual([`OK:${ISSUER}`]);
-    expect(strictSendPaths).toHaveBeenCalledTimes(1);
+    // the full-size and reference quotes for OK only
+    expect(strictSendPaths).toHaveBeenCalledTimes(2);
+    expect(strictSendPaths.mock.calls.every((c) => (c[0] as { code: string }).code === "OK")).toBe(
+      true,
+    );
   });
 });
 
@@ -131,7 +135,8 @@ describe("resolveCreditPaths: rate limits and concurrency", () => {
     });
     const map = await resolveCreditPaths(auditWithCredit("USDC", "10"), TESTNET);
     expect(map.size).toBe(1);
-    expect(calls).toBe(2);
+    // the failed attempt, its retry, then the reference quote
+    expect(calls).toBe(3);
   });
 
   it("retries a 5xx whose body is not a horizon problem document", async () => {
@@ -145,7 +150,7 @@ describe("resolveCreditPaths: rate limits and concurrency", () => {
     });
     const map = await resolveCreditPaths(auditWithCredit("USDC", "10"), TESTNET);
     expect(map.size).toBe(1);
-    expect(calls).toBe(2);
+    expect(calls).toBe(3);
   });
 
   it("does not retry a 400", async () => {
@@ -192,5 +197,63 @@ describe("resolveCreditPaths: rate limits and concurrency", () => {
     expect(map.size).toBe(40);
     expect(peak).toBeLessThanOrEqual(PATH_REQUEST_CONCURRENCY);
     expect(peak).toBeGreaterThan(1);
+  });
+});
+
+// the batcher measures price impact against a small reference trade through the
+// same market; without it every conversion is unpriced and blocked
+describe("resolveCreditPaths: reference quote", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // full-size and reference quotes answered per requested source amount
+  function quotesBy(byAmount: Record<string, string | null>): void {
+    strictSendPaths.mockImplementation((_asset: unknown, amount: string) => ({
+      call: async () => {
+        const dest = byAmount[amount];
+        if (dest === undefined) throw new Error(`unexpected quote amount ${amount}`);
+        return {
+          records:
+            dest === null ? [] : [{ destination_amount: dest, source_amount: amount, path: [] }],
+        };
+      },
+    }));
+  }
+
+  it("quotes a 1/1000 slice of the balance and attaches it as the reference", async () => {
+    quotesBy({ "1000": "3694.0000000", "1.0000000": "4.4160000" });
+    const map = await resolveCreditPaths(auditWithCredit("USDC", "1000"), TESTNET);
+    const ref = map.get(`USDC:${ISSUER}`);
+    expect(ref?.sourceAmount).toBe("1000");
+    expect(ref?.destinationAmount).toBe("3694.0000000");
+    expect(ref?.reference).toEqual({ sourceAmount: "1.0000000", destinationAmount: "4.4160000" });
+    expect(strictSendPaths.mock.calls.map((c) => c[1])).toEqual(["1000", "1.0000000"]);
+  });
+
+  it("uses one stroop as the slice of a balance under 1000 stroops", async () => {
+    quotesBy({ "0.0000500": "0.0000400", "0.0000001": "0.0000001" });
+    const map = await resolveCreditPaths(auditWithCredit("TINY", "0.0000500"), TESTNET);
+    expect(map.get(`TINY:${ISSUER}`)?.reference?.sourceAmount).toBe("0.0000001");
+  });
+
+  it("leaves the reference unset when the slice has no path", async () => {
+    quotesBy({ "500": "40.0000000", "0.5000000": null });
+    const map = await resolveCreditPaths(auditWithCredit("THIN", "500"), TESTNET);
+    const ref = map.get(`THIN:${ISSUER}`);
+    expect(ref).toBeDefined();
+    expect(ref?.reference).toBeUndefined();
+  });
+
+  it("does not quote a reference for an asset with no full-size path", async () => {
+    quotesBy({ "7": null });
+    const map = await resolveCreditPaths(auditWithCredit("NOPATH", "7"), TESTNET);
+    expect(map.size).toBe(0);
+    expect(strictSendPaths).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws on a malformed horizon amount instead of reading it as zero", async () => {
+    quotesBy({ "10": "12.34567891" });
+    await expect(resolveCreditPaths(auditWithCredit("BAD", "10"), TESTNET)).rejects.toThrow(
+      /malformed amount/,
+    );
   });
 });

@@ -109,7 +109,12 @@ describe("assessCloseValue", () => {
   it("counts path-quoted credit balances toward the total", () => {
     const audit = auditWith([line({ kind: "native" }, "20"), line(usdc, "50000")]);
     const quotes = new Map([[`USDC:${ISSUER}`, { destinationAmount: "180000.0000000" }]]);
-    const value = assessCloseValue({ audit, creditQuotes: quotes, unpricedPositions: 0 });
+    const value = assessCloseValue({
+      audit,
+      creditQuotes: quotes,
+      unpricedPositions: 0,
+      claimedBalanceIds: [],
+    });
     expect(value.estimatedXlm).toBe("180020.0000000");
     expect(value.unpricedHoldings).toBe(0);
     expect(value.highValue).toBe(true);
@@ -118,13 +123,23 @@ describe("assessCloseValue", () => {
   it("stays below the gate for a small, fully priced account", () => {
     const audit = auditWith([line({ kind: "native" }, "20"), line(usdc, "1")]);
     const quotes = new Map([[`USDC:${ISSUER}`, { destinationAmount: "3.5" }]]);
-    const value = assessCloseValue({ audit, creditQuotes: quotes, unpricedPositions: 0 });
+    const value = assessCloseValue({
+      audit,
+      creditQuotes: quotes,
+      unpricedPositions: 0,
+      claimedBalanceIds: [],
+    });
     expect(value).toEqual({ estimatedXlm: "23.5000000", unpricedHoldings: 0, highValue: false });
   });
 
   it("triggers on a DeFi position whose value is not estimated", () => {
     const audit = auditWith([line({ kind: "native" }, "20")]);
-    const value = assessCloseValue({ audit, creditQuotes: new Map(), unpricedPositions: 1 });
+    const value = assessCloseValue({
+      audit,
+      creditQuotes: new Map(),
+      unpricedPositions: 1,
+      claimedBalanceIds: [],
+    });
     expect(value.unpricedHoldings).toBe(1);
     expect(value.highValue).toBe(true);
   });
@@ -135,12 +150,19 @@ describe("assessCloseValue", () => {
       line(usdc, "5"),
       line({ kind: "liquidity_pool_shares", poolId: "ab".repeat(32) }, "10"),
     ]);
-    const value = assessCloseValue({ audit, creditQuotes: new Map(), unpricedPositions: 0 });
+    const value = assessCloseValue({
+      audit,
+      creditQuotes: new Map(),
+      unpricedPositions: 0,
+      claimedBalanceIds: [],
+    });
     expect(value.unpricedHoldings).toBe(2);
     expect(value.highValue).toBe(true);
   });
 
-  it("adds selected claimable XLM and treats selected non-native claims as unpriced", () => {
+  // the plan, not the selection, decides what is claimed: the batcher claims a
+  // self-sponsored balance the user unticked, so value follows the plan's claims
+  it("adds the XLM of the claims the plan makes and treats other claims as unpriced", () => {
     const cb = (id: string, asset: ClaimableBalanceEntry["asset"], amount: string) =>
       ({
         id,
@@ -155,21 +177,45 @@ describe("assessCloseValue", () => {
       [line({ kind: "native" }, "20")],
       [cb("xlm", { kind: "native" }, "2000"), cb("usd", usdc, "5")],
     );
-    const all = assessCloseValue({ audit, creditQuotes: new Map(), unpricedPositions: 0 });
-    expect(all.estimatedXlm).toBe("2020.0000000");
-    expect(all.unpricedHoldings).toBe(1);
-    const none = assessCloseValue({
-      audit,
-      creditQuotes: new Map(),
-      unpricedPositions: 0,
-      claimableBalanceIds: [],
+    const value = (claimedBalanceIds: string[]) =>
+      assessCloseValue({ audit, creditQuotes: new Map(), unpricedPositions: 0, claimedBalanceIds });
+    expect(value(["xlm", "usd"])).toEqual({
+      estimatedXlm: "2020.0000000",
+      unpricedHoldings: 1,
+      highValue: true,
     });
-    expect(none).toEqual({ estimatedXlm: "20.0000000", unpricedHoldings: 0, highValue: false });
+    expect(value(["xlm"])).toEqual({
+      estimatedXlm: "2020.0000000",
+      unpricedHoldings: 0,
+      highValue: true,
+    });
+    expect(value([])).toEqual({
+      estimatedXlm: "20.0000000",
+      unpricedHoldings: 0,
+      highValue: false,
+    });
+  });
+
+  it("refuses a malformed amount instead of reading it as zero", () => {
+    const audit = auditWith([line({ kind: "native" }, "20.12345678")]);
+    expect(() =>
+      assessCloseValue({
+        audit,
+        creditQuotes: new Map(),
+        unpricedPositions: 0,
+        claimedBalanceIds: [],
+      }),
+    ).toThrow(/malformed amount/);
   });
 
   it("ignores zero balances", () => {
     const audit = auditWith([line({ kind: "native" }, "20"), line(usdc, "0.0000000")]);
-    const value = assessCloseValue({ audit, creditQuotes: new Map(), unpricedPositions: 0 });
+    const value = assessCloseValue({
+      audit,
+      creditQuotes: new Map(),
+      unpricedPositions: 0,
+      claimedBalanceIds: [],
+    });
     expect(value.unpricedHoldings).toBe(0);
   });
 });

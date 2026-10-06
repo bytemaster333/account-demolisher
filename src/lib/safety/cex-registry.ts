@@ -145,11 +145,11 @@ const TEXT_MEMO_MAX_BYTES = 28;
 const HASH_MEMO_HEX_LENGTH = 64; // 32 bytes
 const HASH_MEMO_BASE64_LENGTH = 44; // 32 bytes base64-encoded with padding
 
-// Validate a memo VALUE against its TYPE (shape only; the content can't be
-// checked against the user's exchange account from the client). Returns an error
-// string, or null when the value is a well-formed memo of that type. Used both by
-// CEX enforcement AND the general pre-flight, so a malformed memo can never reach
-// Memo.id()/Memo.hash()/Memo.return() and throw mid-close on ANY destination.
+// checks a memo value's shape against its type (the content can't be checked
+// against the user's exchange account from the client). returns an error string,
+// or null for a well-formed memo. used by exchange enforcement and the general
+// pre-flight, so a malformed memo never reaches the sdk Memo constructors and
+// throws mid-close on any destination.
 export function validateMemoFormat(type: CexMemoType, value: string): string | null {
   const v = value.trim();
   if (v.length === 0) return "Enter a non-empty memo value.";

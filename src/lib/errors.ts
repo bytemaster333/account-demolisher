@@ -1,14 +1,10 @@
 import { AccountRequiresMemoError } from "@stellar/stellar-sdk";
 
-// Extract a human-readable message from an unknown thrown value.
-//
-// Not every rejection is an `Error`. The Soroban RPC client in
-// `@stellar/stellar-sdk` rejects with a plain object shaped `{ code, message }`
-// rather than an `Error` instance, so a bare `err instanceof Error ? err.message
-// : fallback` check silently discards the real message (e.g. "startLedger must be
-// within the ledger range: 3517481 - 3638440"), and a `String(err)` fallback
-// renders the useless "[object Object]". This reads `.message` off plain objects
-// too, and only uses `fallback` when nothing meaningful can be extracted.
+// not every rejection is an Error: the soroban rpc client in stellar-sdk rejects
+// with a plain { code, message } object, so `err instanceof Error` alone drops
+// the real message (e.g. "startLedger must be within the ledger range") and
+// String(err) gives "[object Object]". this reads .message off plain objects too
+// and uses `fallback` only when nothing meaningful can be extracted.
 export function errorMessage(err: unknown, fallback?: string): string {
   if (err instanceof Error && err.message.length > 0) return err.message;
   if (typeof err === "string" && err.length > 0) return err;
@@ -24,10 +20,9 @@ export function errorMessage(err: unknown, fallback?: string): string {
   return fallback ?? String(err);
 }
 
-// Describe a rejected Horizon submission. Horizon's result codes when it ran the
-// transaction; otherwise the error's own message, so a refusal that never reached
-// Horizon (the sdk's SEP-29 memo check, a network failure) is not reduced to a
-// bare "no result codes".
+// horizon's result codes when it ran the transaction, otherwise the error's own
+// message, so a refusal that never reached horizon (the sdk's sep-29 memo check,
+// a network failure) is not reduced to a bare "no result codes"
 export function describeSubmitError(err: unknown): string {
   if (err instanceof AccountRequiresMemoError) {
     return (

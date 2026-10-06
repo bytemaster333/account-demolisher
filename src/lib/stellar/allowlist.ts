@@ -8,7 +8,7 @@ import {
   type OperationRecord,
   type Transaction,
 } from "@stellar/stellar-sdk";
-import { isAllowedContract } from "@/lib/config/contracts";
+import { isAllowedRootTarget } from "@/lib/config/contracts";
 import type { NetworkConfig } from "@/lib/config/networks";
 
 export interface AllowlistViolationDetail {
@@ -30,11 +30,12 @@ export class AllowlistViolation extends Error {
   }
 }
 
-// throws AllowlistViolation if any contract invocation isn't on the list
-// omitting network defaults to mainnet
+// throws AllowlistViolation if any contract invocation isn't on the list for
+// the given network. the network is required so no caller silently gets the
+// other network's list
 export function assertTransactionAllowed(
   tx: Transaction | FeeBumpTransaction,
-  network?: NetworkConfig,
+  network: NetworkConfig,
 ): void {
   const violations = getViolations(tx, network);
   if (violations.length > 0) throw new AllowlistViolation(violations);
@@ -43,7 +44,7 @@ export function assertTransactionAllowed(
 // non-throwing variant. returns every violation for ui display
 export function getViolations(
   tx: Transaction | FeeBumpTransaction,
-  network?: NetworkConfig,
+  network: NetworkConfig,
 ): readonly AllowlistViolationDetail[] {
   const ops = collectOperations(tx);
   const out: AllowlistViolationDetail[] = [];
@@ -65,14 +66,13 @@ function collectOperations(tx: Transaction | FeeBumpTransaction): readonly Opera
   return (tx as Transaction).operations;
 }
 
-// Walk an invokeHostFunction op's Soroban authorization entries and flag any that
-// AUTHORIZE contract creation or wasm upload anywhere in their invocation tree. A
-// legitimate DeFi auth tree only authorizes contract-function calls (the protocol
-// entry point plus token transfers); an entry authorizing create/upload is a
-// smuggled privilege the op-level check alone would miss. Sub-invocations to
-// non-allow-listed token contracts are intentionally NOT flagged here (they are a
-// normal part of a swap/withdraw and hard-gating them would break real closes; the
-// broader per-contract auth-scope walk is left for the external audit).
+// flags a soroban authorization entry that authorizes contract creation or wasm
+// upload anywhere in its invocation tree. a legitimate defi auth tree only
+// authorizes contract calls (the entry point plus token transfers), so such an
+// entry is a smuggled privilege the op-level check would miss. sub-invocations of
+// tokens that are not allow-listed are not flagged here: they are a normal part
+// of a swap or withdraw, and the per-node auth-tree validator
+// (src/lib/soroban/defi-auth-guard.ts) checks each node kind's calls.
 function inspectAuthEntries(ihf: Operation.InvokeHostFunction): AllowlistViolationDetail | null {
   const auth = ihf.auth;
   if (!auth || auth.length === 0) return null;
@@ -111,7 +111,7 @@ function inspectAuthEntries(ihf: Operation.InvokeHostFunction): AllowlistViolati
 // returns null for classical ops or for allow-listed invocations
 function inspectOperation(
   op: OperationRecord,
-  network: NetworkConfig | undefined,
+  network: NetworkConfig,
 ): AllowlistViolationDetail | null {
   if (op.type !== "invokeHostFunction") return null;
 
@@ -142,7 +142,9 @@ function inspectOperation(
             reason: "Invocation target is not a contract address (expected C... strkey).",
           };
         }
-        if (!isAllowedContract(addrStrkey, network)) {
+        // only entry points may be the root of a signed call; known tokens and
+        // infrastructure are refused even though they are curated
+        if (!isAllowedRootTarget(addrStrkey, network)) {
           return {
             contractId: addrStrkey,
             reason: networkAwareReason(network),
@@ -180,8 +182,7 @@ function inspectOperation(
 }
 
 // only mainnet and testnet are supported targets; any other id has no allow-list
-function networkAwareReason(network: NetworkConfig | undefined): string {
-  if (network === undefined) return "Contract is not on MAINNET_ALLOWLIST.";
+function networkAwareReason(network: NetworkConfig): string {
   switch (network.id) {
     case "mainnet":
       return "Contract is not on MAINNET_ALLOWLIST.";

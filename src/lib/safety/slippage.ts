@@ -42,28 +42,24 @@ export function parseMinMarketOutEnv(raw: string | undefined): bigint {
   return BigInt(v);
 }
 
-// The configured slippage tolerance for the whole close. This is the single
-// source of truth for slippage across the plan (DeFi-exit floors and the classic
-// path-payment / LP-withdraw floors), so there is one policy rather than two
-// hardcoded constants.
+// the slippage tolerance for the whole close: one policy for the defi-exit
+// floors and the classic path-payment and lp-withdraw floors
 export function resolveConfiguredSlippageBps(): number {
   return parseSlippageBpsEnv(process.env.NEXT_PUBLIC_SLIPPAGE_BPS);
 }
 
-// Absolute floor (stroops) for a market conversion's XLM output. A sell whose
-// slippage-adjusted minimum output is at or below this is refused as
-// value-destroying, and the asset is routed to issuer/destination disposal instead
-// of being sold. Default 0: refuse only a sell that nets nothing (the classic-
-// path analog of the aggregator/router's zero-output refusal), which catches an
-// illiquid asset whose whole balance routes to dust without blocking a legitimate
-// small sale. Raise via NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS for a stronger floor.
+// absolute floor (stroops) for a market conversion's xlm output. a sell whose
+// slippage-adjusted minimum output is at or below it is refused and the asset
+// goes to the issuer or destination disposal instead. the default 0 refuses only
+// a sell that rounds to nothing after slippage; it does not catch a large balance
+// sold far below its fair rate, which is the price-impact cap's job (measured
+// against the reference quote). NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS raises it.
 export function resolveMinMarketOutStroops(): bigint {
   return parseMinMarketOutEnv(process.env.NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS);
 }
 
-// True when a market sell yielding `expectedOutStroops` XLM is worth executing:
-// its slippage-adjusted minimum output must exceed the absolute floor. A sell
-// that nets nothing (or ≤ the configured floor) is value-destroying, so refuse it.
+// true when the slippage-adjusted minimum output of a sell yielding
+// expectedOutStroops exceeds the absolute floor
 export function isMarketSellAcceptable(
   expectedOutStroops: bigint,
   bps: number,

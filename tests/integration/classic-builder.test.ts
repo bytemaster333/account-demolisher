@@ -13,6 +13,8 @@ import { batchClassicDemolition } from "@/lib/plan/classic-batcher";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { TESTNET } from "@/lib/config/networks";
+import { CLOSE_MARKER_NAME, CLOSE_MARKER_VALUE } from "@/lib/metrics/close-marker";
+import type { BatchedOperation } from "@/lib/types/plan";
 
 // live testnet close of an account carrying every non-ed25519 signer type, with
 // a base64 hash memo, built through the real batcher and builder and anchored to
@@ -87,6 +89,51 @@ describe("integration: classic builder (testnet)", () => {
       await server.submitTransaction(tx);
     }
 
+    await expect(auditAccount(kp.publicKey(), TESTNET)).rejects.toBeInstanceOf(
+      AccountNotFoundError,
+    );
+  });
+
+  it("lands the close marker pair right before the merge", async () => {
+    const kp = Keypair.random();
+    const destination = Keypair.random();
+    await friendbotFund(kp.publicKey());
+    await friendbotFund(destination.publicKey());
+
+    const marker = (action: string): BatchedOperation =>
+      ({
+        kind: "close_marker",
+        summary: `close marker ${action}`,
+        metadata: { action },
+      }) as unknown as BatchedOperation;
+    const source = await server.loadAccount(kp.publicKey());
+    const built = buildClassicTransaction(
+      {
+        operations: [
+          marker("set"),
+          marker("delete"),
+          {
+            kind: "account_merge",
+            summary: "merge",
+            metadata: { destination: destination.publicKey() },
+          },
+        ],
+        destination: destination.publicKey(),
+      },
+      source,
+      TESTNET,
+    );
+    const tx = built.transaction as Transaction;
+    tx.sign(kp);
+    const res = await server.submitTransaction(tx);
+
+    const ops = await server.operations().forTransaction(res.hash).call();
+    expect(ops.records.map((o) => o.type)).toEqual(["manage_data", "manage_data", "account_merge"]);
+    const [set, del] = ops.records as unknown as { name: string; value: string }[];
+    expect(set!.name).toBe(CLOSE_MARKER_NAME);
+    expect(Buffer.from(set!.value, "base64").toString()).toBe(CLOSE_MARKER_VALUE);
+    expect(del!.name).toBe(CLOSE_MARKER_NAME);
+    expect(del!.value).toBe("");
     await expect(auditAccount(kp.publicKey(), TESTNET)).rejects.toBeInstanceOf(
       AccountNotFoundError,
     );

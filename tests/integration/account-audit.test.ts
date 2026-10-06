@@ -1,16 +1,21 @@
 import { describe, it, expect } from "vitest";
 import {
   Asset,
+  AuthRequiredFlag,
   AuthRevocableFlag,
   BASE_FEE,
   Claimant,
   Keypair,
   Operation,
   TransactionBuilder,
+  type Transaction,
   type xdr,
 } from "@stellar/stellar-sdk";
 import { assessMergeability, auditAccount } from "@/lib/stellar/account-audit";
+import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
 import { resolveCreditPaths } from "@/lib/stellar/path-finder";
+import { planClaimableBalances } from "@/lib/plan/classic-batcher";
+import type { BatchedOperation } from "@/lib/types/plan";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { TESTNET } from "@/lib/config/networks";
 
@@ -71,7 +76,11 @@ describe("integration: audit merge verdicts (testnet)", () => {
     expect(audit.data).toHaveLength(2);
     expect(audit.sponsorship.coverable).toBe(0);
     expect(
-      assessMergeability(audit, { ledger: audit.ledger, transactionsBeforeMerge: 2 }),
+      assessMergeability(audit, {
+        ledger: audit.ledger,
+        claimedBalanceIds: [],
+        transactionsBeforeMerge: 2,
+      }),
     ).toMatchObject({ mergeable: false, reason: "IS_SPONSOR" });
 
     // clear the data entries so the only obstacle left is the sponsorship
@@ -97,9 +106,13 @@ describe("integration: audit merge verdicts (testnet)", () => {
     const audit = await auditAccount(kp.publicKey(), TESTNET);
     const own = audit.claimableBalances.find((c) => c.sponsor === kp.publicKey());
     expect(own?.claimableNow).toBe(true);
+    const claimed = planClaimableBalances(audit, []).claimed.map((c) => c.id);
+    expect(claimed).toEqual([own?.id]);
     const opts = { ledger: audit.ledger, transactionsBeforeMerge: 1 };
-    expect(assessMergeability(audit, opts)).toEqual({ mergeable: true });
-    expect(assessMergeability(audit, { ...opts, claimableBalanceIds: [] })).toMatchObject({
+    expect(assessMergeability(audit, { ...opts, claimedBalanceIds: claimed })).toEqual({
+      mergeable: true,
+    });
+    expect(assessMergeability(audit, { ...opts, claimedBalanceIds: [] })).toMatchObject({
       mergeable: false,
       reason: "IS_SPONSOR",
     });
@@ -135,7 +148,11 @@ describe("integration: audit merge verdicts (testnet)", () => {
     const audit = await auditAccount(holder.publicKey(), TESTNET);
     const line = audit.balances.find((b) => b.asset.kind === "credit");
     expect(line?.isAuthorized).toBe(false);
-    const verdict = assessMergeability(audit, { ledger: audit.ledger, transactionsBeforeMerge: 1 });
+    const verdict = assessMergeability(audit, {
+      ledger: audit.ledger,
+      claimedBalanceIds: [],
+      transactionsBeforeMerge: 1,
+    });
     expect(verdict).toMatchObject({ mergeable: false, reason: "FROZEN_TRUSTLINE" });
 
     const paths = await resolveCreditPaths(audit, TESTNET);
@@ -208,10 +225,85 @@ describe("integration: audit merge verdicts (testnet)", () => {
     await submitAs(kp, [Operation.bumpSequence({ bumpTo: far.toString() })]);
 
     const audit = await auditAccount(kp.publicKey(), TESTNET);
-    const verdict = assessMergeability(audit, { ledger: audit.ledger, transactionsBeforeMerge: 1 });
+    const verdict = assessMergeability(audit, {
+      ledger: audit.ledger,
+      claimedBalanceIds: [],
+      transactionsBeforeMerge: 1,
+    });
     expect(verdict).toMatchObject({ mergeable: false, reason: "SEQNUM_TOO_FAR" });
     expect(await mergeResultCodes(kp, dest.publicKey())).toMatchObject({
       operations: ["op_seq_num_too_far"],
     });
+  });
+
+  // a claimable balance of an untrusted asset: claimable after change_trust_add
+  // when the issuer does not require authorization, never when it does
+  it("tags untrusted claimable balances by issuer auth and collects the open one", async () => {
+    const holder = Keypair.random();
+    const open = Keypair.random();
+    const gated = Keypair.random();
+    await friendbotFund(holder.publicKey());
+    await friendbotFund(open.publicKey());
+    await friendbotFund(gated.publicKey());
+    await submitAs(gated, [Operation.setOptions({ setFlags: AuthRequiredFlag })]);
+
+    const openAsset = new Asset("OPEN", open.publicKey());
+    const gatedAsset = new Asset("GATED", gated.publicKey());
+    for (const [issuer, asset] of [
+      [open, openAsset],
+      [gated, gatedAsset],
+    ] as const) {
+      await submitAs(issuer, [
+        Operation.createClaimableBalance({
+          asset,
+          amount: "5",
+          claimants: [new Claimant(holder.publicKey(), Claimant.predicateUnconditional())],
+        }),
+      ]);
+    }
+
+    const audit = await auditAccount(holder.publicKey(), TESTNET);
+    const byCode = new Map(
+      audit.claimableBalances.map((c) => [c.asset.kind === "credit" ? c.asset.code : "", c]),
+    );
+    expect(byCode.get("OPEN")?.issuerAuthRequired).toBe(false);
+    expect(byCode.get("GATED")?.issuerAuthRequired).toBe(true);
+
+    // the gated one: the trustline is added but the claim is refused
+    const claimOf = (id: string): BatchedOperation => ({
+      kind: "claim_claimable_balance",
+      summary: "claim",
+      metadata: { balanceId: id },
+    });
+    const addLine = (asset: Asset): BatchedOperation =>
+      ({
+        kind: "change_trust_add",
+        summary: "add trustline",
+        metadata: { asset: { kind: "credit", code: asset.code, issuer: asset.issuer } },
+      }) as unknown as BatchedOperation;
+    const submitBatch = async (operations: BatchedOperation[]): Promise<void> => {
+      const source = await server.loadAccount(holder.publicKey());
+      const built = buildClassicTransaction(
+        { operations, destination: holder.publicKey() },
+        source,
+        TESTNET,
+      );
+      const tx = built.transaction as Transaction;
+      tx.sign(holder);
+      await server.submitTransaction(tx, { skipMemoRequiredCheck: true });
+    };
+    await expect(
+      submitBatch([addLine(gatedAsset), claimOf(byCode.get("GATED")!.id)]),
+    ).rejects.toMatchObject({
+      response: {
+        data: { extras: { result_codes: { operations: ["op_success", "op_not_authorized"] } } },
+      },
+    });
+
+    await submitBatch([addLine(openAsset), claimOf(byCode.get("OPEN")!.id)]);
+    const after = await auditAccount(holder.publicKey(), TESTNET);
+    const line = after.balances.find((b) => b.asset.kind === "credit" && b.asset.code === "OPEN");
+    expect(line?.amount).toBe("5.0000000");
+    expect(after.claimableBalances.map((c) => c.id)).toEqual([byCode.get("GATED")!.id]);
   });
 });

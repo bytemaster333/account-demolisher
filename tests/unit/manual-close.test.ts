@@ -17,6 +17,13 @@ describe("manualCloseRequiredNotice", () => {
     for (const p of SUPPORTED_DEFI_PROTOCOLS) expect(notice!).toContain(p);
   });
 
+  // fxdao shut down on chain and is no longer unwound by the close
+  it("names only the protocols the close still unwinds", () => {
+    expect(SUPPORTED_DEFI_PROTOCOLS).toEqual(["Blend", "Aquarius", "Soroswap"]);
+    const notice = manualCloseRequiredNotice({ heldTokenCount: 1, unreadableTokenCount: 0 });
+    expect(notice!).not.toMatch(/fxdao/i);
+  });
+
   it("uses singular grammar for exactly one token", () => {
     const notice = manualCloseRequiredNotice({ heldTokenCount: 1, unreadableTokenCount: 0 });
     expect(notice!).toContain("1 token from");

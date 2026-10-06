@@ -3,6 +3,9 @@
 import { Asset, BadRequestError, NetworkError, NotFoundError } from "@stellar/stellar-sdk";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { isFrozenBalance } from "@/lib/stellar/account-audit";
+import { decimalToStroops, stroopsToDecimal } from "@/lib/stellar/amount";
+import { mapWithConcurrency } from "@/lib/stellar/concurrency";
+import { referenceTradeAmount } from "@/lib/plan/price-impact";
 import type { NetworkConfig } from "@/lib/config/networks";
 import type { AccountAudit, AssetIdentifier } from "@/lib/types/account";
 import { pathKey, type PathResultRef } from "@/lib/types/plan";
@@ -60,14 +63,19 @@ export async function findPathToXLM(
   return best;
 }
 
-// resolve a best XLM-conversion path for every positive credit balance the
-// account holds, keyed by pathKey(asset). Assets with no market path, or whose
-// best path is value-destroying (its slippage-adjusted output nets ≤ the absolute
-// floor, e.g. an illiquid asset routing its whole balance to dust), are absent
-// from the map, so the caller treats them as un-routable and disposes of them via
-// issuer-return / send-to-destination instead of selling them for a pittance. A
-// network error propagates rather than being silently treated as "no path".
-// Balances frozen by their issuer are skipped: horizon's path search ignores
+// resolve a best xlm-conversion path for every positive credit balance the
+// account holds, keyed by pathKey(asset). an asset is absent from the map when it
+// has no market path, or when its slippage-adjusted output nets at or below the
+// absolute floor (NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS, 0 by default, so by default
+// only a path that rounds to nothing after slippage is dropped). the caller treats
+// an absent asset as un-routable. a network error propagates rather than being
+// read as "no path".
+//
+// every path also carries a reference quote for a 1/1000 slice of the balance,
+// which the batcher measures the full-size price impact against. a slice with no
+// path leaves the reference unset, and the conversion then counts as unpriced.
+//
+// balances frozen by their issuer are skipped: horizon's path search ignores
 // whether the source may send the asset, and any payment of it fails with
 // op_src_not_authorized (assessMergeability blocks the close on them instead).
 export async function resolveCreditPaths(
@@ -77,22 +85,32 @@ export async function resolveCreditPaths(
   const credits = audit.balances.filter(
     (b) => b.asset.kind === "credit" && hasPositiveAmount(b.amount) && !isFrozenBalance(b),
   );
-  const resolved = await mapWithConcurrency(credits, PATH_REQUEST_CONCURRENCY, async (b) => ({
-    key: pathKey(b.asset),
-    res: await findPathToXLM(b.asset, b.amount, network),
-  }));
   const bps = resolveConfiguredSlippageBps();
   const floor = resolveMinMarketOutStroops();
-  const map = new Map<string, PathResultRef>();
-  for (const { key, res } of resolved) {
-    if (!res) continue;
-    // refuse a value-destroying sell: a path whose slippage-adjusted output nets
-    // at or below the floor is dropped, so the asset falls through to the
-    // issuer/destination disposal rather than being sold for ~nothing.
-    if (!isMarketSellAcceptable(xlmDecimalToStroops(res.destinationAmount), bps, floor)) {
-      continue;
+  const resolved = await mapWithConcurrency(credits, PATH_REQUEST_CONCURRENCY, async (b) => {
+    const key = pathKey(b.asset);
+    const full = await findPathToXLM(b.asset, b.amount, network);
+    // a value-destroying sell is dropped, so the asset falls through to the
+    // issuer or destination disposal instead of being sold for nothing
+    if (!full || !isMarketSellAcceptable(decimalToStroops(full.destinationAmount), bps, floor)) {
+      return { key, path: null };
     }
-    map.set(key, res);
+    const slice = stroopsToDecimal(referenceTradeAmount(decimalToStroops(b.amount)));
+    const reference = await findPathToXLM(b.asset, slice, network);
+    const path: PathResultRef = reference
+      ? {
+          ...full,
+          reference: {
+            sourceAmount: reference.sourceAmount,
+            destinationAmount: reference.destinationAmount,
+          },
+        }
+      : full;
+    return { key, path };
+  });
+  const map = new Map<string, PathResultRef>();
+  for (const { key, path } of resolved) {
+    if (path) map.set(key, path);
   }
   return map;
 }
@@ -102,23 +120,6 @@ export async function resolveCreditPaths(
 export const PATH_REQUEST_CONCURRENCY = 8;
 export const PATH_REQUEST_ATTEMPTS = 4;
 const RETRY_BASE_DELAY_MS = 250;
-
-async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
-  const worker = async (): Promise<void> => {
-    while (next < items.length) {
-      const i = next++;
-      results[i] = await fn(items[i]!);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return results;
-}
 
 // 429, 5xx and connection failures are transient; anything else (a 400 on a
 // malformed asset, a 404) is a real answer and is thrown at once. the last
@@ -147,16 +148,6 @@ function isTransientHorizonError(err: unknown): boolean {
   }
   // no response at all: the request never reached horizon
   return err instanceof Error;
-}
-
-// convert an XLM horizon-decimal string ("12.3456789") to integer stroops.
-// non-numeric / malformed input yields 0n (treated as value-destroying).
-function xlmDecimalToStroops(s: string): bigint {
-  const trimmed = s.trim();
-  if (!/^\d+(\.\d+)?$/.test(trimmed)) return 0n;
-  const [intPart = "0", fracPart = ""] = trimmed.split(".");
-  const frac = (fracPart + "0000000").slice(0, 7);
-  return BigInt(intPart) * 10_000_000n + BigInt(frac);
 }
 
 function hasPositiveAmount(s: string): boolean {
@@ -198,23 +189,9 @@ function assetRecordToIdentifier(p: {
   };
 }
 
-// compare horizon decimal amount strings without fp loss
-// returns >0 when a > b, <0 when a < b, 0 when equal
+// exact comparison of horizon decimal amounts: >0 when a > b, <0 when a < b
 function compareAmounts(a: string, b: string): number {
-  const [aiRaw = "0", afRaw = ""] = a.split(".");
-  const [biRaw = "0", bfRaw = ""] = b.split(".");
-  const ai = BigInt(aiRaw);
-  const bi = BigInt(biRaw);
-  if (ai !== bi) return ai > bi ? 1 : -1;
-  const af = padRight(afRaw, 7);
-  const bf = padRight(bfRaw, 7);
-  const afn = BigInt(af);
-  const bfn = BigInt(bf);
-  if (afn === bfn) return 0;
-  return afn > bfn ? 1 : -1;
-}
-
-function padRight(s: string, n: number): string {
-  if (s.length >= n) return s.slice(0, n);
-  return s + "0".repeat(n - s.length);
+  const x = decimalToStroops(a);
+  const y = decimalToStroops(b);
+  return x === y ? 0 : x > y ? 1 : -1;
 }

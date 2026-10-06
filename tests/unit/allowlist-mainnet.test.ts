@@ -14,13 +14,8 @@ import {
   getViolations,
   AllowlistViolation,
 } from "@/lib/stellar/allowlist";
-import {
-  MAINNET_ALLOWLIST,
-  TESTNET_ALLOWLIST,
-  getAllowlistForNetwork,
-  isAllowedContract,
-} from "@/lib/config/contracts";
-import { MAINNET, TESTNET, resolveNetwork } from "@/lib/config/networks";
+import { MAINNET_ALLOWLIST, TESTNET_ALLOWLIST, isAllowedRootTarget } from "@/lib/config/contracts";
+import { MAINNET, TESTNET } from "@/lib/config/networks";
 
 // Source-level tests for the FINALIZED MAINNET contract-address allow-list:
 // (1) the sign-time gate rejects a non-allow-listed contract on mainnet, and
@@ -69,9 +64,9 @@ describe("mainnet allow-list: sign-time enforcement", () => {
 });
 
 describe("mainnet allow-list: completeness and provenance", () => {
-  it("covers all four DeFi protocols", () => {
+  it("covers every supported DeFi protocol", () => {
     const protocols = new Set(MAINNET_ALLOWLIST.map((c) => c.protocol));
-    for (const p of ["blend", "aquarius", "soroswap", "fxdao"]) {
+    for (const p of ["blend", "aquarius", "soroswap"]) {
       expect(protocols.has(p), `missing mainnet protocol: ${p}`).toBe(true);
     }
   });
@@ -102,19 +97,21 @@ describe("mainnet allow-list: completeness and provenance", () => {
 
 describe("allow-list: network isolation", () => {
   it("a mainnet id is allowed on mainnet and rejected on testnet", () => {
-    expect(isAllowedContract(MAINNET_ROUTER, MAINNET)).toBe(true);
-    expect(isAllowedContract(MAINNET_ROUTER, TESTNET)).toBe(false);
+    expect(isAllowedRootTarget(MAINNET_ROUTER, MAINNET)).toBe(true);
+    expect(isAllowedRootTarget(MAINNET_ROUTER, TESTNET)).toBe(false);
   });
 
   it("a testnet id is allowed on testnet and rejected on mainnet", () => {
     const testnetId = TESTNET_ALLOWLIST[0]!.id;
-    expect(isAllowedContract(testnetId, TESTNET)).toBe(true);
-    expect(isAllowedContract(testnetId, MAINNET)).toBe(false);
+    expect(isAllowedRootTarget(testnetId, TESTNET)).toBe(true);
+    expect(isAllowedRootTarget(testnetId, MAINNET)).toBe(false);
   });
 
-  it("futurenet has an empty allow-list and allows nothing", () => {
-    const futurenet = resolveNetwork("futurenet");
-    expect(getAllowlistForNetwork(futurenet)).toEqual([]);
-    expect(isAllowedContract(MAINNET_ROUTER, futurenet)).toBe(false);
+  it("the sign-time gate uses the list of the network it is given", () => {
+    const t = mainnetTx(new Contract(MAINNET_ROUTER).call("swap"));
+    expect(getViolations(t, MAINNET)).toEqual([]);
+    const v = getViolations(t, TESTNET);
+    expect(v).toHaveLength(1);
+    expect(v[0]!.reason).toMatch(/TESTNET_ALLOWLIST/);
   });
 });
