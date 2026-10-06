@@ -96,6 +96,25 @@ export function decodeAllowance(v: xdr.ScVal): { amount: bigint; live_until_ledg
   return { amount, live_until_ledger: liveUntilLedger };
 }
 
+// an i128 holds at most 39 digits (max about 1.7e38), so no amount needs more
+// than 38 decimals. decimals() is the token's own answer and any contract can
+// get onto a user's allowance list, so a larger value is refused instead of
+// reaching 10n ** decimals and padStart in a formatter.
+export const MAX_TOKEN_DECIMALS = 38;
+
+export class TokenDecimalsOutOfRangeError extends Error {
+  readonly contractId: string;
+  readonly reported: number;
+  constructor(contractId: string, reported: number) {
+    super(
+      `token ${contractId} reports ${reported} decimals, over the ${MAX_TOKEN_DECIMALS} an i128 amount can use`,
+    );
+    this.name = "TokenDecimalsOutOfRangeError";
+    this.contractId = contractId;
+    this.reported = reported;
+  }
+}
+
 // decimals() -> u32, cached per (server, contractId)
 export async function decimals(
   server: rpc.Server,
@@ -120,6 +139,7 @@ export async function decimals(
     network,
   );
   const value = fromScValU32(retval);
+  if (value > MAX_TOKEN_DECIMALS) throw new TokenDecimalsOutOfRangeError(contractId, value);
   perServer.set(contractId, value);
   return value;
 }
