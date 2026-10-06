@@ -97,9 +97,12 @@ function computeFee(base: number, opCount: number): string {
   return total.toString();
 }
 
-// change_trust_add and close_marker are spelled out here so the builder is ready
-// before ClassicOpKind lists them; once it does, this is just ClassicOpKind
-type BuildableOpKind = ClassicOpKind | "change_trust_add" | "close_marker";
+// change_trust_add and the close marker kinds are spelled out here so the
+// builder is ready before ClassicOpKind lists them; once it does, this is just
+// ClassicOpKind. the marker has two spellings because the planner may emit
+// either: close_marker with an action, or close_marker_set followed by a
+// manage_data_delete of the marker name. both build the same two operations
+type BuildableOpKind = ClassicOpKind | "change_trust_add" | "close_marker" | "close_marker_set";
 
 function addOperation(op: BatchedOperation): xdr.Operation {
   // widened with `as` so control flow does not narrow it back to ClassicOpKind
@@ -219,6 +222,9 @@ function addOperation(op: BatchedOperation): xdr.Operation {
       if (action === "delete") return del;
       throw new Error(`close_marker action must be "set" or "delete"; got ${String(action)}`);
     }
+
+    case "close_marker_set":
+      return closeMarkerOperations(op.source)[0];
 
     case "set_options_clear_signers":
       return buildSetOptions(op);
