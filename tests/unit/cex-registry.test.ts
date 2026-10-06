@@ -1,10 +1,14 @@
 import { describe, it, expect } from "vitest";
 import type { CexInfo, MemoLike } from "@/lib/safety/cex-registry";
+import { StrKey } from "@stellar/stellar-sdk";
 import {
   KNOWN_CEXES,
+  REFUSED_DESTINATIONS,
+  cexMemoTypes,
   destinationRequiresMediator,
   isSep29MemoRequired,
   lookupCex,
+  lookupRefusedDestination,
   requireMemoEnforcement,
   validateMemoFormat,
 } from "@/lib/safety/cex-registry";
@@ -67,11 +71,21 @@ describe("lookupCex", () => {
 });
 
 describe("KNOWN_CEXES registry invariants", () => {
-  it("every entry requires a memo and declares a text or id memo type", () => {
+  it("every entry requires a memo and declares text or id memo types only", () => {
     for (const cex of KNOWN_CEXES) {
       expect(cex.requiresMemo).toBe(true);
+      // exactly one of the two ways to declare the memo type
+      expect((cex.memoType === undefined) !== (cex.acceptedMemoTypes === undefined)).toBe(true);
+      const types = cexMemoTypes(cex);
+      expect(types.length).toBeGreaterThan(0);
       // the registry only ships text/id today; hash/return are unused
-      expect(cex.memoType === "text" || cex.memoType === "id").toBe(true);
+      for (const t of types) expect(t === "text" || t === "id").toBe(true);
+    }
+  });
+
+  it("holds only valid account ids", () => {
+    for (const { address } of [...KNOWN_CEXES, ...REFUSED_DESTINATIONS]) {
+      expect(StrKey.isValidEd25519PublicKey(address)).toBe(true);
     }
   });
 
@@ -257,7 +271,7 @@ describe("validateMemoFormat (shape validation for ALL destinations)", () => {
 
 // SEP-29: an account publishes config.memo_required = "1" (base64 "MQ==") to say
 // deposits without a memo are not credited
-const UNLISTED = "GCZLCMUM4Q4H324CTT3753P6656CYR4KPLHYFPGYPGE6JVHONGLNRDI5";
+const UNLISTED = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
 
 describe("isSep29MemoRequired", () => {
   it("reads the config.memo_required data entry the way the sdk does", () => {
@@ -307,5 +321,75 @@ describe("requireMemoEnforcement for SEP-29 destinations", () => {
     expect(requireMemoEnforcement(UNLISTED, undefined, { sep29MemoRequired: false })).toEqual({
       ok: true,
     });
+  });
+});
+
+// owner decision 2026-10-06 (L-24), from the stellar.expert directory
+const UPBIT = "GAW4E6NGM4NPNX2LO2BKDPCCTUX3FJLKWHPU4VQPGBIBQGD6JTVF5C7C";
+const UPBIT_DEPOSITS = "GCZLCMUM4Q4H324CTT3753P6656CYR4KPLHYFPGYPGE6JVHONGLNRDI5";
+const UPBIT_INTERNAL = [
+  "GAGL7APMF7BZT6AVGNLBXKCMEHHLKPOL6PADWSLWFVYULGHPQQSIUU2W",
+  "GCWEER57MBVRXA4I426VL3PSWWM72SSZ3AZ5TGBDSWJMTDFVCABWNZIF",
+  "GB74KSRBBV4HPPGJCXHN54VEHKWW5DYV2EKBQJAU7TO5NQFMCG2736YX",
+  "GC2MRMMX6JPYSMTPGDAUPXPFPLJJMEDHETPP6SNCWCGR6MRSSHJMF7O4",
+  "GCB5WCEQ2S4VFEWYTIAY5P2EXKTQJZEBBA7L7EYFSZ27PTLLIFB47WSM",
+  "GCENZAHLGHSMJTUAHBBHQ3G6K73DURLCEUZYIF45JGGB6W63B6HCHWBU",
+  "GDAZHX3DBBF25VUJ77FKK3ULKJXEUGRVQPCAKSNFOUMFDMVD4JYDIFBB",
+];
+
+describe("Upbit", () => {
+  it("keeps the original Upbit entry", () => {
+    expect(lookupCex(UPBIT)).toMatchObject({ name: "Upbit", requiresMemo: true });
+  });
+
+  it("lists Upbit Deposits as a memo-required exchange that accepts id and text memos", () => {
+    const entry = lookupCex(UPBIT_DEPOSITS);
+    expect(entry).toMatchObject({
+      name: "Upbit Deposits",
+      requiresMemo: true,
+      acceptedMemoTypes: ["id", "text"],
+      verifiedAt: "2026-10-06",
+    });
+    expect(entry!.source).toContain("stellar.expert directory");
+    expect(entry!.source).toContain("not confirmed by Upbit");
+  });
+
+  it("routes Upbit Deposits through the mediator even without a SEP-29 flag", () => {
+    expect(destinationRequiresMediator(UPBIT_DEPOSITS, false)).toBe(true);
+  });
+
+  it("requires a memo for Upbit Deposits and accepts a well-formed id or text memo", () => {
+    const missing = requireMemoEnforcement(UPBIT_DEPOSITS);
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.reason).toContain('"id" or "text"');
+    expect(requireMemoEnforcement(UPBIT_DEPOSITS, memo("id", "123456"))).toEqual({ ok: true });
+    expect(requireMemoEnforcement(UPBIT_DEPOSITS, memo("text", "123456"))).toEqual({ ok: true });
+    expect(requireMemoEnforcement(UPBIT_DEPOSITS, memo("id", "12ab")).ok).toBe(false);
+    const hash = requireMemoEnforcement(UPBIT_DEPOSITS, memo("hash", "a".repeat(64)));
+    expect(hash.ok).toBe(false);
+    if (!hash.ok) expect(hash.reason).toContain('got "hash"');
+  });
+
+  it.each(UPBIT_INTERNAL)("refuses the Upbit internal wallet %s as a close destination", (a) => {
+    const refused = lookupRefusedDestination(a);
+    expect(refused).not.toBeNull();
+    expect(refused!.name).toMatch(/^Upbit (ColdStorage|ColdWallet|Withdrawals)$/);
+    expect(lookupCex(a)).toBeNull();
+    for (const m of [undefined, memo("id", "1"), memo("text", "1")]) {
+      const res = requireMemoEnforcement(a, m);
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.reason).toContain("internal wallet, not a deposit address");
+        expect(res.reason).toContain(a);
+      }
+    }
+    // a SEP-29 flag does not turn it into a deposit address
+    expect(requireMemoEnforcement(a, memo("id", "1"), { sep29MemoRequired: true }).ok).toBe(false);
+  });
+
+  it("refuses exactly the seven internal wallets and nothing in the exchange registry", () => {
+    expect(REFUSED_DESTINATIONS.map((r) => r.address).sort()).toEqual([...UPBIT_INTERNAL].sort());
+    for (const cex of KNOWN_CEXES) expect(lookupRefusedDestination(cex.address)).toBeNull();
+    expect(lookupRefusedDestination(UNLISTED)).toBeNull();
   });
 });

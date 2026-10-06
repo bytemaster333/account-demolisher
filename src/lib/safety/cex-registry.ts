@@ -11,8 +11,10 @@ export interface CexInfo {
   readonly name: string;
   // true if the cex requires a deposit memo
   readonly requiresMemo: boolean;
-  // memo encoding the cex expects, when memo is required
+  // memo encoding the cex expects, when memo is required and it names one
   readonly memoType?: CexMemoType;
+  // set instead of memoType when the cex accepts more than one encoding
+  readonly acceptedMemoTypes?: readonly CexMemoType[];
   // decimal-string xlm minimum deposit, if the cex publishes one
   readonly minimumDeposit?: string;
   // iso date this address+policy was verified
@@ -80,8 +82,20 @@ export const KNOWN_CEXES: readonly CexInfo[] = [
     name: "Upbit",
     requiresMemo: true,
     memoType: "text",
-    verifiedAt: "2026-05-15",
-    source: `${STELLAR_EXPERT_DIRECTORY}: tag "memo-required". Upbit XLM deposit page requires a per-user memo.`,
+    verifiedAt: "2026-10-06",
+    source: `${STELLAR_EXPERT_DIRECTORY}: name "Upbit", tags exchange + memo-required, checked 2026-10-06. Upbit publishes no deposit address (it shows one only to logged-in users); horizon shows the account unchanged since ledger 56030614, so the active deposit account is the "Upbit Deposits" entry below.`,
+  },
+  // the active upbit deposit account (owner decision 2026-10-06). upbit shows
+  // deposit addresses only to logged-in users, so there is no upbit-published
+  // source and the memo type is not known: both id and text are accepted
+  {
+    address: "GCZLCMUM4Q4H324CTT3753P6656CYR4KPLHYFPGYPGE6JVHONGLNRDI5",
+    name: "Upbit Deposits",
+    requiresMemo: true,
+    acceptedMemoTypes: ["id", "text"],
+    verifiedAt: "2026-10-06",
+    source:
+      "stellar.expert directory, tags exchange + memo-required, checked 2026-10-06; not confirmed by Upbit",
   },
   {
     address: "GB3RMPTL47E4ULVANHBNCXSXM2ZA5JFY5ISDRERPCXNJUDEO73QFZUNK",
@@ -130,6 +144,63 @@ const BY_ADDRESS: ReadonlyMap<string, CexInfo> = new Map(KNOWN_CEXES.map((c) => 
 // returns the registry entry or null if not a known cex hot wallet
 export function lookupCex(address: string): CexInfo | null {
   return BY_ADDRESS.get(address) ?? null;
+}
+
+// the memo encodings an entry accepts
+export function cexMemoTypes(cex: CexInfo): readonly CexMemoType[] {
+  if (cex.acceptedMemoTypes !== undefined) return cex.acceptedMemoTypes;
+  return cex.memoType !== undefined ? [cex.memoType] : [];
+}
+
+// "text", or "id" or "text" when several are accepted, for messages
+function describeMemoTypes(cex: CexInfo): string {
+  return cexMemoTypes(cex)
+    .map((t) => `"${t}"`)
+    .join(" or ");
+}
+
+// exchange accounts that are not deposit addresses (cold storage, withdrawal hot
+// wallets). a merge into one is not tied to any customer, so a close is refused
+// outright rather than routed with a memo
+export interface RefusedDestination {
+  readonly address: string;
+  // the directory's label for the account
+  readonly name: string;
+  readonly verifiedAt: string;
+  readonly source: string;
+}
+
+const UPBIT_INTERNAL_SOURCE =
+  "stellar.expert directory (api.stellar.expert/explorer/directory/<address>), domain upbit.com, checked 2026-10-06";
+
+function upbitInternal(address: string, name: string): RefusedDestination {
+  return { address, name, verifiedAt: "2026-10-06", source: UPBIT_INTERNAL_SOURCE };
+}
+
+export const REFUSED_DESTINATIONS: readonly RefusedDestination[] = [
+  upbitInternal("GAGL7APMF7BZT6AVGNLBXKCMEHHLKPOL6PADWSLWFVYULGHPQQSIUU2W", "Upbit ColdStorage"),
+  upbitInternal("GCWEER57MBVRXA4I426VL3PSWWM72SSZ3AZ5TGBDSWJMTDFVCABWNZIF", "Upbit ColdWallet"),
+  upbitInternal("GB74KSRBBV4HPPGJCXHN54VEHKWW5DYV2EKBQJAU7TO5NQFMCG2736YX", "Upbit Withdrawals"),
+  upbitInternal("GC2MRMMX6JPYSMTPGDAUPXPFPLJJMEDHETPP6SNCWCGR6MRSSHJMF7O4", "Upbit Withdrawals"),
+  upbitInternal("GCB5WCEQ2S4VFEWYTIAY5P2EXKTQJZEBBA7L7EYFSZ27PTLLIFB47WSM", "Upbit Withdrawals"),
+  upbitInternal("GCENZAHLGHSMJTUAHBBHQ3G6K73DURLCEUZYIF45JGGB6W63B6HCHWBU", "Upbit Withdrawals"),
+  upbitInternal("GDAZHX3DBBF25VUJ77FKK3ULKJXEUGRVQPCAKSNFOUMFDMVD4JYDIFBB", "Upbit Withdrawals"),
+];
+
+const REFUSED_BY_ADDRESS: ReadonlyMap<string, RefusedDestination> = new Map(
+  REFUSED_DESTINATIONS.map((r) => [r.address, r]),
+);
+
+export function lookupRefusedDestination(address: string): RefusedDestination | null {
+  return REFUSED_BY_ADDRESS.get(address) ?? null;
+}
+
+function refusedDestinationReason(refused: RefusedDestination): string {
+  return (
+    `${refused.address} is ${refused.name}, an exchange internal wallet, not a deposit ` +
+    `address. A close cannot send funds there. Use the deposit address and memo your ` +
+    `exchange account shows you.`
+  );
 }
 
 // result of a memo-enforcement check
@@ -212,31 +283,34 @@ export function destinationRequiresMediator(
 
 // verify that a destination's memo requirement (registry exchange, or SEP-29
 // flag read from the destination account) is satisfied by the caller-supplied
-// memo, if any. returns ok:true for a destination with no memo requirement
+// memo, if any. an exchange internal wallet is refused whatever the memo.
+// returns ok:true for a destination with no memo requirement
 export function requireMemoEnforcement(
   destination: string,
   memo?: MemoLike,
   options: { readonly sep29MemoRequired?: boolean } = {},
 ): MemoEnforcementResult {
+  const refused = lookupRefusedDestination(destination);
+  if (refused !== null) return { ok: false, reason: refusedDestinationReason(refused) };
   const cex = lookupCex(destination);
   if (cex === null) {
     return options.sep29MemoRequired === true ? requireSep29Memo(memo) : { ok: true };
   }
   if (!cex.requiresMemo) return { ok: true };
 
+  const types = cexMemoTypes(cex);
+  const typeHint = types.length > 0 ? ` (type ${describeMemoTypes(cex)})` : "";
   if (memo === undefined) {
     return {
       ok: false,
-      reason: `${cex.name} requires a deposit memo${
-        cex.memoType !== undefined ? ` (type "${cex.memoType}")` : ""
-      }. Sending without one will lose your funds.`,
+      reason: `${cex.name} requires a deposit memo${typeHint}. Sending without one will lose your funds.`,
     };
   }
 
-  if (cex.memoType !== undefined && memo.type !== cex.memoType) {
+  if (types.length > 0 && !types.includes(memo.type)) {
     return {
       ok: false,
-      reason: `${cex.name} requires a memo of type "${cex.memoType}"; got "${memo.type}". Wrong memo type at the CEX = lost funds.`,
+      reason: `${cex.name} requires a memo of type ${describeMemoTypes(cex)}; got "${memo.type}". Wrong memo type at the CEX = lost funds.`,
     };
   }
 
@@ -244,9 +318,7 @@ export function requireMemoEnforcement(
   if (value.length === 0) {
     return {
       ok: false,
-      reason: `${cex.name} requires a non-empty memo${
-        cex.memoType !== undefined ? ` (type "${cex.memoType}")` : ""
-      }. Supply your CEX deposit memo before proceeding.`,
+      reason: `${cex.name} requires a non-empty memo${typeHint}. Supply your CEX deposit memo before proceeding.`,
     };
   }
 
