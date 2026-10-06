@@ -81,6 +81,43 @@ describe("readTokenMetadata", () => {
     expect(stats.calls.some((c) => c.startsWith(token(999)))).toBe(false);
   });
 
+  // a row whose queued read is dropped and that mounts again in the same tick
+  // (react strict mode re-running an effect, or a keyed re-render) must get a
+  // fresh read, not the dropped one's AbortError
+  it("starts a fresh read for a row that asks again right after dropping its queued read", async () => {
+    const { server, stats } = tokenServer();
+    const busy = Array.from({ length: TOKEN_METADATA_CONCURRENCY }, (_, i) =>
+      readTokenMetadata(server, token(300 + i), SOURCE, TESTNET),
+    );
+    const id = token(777);
+    const first = new AbortController();
+    const dropped = readTokenMetadata(server, id, SOURCE, TESTNET, { signal: first.signal });
+    first.abort();
+    const second = new AbortController();
+    const again = readTokenMetadata(server, id, SOURCE, TESTNET, { signal: second.signal });
+    await expect(dropped).rejects.toMatchObject({ name: "AbortError" });
+    await expect(again).resolves.toEqual({ symbol: "TKN", decimals: 7 });
+    expect(second.signal.aborted).toBe(false);
+    await Promise.all(busy);
+    expect(stats.calls.filter((c) => c.startsWith(id))).toEqual([`${id}.symbol`, `${id}.decimals`]);
+  });
+
+  it("keeps a shared read going while another row still waits on it", async () => {
+    const { server } = tokenServer();
+    const busy = Array.from({ length: TOKEN_METADATA_CONCURRENCY }, (_, i) =>
+      readTokenMetadata(server, token(400 + i), SOURCE, TESTNET),
+    );
+    const id = token(778);
+    const leaving = new AbortController();
+    const staying = new AbortController();
+    const gone = readTokenMetadata(server, id, SOURCE, TESTNET, { signal: leaving.signal });
+    const kept = readTokenMetadata(server, id, SOURCE, TESTNET, { signal: staying.signal });
+    leaving.abort();
+    await expect(gone).rejects.toMatchObject({ name: "AbortError" });
+    await expect(kept).resolves.toEqual({ symbol: "TKN", decimals: 7 });
+    await Promise.all(busy);
+  });
+
   it("passes a hostile decimals answer through as an error, and frees its slot", async () => {
     const bad = token(5);
     const { server } = tokenServer((c) => (c === bad ? 4_294_967_295 : 7));
