@@ -1,7 +1,7 @@
 // shared decoder for a FAILED Soroban transaction's diagnostic events.
 //
-// The RPC keeps the human-facing failure reason (an "outside of the footprint"
-// trap, an scecExceededLimit, a contract panic) only in these events. Every
+// the RPC keeps the human-facing failure reason (an "outside of the footprint"
+// trap, an scecExceededLimit, a contract panic) only in these events. every
 // Soroban submit path should decode them rather than throw a bare "failed
 // on-chain": it surfaces the real cause to the user, and it lets a caller that
 // has a rebuild-and-retry loop classify a recoverable footprint/resource trap

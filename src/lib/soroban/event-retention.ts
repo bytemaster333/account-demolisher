@@ -1,5 +1,5 @@
-// Shared helpers for Soroban getEvents scans that page back to the RPC retention
-// floor. A start ledger below the ~7-day retention window makes getEvents throw a
+// shared helpers for Soroban getEvents scans that page back to the RPC retention
+// floor. a start ledger below the ~7-day retention window makes getEvents throw a
 // "ledger range: N - M" error; these let a scanner re-clamp startLedger to the
 // reported floor (plus a margin) and retry, instead of aborting the whole scan.
 

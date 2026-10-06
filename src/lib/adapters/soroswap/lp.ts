@@ -82,7 +82,9 @@ export async function removeLiquidityByContractIds(
   const assemble = deps.assemble ?? assembleSubmittable;
   const prepared = await assemble(deps.server, tx);
   if ("innerTransaction" in prepared) {
-    throw new Error(`${CALLER}: prepareTransaction returned a FeeBumpTransaction unexpectedly`);
+    throw new Error(
+      `${CALLER}: assembling the simulation returned a FeeBumpTransaction unexpectedly`,
+    );
   }
   // parity with the other adapters: verify the assembled tx only invokes
   // allow-listed contracts before it can ever be signed.

@@ -1,19 +1,19 @@
-// Guard the auto-drain of standalone SEP-41 tokens against auth-entry smuggling.
+// guard the auto-drain of standalone SEP-41 tokens against auth-entry smuggling.
 //
-// Held tokens are discovered by scanning `transfer`-to-the-account events, so the
+// held tokens are discovered by scanning `transfer`-to-the-account events, so the
 // list can include a token an ATTACKER airdropped, a fully attacker-controlled
-// contract. To sweep one, the close builds contractId.transfer(user, destination,
-// amount) and the user signs it. prepareTransaction attaches whatever
+// contract. to sweep one, the close builds contractId.transfer(user, destination,
+// amount) and the user signs it. assembling the simulation attaches whatever
 // SorobanAuthorizationEntry tree the token's own simulation returns, and this
-// drain path is (like the revoke path) exempt from the DeFi allow-list. Without a
+// drain path is (like the revoke path) exempt from the DeFi allow-list. without a
 // guard a hostile token could smuggle an over-broad auth entry (a nested transfer
 // of the victim's OTHER balances, or an approve to the attacker) that the single
 // signature would authorize.
 //
-// Before signing we assert the built transaction is EXACTLY the intended
+// before signing we assert the built transaction is EXACTLY the intended
 // transfer to the user's chosen destination and that its auth tree authorizes
 // nothing else: no other contract, no other function, no sub-invocations, no
-// address credentials. This mirrors assertSafeRevokeInvocation (SEC-02).
+// address credentials. this mirrors assertSafeRevokeInvocation (SEC-02).
 
 import { Address, Operation, scValToNative, xdr, type Transaction } from "@stellar/stellar-sdk";
 
@@ -31,7 +31,7 @@ export interface ExpectedTransfer {
   readonly amount: bigint;
 }
 
-// Throws UnsafeTransferError unless `tx` is a single invokeHostFunction calling
+// throws UnsafeTransferError unless `tx` is a single invokeHostFunction calling
 // exactly expected.contractId.transfer(from, to, amount), whose every auth entry
 // authorizes only that same transfer (source-account credentials, no
 // sub-invocations).
@@ -52,7 +52,7 @@ export function assertSafeTransferInvocation(tx: Transaction, expected: Expected
   }
   assertTransferCall(func.invokeContract, expected, "invocation");
 
-  // 2) every auth entry must authorize ONLY that same transfer. A hostile token
+  // 2) every auth entry must authorize ONLY that same transfer. a hostile token
   //    that tries to move other balances must add either a sub-invocation or a
   //    separate entry targeting a different contract/function, both rejected here.
   const auth = ihf.auth ?? [];

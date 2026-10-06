@@ -1,7 +1,7 @@
 import { rpc, type FeeBumpTransaction, type Transaction } from "@stellar/stellar-sdk";
 import type { NetworkConfig } from "@/lib/config/networks";
 
-// memoized soroban rpc client per primary rpc url. The client fails over across
+// memoized soroban rpc client per primary rpc url. the client fails over across
 // the network's vetted endpoints when the current one rate-limits or faults, so
 // heavy discovery (Soroswap pair walks, allowance event scans, per-pool Blend
 // loads) doesn't dead-end on a single overloaded public RPC.
@@ -38,10 +38,10 @@ export function createRpcServer(
 // a per-host load limit, so another host may still serve the request
 const JSONRPC_PROCESSING_LIMIT = -32001;
 
-// Which THROWN errors justify switching endpoints. Only host-specific faults are
+// which THROWN errors justify switching endpoints. only host-specific faults are
 // worth retrying elsewhere: rate limits (429), upstream 5xx, the processing-limit
-// throttle, and network/timeout errors. A deterministic 4xx or json-rpc error is
-// the same on every host, so failing over just multiplies load. The sdk throws a
+// throttle, and network/timeout errors. a deterministic 4xx or json-rpc error is
+// the same on every host, so failing over just multiplies load. the sdk throws a
 // json-rpc error as the plain {code, message} object from the response body, and
 // an http failure as an axios-style error carrying response.status.
 export function isFailoverError(err: unknown): boolean {
@@ -100,10 +100,10 @@ function isBadSeq(res: rpc.Api.SendTransactionResponse): boolean {
   return res.status === "ERROR" && res.errorResult?.result.type === "txBadSeq";
 }
 
-// Wraps an ordered list of rpc.Server instances so every method call tries the
+// wraps an ordered list of rpc.Server instances so every method call tries the
 // current host and, on a failover-worthy error, advances to the next host and
-// retries the identical call. Sticky: once a host works we stay on it, shedding
-// load off the faulted one until IT faults too. A single server is returned as-is
+// retries the identical call. sticky: once a host works we stay on it, shedding
+// load off the faulted one until IT faults too. a single server is returned as-is
 // (no proxy overhead).
 //
 // sendTransaction is the one call where a retry is not idempotent from the
@@ -164,8 +164,8 @@ export function buildFailoverServer(servers: readonly rpc.Server[]): rpc.Server 
     return res;
   };
 
-  // Route method calls through invoke(); read non-function properties straight
-  // from the primary (they're informational, e.g. serverURL). Method lookup uses
+  // route method calls through invoke(); read non-function properties straight
+  // from the primary (they're informational, e.g. serverURL). method lookup uses
   // Reflect so prototype methods resolve.
   return new Proxy(servers[0]!, {
     get(target, prop, receiver) {

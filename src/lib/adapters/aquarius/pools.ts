@@ -221,7 +221,7 @@ export class AquariusAPIPoolProvider implements AquariusPoolProvider {
     this.timeoutMs = opts.timeoutMs ?? AQUARIUS_API_TIMEOUT_MS;
     // the browser's fetch must be invoked with `this === window`; stored on the
     // instance and called as `this.fetchImpl(...)` it would otherwise throw
-    // "Illegal invocation". Bind the global default; a caller-supplied mock is
+    // "Illegal invocation". bind the global default; a caller-supplied mock is
     // used as-is.
     const fetchImpl = opts.fetchImpl ?? globalThis.fetch?.bind(globalThis);
     if (fetchImpl === undefined) {
@@ -471,7 +471,7 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
         resp = await this.server.getEvents(request);
       } catch (err) {
         // on the first page, a startLedger below the RPC retention floor throws a
-        // "ledger range" error. Re-clamp to the reported floor (plus a margin) and
+        // "ledger range" error. re-clamp to the reported floor (plus a margin) and
         // redo this page instead of aborting the whole (fallback) scan.
         const floor = cursor === undefined ? parseRetentionFloor(err) : null;
         if (floor === null || retentionRetries >= MAX_RETENTION_RETRIES) throw err;
@@ -541,7 +541,7 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
       } catch (e) {
         // an RPC/decode failure while probing a pool the user has interacted with
         // is NOT "no position": swallowing it could strand a live LP balance and
-        // let the merge proceed. Surface it so discovery reports an incomplete
+        // let the merge proceed. surface it so discovery reports an incomplete
         // scan (a whole-scan throw becomes a user-facing discoveryWarning).
         throw new Error(
           `Aquarius: failed to probe pool ${value.poolAddress}; discovery may be incomplete ` +

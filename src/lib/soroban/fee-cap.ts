@@ -1,6 +1,6 @@
 // ceiling on what a prepared Soroban transaction may cost before anyone signs it.
 //
-// prepareTransaction takes the resource fee and the declared resources from the
+// assembleSubmittable takes the resource fee and the declared resources from the
 // simulation, and the simulation runs whatever the invoked contracts do. for an
 // untrusted token (revoke, held-token transfer, held-token convert) that is
 // attacker code: its transfer/approve can write large persistent entries with a

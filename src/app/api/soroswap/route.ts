@@ -210,12 +210,12 @@ const DEV_ALLOWED_ORIGINS = new Set<string>([
   "http://localhost:3002",
 ]);
 
-// same-origin / CSRF control for this unauthenticated proxy. The app's own
+// same-origin / CSRF control for this unauthenticated proxy. the app's own
 // browser client is same-origin and posts to a relative URL, so browsers always
 // attach an Origin header on these requests; a cross-origin site trying to drive
-// the user's browser into spending our Soroswap API quota is rejected. A request
+// the user's browser into spending our Soroswap API quota is rejected. a request
 // with no Origin at all (non-browser caller) is also rejected: the only
-// legitimate traffic is the browser client, which always sends one. A determined
+// legitimate traffic is the browser client, which always sends one. a determined
 // non-browser attacker can still forge the header, but they're bounded by the
 // per-IP rate limit; a fully closed control would need request auth this proxy
 // intentionally does not have.

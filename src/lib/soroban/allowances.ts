@@ -28,11 +28,11 @@ export interface AllowanceRecord {
   // when it has been confirmed. `amount` above is event-derived and a hostile
   // contract can emit a fabricated approve event, so this on-chain read is the
   // accuracy check: undefined = not confirmed, null = the confirm read failed, a
-  // bigint = the real current allowance. See confirmAllowancesOnChain.
+  // bigint = the real current allowance. see confirmAllowancesOnChain.
   readonly onChainAmount?: bigint | null;
 }
 
-// A record whose on-chain amount is DEFINED (confirmed or failed), i.e. the
+// a record whose on-chain amount is DEFINED (confirmed or failed), i.e. the
 // result of confirmAllowancesOnChain.
 export interface ConfirmedAllowanceRecord extends AllowanceRecord {
   readonly onChainAmount: bigint | null;
@@ -44,8 +44,8 @@ export function allowanceAmountMismatch(r: AllowanceRecord): boolean {
   return typeof r.onChainAmount === "bigint" && r.onChainAmount !== r.amount;
 }
 
-// Confirm each event-derived allowance against on-chain state by calling the
-// token's allowance(from, spender). Best-effort and read-only: a failed read
+// confirm each event-derived allowance against on-chain state by calling the
+// token's allowance(from, spender). best-effort and read-only: a failed read
 // leaves onChainAmount = null (shown as "unconfirmed") rather than dropping the
 // row. simSourcePublicKey is any valid G-address used only as the simulation
 // source (the read doesn't move funds and the source needn't exist on-chain).

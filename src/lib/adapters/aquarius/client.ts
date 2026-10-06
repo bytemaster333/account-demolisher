@@ -37,9 +37,9 @@ export interface WithdrawArgs {
 
 export interface ClaimArgs {
   readonly user: string;
-  // the pool's token set, in the router's sorted order. The router resolves a
+  // the pool's token set, in the router's sorted order. the router resolves a
   // pool by (tokens, pool_index) because a pool_index is only unique within one
-  // token set. Typed optional because older plan metadata did not carry it; a
+  // token set. typed optional because older plan metadata did not carry it; a
   // claim without it is refused rather than sent as a call that can never work.
   readonly tokens?: readonly string[];
   readonly poolIndex: Uint8Array;
@@ -254,7 +254,7 @@ async function buildAndAssemble(
   const prepared = await assemble(deps.server, tx);
   if ("innerTransaction" in prepared) {
     throw new Error(
-      `Aquarius ${fnName}: prepareTransaction returned a FeeBumpTransaction unexpectedly`,
+      `Aquarius ${fnName}: assembling the simulation returned a FeeBumpTransaction unexpectedly`,
     );
   }
   assertTransactionAllowed(prepared, network);
