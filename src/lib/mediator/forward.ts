@@ -116,9 +116,13 @@ export async function submitMediatorForward(
       // it would send the user's balance through the uncredited merge leg.
       const account = await waitForAccountView(server, input.mediatorPublicKey, mergeLedger, sleep);
       if (account === "gone") {
-        const after = await read(() => readMediatorHistory(server, input.mediatorPublicKey));
-        if (after.mergedOut !== null) {
-          return deliveredResult(after.mergedOut, input.destination, flowToken);
+        // the node that answered 404 may be ahead of the one serving history
+        for (let i = 0; i < VIEW_POLL_ATTEMPTS; i++) {
+          const after = await read(() => readMediatorHistory(server, input.mediatorPublicKey));
+          if (after.mergedOut !== null) {
+            return deliveredResult(after.mergedOut, input.destination, flowToken);
+          }
+          await sleep(VIEW_POLL_DELAY_MS);
         }
         return fail("The mediator account no longer exists and no forward out of it was found.");
       }
@@ -163,6 +167,13 @@ export async function submitMediatorForward(
             `Could not renew the expired flow token (${renewed.code}): ${renewed.reason}`,
           );
         }
+        // a renewed token must unlock the same mediator; anything else would
+        // leave the recovery record pointing at a key that holds nothing
+        if (renewed.mediatorPublicKey !== input.mediatorPublicKey) {
+          return fail(
+            `The re-issue route returned a token for mediator ${renewed.mediatorPublicKey}, not ${input.mediatorPublicKey}.`,
+          );
+        }
         flowToken = renewed.flowToken;
         signature = await requestMediatorSignature(unsignedXdr, flowToken, input.network.id);
       }
@@ -201,9 +212,16 @@ export async function submitMediatorForward(
         feePerOp = Math.min(feePerOp * 3, MAX_FORWARD_FEE_PER_OP);
         continue;
       }
-      // a stale sequence (another tab forwarded first) or a lapsed timebound:
-      // reload and rebuild; a forward that already went out is found above
-      if (codes.transaction === "tx_bad_seq" || codes.transaction === "tx_too_late") continue;
+      // another tab's forward got there first (the mediator is gone or its
+      // sequence moved) or the timebound lapsed: reload, and a forward that
+      // already went out is found by the "gone" check above
+      if (
+        codes.transaction === "tx_no_source_account" ||
+        codes.transaction === "tx_bad_seq" ||
+        codes.transaction === "tx_too_late"
+      ) {
+        continue;
+      }
       return fail(`Mediator forward submission failed: ${formatCodes(codes)}`);
     }
     return fail(

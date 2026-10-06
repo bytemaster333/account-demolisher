@@ -55,6 +55,8 @@ export class FakeHorizon {
   readonly staleViews = new Map<string, FakeAccount[]>();
   readonly submitted: Transaction[] = [];
   readonly requests: string[] = [];
+  // runs once, right before the next submission is applied
+  beforeNextSubmit: (() => void) | null = null;
   private opCounter = 1;
 
   constructor(
@@ -181,6 +183,9 @@ export class FakeHorizon {
     const xdr = decodeURIComponent(body.replace(/^tx=/u, ""));
     const tx = TransactionBuilder.fromXdr(xdr, Networks.TESTNET) as Transaction;
     this.submitted.push(tx);
+    const hook = this.beforeNextSubmit;
+    this.beforeNextSubmit = null;
+    hook?.();
     const script = this.submitScript.shift() ?? { kind: "apply" };
     if (script.kind === "reject") return txFailed(script.codes);
     if (script.kind === "drop-504") return gatewayTimeout();
@@ -191,6 +196,23 @@ export class FakeHorizon {
     if (script.kind === "apply-then-504") return gatewayTimeout();
     if (script.kind === "apply-no-hash") return Response.json({ successful: true });
     return Response.json({ hash, ledger: this.ledger, successful: true, envelope_xdr: xdr });
+  }
+
+  // another tab's forward: pay out and merge the mediator into `into` in a new
+  // ledger, under a transaction this test never submitted
+  forwardElsewhere(mediator: string, into: string): string {
+    this.ledger += 1;
+    const src = this.accounts.get(mediator);
+    const dst = this.accounts.get(into);
+    if (!src || !dst) throw new Error("fake: forward between unknown accounts");
+    dst.balance += src.balance;
+    dst.lastModified = this.ledger;
+    this.accounts.delete(mediator);
+    const hash = randomHash();
+    this.addOp([mediator, into], { type: "payment", source_account: mediator }, hash);
+    this.addOp([mediator, into], { type: "account_merge", source_account: mediator, into }, hash);
+    this.txs.set(hash, { ledger: this.ledger, successful: true });
+    return hash;
   }
 
   // returns result codes on refusal, null when applied

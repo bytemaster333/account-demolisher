@@ -212,6 +212,19 @@ describe("submitMediatorForward", () => {
     expect(fake.submitted).toHaveLength(1);
   });
 
+  it("reports a forward that lost the race to another tab as delivered by that tab", async () => {
+    const input = await mergedFlow();
+    // the other tab's forward lands between this tab's account read and its submit,
+    // so this submission finds no source account
+    let otherHash = "";
+    fake.beforeNextSubmit = () => {
+      otherHash = fake.forwardElsewhere(input.mediatorPublicKey, cex);
+    };
+    const result = await submitMediatorForward(input, deps);
+    expect(result).toMatchObject({ ok: true, alreadyDelivered: true, txHash: otherHash });
+    expect(fake.submitted).toHaveLength(1);
+  });
+
   it("renews an expired flow token and still forwards to the committed destination", async () => {
     const input = await mergedFlow();
     vi.useFakeTimers({ toFake: ["Date"] });
@@ -221,5 +234,30 @@ describe("submitMediatorForward", () => {
     if (result.ok) expect(result.flowToken).not.toBe(input.flowToken);
     expect(fake.requests).toContain("POST /api/mediator/reissue");
     expect(fake.lastForward!.amount).toBe(102n * XLM - 2n * BASE_RESERVE - 200n);
+  });
+
+  it("refuses a renewed token that unlocks a different mediator", async () => {
+    const input = await mergedFlow();
+    const other = await mintedFlow();
+    // a re-issue answer for some other flow's mediator
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (req: RequestInfo | URL, init?: RequestInit) => {
+        const raw = typeof req === "string" ? req : req instanceof URL ? req.href : req.url;
+        if (raw.startsWith("/api/mediator/reissue")) {
+          return Response.json({ ok: true, ...other, expiresAt: Date.now() + 60_000 });
+        }
+        return fake.fetch(req, init);
+      }),
+    );
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + MEDIATOR_FLOW_TTL_MS + 60_000);
+    const result = await submitMediatorForward(input, deps);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain(other.mediatorPublicKey);
+      expect(result.flowToken).toBe(input.flowToken);
+    }
+    expect(fake.submitted).toHaveLength(0);
   });
 });
