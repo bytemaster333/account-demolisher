@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { StrKey } from "@stellar/stellar-sdk";
 
 import { DirectContractProvider } from "@/lib/adapters/positions/direct";
@@ -43,10 +43,10 @@ function provider(overrides: Deps = {}): DirectContractProvider {
       primary: { getUserPools: async () => [] },
       fallback: { getUserPools: async () => [] },
     })) as never,
+    aquariusDiscoverConcentrated: async () => [],
     blendPoolIds: [],
     blendLoadUserPositions: async () => ({ positions: [], errors: [] }),
-    blendLoadBackstopDeposits: async () => ({ deposits: [], errors: [] }),
-    fxdaoGetUserVaults: async () => [],
+    blendLoadBackstopDeposits: async () => ({ deposits: [], unclaimedEmissions: [], errors: [] }),
     soroswapDiscover: async () => [],
     ...overrides,
   });
@@ -199,6 +199,7 @@ describe("Blend backstop is read from each pool's own backstop (C-07)", () => {
               queueDurationSeconds: 21 * 24 * 60 * 60,
             },
           ],
+          unclaimedEmissions: [],
           errors: [],
         };
       },
@@ -219,7 +220,7 @@ describe("Blend backstop is read from each pool's own backstop (C-07)", () => {
     });
   });
 
-  it("keeps a backstop entry whose only content is accrued emissions (L-49)", async () => {
+  it("reports emissions left after a withdrawal without blocking the merge (L-49)", async () => {
     const positions = await provider({
       blendPoolIds: [POOL_V2],
       blendLoadUserPositions: async () => ({
@@ -227,23 +228,18 @@ describe("Blend backstop is read from each pool's own backstop (C-07)", () => {
         errors: [],
       }),
       blendLoadBackstopDeposits: async () => ({
-        deposits: [
-          {
-            poolId: POOL_V2,
-            backstopId: BLEND_BACKSTOP_MAINNET_ID,
-            backstopVersion: "V2",
-            shares: 0n,
-            queuedForWithdrawal: 0n,
-            unlockedQueuedForWithdrawal: 0n,
-            accruedEmissions: 12_345n,
-            queueDurationSeconds: 17 * 24 * 60 * 60,
-          },
+        deposits: [],
+        unclaimedEmissions: [
+          { poolId: POOL_V2, backstopId: BLEND_BACKSTOP_MAINNET_ID, accruedEmissions: 12_345n },
         ],
         errors: [],
       }),
     }).getPositions(USER, MAINNET);
-    expect(positions.backstop).toHaveLength(1);
-    expect(positions.backstop[0]?.accruedEmissions).toBe(12_345n);
+    expect(positions.backstop).toEqual([]);
+    expect(positions.errors).toEqual([]);
+    expect(positions.backstopUnclaimedEmissions).toEqual([
+      { poolId: POOL_V2, backstopId: BLEND_BACKSTOP_MAINNET_ID, accruedEmissions: 12_345n },
+    ]);
   });
 });
 
@@ -286,9 +282,9 @@ describe("Blend pool selection per network (L-34)", () => {
         scanned.push(poolIds);
         return { positions: [], errors: [] };
       },
-      blendLoadBackstopDeposits: async () => ({ deposits: [], errors: [] }),
-      fxdaoGetUserVaults: async () => [],
+      blendLoadBackstopDeposits: async () => ({ deposits: [], unclaimedEmissions: [], errors: [] }),
       soroswapDiscover: async () => [],
+      aquariusDiscoverConcentrated: async () => [],
     });
     await p.getPositions(USER, TESTNET);
     await p.getPositions(USER, MAINNET);
@@ -309,13 +305,120 @@ describe("Blend pool selection per network (L-34)", () => {
         called = true;
         return { positions: [], errors: [] };
       },
-      blendLoadBackstopDeposits: async () => ({ deposits: [], errors: [] }),
-      fxdaoGetUserVaults: async () => [],
+      blendLoadBackstopDeposits: async () => ({ deposits: [], unclaimedEmissions: [], errors: [] }),
       soroswapDiscover: async () => [],
-    }).getPositions(USER, { ...TESTNET, id: "futurenet" } as unknown as NetworkConfig);
+      aquariusDiscoverConcentrated: async () => [],
+    }).getPositions(USER, { ...TESTNET, id: "unsupported" } as unknown as NetworkConfig);
     expect(called).toBe(false);
     expect(positions.errors.find((e) => e.protocol === "blend")?.message).toMatch(
       /no supported pools/,
+    );
+  });
+});
+
+describe("Aquarius concentrated positions (H-26)", () => {
+  const POOL_ADDR = StrKey.encodeContract(Buffer.alloc(32, 9));
+  const position = {
+    poolAddress: POOL_ADDR,
+    poolIndex: SHARED_INDEX,
+    tokens: [TOKEN_XLM, TOKEN_USDC],
+    ranges: [{ tickLower: -120, tickUpper: 60, liquidity: 20_805_200_856_410n }],
+    pendingFees: [0n, 3n],
+    pendingReward: 0n,
+  };
+
+  it("returns the concentrated positions the pool reads found", async () => {
+    const seen: string[] = [];
+    const positions = await provider({
+      aquariusDiscoverConcentrated: async (_server, network, user) => {
+        seen.push(`${network.id}:${user}`);
+        return [position];
+      },
+    }).getPositions(USER, MAINNET);
+    expect(seen).toEqual([`mainnet:${USER}`]);
+    expect(positions.errors).toEqual([]);
+    expect(positions.aquariusConcentrated).toEqual([position]);
+  });
+
+  it("records an aquarius error when a pinned concentrated pool cannot be read", async () => {
+    const positions = await provider({
+      aquariusDiscoverConcentrated: async () => {
+        throw new Error("Aquarius concentrated pools could not be read (CBBMQ: 503)");
+      },
+    }).getPositions(USER, MAINNET);
+    expect(positions.aquariusConcentrated).toEqual([]);
+    expect(positions.errors.find((e) => e.protocol === "aquarius")?.message).toMatch(
+      /concentrated pools could not be read/,
+    );
+  });
+
+  it("refuses a malformed concentrated position instead of planning it", async () => {
+    const positions = await provider({
+      aquariusDiscoverConcentrated: async () => [{ ...position, poolAddress: "nope" }],
+    }).getPositions(USER, MAINNET);
+    expect(positions.aquariusConcentrated).toEqual([]);
+    expect(positions.errors.some((e) => e.protocol === "aquarius")).toBe(true);
+  });
+});
+
+describe("per-protocol discovery budget (M-15)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("keeps the protocols that finished and names the one that timed out", async () => {
+    vi.useFakeTimers();
+    const pending = provider({
+      protocolTimeoutMs: 25_000,
+      blendPoolIds: [POOL_V2],
+      blendLoadUserPositions: async () => ({
+        positions: [snapshot({ poolId: POOL_V2, claimableEmissionTokenIds: [1] })],
+        errors: [],
+      }),
+      soroswapDiscover: () => new Promise(() => {}),
+    }).getPositions(USER, MAINNET);
+    await vi.advanceTimersByTimeAsync(25_000);
+    const positions = await pending;
+    expect(positions.blend).toHaveLength(1);
+    expect(positions.soroswap).toEqual([]);
+    expect(positions.errors).toEqual([
+      { protocol: "soroswap", message: "timed out after 25000ms" },
+    ]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("clears every budget timer once all protocols answer", async () => {
+    vi.useFakeTimers();
+    const positions = await provider({ protocolTimeoutMs: 25_000 }).getPositions(USER, MAINNET);
+    expect(positions.errors).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("defaults to a budget below the 30 s outer discovery timeout", async () => {
+    vi.useFakeTimers();
+    const pending = provider({ soroswapDiscover: () => new Promise(() => {}) }).getPositions(
+      USER,
+      MAINNET,
+    );
+    await vi.advanceTimersByTimeAsync(25_000);
+    const positions = await pending;
+    expect(positions.errors.map((e) => e.protocol)).toEqual(["soroswap"]);
+  });
+});
+
+describe("FxDAO is no longer discovered", () => {
+  it("returns no fxdao slice", async () => {
+    const positions = await provider().getPositions(USER, MAINNET);
+    expect(Object.keys(positions).sort()).toEqual(
+      [
+        "aquarius",
+        "aquariusConcentrated",
+        "backstop",
+        "backstopUnclaimedEmissions",
+        "blend",
+        "errors",
+        "soroswap",
+      ].sort(),
     );
   });
 });

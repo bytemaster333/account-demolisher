@@ -77,15 +77,15 @@ export const defaultBlendPoolLoader: BlendPoolLoader = {
   },
 };
 
-// The blend-sdk builds its OWN rpc Server from the single {rpc} we hand it, so it
-// bypasses the failover Proxy getRpc() gives our direct reads. On mainnet the
+// the blend-sdk builds its own rpc Server from the single {rpc} we hand it, so it
+// bypasses the failover proxy getRpc() gives our direct reads. on mainnet the
 // primary endpoint rate-limits (429) under the concurrent per-pool load burst
-// (V1 pools load twice: a V2 attempt, then V1), which surfaced as a spurious
-// "DeFi positions" discovery warning. Give the SDK the same protection: run a
-// unit of Blend work against the primary and, on a failover-worthy fault
-// (429/5xx/network), retry the SAME work against the next configured endpoint.
-// Deterministic errors (contract-not-found, unmapped reserve index) are identical
-// on every host, so they propagate immediately instead of wasting endpoints.
+// (v1 pools load twice: a v2 attempt, then v1), which surfaced as a spurious
+// "DeFi positions" discovery warning. so a unit of blend work runs against the
+// primary and, on a failover-worthy fault (429/5xx/network), the same work is
+// retried against the next configured endpoint. deterministic errors
+// (contract-not-found, unmapped reserve index) are identical on every host, so
+// they propagate immediately instead of wasting endpoints.
 export async function withBlendFailover<T>(
   network: NetworkConfig,
   op: (sdkNetwork: BlendSdkNetwork) => Promise<T>,
@@ -220,9 +220,9 @@ export async function loadUserPositions(
 }
 
 // ── backstop deposits ────────────────────────────────────────────────────────
-// Blend backstop shares live in a SEPARATE contract, not the pool, so they don't
+// blend backstop shares live in a separate contract, not the pool, so they don't
 // show up in pool positions and don't block an account merge by themselves.
-// Every pool's backstop is read: active shares, queued (Q4W) shares, the part
+// every pool's backstop is read: active shares, queued (Q4W) shares, the part
 // of the queue already unlocked, and BLND emissions accrued to the user.
 
 export interface BackstopUserState {
@@ -286,15 +286,27 @@ export const defaultBackstopDepositLoader: BackstopDepositLoader = {
   },
 };
 
+// accrual left to a user with no shares and nothing queued
+export interface BackstopUnclaimedEmissions {
+  readonly poolId: string;
+  readonly backstopId: string;
+  readonly accruedEmissions: bigint;
+}
+
 export interface LoadBackstopDepositsResult {
+  // active or queued shares: these keep the account open
   readonly deposits: readonly BackstopDeposit[];
+  // emissions with no shares behind them. queue_withdrawal stores the accrual up
+  // to that moment, so every withdrawn deposit leaves some; claiming it mints new
+  // shares under a fresh lock, so it is reported but never blocks the merge.
+  readonly unclaimedEmissions: readonly BackstopUnclaimedEmissions[];
   readonly errors: readonly string[];
 }
 
-// detect any active, queued or claimable backstop position across the pools,
-// each read against the backstop the pool itself names. A read failure or an
-// unknown backstop is reported (not swallowed), so an RPC error is never
-// treated as "no backstop position".
+// detect any active or queued backstop position across the pools, each read
+// against the backstop the pool itself names. a read failure or an unknown
+// backstop is reported (not swallowed), so an RPC error is never treated as "no
+// backstop position".
 export async function loadBackstopDeposits(
   network: NetworkConfig,
   userPublicKey: string,
@@ -302,6 +314,7 @@ export async function loadBackstopDeposits(
   loader: BackstopDepositLoader = defaultBackstopDepositLoader,
 ): Promise<LoadBackstopDepositsResult> {
   const deposits: BackstopDeposit[] = [];
+  const unclaimedEmissions: BackstopUnclaimedEmissions[] = [];
   const errors: string[] = [];
   const settled = await Promise.allSettled(
     pools.map(async ({ poolId, backstopId }) => {
@@ -322,18 +335,26 @@ export async function loadBackstopDeposits(
       return;
     }
     const { backstop, state } = result.value;
-    if (state.shares > 0n || state.totalQ4W > 0n || state.accruedEmissions > 0n) {
-      deposits.push({
-        poolId,
-        backstopId: backstop.id,
-        backstopVersion: backstop.version,
-        shares: state.shares,
-        queuedForWithdrawal: state.totalQ4W,
-        unlockedQueuedForWithdrawal: state.unlockedQ4W,
-        accruedEmissions: state.accruedEmissions,
-        queueDurationSeconds: backstop.queueDurationSeconds,
-      });
+    if (state.shares === 0n && state.totalQ4W === 0n) {
+      if (state.accruedEmissions > 0n) {
+        unclaimedEmissions.push({
+          poolId,
+          backstopId: backstop.id,
+          accruedEmissions: state.accruedEmissions,
+        });
+      }
+      return;
     }
+    deposits.push({
+      poolId,
+      backstopId: backstop.id,
+      backstopVersion: backstop.version,
+      shares: state.shares,
+      queuedForWithdrawal: state.totalQ4W,
+      unlockedQueuedForWithdrawal: state.unlockedQ4W,
+      accruedEmissions: state.accruedEmissions,
+      queueDurationSeconds: backstop.queueDurationSeconds,
+    });
   });
-  return { deposits, errors };
+  return { deposits, unclaimedEmissions, errors };
 }

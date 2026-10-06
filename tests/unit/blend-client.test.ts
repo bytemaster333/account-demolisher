@@ -208,7 +208,10 @@ describe("loadBackstopDeposits", () => {
     ]);
   });
 
-  it("reports active, queued, unlocked and emissions-only deposits (L-49)", async () => {
+  it("blocks on shares or a queue, and lists emissions-only leftovers apart (L-49)", async () => {
+    // queue_withdrawal stores accrued emissions, so every in-app close ends with
+    // some accrual once the queue is withdrawn. claiming it would mint new shares
+    // and restart the lock, so it must not keep the merge blocked.
     const res = await loadBackstopDeposits(
       MAINNET,
       USER,
@@ -218,16 +221,40 @@ describe("loadBackstopDeposits", () => {
         { poolId: POOL_C, backstopId: BLEND_BACKSTOP_V1_MAINNET_ID },
       ],
       stateLoader({
-        [POOL_A]: { accruedEmissions: 4_2000000n },
-        [POOL_B]: { totalQ4W: 100n, unlockedQ4W: 100n },
+        [POOL_A]: { accruedEmissions: 18_611_659n },
+        [POOL_B]: { shares: 5n, accruedEmissions: 9n },
+      }),
+    );
+    expect(res.errors).toEqual([]);
+    expect(res.deposits.map((d) => [d.poolId, d.shares, d.accruedEmissions])).toEqual([
+      [POOL_B, 5n, 9n],
+    ]);
+    expect(res.unclaimedEmissions).toEqual([
+      { poolId: POOL_A, backstopId: BLEND_BACKSTOP_MAINNET_ID, accruedEmissions: 18_611_659n },
+    ]);
+  });
+
+  it("reports active, queued and unlocked deposits with their accrual (L-49, M-25)", async () => {
+    const res = await loadBackstopDeposits(
+      MAINNET,
+      USER,
+      [
+        { poolId: POOL_A, backstopId: BLEND_BACKSTOP_MAINNET_ID },
+        { poolId: POOL_B, backstopId: BLEND_BACKSTOP_V1_MAINNET_ID },
+        { poolId: POOL_C, backstopId: BLEND_BACKSTOP_V1_MAINNET_ID },
+      ],
+      stateLoader({
+        [POOL_A]: { shares: 3n, accruedEmissions: 4_2000000n },
+        [POOL_B]: { totalQ4W: 100n, unlockedQ4W: 100n, accruedEmissions: 1n },
       }),
     );
     expect(
       res.deposits.map((d) => [d.poolId, d.accruedEmissions, d.unlockedQueuedForWithdrawal]),
     ).toEqual([
       [POOL_A, 4_2000000n, 0n],
-      [POOL_B, 0n, 100n],
+      [POOL_B, 1n, 100n],
     ]);
+    expect(res.unclaimedEmissions).toEqual([]);
   });
 
   it("refuses a backstop that is not a pinned Blend backstop for the network", async () => {

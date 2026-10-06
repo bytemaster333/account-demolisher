@@ -21,7 +21,7 @@ import { isAllowedContract } from "@/lib/config/contracts";
 import { MAINNET, TESTNET } from "@/lib/config/networks";
 import type { NetworkConfig } from "@/lib/config/networks";
 
-const FUTURENET = { id: "futurenet" } as unknown as NetworkConfig;
+const UNSUPPORTED = { id: "unsupported" } as unknown as NetworkConfig;
 
 describe("Blend backstops per network (C-07)", () => {
   it("knows both mainnet backstops with their own queue locks", () => {
@@ -58,7 +58,7 @@ describe("Blend backstops per network (C-07)", () => {
   });
 
   it("has no backstop on an unsupported network", () => {
-    expect(() => blendBackstopsForNetwork(FUTURENET)).toThrow(/no supported deployment/);
+    expect(() => blendBackstopsForNetwork(UNSUPPORTED)).toThrow(/no supported deployment/);
   });
 });
 
@@ -92,6 +92,6 @@ describe("Blend pool registry (H-24, L-34)", () => {
   it("selects pools explicitly per network", () => {
     expect(blendPoolIdsForNetwork(MAINNET)).toBe(BLEND_MAINNET_POOL_IDS);
     expect(blendPoolIdsForNetwork(TESTNET)).toBe(BLEND_TESTNET_POOL_IDS);
-    expect(() => blendPoolIdsForNetwork(FUTURENET)).toThrow(/no supported pools/);
+    expect(() => blendPoolIdsForNetwork(UNSUPPORTED)).toThrow(/no supported pools/);
   });
 });

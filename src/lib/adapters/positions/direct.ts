@@ -14,28 +14,35 @@ import {
   type AquariusPool,
   type AquariusPoolProvider,
 } from "@/lib/adapters/aquarius/pools";
-import { getUserVaults, type FxDAOVault } from "@/lib/adapters/fxdao/client";
+import { discoverConcentratedPositions } from "@/lib/adapters/aquarius/concentrated";
 import { discoverSoroswapPositions } from "@/lib/adapters/soroswap/discovery";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import type { rpc } from "@stellar/stellar-sdk";
 import type { NetworkConfig } from "@/lib/config/networks";
 import {
+  type AquariusConcentratedPositionSummary,
   type AquariusPositionSummary,
   type BlendBackstopSummary,
+  type BlendBackstopUnclaimedEmissions,
   type BlendPositionSummary,
-  type FxDAOPositionSummary,
   type IDeFiPositionProvider,
   type ProtocolPositions,
   type SoroswapPositionSummary,
 } from "./interface";
 import {
+  aquariusConcentratedPositionSchema,
   aquariusPositionSchema,
   blendBackstopSchema,
+  blendBackstopUnclaimedSchema,
   blendPositionSchema,
-  fxdaoPositionSchema,
   parsePositions,
   soroswapPositionSchema,
 } from "./schema";
+
+// each protocol gets its own budget, below the 30 s the page flow allows the
+// whole discovery, so a slow protocol is named in errors while the others'
+// results are kept
+export const DEFAULT_PROTOCOL_TIMEOUT_MS = 25_000;
 
 // aquarius sources: the REST API (primary) and the on-chain event scan
 export interface AquariusProviderFactory {
@@ -61,9 +68,10 @@ export interface DirectContractProviderDeps {
   readonly blendLoadUserPositions?: typeof loadUserPositions;
   readonly blendLoadBackstopDeposits?: typeof loadBackstopDeposits;
   readonly aquariusFactory?: AquariusProviderFactory;
-  readonly fxdaoGetUserVaults?: typeof getUserVaults;
+  readonly aquariusDiscoverConcentrated?: typeof discoverConcentratedPositions;
   readonly soroswapDiscover?: typeof discoverSoroswapPositions;
   readonly serverFactory?: (network: NetworkConfig) => rpc.Server;
+  readonly protocolTimeoutMs?: number;
 }
 
 type ProtocolError = { protocol: string; message: string };
@@ -76,8 +84,9 @@ export class DirectContractProvider implements IDeFiPositionProvider {
       | "blendLoadUserPositions"
       | "blendLoadBackstopDeposits"
       | "aquariusFactory"
-      | "fxdaoGetUserVaults"
+      | "aquariusDiscoverConcentrated"
       | "soroswapDiscover"
+      | "protocolTimeoutMs"
     >
   > & {
     readonly blendPoolLoader: BlendPoolLoader | undefined;
@@ -92,9 +101,11 @@ export class DirectContractProvider implements IDeFiPositionProvider {
       blendLoadUserPositions: deps.blendLoadUserPositions ?? loadUserPositions,
       blendLoadBackstopDeposits: deps.blendLoadBackstopDeposits ?? loadBackstopDeposits,
       aquariusFactory: deps.aquariusFactory ?? defaultAquariusFactory,
-      fxdaoGetUserVaults: deps.fxdaoGetUserVaults ?? getUserVaults,
+      aquariusDiscoverConcentrated:
+        deps.aquariusDiscoverConcentrated ?? discoverConcentratedPositions,
       soroswapDiscover: deps.soroswapDiscover ?? discoverSoroswapPositions,
       serverFactory: deps.serverFactory ?? defaultServerFactory,
+      protocolTimeoutMs: deps.protocolTimeoutMs ?? DEFAULT_PROTOCOL_TIMEOUT_MS,
     };
   }
 
@@ -106,25 +117,26 @@ export class DirectContractProvider implements IDeFiPositionProvider {
   async getPositions(userAddress: string, network: NetworkConfig): Promise<ProtocolPositions> {
     const server = this.deps.serverFactory(network);
 
-    // each protocol independent; allSettled so any one rejecting doesn't abort the others
-    const [blendSettled, aquariusSettled, soroswapSettled, fxdaoSettled] = await Promise.allSettled(
-      [
-        this.discoverBlend(network, userAddress),
-        this.discoverAquarius(server, network, userAddress),
-        this.discoverSoroswap(server, network, userAddress),
-        this.discoverFxDAO(userAddress, network),
-      ],
-    );
+    // each protocol independent and on its own budget; allSettled so any one
+    // rejecting or timing out doesn't abort the others
+    const budget = this.deps.protocolTimeoutMs;
+    const [blendSettled, aquariusSettled, soroswapSettled] = await Promise.allSettled([
+      withBudget(() => this.discoverBlend(network, userAddress), budget),
+      withBudget(() => this.discoverAquarius(server, network, userAddress), budget),
+      withBudget(() => this.discoverSoroswap(server, network, userAddress), budget),
+    ]);
 
     const errors: ProtocolError[] = [];
 
     const blendResult = unwrap("blend", blendSettled, errors, {
       positions: [] as readonly BlendPositionSummary[],
       backstop: [] as readonly BlendBackstopSummary[],
+      unclaimedEmissions: [] as readonly BlendBackstopUnclaimedEmissions[],
       perPoolErrors: [] as readonly string[],
     });
     const aquariusResult = unwrap("aquarius", aquariusSettled, errors, {
       positions: [] as readonly AquariusPositionSummary[],
+      concentrated: [] as readonly AquariusConcentratedPositionSummary[],
       sourceErrors: [] as readonly string[],
     });
     const soroswap = unwrap(
@@ -133,7 +145,6 @@ export class DirectContractProvider implements IDeFiPositionProvider {
       errors,
       [] as readonly SoroswapPositionSummary[],
     );
-    const fxdao = unwrap("fxdao", fxdaoSettled, errors, [] as readonly FxDAOPositionSummary[]);
 
     // per-pool and per-source failures are errors too: each one means a
     // position may exist that discovery could not see
@@ -144,8 +155,9 @@ export class DirectContractProvider implements IDeFiPositionProvider {
       blend: blendResult.positions,
       backstop: blendResult.backstop,
       aquarius: aquariusResult.positions,
+      aquariusConcentrated: aquariusResult.concentrated,
       soroswap,
-      fxdao,
+      backstopUnclaimedEmissions: blendResult.unclaimedEmissions,
       errors,
     };
   }
@@ -156,6 +168,7 @@ export class DirectContractProvider implements IDeFiPositionProvider {
   ): Promise<{
     positions: readonly BlendPositionSummary[];
     backstop: readonly BlendBackstopSummary[];
+    unclaimedEmissions: readonly BlendBackstopUnclaimedEmissions[];
     perPoolErrors: readonly string[];
   }> {
     const poolIds = this.deps.blendPoolIds ?? blendPoolIdsForNetwork(network);
@@ -181,6 +194,7 @@ export class DirectContractProvider implements IDeFiPositionProvider {
     // pool is checked against that backstop. a pool that failed to load already
     // carries an error above, which blocks the merge on its own.
     const backstopSummaries: BlendBackstopSummary[] = [];
+    const unclaimed: BlendBackstopUnclaimedEmissions[] = [];
     try {
       const backstop = await this.deps.blendLoadBackstopDeposits(
         network,
@@ -198,6 +212,7 @@ export class DirectContractProvider implements IDeFiPositionProvider {
           queueDurationSeconds: d.queueDurationSeconds,
         });
       }
+      unclaimed.push(...backstop.unclaimedEmissions);
       perPoolErrors.push(...backstop.errors);
     } catch (e) {
       perPoolErrors.push(
@@ -212,6 +227,7 @@ export class DirectContractProvider implements IDeFiPositionProvider {
     return {
       positions: parsePositions(blendPositionSchema, positions),
       backstop: parsePositions(blendBackstopSchema, backstopSummaries),
+      unclaimedEmissions: parsePositions(blendBackstopUnclaimedSchema, unclaimed),
       perPoolErrors,
     };
   }
@@ -222,21 +238,25 @@ export class DirectContractProvider implements IDeFiPositionProvider {
     userAddress: string,
   ): Promise<{
     positions: readonly AquariusPositionSummary[];
+    concentrated: readonly AquariusConcentratedPositionSummary[];
     sourceErrors: readonly string[];
   }> {
     const { primary, fallback } = this.deps.aquariusFactory(server, network);
 
-    // The REST API is the complete source. The on-chain event scan only sees
-    // router deposit/withdraw events inside the RPC's retention window (about the
-    // last 7 days) and never sees LP received by transfer, so an empty scan is not
-    // evidence of no position. It runs alongside REST as a check against a
-    // spoofed or partial REST answer, and the two are unioned. When REST fails,
-    // whatever the scan found (and any pools REST did read before failing) is
-    // kept AND an error is recorded, so preview warns and the merge-time reprobe
-    // refuses to merge around an older position.
-    const [apiResult, scanResult] = await Promise.allSettled([
+    // the REST API is the complete source for router (standard) pools. the
+    // on-chain event scan only sees router deposit/withdraw events inside the
+    // RPC's retention window (about the last 7 days) and never sees LP received
+    // by transfer, so an empty scan is not evidence of no position. it runs
+    // alongside REST as a check against a spoofed or partial REST answer, and the
+    // two are unioned. when REST fails, whatever the scan found (and any pools
+    // REST did read before failing) is kept and an error is recorded, so preview
+    // warns and the merge-time reprobe refuses to merge around an older position.
+    // concentrated positions sit in the pool contracts, where neither source
+    // looks, so every pinned concentrated pool is read directly.
+    const [apiResult, scanResult, concentratedResult] = await Promise.allSettled([
       primary.getUserPools(userAddress),
       fallback.getUserPools(userAddress),
+      this.deps.aquariusDiscoverConcentrated(server, network, userAddress),
     ]);
 
     const sourceErrors: string[] = [];
@@ -253,9 +273,21 @@ export class DirectContractProvider implements IDeFiPositionProvider {
       );
     }
 
+    let concentrated: readonly AquariusConcentratedPositionSummary[] = [];
+    if (concentratedResult.status === "rejected") {
+      sourceErrors.push(reasonMessage(concentratedResult.reason));
+    } else {
+      try {
+        concentrated = parsePositions(aquariusConcentratedPositionSchema, concentratedResult.value);
+      } catch (e) {
+        sourceErrors.push(`Aquarius concentrated position failed validation: ${reasonMessage(e)}`);
+      }
+    }
+
     // pool_index is only unique within a token set (the router's get_pools(tokens)
     // returns index -> pool), so the same index can name different pools for
-    // different pairs. key by the sorted token set plus the index.
+    // different pairs. key by the sorted token set plus the index, which is
+    // exactly what the router withdraw is addressed by.
     const byPool = new Map<string, AquariusPool>();
     if (apiResult.status === "rejected") {
       for (const pool of partialPools(apiResult.reason)) byPool.set(aquariusPoolKey(pool), pool);
@@ -271,12 +303,13 @@ export class DirectContractProvider implements IDeFiPositionProvider {
         aquariusPositionSchema,
         [...byPool.values()].map(aquariusPoolToSummary),
       ),
+      concentrated,
       sourceErrors,
     };
   }
 
-  // our own on-chain Soroswap LP discovery: walks the factory's pair list and
-  // probes the user's LP balance on each pair. No third-party position API.
+  // our own on-chain soroswap LP discovery: walks the factory's pair list and
+  // probes the user's LP balance on each pair. no third-party position API.
   private async discoverSoroswap(
     server: rpc.Server,
     network: NetworkConfig,
@@ -286,14 +319,6 @@ export class DirectContractProvider implements IDeFiPositionProvider {
       soroswapPositionSchema,
       await this.deps.soroswapDiscover(server, network, userAddress),
     );
-  }
-
-  private async discoverFxDAO(
-    userAddress: string,
-    network: NetworkConfig,
-  ): Promise<readonly FxDAOPositionSummary[]> {
-    const vaults: FxDAOVault[] = await this.deps.fxdaoGetUserVaults(userAddress, network);
-    return parsePositions(fxdaoPositionSchema, vaults.map(fxdaoVaultToSummary));
   }
 }
 
@@ -335,16 +360,19 @@ function aquariusPoolToSummary(p: AquariusPool): AquariusPositionSummary {
   };
 }
 
-function fxdaoVaultToSummary(v: FxDAOVault): FxDAOPositionSummary {
-  return {
-    denomination: v.denomination,
-    debt: v.debt,
-    collateral: v.collateral,
-  };
-}
-
 function reasonMessage(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
+}
+
+// settle with the protocol's result, or reject once the budget runs out. the
+// timer is cleared either way so nothing stays scheduled; the slow work itself
+// cannot be aborted, its late result is ignored.
+function withBudget<T>(work: () => Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([work(), timeout]).finally(() => clearTimeout(timer));
 }
 
 // generic allSettled unwrap: returns fulfilled value or fallback, stamping any rejection onto errors

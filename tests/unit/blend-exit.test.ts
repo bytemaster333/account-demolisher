@@ -450,6 +450,59 @@ describe("Blend backstop exits target the pool's own backstop (C-07)", () => {
     const step = steps.find((s) => s.kind === "backstop_queue_withdrawal");
     if (!step || step.kind !== "backstop_queue_withdrawal") throw new Error("missing step");
     expect(invocation(step.transaction).contract).toBe(BLEND_BACKSTOP_V1_MAINNET_ID);
+    expect(step.shares).toBe(42n);
+  });
+
+  it("buildExitSequence claims backstop emissions before the queue, then withdraws the unlocked part (L-49, M-25)", async () => {
+    const steps = await buildExitSequence(
+      MAINNET,
+      hydrationPosition(POOL_V1),
+      USER,
+      account([{ balance: "10.0000000" }]),
+      deps({
+        poolLoader: loaderFor(v1Pool()),
+        backstopLoader: backstopLoader({
+          shares: 42n,
+          totalQ4W: 500n,
+          unlockedQ4W: 300n,
+          accruedEmissions: 7n,
+        }),
+        claimBackstopEmissions: true,
+        backstopShares: 42n,
+        backstopWithdrawAmount: 1n,
+      }),
+    );
+    expect(steps.map((s) => s.kind)).toEqual([
+      "backstop_claim_emissions",
+      "backstop_queue_withdrawal",
+      "backstop_withdraw",
+    ]);
+    const calls = steps.map((s) => invocation(s.transaction));
+    expect(calls.map((c) => [c.contract, c.fn])).toEqual([
+      [BLEND_BACKSTOP_V1_MAINNET_ID, "claim"],
+      [BLEND_BACKSTOP_V1_MAINNET_ID, "queue_withdrawal"],
+      [BLEND_BACKSTOP_V1_MAINNET_ID, "withdraw"],
+    ]);
+    const withdraw = steps[2];
+    if (withdraw?.kind !== "backstop_withdraw") throw new Error("missing withdraw step");
+    // the amount is what is unlocked on chain now, not the planned figure
+    expect(withdraw.amount).toBe(300n);
+    expect(scValToNative(calls[2]!.args[2]!)).toBe(300n);
+  });
+
+  it("buildExitSequence builds only the backstop withdraw for a fully queued deposit (M-25)", async () => {
+    const steps = await buildExitSequence(
+      MAINNET,
+      hydrationPosition(POOL_V1),
+      USER,
+      account([{ balance: "10.0000000" }]),
+      deps({
+        poolLoader: loaderFor(v1Pool()),
+        backstopLoader: backstopLoader({ totalQ4W: 300n, unlockedQ4W: 300n }),
+        backstopWithdrawAmount: 300n,
+      }),
+    );
+    expect(steps.map((s) => s.kind)).toEqual(["backstop_withdraw"]);
   });
 
   it("uses the 17-day lock for the v2 backstop", async () => {
