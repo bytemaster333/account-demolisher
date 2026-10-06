@@ -231,8 +231,9 @@ export class DirectContractProvider implements IDeFiPositionProvider {
     // last 7 days) and never sees LP received by transfer, so an empty scan is not
     // evidence of no position. It runs alongside REST as a check against a
     // spoofed or partial REST answer, and the two are unioned. When REST fails,
-    // whatever the scan found is kept AND an error is recorded, so preview warns
-    // and the merge-time reprobe refuses to merge around an older position.
+    // whatever the scan found (and any pools REST did read before failing) is
+    // kept AND an error is recorded, so preview warns and the merge-time reprobe
+    // refuses to merge around an older position.
     const [apiResult, scanResult] = await Promise.allSettled([
       primary.getUserPools(userAddress),
       fallback.getUserPools(userAddress),
@@ -256,6 +257,9 @@ export class DirectContractProvider implements IDeFiPositionProvider {
     // returns index -> pool), so the same index can name different pools for
     // different pairs. key by the sorted token set plus the index.
     const byPool = new Map<string, AquariusPool>();
+    if (apiResult.status === "rejected") {
+      for (const pool of partialPools(apiResult.reason)) byPool.set(aquariusPoolKey(pool), pool);
+    }
     for (const result of [apiResult, scanResult]) {
       if (result.status === "fulfilled") {
         for (const pool of result.value) byPool.set(aquariusPoolKey(pool), pool);
@@ -309,6 +313,14 @@ function blendSnapshotToSummary(p: BlendPoolSnapshot): BlendPositionSummary {
     supply: new Map(p.supply),
     emissionReserveTokenIds: [...p.claimableEmissionTokenIds].sort((a, b) => a - b),
   };
+}
+
+// a REST failure partway through the per-pool balance reads carries the pools
+// that did read as partialPools. they still pass the schema check below.
+function partialPools(reason: unknown): readonly AquariusPool[] {
+  if (typeof reason !== "object" || reason === null || !("partialPools" in reason)) return [];
+  const pools: unknown = reason.partialPools;
+  return Array.isArray(pools) ? (pools as AquariusPool[]) : [];
 }
 
 function aquariusPoolKey(p: AquariusPool): string {

@@ -87,6 +87,42 @@ describe("Aquarius discovery when the REST source fails (C-06)", () => {
   });
 });
 
+describe("Aquarius REST source that read only some of its pools (C-06)", () => {
+  // the REST provider reads each listed pool's share balance on chain; when one
+  // read fails it rejects with the pools that did read attached as partialPools
+  function partialRest(pools: readonly unknown[]) {
+    return () => {
+      throw Object.assign(new Error("share balance read failed for pool 2 of 2"), {
+        partialPools: pools,
+      });
+    };
+  }
+
+  it("keeps the pools REST did read, plus the scan's, and still records the error", async () => {
+    const restPool = {
+      poolIndex: SHARED_INDEX,
+      poolType: "constant_product",
+      tokens: [TOKEN_XLM, TOKEN_USDC],
+      shareBalance: 7n,
+    };
+    const scanPool = { ...restPool, tokens: [TOKEN_XLM, TOKEN_AQUA], shareBalance: 3n };
+    const positions = await provider(
+      aquarius(partialRest([restPool]), () => [scanPool]),
+    ).getPositions(USER, MAINNET);
+    expect(positions.aquarius.map((p) => p.shareBalance).sort()).toEqual([3n, 7n]);
+    const err = positions.errors.find((e) => e.protocol === "aquarius");
+    expect(err?.message).toMatch(/pool 2 of 2/);
+  });
+
+  it("rejects a malformed partial pool through the schema instead of planning it", async () => {
+    const positions = await provider(
+      aquarius(partialRest([{ poolIndex: "nope", tokens: [], shareBalance: 1n }]), () => []),
+    ).getPositions(USER, MAINNET);
+    expect(positions.aquarius).toEqual([]);
+    expect(positions.errors.some((e) => e.protocol === "aquarius")).toBe(true);
+  });
+});
+
 describe("Aquarius union keyed by token set and pool index (H-21)", () => {
   it("keeps two pools that share a pool_index but hold different tokens", async () => {
     const xlmUsdc = {
