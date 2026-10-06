@@ -123,3 +123,99 @@ describe("shared account without a bundleable close (C-08)", () => {
     expect(screen.getByTestId("review-create-request")).toBeTruthy();
   });
 });
+
+describe("what keeps the close from starting (H-05)", () => {
+  it("lists the blockers and keeps the confirmation off", () => {
+    renderPanel(makeTree(), { blockers: ["Blend: positions could not be read."] });
+    expect(screen.getByTestId("review-blockers").textContent).toMatch(/could not be read/);
+    expect((screen.getByTestId("demolish-confirm") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("keeps the signing request off while a blocker is open", () => {
+    renderPanel(makeTree(), {
+      blockers: ["The account can't be merged yet."],
+      shared: {
+        gate: { ok: true },
+        claimRisks: [],
+        onCreate: () => {},
+        creating: false,
+        error: null,
+      },
+    });
+    expect((screen.getByTestId("review-create-request") as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("the exchange close says what the merge leg delivers (L-06)", () => {
+  it("discloses the roughly 1 XLM merge the exchange may not credit", () => {
+    const memo: ClassicMemo = { type: "text", value: "abc" };
+    const mediator = Keypair.random().publicKey();
+    renderPanel(
+      makeTree({ opts: { memo, useMediator: true, mediatorPublicKey: mediator, flowToken: "t" } }),
+      { memo, useMediator: true },
+    );
+    expect(screen.getByTestId("review-merge-leg").textContent).toMatch(
+      /About 1 XLM .* account merge, which most exchanges do not credit/,
+    );
+  });
+
+  it("says nothing about a merge leg on a direct close", () => {
+    renderPanel(makeTree());
+    expect(screen.queryByTestId("review-merge-leg")).toBeNull();
+  });
+});
+
+describe("a shared close never signs a claim that can't land in the window (L-25)", () => {
+  it("offers to leave the claim out and keeps the request off until then", () => {
+    let leftOut = 0;
+    renderPanel(makeTree(), {
+      shared: {
+        gate: { ok: true },
+        claimRisks: [
+          { id: "cb", asset: { kind: "native" }, amount: "5.0000000", reason: "expires" },
+        ],
+        onLeaveOutRisky: () => {
+          leftOut += 1;
+        },
+        onCreate: () => {},
+        creating: false,
+        error: null,
+      },
+    });
+    expect((screen.getByTestId("review-create-request") as HTMLButtonElement).disabled).toBe(true);
+    screen.getByTestId("review-leave-out-risky").click();
+    expect(leftOut).toBe(1);
+  });
+});
+
+describe("conversions show what they sell and the floor they sign (M-18)", () => {
+  it("lists the amount sold, the reviewed quote and the signed minimum", () => {
+    const issuer = Keypair.random().publicKey();
+    const audit = makeAudit({
+      balances: [
+        ...makeAudit().balances,
+        {
+          asset: { kind: "credit", code: "USDC", issuer },
+          amount: "10.0000000",
+          buyingLiabilities: "0",
+          sellingLiabilities: "0",
+        },
+      ],
+    });
+    const paths = new Map([
+      [
+        `USDC:${issuer}`,
+        {
+          sourceAmount: "10.0000000",
+          destinationAmount: "40.0000000",
+          path: [],
+          reference: { sourceAmount: "0.0100000", destinationAmount: "0.0400000" },
+        },
+      ],
+    ]);
+    renderPanel(makeTree({ audit, opts: { paths } }), { audit });
+    const text = screen.getByTestId("review-conversions").textContent ?? "";
+    expect(text).toMatch(/Sells 10\.0000000 USDC for about 40\.0000000 XLM/);
+    expect(text).toMatch(/refuses less than \d+\.\d+ XLM/);
+  });
+});
