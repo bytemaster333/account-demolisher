@@ -108,10 +108,22 @@ describe("mediator ephemeral per-flow keys", () => {
 
   it("reports an authentic token past its expiry as expired, not forged", () => {
     const flow = startMediatorFlow(TERMS, 1_000);
+    const nonce = flow.flowToken.split(".")[1];
     expect(resolveMediatorFlow(flow.flowToken, 1_000 + MEDIATOR_FLOW_TTL_MS)).toEqual({
       ok: false,
       reason: "expired",
+      flowId: nonce,
     });
+  });
+
+  it("gives the same flow id to a token and its renewal, and a different one to a new flow", () => {
+    const flow = startMediatorFlow(TERMS, 1_000);
+    const renewed = reissueMediatorFlow(flow.flowToken, 5_000);
+    const resolved = resolveMediatorFlow(flow.flowToken, 2_000);
+    const other = resolveMediatorFlow(startMediatorFlow(TERMS, 1_000).flowToken, 2_000);
+    if (!renewed.ok || !resolved.ok || !other.ok) throw new Error("expected authentic tokens");
+    expect(renewed.flowId).toBe(resolved.flow.flowId);
+    expect(other.flow.flowId).not.toBe(resolved.flow.flowId);
   });
 
   it("re-issues an expired authentic token for the same mediator and terms", () => {

@@ -32,6 +32,11 @@ function mintUrl(params: Record<string, string>): string {
   return `http://app.test/api/mediator/sign?${new URLSearchParams(params).toString()}`;
 }
 
+// the app only runs behind a proxy, which always appends the client address
+function getReq(url: string, headers: Record<string, string> = {}): Request {
+  return new Request(url, { headers: { "x-forwarded-for": nextIp(), ...headers } });
+}
+
 async function mint(
   memo: Memo = DEPOSIT_MEMO,
   network = "testnet",
@@ -74,18 +79,20 @@ function post(body: unknown, headers: Record<string, string> = {}): Promise<Resp
 }
 
 beforeEach(() => {
+  vi.stubEnv("TRUSTED_PROXY_HOPS", "1");
   __resetRateLimiterForTests();
 });
 
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe("GET /api/mediator/sign (mint)", () => {
   it("returns a token bound to destination, network and memo, never cacheable", async () => {
     const res = GET(
-      new Request(
+      getReq(
         mintUrl({ destination: CEX, network: "testnet", memo: encodeMemoCommitment(DEPOSIT_MEMO) }),
       ),
     );
@@ -99,7 +106,7 @@ describe("GET /api/mediator/sign (mint)", () => {
   });
 
   it("refuses to mint without an explicit memo commitment", async () => {
-    const res = GET(new Request(mintUrl({ destination: CEX, network: "testnet" })));
+    const res = GET(getReq(mintUrl({ destination: CEX, network: "testnet" })));
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ code: "INVALID_MEMO" });
   });
@@ -109,7 +116,7 @@ describe("GET /api/mediator/sign (mint)", () => {
     for (const network of [undefined, "futurenet", "bogus"]) {
       const params: Record<string, string> = { destination: CEX, memo };
       if (network !== undefined) params.network = network;
-      const res = GET(new Request(mintUrl(params)));
+      const res = GET(getReq(mintUrl(params)));
       expect(res.status).toBe(400);
       expect(await res.json()).toMatchObject({ code: "INVALID_NETWORK" });
     }
@@ -117,9 +124,9 @@ describe("GET /api/mediator/sign (mint)", () => {
 
   it("answers an allow-listed cross-origin GET with CORS headers", () => {
     const res = GET(
-      new Request(
+      getReq(
         mintUrl({ destination: CEX, network: "testnet", memo: encodeMemoCommitment(Memo.none()) }),
-        { headers: { origin: "http://localhost:3002" } },
+        { origin: "http://localhost:3002" },
       ),
     );
     expect(res.status).toBe(200);
@@ -129,9 +136,9 @@ describe("GET /api/mediator/sign (mint)", () => {
 
   it("does not answer an unknown origin with CORS headers", () => {
     const res = GET(
-      new Request(
+      getReq(
         mintUrl({ destination: CEX, network: "testnet", memo: encodeMemoCommitment(Memo.none()) }),
-        { headers: { origin: "https://evil.example" } },
+        { origin: "https://evil.example" },
       ),
     );
     expect(res.headers.get("access-control-allow-origin")).toBeNull();
@@ -300,6 +307,105 @@ describe("POST /api/mediator/sign (co-sign)", () => {
   });
 });
 
+describe("network ids", () => {
+  it("answers 400 for a network id it does not know instead of guessing one", async () => {
+    const flow = await mint();
+    for (const network of ["futurenet", "bogus"]) {
+      const res = await post({
+        envelopeXdr: forwardXdr(flow.mediatorPublicKey, DEPOSIT_MEMO),
+        flowToken: flow.flowToken,
+        network,
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: "INVALID_NETWORK" });
+    }
+  });
+});
+
+describe("client identification and rate limits", () => {
+  const ORIGIN = "http://localhost:3002";
+
+  function junkPost(from: string): Promise<Response> {
+    return post({ envelopeXdr: "AAAA", flowToken: "v2.junk" }, { "x-forwarded-for": from });
+  }
+
+  it("answers a request it can't attribute to a client with a json 500 that keeps cors", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const minted = GET(
+      new Request(
+        mintUrl({ destination: CEX, network: "testnet", memo: encodeMemoCommitment(Memo.none()) }),
+        { headers: { origin: ORIGIN } },
+      ),
+    );
+    expect(minted.status).toBe(500);
+    expect(await minted.json()).toMatchObject({ code: "PROXY_MISCONFIGURED" });
+    expect(minted.headers.get("access-control-allow-origin")).toBe(ORIGIN);
+
+    const signed = await POST(
+      new Request("http://app.test/api/mediator/sign", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: ORIGIN },
+        body: JSON.stringify({ envelopeXdr: "AAAA", flowToken: "junk" }),
+      }),
+    );
+    expect(signed.status).toBe(500);
+    expect(await signed.json()).toMatchObject({ code: "PROXY_MISCONFIGURED" });
+    expect(signed.headers.get("access-control-allow-origin")).toBe(ORIGIN);
+  });
+
+  it("limits junk posts per address with retry-after and cors", async () => {
+    const statuses: number[] = [];
+    for (let i = 0; i < 6; i++) statuses.push((await junkPost("10.66.0.1")).status);
+    expect(statuses.slice(0, 5)).toEqual([400, 400, 400, 400, 400]);
+    const limited = await post(
+      { envelopeXdr: "AAAA", flowToken: "v2.junk" },
+      { "x-forwarded-for": "10.66.0.1", origin: ORIGIN },
+    );
+    expect(limited.status).toBe(429);
+    expect(await limited.json()).toMatchObject({ code: "RATE_LIMITED" });
+    expect(Number(limited.headers.get("retry-after"))).toBeGreaterThan(0);
+    expect(limited.headers.get("access-control-allow-origin")).toBe(ORIGIN);
+    expect(limited.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("does not let junk from an address use up a real flow's budget", async () => {
+    const flow = await mint();
+    for (let i = 0; i < 8; i++) await junkPost("10.66.0.2");
+    expect((await junkPost("10.66.0.2")).status).toBe(429);
+    const res = await post(
+      { envelopeXdr: forwardXdr(flow.mediatorPublicKey, DEPOSIT_MEMO), flowToken: flow.flowToken },
+      { "x-forwarded-for": "10.66.0.2" },
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("limits each authentic flow on its own budget, whatever address it comes from", async () => {
+    const flow = await mint();
+    const other = await mint();
+    const signFlow = (f: { flowToken: string; mediatorPublicKey: string }) =>
+      post({ envelopeXdr: forwardXdr(f.mediatorPublicKey, DEPOSIT_MEMO), flowToken: f.flowToken });
+    const statuses: number[] = [];
+    for (let i = 0; i < 11; i++) statuses.push((await signFlow(flow)).status);
+    expect(statuses.filter((s) => s === 200)).toHaveLength(10);
+    expect(statuses.at(-1)).toBe(429);
+    expect((await signFlow(other)).status).toBe(200);
+  });
+});
+
+describe("operator log lines", () => {
+  it("never print a secret seed that ends up in an error message", async () => {
+    const { logMediatorError } = await import("@/app/api/mediator/_shared/http");
+    const lines: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      lines.push(args.map(String).join(" "));
+    });
+    logMediatorError("ctx", new Error(`bad seed ${MASTER} in config`));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).not.toContain(MASTER);
+    expect(lines[0]).toContain("[redacted seed]");
+  });
+});
+
 describe("misconfigured MEDIATOR_SECRET", () => {
   it("logs the cause for the operator without the secret, and returns a generic code", async () => {
     vi.resetModules();
@@ -312,7 +418,7 @@ describe("misconfigured MEDIATOR_SECRET", () => {
     try {
       const route = await import("@/app/api/mediator/sign/route");
       const res = route.GET(
-        new Request(
+        getReq(
           mintUrl({
             destination: CEX,
             network: "testnet",

@@ -79,10 +79,15 @@ export function bodyTooLarge(cors: HeaderMap): Response {
   return failure("BODY_TOO_LARGE", "Request body is too large.", 413, cors);
 }
 
-export function rateLimited(cors: HeaderMap): Response {
-  return failure("RATE_LIMITED", "Too many requests; try again shortly.", 429, cors, {
-    "retry-after": "60",
-  });
+// the shared limiter answers without cors or cache headers; a cross-origin
+// caller would see an opaque failure and could not read retry-after
+export function withMediatorHeaders(response: Response, cors: HeaderMap): Response {
+  response.headers.set("cache-control", "no-store");
+  for (const [name, value] of Object.entries(cors)) response.headers.set(name, value);
+  if (Object.keys(cors).length > 0) {
+    response.headers.set("access-control-expose-headers", "retry-after");
+  }
+  return response;
 }
 
 // handler for the methods a route does not serve

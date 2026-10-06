@@ -2,11 +2,11 @@
 
 import { StrKey } from "@stellar/stellar-sdk";
 
-import { resolveNetwork } from "@/lib/config/networks";
+import { requireNetwork } from "@/lib/config/networks";
 import { decodeMemoCommitment, isMediatorNetworkId } from "@/lib/mediator/forward-terms";
 import { validateMediatorForwardEnvelope } from "@/lib/mediator/validator";
 import { resolveMediatorFlow, startMediatorFlow } from "@/server/mediator-secret";
-import { createLimiter, getRemoteIp } from "@/server/rate-limit";
+import { createLimiter, rateLimitByIp, rateLimitByKey } from "@/server/rate-limit";
 import { readJsonCapped, MAX_JSON_BODY_BYTES, BodyTooLargeError } from "@/server/read-body";
 
 import {
@@ -18,7 +18,7 @@ import {
   logMediatorError,
   methodNotAllowed,
   preflight,
-  rateLimited,
+  withMediatorHeaders,
 } from "../_shared/http";
 
 // node runtime: the flow-key derivation (node:crypto) and the validator pull in
@@ -26,16 +26,20 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// co-signing: 5 requests per 60s per IP. minting is cheap (an hmac), so it gets
-// a looser bucket of its own. The shared limiter is bounded (evicts idle keys)
-// and keys on TRUSTED_PROXY_HOPS-aware getRemoteIp, so a forged-XFF flood can't
-// exhaust memory or mint fresh buckets per request.
-const signLimiter = createLimiter(5, 60_000);
+// a POST that carries an authentic flow token is limited per flow, everything
+// else per client address. junk from an address (or from many) then can't use
+// up the budget of a forward whose balance is already sitting in a mediator.
+// a forward run makes at most 8 sign calls (4 attempts, each possibly after a
+// token renewal), so 10 a minute per flow leaves room for one resume on top.
+const signIpLimiter = createLimiter(5, 60_000);
+const signFlowLimiter = createLimiter(10, 60_000);
+// minting is cheap (an hmac), so it gets a looser bucket of its own
 const mintLimiter = createLimiter(30, 60_000);
 
-// test-only: reset the per-IP buckets
+// test-only: reset every bucket
 export function __resetRateLimiterForTests(): void {
-  signLimiter.reset();
+  signIpLimiter.reset();
+  signFlowLimiter.reset();
   mintLimiter.reset();
 }
 
@@ -43,79 +47,116 @@ export function OPTIONS(request: Request): Response {
   return preflight(request);
 }
 
-// rate-limit, parse body, validate the envelope against the token's terms, then
-// co-sign and return base64 xdr
-export async function POST(request: Request): Promise<Response> {
-  const cors = buildCorsHeaders(request.headers.get("origin"));
-  if (!signLimiter.take(getRemoteIp(request))) return rateLimited(cors);
+type ParsedSignBody =
+  | {
+      readonly ok: true;
+      readonly envelopeXdr: string;
+      readonly flowToken: string;
+      readonly network: string | undefined;
+    }
+  | { readonly ok: false; readonly response: Response };
 
-  let envelopeXdr: string;
-  let flowToken: string;
-  let requestedNetwork: string | undefined;
+async function parseSignBody(
+  request: Request,
+  cors: Record<string, string>,
+): Promise<ParsedSignBody> {
+  let raw: unknown;
   try {
-    const raw = (await readJsonCapped(request, MAX_JSON_BODY_BYTES)) as unknown;
-    if (typeof raw !== "object" || raw === null) {
-      return badRequest("Request body must be a JSON object.", cors);
-    }
-    const rec = raw as Record<string, unknown>;
-    if (typeof rec.envelopeXdr !== "string" || rec.envelopeXdr.length === 0) {
-      return badRequest("`envelopeXdr` must be a non-empty base64 string.", cors);
-    }
-    if (typeof rec.flowToken !== "string" || rec.flowToken.length === 0) {
-      return badRequest(
+    raw = await readJsonCapped(request, MAX_JSON_BODY_BYTES);
+  } catch (e) {
+    if (e instanceof BodyTooLargeError) return { ok: false, response: bodyTooLarge(cors) };
+    return { ok: false, response: badRequest("Request body is not valid JSON.", cors) };
+  }
+  if (typeof raw !== "object" || raw === null) {
+    return { ok: false, response: badRequest("Request body must be a JSON object.", cors) };
+  }
+  const rec = raw as Record<string, unknown>;
+  if (typeof rec.envelopeXdr !== "string" || rec.envelopeXdr.length === 0) {
+    return {
+      ok: false,
+      response: badRequest("`envelopeXdr` must be a non-empty base64 string.", cors),
+    };
+  }
+  if (typeof rec.flowToken !== "string" || rec.flowToken.length === 0) {
+    return {
+      ok: false,
+      response: badRequest(
         "`flowToken` must be a non-empty string; call GET to start a flow first.",
         cors,
-      );
-    }
-    if (rec.network !== undefined && typeof rec.network !== "string") {
-      return badRequest("`network` must be a string when present.", cors);
-    }
-    envelopeXdr = rec.envelopeXdr;
-    flowToken = rec.flowToken;
-    requestedNetwork = rec.network;
-  } catch (e) {
-    if (e instanceof BodyTooLargeError) return bodyTooLarge(cors);
-    return badRequest("Request body is not valid JSON.", cors);
+      ),
+    };
   }
+  if (rec.network !== undefined && typeof rec.network !== "string") {
+    return { ok: false, response: badRequest("`network` must be a string when present.", cors) };
+  }
+  return { ok: true, envelopeXdr: rec.envelopeXdr, flowToken: rec.flowToken, network: rec.network };
+}
+
+// parse the body and authenticate the token first, then rate-limit (per flow
+// for an authentic token, per address otherwise), validate the envelope
+// against the token's terms, co-sign and return base64 xdr
+export async function POST(request: Request): Promise<Response> {
+  const cors = buildCorsHeaders(request.headers.get("origin"));
+  // anything that can't name an authentic flow is charged to the client address
+  const limitByIp = (): Response | null => {
+    const limited = rateLimitByIp(signIpLimiter, request);
+    return limited === null ? null : withMediatorHeaders(limited, cors);
+  };
+
+  const body = await parseSignBody(request, cors);
+  if (!body.ok) return limitByIp() ?? body.response;
 
   // resolve THIS flow's ephemeral keypair and terms from the token. A thrown
   // error means the master seed is unset or malformed: logged for the operator,
   // scrubbed for the client.
   let resolution: ReturnType<typeof resolveMediatorFlow>;
   try {
-    resolution = resolveMediatorFlow(flowToken);
+    resolution = resolveMediatorFlow(body.flowToken);
   } catch (err) {
     logMediatorError("POST /api/mediator/sign could not resolve a flow token", err);
     return failure("MEDIATOR_NOT_CONFIGURED", "Mediator is not configured.", 500, cors);
   }
+  if (!resolution.ok && resolution.reason !== "expired") {
+    return limitByIp() ?? failure("INVALID_FLOW_TOKEN", "Flow token is invalid.", 400, cors);
+  }
+
+  const flowId = resolution.ok ? resolution.flow.flowId : resolution.flowId;
+  const limited = rateLimitByKey(signFlowLimiter, `flow:${flowId}`);
+  if (limited !== null) return withMediatorHeaders(limited, cors);
+
   if (!resolution.ok) {
-    if (resolution.reason === "expired") {
-      return failure(
-        "FLOW_TOKEN_EXPIRED",
-        "Flow token has expired; renew it at /api/mediator/reissue and retry.",
-        400,
-        cors,
-      );
-    }
-    return failure("INVALID_FLOW_TOKEN", "Flow token is invalid.", 400, cors);
+    return failure(
+      "FLOW_TOKEN_EXPIRED",
+      "Flow token has expired; renew it at /api/mediator/reissue and retry.",
+      400,
+      cors,
+    );
   }
   const flow = resolution.flow;
 
-  // the network is part of the token. A client that says otherwise built its
-  // envelope for a different network, so refuse instead of signing for one it
-  // did not mean.
-  if (requestedNetwork !== undefined && requestedNetwork !== flow.networkId) {
+  // the network is part of the token. A client that names one this build does
+  // not serve, or a different one, built its envelope for another network, so
+  // refuse instead of signing for one it did not mean.
+  if (body.network !== undefined && !isMediatorNetworkId(body.network)) {
+    return failure(
+      "INVALID_NETWORK",
+      `Exchange forwards run on mainnet or testnet, not "${body.network}".`,
+      400,
+      cors,
+    );
+  }
+  if (body.network !== undefined && body.network !== flow.networkId) {
     return failure(
       "NETWORK_MISMATCH",
-      `This flow is bound to ${flow.networkId}, not ${requestedNetwork}.`,
+      `This flow is bound to ${flow.networkId}, not ${body.network}.`,
       400,
       cors,
     );
   }
 
   const result = validateMediatorForwardEnvelope(
-    envelopeXdr,
-    resolveNetwork(flow.networkId).passphrase,
+    body.envelopeXdr,
+    requireNetwork(flow.networkId).passphrase,
     flow.keypair.publicKey(),
     { destination: flow.destination, memoXdr: flow.memoXdr },
   );
@@ -138,7 +179,8 @@ export async function POST(request: Request): Promise<Response> {
 // than once (a failed forward is retried with it) until it expires.
 export function GET(request: Request): Response {
   const cors = buildCorsHeaders(request.headers.get("origin"));
-  if (!mintLimiter.take(getRemoteIp(request))) return rateLimited(cors);
+  const limited = rateLimitByIp(mintLimiter, request);
+  if (limited !== null) return withMediatorHeaders(limited, cors);
 
   const params = new URL(request.url).searchParams;
   const destination = params.get("destination");

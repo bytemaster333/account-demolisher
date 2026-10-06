@@ -191,6 +191,37 @@ describe("POST /api/mediator/reissue", () => {
     expect(logged).toHaveBeenCalledTimes(1);
   });
 
+  it("answers a request it can't attribute to a client with a json 500", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const res = await reissueRoute.POST(
+      new Request("http://app.test/api/mediator/reissue", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ flowToken: "junk" }),
+      }),
+    );
+    expect(res.status).toBe(500);
+    expect(await res.json()).toMatchObject({ code: "PROXY_MISCONFIGURED" });
+  });
+
+  it("does not let junk from an address block renewing a real flow from that address", async () => {
+    const flow = await mint();
+    existing.add(flow.mediatorPublicKey);
+    const from = (flowToken: unknown) =>
+      reissueRoute.POST(
+        new Request("http://app.test/api/mediator/reissue", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-forwarded-for": "10.77.0.1" },
+          body: JSON.stringify({ flowToken }),
+        }),
+      );
+    for (let i = 0; i < 6; i++) await from("junk");
+    const limited = await from("junk");
+    expect(limited.status).toBe(429);
+    expect(Number(limited.headers.get("retry-after"))).toBeGreaterThan(0);
+    expect((await from(flow.flowToken)).status).toBe(200);
+  });
+
   it("rejects a missing token and refuses GET", async () => {
     const res = await reissue(undefined);
     expect(res.status).toBe(400);
