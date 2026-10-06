@@ -999,6 +999,19 @@ function storeInput(input: PageFlowInput): StoredInput {
   return { ...rest, signerKind: connector.kind };
 }
 
+// everything that must be resolved before the close may start, in words for the
+// user: a required step that failed preview, and any defi protocol discovery
+// could not read. the merge guard refuses an unreadable protocol at merge time,
+// so confirming anyway would only unwind the other positions first.
+export function confirmBlockers(
+  context: Pick<PageFlowContext, "tree" | "positions">,
+): readonly string[] {
+  return [
+    ...previewBlockers(context.tree).map((b) => `${b.description}: ${b.error}`),
+    ...context.positions.errors.map((e) => discoveryWarningFor(e)),
+  ];
+}
+
 function typedMatches(context: PageFlowContext, typed: string | undefined): boolean {
   const dest = context.input?.destination;
   return (
@@ -1033,14 +1046,14 @@ export const pageFlowMachine = setup({
   guards: {
     // the irreversible execute transition refuses unless the event carries the
     // last 4 characters of the reviewed destination, a wallet is connected, and
-    // no required step failed in preview. a CONFIRM dispatched outside the
+    // nothing in confirmBlockers is open. a CONFIRM dispatched outside the
     // confirmation UI can't trigger the merge.
     confirmMatchesDestination: ({ context, event }) => {
       if (event.type !== "CONFIRM") return false;
       return (
         typedMatches(context, event.typed) &&
         context.connector !== null &&
-        previewBlockers(context.tree).length === 0
+        confirmBlockers(context).length === 0
       );
     },
     bundleConfirmed: ({ context, event }) => {
@@ -1048,7 +1061,7 @@ export const pageFlowMachine = setup({
       return (
         typedMatches(context, event.typed) &&
         context.connector !== null &&
-        previewBlockers(context.tree).length === 0
+        confirmBlockers(context).length === 0
       );
     },
     canResume: ({ context, event }) => {

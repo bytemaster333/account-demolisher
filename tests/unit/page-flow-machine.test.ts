@@ -4,6 +4,7 @@ import { createActor, fromPromise, waitFor } from "xstate";
 import {
   pageFlowMachine,
   classifyFailure,
+  confirmBlockers,
   discoveryWarningFor,
   heldTokenDispositionWarnings,
   isRetryableFailure,
@@ -239,6 +240,36 @@ describe("the CONFIRM gate", () => {
     expect(actor.getSnapshot().matches("executing")).toBe(true);
     // the executor gets it back as pending, so it runs again
     expect(actor.getSnapshot().context.tree!.allNodes.get("drain")!.status).toBe("pending");
+    actor.stop();
+  });
+});
+
+describe("an unfinished defi discovery blocks the close before anything is signed", () => {
+  it("refuses CONFIRM and SUBMIT_BUNDLE while a protocol could not be read", async () => {
+    const { actor, execute } = machineWith({
+      discover: async () => ({
+        audit: fakeAudit,
+        positions: {
+          ...EMPTY_POSITIONS,
+          errors: [{ protocol: "all", message: "getPositions timed out after 30000ms" }],
+        },
+        allowances: [],
+        heldTokens: [],
+        unreadableHeldTokens: [],
+        heldTokenScanFailed: false,
+        discoveryWarnings: [],
+        discoveryDiagnostics: [],
+      }),
+      execute: hang,
+    });
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    expect(confirmBlockers(actor.getSnapshot().context)).toEqual([
+      expect.stringMatching(/couldn't finish checking for DeFi positions/),
+    ]);
+    actor.send({ type: "CONFIRM", typed: "DEST" });
+    actor.send({ type: "SUBMIT_BUNDLE", signedXdr: "AAAA", typed: "DEST" });
+    expect(actor.getSnapshot().matches("awaiting_confirmation")).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
     actor.stop();
   });
 });
