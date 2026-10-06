@@ -14,7 +14,6 @@ import { CollectSignatures } from "@/components/multisig/CollectSignatures";
 import { explorerAccountUrl } from "@/lib/explorer";
 import { useNetworkStore } from "@/stores/network";
 import { resolveNetwork, type NetworkConfig } from "@/lib/config/networks";
-import { trackClose, trackFunnel, trackVisit } from "@/lib/metrics/beacon";
 import {
   isRetryableFailure,
   pageFlowMachine,
@@ -22,7 +21,6 @@ import {
 } from "@/lib/orchestrator/page-flow-machine";
 import { getPublicEnv } from "@/lib/config/env";
 import { SIGNING_WINDOW_SECONDS, assessBundleability } from "@/lib/multisig/signing-request";
-import { getHorizon } from "@/lib/stellar/horizon-client";
 import {
   lookupCex,
   requireMemoEnforcement,
@@ -38,6 +36,8 @@ import { disconnectSession, getActiveConnector } from "@/lib/wallet/active-conne
 import { useWalletStore } from "@/stores/wallet";
 
 import { useBaseReserve, useDeliveredAmount } from "../_hooks/use-chain-figures";
+import { useDemolishMetrics } from "../_hooks/use-demolish-metrics";
+import { useDestinationChecks } from "../_hooks/use-destination-checks";
 import { useMultisigPreflight } from "../_hooks/use-multisig-preflight";
 import { useRunGuard } from "../_hooks/use-run-guard";
 import { useSigningRequest } from "../_hooks/use-signing-request";
@@ -45,7 +45,7 @@ import { SR_ONLY } from "../_lib/a11y";
 import { claimableSplit } from "../_lib/claimables";
 import { failureNoteFor } from "../_lib/failure-note";
 import { buildFlowSteps, flowPhaseFor, type ConfirmStage } from "../_lib/flow-steps";
-import { FORM_SCHEMA, G_ADDRESS, INITIAL_FORM, parseMemo, type FormState } from "../_lib/form";
+import { FORM_SCHEMA, INITIAL_FORM, parseMemo, type FormState } from "../_lib/form";
 import { heldSelectionDirty } from "../_lib/held-selection";
 import { groupPlanNodes, sumNativeBalance } from "../_lib/plan-copy";
 import { assessSigningRequest, claimsAtRiskInWindow } from "../_lib/signing-bundle";
@@ -190,39 +190,13 @@ export function DemolishFlow(): React.JSX.Element {
     send,
   });
 
-  // ── usage metrics (aggregate, no PII) ──────────────────────────────────────
-  // one page-view on mount, then one beacon per funnel milestone and one for the
-  // verified close (its on-chain merge hash) as the machine advances. Each fires
-  // at most once per mount; all are fire-and-forget and never affect the flow.
-  // The close is reported on the network it ran on.
-  const metricsSentRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    const once = (key: string, fn: () => void): void => {
-      if (metricsSentRef.current.has(key)) return;
-      metricsSentRef.current.add(key);
-      fn();
-    };
-    const net = network.id;
-    once("visit", () => trackVisit("demolish", net));
-    if (publicKey) once("wallet_connected", () => trackFunnel(net, "wallet_connected"));
-    if (isPreviewing)
-      once("discovery_completed", () => trackFunnel(runNetwork.id, "discovery_completed"));
-    if (isAwaitingConfirmation) once("plan_built", () => trackFunnel(runNetwork.id, "plan_built"));
-    if (isExecuting) once("close_started", () => trackFunnel(runNetwork.id, "close_started"));
-    if (isSucceeded && ctx.result?.ok && ctx.result.mergedTxHash) {
-      const hash = ctx.result.mergedTxHash;
-      once("close_completed", () => trackClose(runNetwork.id, hash));
-    }
-  }, [
-    publicKey,
-    isPreviewing,
-    isAwaitingConfirmation,
-    isExecuting,
-    isSucceeded,
-    ctx.result,
-    network.id,
-    runNetwork.id,
-  ]);
+  useDemolishMetrics({
+    networkId: network.id,
+    runNetworkId: runNetwork.id,
+    connected: publicKey !== null,
+    state: String(state),
+    mergedTxHash: ctx.result?.ok ? (ctx.result.mergedTxHash ?? null) : null,
+  });
 
   // derived UI sub-states from the design ↔ real machine mapping
   const isIdle = isMachineIdle && publicKey === null;
@@ -381,113 +355,13 @@ export function DemolishFlow(): React.JSX.Element {
     ],
   );
 
-  // gate the "Build & simulate" button on a usable destination so the user gets
-  // immediate feedback instead of being able to proceed and only then hit an
-  // error. Empty is left hint-free (self-evident); a bad or self address is
-  // explained inline. (onStart still re-validates as the authoritative check.)
-  const destinationGate = useMemo<{ ready: boolean; hint: string | null }>(() => {
-    const trimmed = form.destination.trim();
-    if (trimmed.length === 0) return { ready: false, hint: null };
-    if (!G_ADDRESS.safeParse(trimmed).success) {
-      return { ready: false, hint: "That isn't a valid Stellar G… address." };
-    }
-    if (trimmed === publicKey) {
-      return {
-        ready: false,
-        hint: "Destination can't be your own account, the network rejects a self-merge.",
-      };
-    }
-    return { ready: true, hint: null };
-  }, [form.destination, publicKey]);
-
-  // Existence check for the destination. ACCOUNT_MERGE (and, on the exchange path,
-  // the mediator's forward payment) fails if the destination account does not
-  // exist on-chain, and that failure only surfaces at the final, irreversible step
-  // AFTER the DeFi exits have already run. So verify up-front that the destination
-  // exists and block the close until it does, instead of failing late. Debounced,
-  // and keyed to the address so a stale in-flight result can't leak onto a newer
-  // one. A transient (non-404) read error does not hard-block (the merge would
-  // still fail loudly); only a confirmed "missing" (404) blocks.
-  const [destCheck, setDestCheck] = useState<{
-    addr: string;
-    net: string;
-    state: "checking" | "exists" | "missing" | "error";
-  } | null>(null);
-  useEffect(() => {
-    const trimmed = form.destination.trim();
-    // invalid / self address: destinationGate owns the gate; leave destCheck as
-    // is (destExistsGate defers to destinationGate for these). Setting state
-    // synchronously in an effect body is a cascading-render smell, so every
-    // setDestCheck below runs inside the debounce timer / async resolution.
-    if (!G_ADDRESS.safeParse(trimmed).success || trimmed === publicKey) {
-      return;
-    }
-    let cancelled = false;
-    const timer = setTimeout(() => {
-      if (cancelled) return;
-      setDestCheck({ addr: trimmed, net: network.id, state: "checking" });
-      void getHorizon(network)
-        .loadAccount(trimmed)
-        .then(() => {
-          if (!cancelled) setDestCheck({ addr: trimmed, net: network.id, state: "exists" });
-        })
-        .catch((err: unknown) => {
-          if (cancelled) return;
-          const e = err as { response?: { status?: number }; name?: string; message?: string };
-          const notFound =
-            e?.response?.status === 404 ||
-            e?.name === "NotFoundError" ||
-            /404|not[_ ]?found|resource missing/i.test(e?.message ?? "");
-          setDestCheck({ addr: trimmed, net: network.id, state: notFound ? "missing" : "error" });
-        });
-    }, 400);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [form.destination, publicKey, network]);
-
-  const destExistsGate = useMemo<{ ready: boolean; hint: string | null }>(() => {
-    const trimmed = form.destination.trim();
-    // defer to destinationGate until the address is well-formed and not self
-    if (!G_ADDRESS.safeParse(trimmed).success || trimmed === publicKey) {
-      return { ready: true, hint: null };
-    }
-    if (
-      !destCheck ||
-      destCheck.addr !== trimmed ||
-      destCheck.net !== network.id ||
-      destCheck.state === "checking"
-    ) {
-      return { ready: false, hint: "Checking the destination account…" };
-    }
-    if (destCheck.state === "missing") {
-      return {
-        ready: false,
-        hint: "This destination account doesn't exist on the network yet. A close merges into it, which needs an existing, funded account. Fund it first, or use a different address.",
-      };
-    }
-    return { ready: true, hint: null };
-  }, [form.destination, publicKey, destCheck, network.id]);
-
-  // gate the Continue CTA on a required exchange memo (and a well-formed memo
-  // value), so the requirement shows inline instead of bouncing the user back
-  // after they press Continue. Reuses the exact checks onStart runs
-  // (validateMemoFormat + requireMemoEnforcement) so the gate and the submit path
-  // can never disagree. Only engages once the destination itself is valid; until
-  // then destinationGate owns the hint.
-  const memoGate = useMemo<{ ready: boolean; hint: string | null }>(() => {
-    const trimmed = form.destination.trim();
-    if (!G_ADDRESS.safeParse(trimmed).success) return { ready: true, hint: null };
-    const memo = parseMemo(form);
-    if (memo !== undefined) {
-      const formatError = validateMemoFormat(memo.type, memo.value);
-      if (formatError !== null) return { ready: false, hint: formatError };
-    }
-    const check = requireMemoEnforcement(trimmed, memo);
-    if (!check.ok) return { ready: false, hint: check.reason };
-    return { ready: true, hint: null };
-  }, [form]);
+  // inline gates on the destination and memo, so Continue only enables for a
+  // close onStart will accept
+  const { destinationGate, destExistsGate, memoGate } = useDestinationChecks(
+    form,
+    publicKey,
+    network,
+  );
 
   const setConnector = useCallback((c: Connector | null) => {
     connectorRef.current = c;
