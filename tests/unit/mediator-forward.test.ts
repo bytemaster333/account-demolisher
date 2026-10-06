@@ -74,6 +74,16 @@ afterEach(() => {
 });
 
 describe("submitMediatorForward", () => {
+  it("refuses a balance it cannot read exactly instead of truncating it", async () => {
+    const input = await mergedFlow();
+    fake.balanceText.set(input.mediatorPublicKey, "102.12345678");
+    const result = await submitMediatorForward(input, deps);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain('malformed amount "102.12345678"');
+    expect(fake.submitted).toHaveLength(0);
+  });
+
   it("pays everything above the minimum balance and the fee, with the committed memo", async () => {
     const input = await mergedFlow();
     const result = await submitMediatorForward(input, deps);
