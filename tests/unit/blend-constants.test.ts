@@ -17,7 +17,7 @@ import {
   BLEND_TESTNET_POOL_IDS,
   blendPoolIdsForNetwork,
 } from "@/lib/adapters/blend/pools";
-import { isAllowedContract } from "@/lib/config/contracts";
+import { isAllowedRootTarget } from "@/lib/config/contracts";
 import { MAINNET, TESTNET } from "@/lib/config/networks";
 import type { NetworkConfig } from "@/lib/config/networks";
 
@@ -45,7 +45,7 @@ describe("Blend backstops per network (C-07)", () => {
   it("keeps every backstop the close can call on the allow-list", () => {
     for (const network of [MAINNET, TESTNET]) {
       for (const b of blendBackstopsForNetwork(network)) {
-        expect(isAllowedContract(b.id, network)).toBe(true);
+        expect(isAllowedRootTarget(b.id, network)).toBe(true);
       }
     }
   });
@@ -84,7 +84,7 @@ describe("Blend pool registry (H-24, L-34)", () => {
       "CBVOPI6QC6OWVCOEZDCFELAGQNAOHUS4CWOKAVADKQZXVSWR2R5IAKO7", // ClickPesa DebtFund
     ]) {
       expect(BLEND_MAINNET_POOL_IDS).toContain(id);
-      expect(isAllowedContract(id, MAINNET)).toBe(true);
+      expect(isAllowedRootTarget(id, MAINNET)).toBe(true);
       expect(BLEND_MAINNET_POOLS.find((p) => p.pool_id === id)?.version).toBe("V1");
     }
   });
