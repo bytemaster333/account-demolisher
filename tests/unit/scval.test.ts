@@ -6,9 +6,11 @@ import {
   fromScValI128,
   fromScValString,
   fromScValSymbol,
+  fromScValU128,
   fromScValU32,
   i128,
   symbol,
+  u128,
   u32,
   vec,
 } from "@/lib/soroban/scval";
@@ -186,5 +188,30 @@ describe("fromScValString", () => {
 
   it("rejects an ScVal that is neither string nor symbol", () => {
     expect(() => fromScValString(u32(1))).toThrow(/Expected scvString or scvSymbol/);
+  });
+});
+
+describe("128-bit range checks", () => {
+  const U128_MAX = 2n ** 128n - 1n;
+
+  it("refuses an i128 outside the signed 128-bit range instead of wrapping", () => {
+    expect(() => i128(I128_MAX + 1n)).toThrow(/out of range/);
+    expect(() => i128(I128_MIN - 1n)).toThrow(/out of range/);
+    expect(() => i128(2n ** 200n)).toThrow(/out of range/);
+  });
+
+  it("refuses a u128 outside [0, 2^128)", () => {
+    expect(() => u128(2n ** 128n)).toThrow(/out of range/);
+    expect(() => u128(-1n)).toThrow(/negative/);
+  });
+
+  it("round-trips the u128 boundaries", () => {
+    expect(fromScValU128(u128(0n))).toBe(0n);
+    expect(fromScValU128(u128(U128_MAX))).toBe(U128_MAX);
+    expect(u128(1n).type).toBe("scvU128");
+  });
+
+  it("rejects a non-u128 ScVal on decode", () => {
+    expect(() => fromScValU128(i128(1n))).toThrow(/Expected scvU128/);
   });
 });

@@ -28,6 +28,7 @@ import {
   decimals,
   decodeAllowance,
   symbol,
+  TokenDecimalsOutOfRangeError,
 } from "@/lib/soroban/sep41";
 import { i128 as scvI128, u32 as scvU32, symbol as scvSymbol } from "@/lib/soroban/scval";
 import { TESTNET } from "@/lib/config/networks";
@@ -50,7 +51,7 @@ function invokeCall(tx: Transaction): { contract: string; fn: string; args: read
   };
 }
 
-describe("sep41 decodeAllowance — SAC (bare i128) vs custom token (scvMap)", () => {
+describe("sep41 decodeAllowance: SAC (bare i128) vs custom token (scvMap)", () => {
   it("decodes a Stellar Asset Contract's bare-i128 allowance (no expiry ledger)", () => {
     expect(decodeAllowance(scvI128(500n))).toEqual({ amount: 500n, live_until_ledger: 0 });
   });
@@ -94,6 +95,25 @@ describe("sep41 read helpers (simulate-backed)", () => {
   it("decimals() decodes the u32 retval", async () => {
     simulateRead.mockResolvedValue({ retval: scvU32(7) });
     expect(await decimals({} as rpc.Server, TOKEN, USER, TESTNET)).toBe(7);
+  });
+
+  it("decimals() refuses a value no i128 amount can need, without caching it", async () => {
+    // any contract can put itself on a user's allowance list; its decimals() then
+    // drives 10n ** decimals and padStart in the row formatter
+    for (const bad of [39, 1_000_000, 4_294_967_295]) {
+      simulateRead.mockResolvedValue({ retval: scvU32(bad) });
+      const server = {} as rpc.Server;
+      await expect(decimals(server, TOKEN, USER, TESTNET)).rejects.toBeInstanceOf(
+        TokenDecimalsOutOfRangeError,
+      );
+      simulateRead.mockResolvedValue({ retval: scvU32(7) });
+      expect(await decimals(server, TOKEN, USER, TESTNET)).toBe(7);
+    }
+  });
+
+  it("decimals() accepts the i128 maximum of 38", async () => {
+    simulateRead.mockResolvedValue({ retval: scvU32(38) });
+    expect(await decimals({} as rpc.Server, TOKEN, USER, TESTNET)).toBe(38);
   });
 
   it("symbol() decodes the string retval", async () => {

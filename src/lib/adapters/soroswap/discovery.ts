@@ -13,8 +13,11 @@
 //   pair     persistent  Vec[Symbol("Balance"), Address(user)]            -> i128 shares
 // So the whole factory enumerates + filters in a handful of batched reads, and we
 // fall back to the authoritative simulate for anything the bulk read can't resolve.
-// Reading the exact key balance() reads means identical completeness (an evicted
-// entry reads absent either way), so no position is silently missed.
+// Archived (evicted) entries are not a blind spot: stellar-rpc's getLedgerEntries
+// (cmd/stellar-rpc/internal/ledgerentries) drops only keys core reports as
+// LedgerEntryStateNotFound and returns archived ones with liveUntilLedgerSeq 0, so
+// a long-dormant LP balance still comes back as a candidate and is then read by
+// the balance() simulation (which restores archived footprint entries).
 //
 // Pair-token ABI (verified against docs.soroswap.finance):
 //   SoroswapFactory.all_pairs_length() -> u32
@@ -24,11 +27,7 @@
 //   SoroswapPair.token_1() -> Address
 
 import { Address, xdr, type rpc } from "@stellar/stellar-sdk";
-import {
-  getAllowlistForNetwork,
-  MAINNET_ALLOWLIST,
-  type AllowedContract,
-} from "@/lib/config/contracts";
+import { getAllowlistForNetwork, type AllowedContract } from "@/lib/config/contracts";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { address as scvAddress, u32 as scvU32 } from "@/lib/soroban/scval";
 import { fromScValAddress, fromScValI128, fromScValU32 } from "@/lib/soroban/scval";
@@ -186,9 +185,10 @@ async function resolvePairAddresses(
 }
 
 // Returns the subset of pairs for which the user has a persistent Balance entry.
-// getLedgerEntries returns only entries that exist, so a returned entry means a
-// (possibly non-zero) balance; absence means definitively zero. The exact amount
-// is confirmed by simulate in the caller.
+// getLedgerEntries returns every key that exists, archived ones included (with
+// liveUntilLedgerSeq 0), so a returned entry means a (possibly non-zero) balance
+// and absence means definitively zero. The exact amount is confirmed by simulate
+// in the caller.
 async function filterPairsWithBalance(
   server: rpc.Server,
   pairAddresses: readonly string[],
@@ -222,6 +222,92 @@ async function filterPairsWithBalance(
   return held;
 }
 
+// one soroswap pair with its tokens and reserves, read from the pair's contract
+// instance storage. layout checked against mainnet pair CB46LMGJ... (and the
+// pair's own token_0/token_1 reads in tests/integration/soroswap-route.test.ts):
+//   U32(0) token_0, U32(1) token_1, U32(2) reserve_0, U32(3) reserve_1, U32(4) factory
+export interface SoroswapPairInfo {
+  readonly pair: string;
+  readonly token0: string;
+  readonly token1: string;
+  readonly reserve0: bigint;
+  readonly reserve1: bigint;
+}
+
+const PAIR_TOKEN_0 = 0;
+const PAIR_TOKEN_1 = 1;
+const PAIR_RESERVE_0 = 2;
+const PAIR_RESERVE_1 = 3;
+
+// every pair of the network's factory with its tokens and reserves: one
+// all_pairs_length read plus batched getLedgerEntries for the pair addresses and
+// the pair instances. throws if a pair instance is missing or does not decode, so
+// a route search never runs on a silently partial graph.
+export async function loadSoroswapPairs(
+  server: rpc.Server,
+  network: NetworkConfig,
+  sourcePublicKey: string,
+  deps: Pick<SoroswapDiscoveryDeps, "simulateRead" | "maxPairs" | "batchSize"> = {},
+): Promise<readonly SoroswapPairInfo[]> {
+  const read = deps.simulateRead ?? simulateRead;
+  const maxPairs = deps.maxPairs ?? DEFAULT_MAX_PAIRS;
+  const batchSize = deps.batchSize ?? DEFAULT_BATCH_SIZE;
+  const factoryId = getSoroswapFactoryId(network);
+  const lenRet = await read(server, factoryId, "all_pairs_length", [], sourcePublicKey, network);
+  const pairCount = fromScValU32(lenRet.retval);
+  if (pairCount > maxPairs) {
+    throw new Error(`SoroswapFactory reports ${pairCount} pairs, over the ${maxPairs} cap`);
+  }
+  if (pairCount === 0) return [];
+  const pairs = await resolvePairAddresses(
+    server,
+    network,
+    factoryId,
+    pairCount,
+    batchSize,
+    read,
+    sourcePublicKey,
+  );
+
+  const instanceKeys = pairs.map((p) =>
+    xdr.LedgerKey.contractData(
+      new xdr.LedgerKeyContractData({
+        contract: new Address(p).toScAddress(),
+        key: xdr.ScVal.scvLedgerKeyContractInstance(),
+        durability: xdr.ContractDataDurability.persistent,
+      }),
+    ),
+  );
+  const byPair = new Map<string, SoroswapPairInfo>();
+  const batches = await Promise.all(
+    chunk(instanceKeys, batchSize).map((c) => server.getLedgerEntries(...c)),
+  );
+  for (const resp of batches) {
+    for (const entry of resp.entries) {
+      const cd = xdr.expectUnionVariant(entry.val, "contractData").contractData;
+      const pair = Address.fromScAddress(cd.contract).toString();
+      const storage = xdr.expectUnionVariant(cd.val, "scvContractInstance").instance.storage;
+      const slot = (i: number): xdr.ScVal => {
+        const hit = (storage ?? []).find((e) => e.key.type === "scvU32" && e.key.u32 === i);
+        if (hit === undefined) throw new Error(`Soroswap pair ${pair}: instance slot ${i} missing`);
+        return hit.val;
+      };
+      byPair.set(pair, {
+        pair,
+        token0: fromScValAddress(slot(PAIR_TOKEN_0)),
+        token1: fromScValAddress(slot(PAIR_TOKEN_1)),
+        reserve0: fromScValI128(slot(PAIR_RESERVE_0)),
+        reserve1: fromScValI128(slot(PAIR_RESERVE_1)),
+      });
+    }
+  }
+  const missing = pairs.filter((p) => !byPair.has(p));
+  if (missing.length > 0) {
+    throw new Error(`Soroswap pair instances not returned by the rpc: ${missing.join(", ")}`);
+  }
+  return pairs.map((p) => byPair.get(p)!);
+}
+
 function chunk<T>(items: readonly T[], size: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
@@ -229,7 +315,7 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
 }
 
 export function getSoroswapFactoryId(network: NetworkConfig): string {
-  const list = getAllowlistForNetwork(network) ?? MAINNET_ALLOWLIST;
+  const list = getAllowlistForNetwork(network);
   const entry = list.find(
     (c: AllowedContract) => c.protocol === "soroswap" && c.name === "SoroswapFactory",
   );

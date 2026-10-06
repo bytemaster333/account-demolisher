@@ -1,20 +1,37 @@
-// Discover standalone SEP-41 token balances an account holds DIRECTLY (custom
-// tokens someone transferred to it, and SAC balances held in contract storage),
-// which the DeFi-position and allowance paths do not surface.
+// Discover standalone SEP-41 token balances an account holds directly (custom
+// tokens someone transferred or minted to it), which the DeFi-position and
+// allowance paths do not surface.
 //
-// Soroban has no native "list every token an address holds" — balances live in
-// each token contract's own storage. So we scan the RPC event log for `transfer`
-// events crediting the address (topic[2] = `to`), collect the emitting token
-// contracts, then probe balance(address) on each and keep the positive ones.
+// Soroban has no native "list every token an address holds": balances live in
+// each token contract's own storage. So we scan the RPC event log for SEP-41
+// events crediting the address, collect the emitting token contracts, then probe
+// balance(address) on each and keep the positive ones. The credit events, per
+// SEP-41 (stellar-protocol ecosystem/sep-0041.md v0.5.2):
+//   transfer  [Symbol("transfer"), Address from, Address to]
+//   mint      [Symbol("mint"), Address to]
+//   mint      [Symbol("mint"), Address admin, Address to]  (soroban-token-sdk up to v22)
+// A topic filter matches only events with exactly that many topics, so the
+// stellar asset contract's events (CAP-67: transfer carries a fourth topic, the
+// asset name, and mint is [mint, to, asset]) never match. That is on purpose:
+// SAC balances are classic trustline assets, which the classic close path handles.
+// The same rule misses a token that adds topics of its own (SEP-41 v0.5.2 allows
+// it); such a token is found only through the manual add.
 //
-// LIMITATION (documented for callers): the public RPC only retains a rolling
-// window of events (~7 days), so tokens received before that window are missed.
-// This is intended to be paired with a manual "enter a token contract" affordance
-// for completeness — not treated as an exhaustive enumeration.
+// The public RPC only retains a rolling window of events (~7 days), so tokens
+// received before that window are missed, and on mainnet the wildcard-sender
+// filter is costly enough that the scan rarely covers the whole window inside
+// its budget. The result says how much was covered; it is paired with a manual
+// "enter a token contract" affordance, never treated as an exhaustive list.
 
 import { Address, xdr, type rpc } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
+import { mapConcurrent } from "@/lib/soroban/concurrency";
+import {
+  describeIncompleteScan,
+  scanEventWindows,
+  type EventScanIncomplete,
+} from "@/lib/soroban/event-scan";
 import { balance } from "@/lib/soroban/sep41";
 
 export interface HeldToken {
@@ -29,13 +46,27 @@ export interface HeldTokenScan {
   // read (a hostile/broken token, or a reverting probe). Surfaced rather than
   // silently dropped: the account may hold value we can't confirm or auto-move.
   readonly unreadable: readonly string[];
+  // set when the event scan did not cover the whole retention window; tokens
+  // credited only in the uncovered part are missing from held/unreadable
+  readonly incomplete: EventScanIncomplete | null;
 }
 
-const PAGE_LIMIT = 100;
-const MAX_PAGES = 50;
-// ~7 days at 5s/ledger — the practical RPC retention window
-const DEFAULT_SCAN_WINDOW_LEDGERS = 120_000;
-const RETENTION_RETRY_MARGIN_LEDGERS = 60;
+export interface HeldTokenScanOptions {
+  readonly lookbackLedgers?: number;
+  readonly budgetMs?: number;
+  readonly windowLedgers?: number;
+  readonly concurrency?: number;
+}
+
+// measured against the public mainnet rpcs on 2026-10-06 with this filter: 1,000
+// ledgers answer in about 0.4s (4s at worst) one request at a time, while four
+// concurrent 2,000-ledger requests mostly come back -32001 after 10s. so small
+// windows, two at a time; a refused window is halved down to 125 ledgers.
+const SCAN_WINDOW_LEDGERS = 1_000;
+const SCAN_MIN_WINDOW_LEDGERS = 125;
+const SCAN_CONCURRENCY = 2;
+// leaves room for the balance probes inside the caller's 30s discovery timeout
+const SCAN_BUDGET_MS = 15_000;
 // balance() probes run concurrently (bounded) so a token-heavy account doesn't
 // serialize into the discovery timeout; each probe is independently time-boxed so
 // one slow/stalling contract can't consume the whole budget.
@@ -51,101 +82,52 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
 }
 
-const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-
-// getEvents that rides out a transient blip (network / 5xx / slow) with a short
-// backoff. A retention-range error ("ledger range: N - M") is NOT retried here —
-// it's rethrown so the caller can re-clamp startLedger and retry deliberately.
-async function getEventsWithRetry(
-  server: rpc.Server,
-  request: rpc.Api.GetEventsRequest,
-  attempts = 3,
-): Promise<rpc.Api.GetEventsResponse> {
-  let lastErr: unknown;
-  for (let i = 0; i < attempts; i++) {
-    try {
-      return await server.getEvents(request);
-    } catch (err) {
-      if (parseRetentionFloor(err) !== null) throw err;
-      lastErr = err;
-      if (i < attempts - 1) await delay(300 * (i + 1));
-    }
-  }
-  throw lastErr;
-}
-
-// run `fn` over `items` with at most `limit` in flight, preserving input order
-async function mapConcurrent<T, R>(
-  items: readonly T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
-  const worker = async (): Promise<void> => {
-    for (let i = next++; i < items.length; i = next++) {
-      results[i] = await fn(items[i]!);
-    }
+export function heldTokenCreditFilter(toAddress: string): rpc.Api.EventFilter {
+  const sym = (s: string) => xdr.ScVal.scvSymbol(s).toXdr("base64");
+  const to = new Address(toAddress).toScVal().toXdr("base64");
+  return {
+    type: "contract",
+    topics: [
+      [sym("transfer"), "*", to],
+      [sym("mint"), to],
+      [sym("mint"), "*", to],
+    ],
   };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return results;
 }
 
-// Scan `transfer` events crediting `toAddress` and return the distinct emitting
-// token contract ids (candidates to probe for a balance).
+// Scan SEP-41 credit events to `toAddress` and return the distinct emitting
+// token contract ids (candidates to probe for a balance), with how much of the
+// retention window the scan covered.
 export async function scanTokensCreditedTo(
   server: rpc.Server,
   toAddress: string,
   currentLedger: number,
-  scanWindowLedgers: number = DEFAULT_SCAN_WINDOW_LEDGERS,
-): Promise<string[]> {
+  options: HeldTokenScanOptions = {},
+): Promise<{ contractIds: string[]; incomplete: EventScanIncomplete | null }> {
   if (currentLedger <= 0) {
     throw new RangeError(`scanTokensCreditedTo: currentLedger must be > 0; got ${currentLedger}`);
   }
-  let startLedger = Math.max(1, currentLedger - scanWindowLedgers);
-
-  // sep-41 transfer topics: [symbol("transfer"), address(from), address(to)]
-  const transferSymbolXdr = xdr.ScVal.scvSymbol("transfer").toXdr("base64");
-  const toAddressXdr = new Address(toAddress).toScVal().toXdr("base64");
-  const filter: rpc.Api.EventFilter = {
-    type: "contract",
-    topics: [[transferSymbolXdr, "*", toAddressXdr]],
-  };
-
+  const scan = await scanEventWindows(server, [heldTokenCreditFilter(toAddress)], {
+    lastLedger: currentLedger,
+    ...(options.lookbackLedgers !== undefined ? { lookbackLedgers: options.lookbackLedgers } : {}),
+    windowLedgers: options.windowLedgers ?? SCAN_WINDOW_LEDGERS,
+    minWindowLedgers: SCAN_MIN_WINDOW_LEDGERS,
+    concurrency: options.concurrency ?? SCAN_CONCURRENCY,
+    budgetMs: options.budgetMs ?? SCAN_BUDGET_MS,
+  });
   const contractIds = new Set<string>();
-  let cursor: string | undefined;
-
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const request: rpc.Api.GetEventsRequest =
-      cursor === undefined
-        ? { startLedger, filters: [filter], limit: PAGE_LIMIT }
-        : { cursor, filters: [filter], limit: PAGE_LIMIT };
-
-    let resp: rpc.Api.GetEventsResponse;
-    try {
-      resp = await getEventsWithRetry(server, request);
-    } catch (err) {
-      // retention-range clamp (mirrors the allowance scanner): if startLedger is
-      // before the retained range the rpc reports "ledger range: N - M"
-      const floor = page === 0 ? parseRetentionFloor(err) : null;
-      if (floor === null || floor <= startLedger) throw err;
-      startLedger = Math.min(currentLedger, floor + RETENTION_RETRY_MARGIN_LEDGERS);
-      resp = await getEventsWithRetry(server, {
-        startLedger,
-        filters: [filter],
-        limit: PAGE_LIMIT,
-      });
-    }
-
-    for (const ev of resp.events ?? []) {
-      if (ev.contractId !== undefined) contractIds.add(ev.contractId.contractId());
-    }
-    // end-of-results when there's no forward cursor (or it didn't advance)
-    if (!resp.cursor || resp.cursor === cursor) break;
-    cursor = resp.cursor;
+  for (const ev of scan.events) {
+    if (ev.contractId !== undefined) contractIds.add(ev.contractId.contractId());
   }
+  return { contractIds: [...contractIds], incomplete: scan.incomplete };
+}
 
-  return [...contractIds];
+// user-facing note for a held-token scan that did not cover the whole window
+export function heldTokenScanWarning(incomplete: EventScanIncomplete): string {
+  return (
+    `${describeIncompleteScan(incomplete, "standalone (custom SEP-41) tokens")} ` +
+    "A token received before that may be missing from this plan. If you hold one, add it by its contract address to include it in the close."
+  );
 }
 
 // Discover the SEP-41 tokens the account currently holds a positive balance of.
@@ -157,18 +139,18 @@ export async function discoverHeldTokens(
   userAddress: string,
   currentLedger: number,
   network: NetworkConfig,
-  scanWindowLedgers?: number,
+  options: HeldTokenScanOptions = {},
 ): Promise<HeldTokenScan> {
-  const candidates = await scanTokensCreditedTo(
+  const { contractIds: candidates, incomplete } = await scanTokensCreditedTo(
     server,
     userAddress,
     currentLedger,
-    scanWindowLedgers,
+    options,
   );
 
   // probe every candidate concurrently (bounded), each independently time-boxed.
   // balance() is a read-only simulation (no signed tx), so a hostile token can
-  // only make it fail — never smuggle auth. A token that reverts or stalls is
+  // only make it fail, never smuggle auth. A token that reverts or stalls is
   // recorded as UNREADABLE (not silently dropped): it can't be auto-drained, but
   // the user should know it exists and can target it manually.
   const probed = await mapConcurrent(candidates, PROBE_CONCURRENCY, async (contractId) => {
@@ -189,22 +171,7 @@ export async function discoverHeldTokens(
   for (const p of probed) {
     if (p.bal === null) unreadable.push(p.contractId);
     else if (p.bal > 0n) held.push({ contractId: p.contractId, balance: p.bal });
-    // p.bal === 0n: the account holds none of it — nothing to sweep, drop it
+    // p.bal === 0n: the account holds none of it; nothing to sweep, drop it
   }
-  return { held, unreadable };
-}
-
-function parseRetentionFloor(err: unknown): number | null {
-  const direct =
-    typeof (err as { message?: unknown } | undefined)?.message === "string"
-      ? (err as { message: string }).message
-      : "";
-  const cause =
-    typeof (err as { cause?: { message?: unknown } } | undefined)?.cause?.message === "string"
-      ? (err as { cause: { message: string } }).cause.message
-      : "";
-  const match = `${direct} ${cause}`.match(/ledger range:\s*(\d+)\s*-\s*(\d+)/);
-  if (!match) return null;
-  const floor = Number.parseInt(match[1]!, 10);
-  return Number.isFinite(floor) ? floor : null;
+  return { held, unreadable, incomplete };
 }

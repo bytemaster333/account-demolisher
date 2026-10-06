@@ -1,7 +1,10 @@
-// aquarius pool discovery. two interchangeable providers: REST API and event-scan
-import { type rpc, type xdr } from "@stellar/stellar-sdk";
+// aquarius pool discovery. two interchangeable providers: REST API and event-scan.
+// both cover the router's standard (constant product / stable) pools only; a
+// concentrated pool keeps tick-range positions in its own storage and is found by
+// discoverConcentratedPositions in ./concentrated.
+import { Address, xdr, type rpc } from "@stellar/stellar-sdk";
 import { getAllowlistForNetwork, type AllowedContract } from "@/lib/config/contracts";
-import { MAINNET, type NetworkConfig } from "@/lib/config/networks";
+import type { NetworkConfig } from "@/lib/config/networks";
 import { balance as sep41Balance } from "@/lib/soroban/sep41";
 import {
   fromScValAddress,
@@ -11,14 +14,18 @@ import {
 } from "@/lib/soroban/scval";
 import { simulateRead } from "@/lib/soroban/simulate";
 import {
+  EVENT_RETENTION_WINDOW_LEDGERS,
   MAX_RETENTION_RETRIES,
   RETENTION_RETRY_MARGIN_LEDGERS,
   parseRetentionFloor,
 } from "@/lib/soroban/event-retention";
+import { findConcentratedPool } from "@/lib/adapters/aquarius/concentrated-pools";
 
 // one pool the user holds shares in
 export interface AquariusPool {
   readonly poolIndex: string;
+  // the pool contract; pool_index alone is not unique across token sets
+  readonly poolAddress: string;
   readonly poolType: string;
   readonly tokens: readonly string[];
   readonly shareBalance: bigint;
@@ -35,8 +42,11 @@ export interface AquariusPoolProvider {
   ): Promise<bigint>;
 }
 
-// resolve aquarius router id from the network's allow-list. defaults to mainnet
-function getAquariusRouterIdFromAllowlist(network: NetworkConfig = MAINNET): string {
+// the router's pool_type answer and the REST pool_type for a concentrated pool
+export const CONCENTRATED_POOL_TYPE = "concentrated";
+
+// resolve aquarius router id from the network's allow-list
+function getAquariusRouterIdFromAllowlist(network: NetworkConfig): string {
   const list = getAllowlistForNetwork(network);
   const entry: AllowedContract | undefined = list.find(
     (c) => c.protocol === "aquarius" && c.name === "AquariusAmmRouter",
@@ -74,9 +84,7 @@ export function poolIndexHexToBytes(poolIndexHex: string): Uint8Array {
   return bytes;
 }
 
-// encode a hex pool_index as scvBytes
-async function poolIndexToScVal(poolIndexHex: string): Promise<xdr.ScVal> {
-  const { xdr } = await import("@stellar/stellar-sdk");
+function poolIndexToScVal(poolIndexHex: string): xdr.ScVal {
   return xdr.ScVal.scvBytes(Buffer.from(poolIndexHexToBytes(poolIndexHex)));
 }
 
@@ -93,7 +101,7 @@ async function readShareIdFromRouter(
     server,
     routerId,
     "share_id",
-    [tokensToScVal(tokens), await poolIndexToScVal(poolIndex)],
+    [tokensToScVal(tokens), poolIndexToScVal(poolIndex)],
     sourcePublicKey,
     network,
   );
@@ -132,13 +140,23 @@ export const AQUARIUS_API_MAINNET_BASE_URL = "https://amm-api.aqua.network/api/e
 // testnet aquarius backend base URL
 export const AQUARIUS_API_TESTNET_BASE_URL = "https://amm-api-testnet.aqua.network/api/external/v1";
 
-// pick the aquarius REST backend for the given network. Without this the provider
-// would default to the mainnet backend on every network, so a testnet close would
-// query the mainnet API (the on-chain event scan still finds testnet pools, so it
-// degrades rather than breaks, but the REST source was silently useless there).
+// pick the aquarius REST backend for the given network. a network with no
+// aquarius deployment gets an error, never another network's backend.
 export function aquariusApiBaseUrlForNetwork(network: NetworkConfig): string {
-  return network.id === "testnet" ? AQUARIUS_API_TESTNET_BASE_URL : AQUARIUS_API_MAINNET_BASE_URL;
+  switch (network.id) {
+    case "mainnet":
+      return AQUARIUS_API_MAINNET_BASE_URL;
+    case "testnet":
+      return AQUARIUS_API_TESTNET_BASE_URL;
+    case "futurenet":
+      throw new Error("Aquarius has no REST backend on futurenet");
+  }
 }
+
+// a page that has not fully arrived after this long is abandoned: discovery and
+// the merge-time reprobe must not hang on an upstream that accepts the connection
+// and never finishes the body
+export const AQUARIUS_API_TIMEOUT_MS = 15_000;
 
 // one result entry from GET /pools/user/{key}/
 interface AquariusUserPoolApiEntry {
@@ -155,12 +173,22 @@ interface AquariusUserPoolApiResponse {
   readonly results: readonly AquariusUserPoolApiEntry[];
 }
 
+// what the REST source saw for one user: standard pools with a positive share
+// balance, the concentrated pools it listed (handled by the on-chain
+// concentrated discovery), and one message per entry that could not be resolved
+export interface AquariusRestScan {
+  readonly standard: readonly AquariusPool[];
+  readonly concentratedAddresses: readonly string[];
+  readonly errors: readonly string[];
+}
+
 export interface AquariusAPIPoolProviderOptions {
   readonly server: rpc.Server;
   readonly network: NetworkConfig;
   // override for tests; trailing slash stripped
   readonly baseUrl?: string;
   readonly fetchImpl?: typeof fetch;
+  readonly timeoutMs?: number;
 }
 
 // REST-backed provider against aquarius's public API
@@ -170,12 +198,14 @@ export class AquariusAPIPoolProvider implements AquariusPoolProvider {
   private readonly baseUrl: string;
   private readonly routerId: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly timeoutMs: number;
 
   constructor(opts: AquariusAPIPoolProviderOptions) {
     this.server = opts.server;
     this.network = opts.network;
     this.baseUrl = (opts.baseUrl ?? aquariusApiBaseUrlForNetwork(opts.network)).replace(/\/+$/, "");
     this.routerId = getAquariusRouterIdFromAllowlist(opts.network);
+    this.timeoutMs = opts.timeoutMs ?? AQUARIUS_API_TIMEOUT_MS;
     // the browser's fetch must be invoked with `this === window`; stored on the
     // instance and called as `this.fetchImpl(...)` it would otherwise throw
     // "Illegal invocation". Bind the global default; a caller-supplied mock is
@@ -187,25 +217,57 @@ export class AquariusAPIPoolProvider implements AquariusPoolProvider {
     this.fetchImpl = fetchImpl;
   }
 
+  // standard pools only. throws when any listed entry could not be resolved (a
+  // failed share read is not "no shares") or when the API lists a concentrated
+  // pool that is not pinned, so the caller records a discovery error.
   async getUserPools(userPublicKey: string): Promise<AquariusPool[]> {
-    const entries = await this.fetchUserPoolsAllPages(userPublicKey);
-    // drop zero-balance pools: user no longer an LP there
-    const pools: AquariusPool[] = [];
-    for (const entry of entries) {
-      const sharesRaw = await this.getPoolShareBalance(
-        entry.index,
-        entry.tokens_addresses,
-        userPublicKey,
-      );
-      if (sharesRaw === 0n) continue;
-      pools.push({
-        poolIndex: entry.index,
-        poolType: entry.pool_type,
-        tokens: entry.tokens_addresses,
-        shareBalance: sharesRaw,
-      });
+    const scan = await this.scanUserPools(userPublicKey);
+    if (scan.errors.length > 0) {
+      throw new Error(`Aquarius API: ${scan.errors.join("; ")}`);
     }
-    return pools;
+    return [...scan.standard];
+  }
+
+  // reads every entry the API lists, keeping going past a failed entry so one bad
+  // pool does not hide the others
+  async scanUserPools(userPublicKey: string): Promise<AquariusRestScan> {
+    const entries = await this.fetchUserPoolsAllPages(userPublicKey);
+    const standard: AquariusPool[] = [];
+    const concentratedAddresses: string[] = [];
+    const errors: string[] = [];
+    for (const entry of entries) {
+      if (entry.pool_type === CONCENTRATED_POOL_TYPE) {
+        concentratedAddresses.push(entry.address);
+        if (findConcentratedPool(entry.address, this.network) === undefined) {
+          errors.push(
+            `concentrated pool ${entry.address} is not on the pinned ${this.network.id} list; ` +
+              `its position cannot be exited in-app`,
+          );
+        }
+        continue;
+      }
+      try {
+        const sharesRaw = await this.getPoolShareBalance(
+          entry.index,
+          entry.tokens_addresses,
+          userPublicKey,
+        );
+        // zero balance: the user is no longer an LP there
+        if (sharesRaw === 0n) continue;
+        standard.push({
+          poolIndex: entry.index,
+          poolAddress: entry.address,
+          poolType: entry.pool_type,
+          tokens: entry.tokens_addresses,
+          shareBalance: sharesRaw,
+        });
+      } catch (e) {
+        errors.push(
+          `could not read shares in pool ${entry.address} (${e instanceof Error ? e.message : String(e)})`,
+        );
+      }
+    }
+    return { standard, concentratedAddresses, errors };
   }
 
   async getPoolShareBalance(
@@ -223,26 +285,59 @@ export class AquariusAPIPoolProvider implements AquariusPoolProvider {
     });
   }
 
-  // walk the django REST paginated envelope. hard-cap at 100 pages
+  // walk the django REST paginated envelope. a listing longer than MAX_PAGES is
+  // reported as an error rather than returned as if complete
   private async fetchUserPoolsAllPages(userPublicKey: string): Promise<AquariusUserPoolApiEntry[]> {
     const MAX_PAGES = 100;
     const out: AquariusUserPoolApiEntry[] = [];
     let url: string | null = `${this.baseUrl}/pools/user/${encodeURIComponent(userPublicKey)}/`;
 
     for (let page = 0; page < MAX_PAGES; page++) {
-      if (url === null) break;
-      const resp: Response = await this.fetchImpl(url, {
-        headers: { accept: "application/json" },
-      });
-      if (!resp.ok) {
-        throw new Error(`Aquarius API: GET ${url} returned HTTP ${resp.status} ${resp.statusText}`);
-      }
-      const parsed: unknown = await resp.json();
+      if (url === null) return out;
+      const parsed = await this.fetchJson(url);
       const body = assertUserPoolsApiResponse(parsed, url);
       out.push(...body.results);
       url = body.next;
     }
+    if (url !== null) {
+      throw new Error(
+        `Aquarius API: user pool listing exceeds ${MAX_PAGES} pages; refusing a partial list`,
+      );
+    }
     return out;
+  }
+
+  // one GET with a hard deadline on headers and body together. the race is kept
+  // even though the signal is passed, so a fetch implementation that ignores the
+  // signal still cannot hold discovery open
+  private async fetchJson(url: string): Promise<unknown> {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error(`Aquarius API: GET ${url} timed out after ${this.timeoutMs}ms`));
+      }, this.timeoutMs);
+    });
+    try {
+      return await Promise.race([
+        (async () => {
+          const resp: Response = await this.fetchImpl(url, {
+            headers: { accept: "application/json" },
+            signal: controller.signal,
+          });
+          if (!resp.ok) {
+            throw new Error(
+              `Aquarius API: GET ${url} returned HTTP ${resp.status} ${resp.statusText}`,
+            );
+          }
+          return (await resp.json()) as unknown;
+        })(),
+        deadline,
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
 
@@ -295,12 +390,12 @@ function assertUserPoolsApiResponse(parsed: unknown, url: string): AquariusUserP
 export interface AquariusEventScanPoolProviderOptions {
   readonly server: rpc.Server;
   readonly network: NetworkConfig;
-  // soroban RPC retains ~7 days of events by default. defaults to 120_960 ledgers (~7 days at 5s)
+  // defaults to the rpc's stock retention window (EVENT_RETENTION_WINDOW_LEDGERS)
   readonly lookbackLedgers?: number;
   readonly maxPages?: number;
 }
 
-const DEFAULT_EVENT_LOOKBACK_LEDGERS = 120_960;
+const DEFAULT_EVENT_LOOKBACK_LEDGERS = EVENT_RETENTION_WINDOW_LEDGERS;
 const EVENT_PAGE_LIMIT = 10_000;
 const DEFAULT_EVENT_MAX_PAGES = 100;
 
@@ -329,34 +424,35 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
     const latest = await this.server.getLatestLedger();
     let startLedger = Math.max(1, latest.sequence - this.lookbackLedgers);
 
+    // the router emits deposit/withdraw with topics [symbol, Vec<Address> tokens,
+    // Address user] (observed on mainnet). filtering on the user server-side
+    // keeps the scan to this account's own events instead of downloading every
+    // router swap (about 97k a week on mainnet).
+    const userXdr = new Address(userPublicKey).toScVal().toXdr("base64");
+    const filter: rpc.Api.EventFilter = {
+      type: "contract",
+      contractIds: [this.routerId],
+      topics: [
+        [xdr.ScVal.scvSymbol("deposit").toXdr("base64"), "*", userXdr],
+        [xdr.ScVal.scvSymbol("withdraw").toXdr("base64"), "*", userXdr],
+      ],
+    };
+
     // dedupe by tokens+poolAddress since the same pool appears in many events
     const observed = new Map<string, { tokens: string[]; poolAddress: string }>();
 
     let cursor: string | undefined;
     let retentionRetries = 0;
-    for (let page = 0; page < this.maxPages; page++) {
+    let exhausted = false;
+    for (let page = 0; ; page++) {
+      if (page >= this.maxPages) {
+        exhausted = true;
+        break;
+      }
       const request: rpc.Api.GetEventsRequest =
         cursor === undefined
-          ? {
-              startLedger,
-              filters: [
-                {
-                  type: "contract",
-                  contractIds: [this.routerId],
-                },
-              ],
-              limit: EVENT_PAGE_LIMIT,
-            }
-          : {
-              cursor,
-              filters: [
-                {
-                  type: "contract",
-                  contractIds: [this.routerId],
-                },
-              ],
-              limit: EVENT_PAGE_LIMIT,
-            };
+          ? { startLedger, filters: [filter], limit: EVENT_PAGE_LIMIT }
+          : { cursor, filters: [filter], limit: EVENT_PAGE_LIMIT };
 
       let resp: rpc.Api.GetEventsResponse;
       try {
@@ -388,6 +484,12 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
       if (!resp.cursor || resp.cursor === cursor) break;
       cursor = resp.cursor;
     }
+    if (exhausted) {
+      throw new Error(
+        `Aquarius event scan stopped at its ${this.maxPages}-page cap with more events pending; ` +
+          `the scan is incomplete`,
+      );
+    }
 
     const out: AquariusPool[] = [];
     // cache get_pools(tokens) per tokens tuple
@@ -410,11 +512,16 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
         }
         if (poolIndex === undefined) continue;
 
+        const poolType = await this.readPoolType(value.tokens, poolIndex, userPublicKey);
+        // the router does not route deposit_position, but a concentrated pool can
+        // still emit router-level events; its position is read by the dedicated
+        // concentrated discovery, not as router shares
+        if (poolType === CONCENTRATED_POOL_TYPE) continue;
         const shareBalance = await this.getPoolShareBalance(poolIndex, value.tokens, userPublicKey);
         if (shareBalance === 0n) continue;
-        const poolType = await this.readPoolType(value.tokens, poolIndex, userPublicKey);
         out.push({
           poolIndex,
+          poolAddress: value.poolAddress,
           poolType,
           tokens: value.tokens,
           shareBalance,
@@ -458,7 +565,7 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
       this.server,
       this.routerId,
       "pool_type",
-      [tokensToScVal(tokens), await poolIndexToScVal(poolIndex)],
+      [tokensToScVal(tokens), poolIndexToScVal(poolIndex)],
       sourcePublicKey,
       this.network,
     );

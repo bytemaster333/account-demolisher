@@ -1,4 +1,4 @@
-// soroswap LP exit: direct remove_liquidity invocation against the mainnet SoroswapRouter
+// soroswap LP exit: direct remove_liquidity invocation against the network's SoroswapRouter
 import {
   Contract,
   TransactionBuilder,
@@ -7,12 +7,8 @@ import {
   type Horizon,
   type Transaction,
 } from "@stellar/stellar-sdk";
-import {
-  getAllowlistForNetwork,
-  isAllowedContract,
-  MAINNET_ALLOWLIST,
-  type AllowedContract,
-} from "@/lib/config/contracts";
+import { isAllowedRootTarget } from "@/lib/config/contracts";
+import { getSoroswapRouterId } from "@/lib/adapters/soroswap/swap";
 import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { address as scvAddress, i128 as scvI128 } from "@/lib/soroban/scval";
@@ -81,7 +77,7 @@ export async function removeLiquidityByContractIds(
 ): Promise<Transaction> {
   const routerId = getSoroswapRouterId(args.network);
   // defensive re-check; pinned ID is in the allow-list by construction
-  if (!isAllowedContract(routerId, args.network)) {
+  if (!isAllowedRootTarget(routerId, args.network)) {
     throw new Error(
       `SoroswapRouter ${routerId} is not on the ${args.network.id} allow-list, refusing to build remove_liquidity`,
     );
@@ -125,19 +121,6 @@ export async function removeLiquidityByContractIds(
   // allow-listed contracts before it can ever be signed.
   assertTransactionAllowed(prepared, args.network);
   return prepared;
-}
-
-// look up the SoroswapRouter contract id from the allow-list. defaults to mainnet
-function getSoroswapRouterId(network?: NetworkConfig): string {
-  const list = network === undefined ? MAINNET_ALLOWLIST : getAllowlistForNetwork(network);
-  const entry = list.find(
-    (c: AllowedContract) => c.protocol === "soroswap" && c.name === "SoroswapRouter",
-  );
-  if (!entry) {
-    const label = network === undefined ? "MAINNET_ALLOWLIST" : `${network.id} allow-list`;
-    throw new Error(`SoroswapRouter not found in ${label}`);
-  }
-  return entry.id;
 }
 
 function resolveAssetAddress(asset: AssetIdentifier, network: NetworkConfig): string {

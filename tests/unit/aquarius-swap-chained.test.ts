@@ -87,7 +87,7 @@ function baseArgs(swapsChain: readonly SwapChainStep[]) {
   };
 }
 
-describe("aquarius swapChained — budget-bounded swap", () => {
+describe("aquarius swapChained: budget-bounded swap", () => {
   it("enforces the 4-hop budget cap (AquariusBudgetError), one hop over the limit", async () => {
     const { deps } = captureDeps();
     const tooMany = Array.from({ length: AQUARIUS_SWAP_CHAINED_MAX_HOPS + 1 }, oneHop);
@@ -120,16 +120,18 @@ describe("aquarius swapChained — budget-bounded swap", () => {
 
     expect(contract).toBe(ROUTER);
     expect(fn).toBe("swap_chained");
-    // args: [user, chain(vec<map>), token_in, in_amount(u128), out_min(u128)]
+    // args: [user, chain(vec<(tokens, pool_index, token_out)>), token_in, in_amount(u128), out_min(u128)]
     expect(Address.fromScVal(args[0]!).toString()).toBe(USER);
     const chain = xdr.expectUnionVariant(args[1]!, "scvVec").vec!;
     expect(chain.length).toBe(1);
-    // the hop's token_out decodes back to TOKEN_OUT
-    const hopMap = xdr.expectUnionVariant(chain[0]!, "scvMap").map!;
-    const tokenOutEntry = hopMap.find(
-      (e) => xdr.isUnionVariant(e.key, "scvSymbol") && e.key.sym.toString() === "token_out",
-    )!;
-    expect(Address.fromScVal(tokenOutEntry.val).toString()).toBe(TOKEN_OUT);
+    // the router spec types each hop as a tuple, which encodes as a 3-element vec
+    const hop = xdr.expectUnionVariant(chain[0]!, "scvVec").vec!;
+    expect(hop.map((v) => v.type)).toEqual(["scvVec", "scvBytes", "scvAddress"]);
+    expect(
+      xdr.expectUnionVariant(hop[0]!, "scvVec").vec!.map((t) => Address.fromScVal(t).toString()),
+    ).toEqual([TOKEN_IN, TOKEN_OUT]);
+    expect(Buffer.from(scValToNative(hop[1]!) as Uint8Array)).toEqual(Buffer.alloc(32, 9));
+    expect(Address.fromScVal(hop[2]!).toString()).toBe(TOKEN_OUT);
     expect(Address.fromScVal(args[2]!).toString()).toBe(TOKEN_IN);
     expect(scValToNative(args[3]!)).toBe(1_000_000n); // in_amount
     expect(scValToNative(args[4]!)).toBe(950_000n); // out_min (the budget floor)

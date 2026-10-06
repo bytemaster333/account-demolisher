@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   Account,
   Address,
+  Asset,
   Operation,
   TransactionBuilder,
   xdr,
@@ -91,7 +92,7 @@ function buildTx(func: xdr.HostFunction, auth: xdr.SorobanAuthorizationEntry[] =
 
 const okAuth = () => sourceAuth(invocation(CONTRACT, "transfer", transferArgs()));
 
-describe("assertSafeTransferInvocation — accepts a legitimate drain", () => {
+describe("assertSafeTransferInvocation: accepts a legitimate drain", () => {
   it("passes transfer(user, destination, amount) with a matching source-account auth entry", () => {
     const tx = buildTx(hostFn(), [okAuth()]);
     expect(() => assertSafeTransferInvocation(tx, EXPECTED)).not.toThrow();
@@ -103,7 +104,7 @@ describe("assertSafeTransferInvocation — accepts a legitimate drain", () => {
   });
 });
 
-describe("assertSafeTransferInvocation — rejects tampered invocations", () => {
+describe("assertSafeTransferInvocation: rejects tampered invocations", () => {
   it("rejects a non-transfer function", () => {
     const tx = buildTx(hostFn(CONTRACT, "approve", transferArgs()), [okAuth()]);
     expect(() => assertSafeTransferInvocation(tx, EXPECTED)).toThrow(UnsafeTransferError);
@@ -134,7 +135,7 @@ describe("assertSafeTransferInvocation — rejects tampered invocations", () => 
   });
 });
 
-describe("assertSafeTransferInvocation — rejects auth-entry smuggling", () => {
+describe("assertSafeTransferInvocation: rejects auth-entry smuggling", () => {
   it("rejects an auth entry carrying a nested sub-invocation (smuggled second transfer)", () => {
     const smuggled = invocation(OTHER, "transfer", [
       scvAddress(USER),
@@ -165,3 +166,79 @@ describe("assertSafeTransferInvocation — rejects auth-entry smuggling", () => 
 function OTHER_G(): string {
   return "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H";
 }
+
+const createSacFn = () =>
+  new xdr.CreateContractArgs({
+    contractIdPreimage: xdr.ContractIdPreimage.contractIdPreimageFromAsset(
+      xdr.Asset.assetTypeNative(),
+    ),
+    executable: xdr.ContractExecutable.contractExecutableStellarAsset(),
+  });
+
+describe("assertSafeTransferInvocation: rejects the remaining structural branches", () => {
+  it("rejects a transaction with a second operation", () => {
+    const tx = new TransactionBuilder(new Account(USER, "0"), {
+      fee: "100",
+      networkPassphrase: TESTNET.passphrase,
+    })
+      .addOperation(Operation.invokeHostFunction({ func: hostFn(), auth: [okAuth()] }))
+      .addOperation(Operation.payment({ destination: DEST, asset: Asset.native(), amount: "100" }))
+      .setTimeout(30)
+      .build();
+    expect(() => assertSafeTransferInvocation(tx, EXPECTED)).toThrow(/exactly 1 operation, got 2/);
+  });
+
+  it("rejects an operation that is not invokeHostFunction", () => {
+    const tx = new TransactionBuilder(new Account(USER, "0"), {
+      fee: "100",
+      networkPassphrase: TESTNET.passphrase,
+    })
+      .addOperation(Operation.payment({ destination: DEST, asset: Asset.native(), amount: "1" }))
+      .setTimeout(30)
+      .build();
+    expect(() => assertSafeTransferInvocation(tx, EXPECTED)).toThrow(/"payment"/);
+  });
+
+  it("rejects a createContract host function", () => {
+    const tx = buildTx(xdr.HostFunction.hostFunctionTypeCreateContract(createSacFn()));
+    expect(() => assertSafeTransferInvocation(tx, EXPECTED)).toThrow(/expected invokeContract/);
+  });
+
+  it("rejects a transfer with the wrong argument count", () => {
+    const tx = buildTx(
+      xdr.HostFunction.hostFunctionTypeInvokeContract(
+        invokeContractArgs(CONTRACT, "transfer", [...transferArgs(), xdr.ScVal.scvVoid()]),
+      ),
+    );
+    expect(() => assertSafeTransferInvocation(tx, EXPECTED)).toThrow(/has 4 args, expected 3/);
+  });
+
+  it("rejects an auth entry with the wrong argument count", () => {
+    const entry = sourceAuth(invocation(CONTRACT, "transfer", transferArgs().slice(0, 2)));
+    const tx = buildTx(hostFn(), [entry]);
+    expect(() => assertSafeTransferInvocation(tx, EXPECTED)).toThrow(
+      /auth\[0\] transfer has 2 args/,
+    );
+  });
+
+  it("rejects an auth entry whose root is not a contract call", () => {
+    const entry = new xdr.SorobanAuthorizationEntry({
+      credentials: xdr.SorobanCredentials.sorobanCredentialsSourceAccount(),
+      rootInvocation: new xdr.SorobanAuthorizedInvocation({
+        function:
+          xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeCreateContractHostFn(
+            createSacFn(),
+          ),
+        subInvocations: [],
+      }),
+    });
+    const tx = buildTx(hostFn(), [entry]);
+    expect(() => assertSafeTransferInvocation(tx, EXPECTED)).toThrow(/expected a contract call/);
+  });
+
+  it("rejects an auth entry sending to a different recipient than the invocation", () => {
+    const entry = sourceAuth(invocation(CONTRACT, "transfer", transferArgs(USER, OTHER_G())));
+    const tx = buildTx(hostFn(), [entry]);
+    expect(() => assertSafeTransferInvocation(tx, EXPECTED)).toThrow(/auth\[0\] transfer to=/);
+  });
+});

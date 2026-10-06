@@ -1,32 +1,27 @@
-import { describe, it, expect, vi } from "vitest";
-import { Address, Contract, StrKey, nativeToScVal, rpc, xdr } from "@stellar/stellar-sdk";
-import { enumerateAllowances, type AllowanceRecord } from "@/lib/soroban/allowances";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { Address, StrKey, nativeToScVal, xdr, type rpc } from "@stellar/stellar-sdk";
+import {
+  AllowanceScanIncompleteError,
+  CONFIRM_CONCURRENCY,
+  confirmAllowancesOnChain,
+  enumerateAllowances,
+  scanAllowances,
+  withoutConfirmedZero,
+  type AllowanceRecord,
+} from "@/lib/soroban/allowances";
+import { TESTNET } from "@/lib/config/networks";
+import { fakeEventsRpc, type FakeEvent, type FakeEventsRpcOptions } from "./event-scan-fake-rpc";
 
 // A valid ed25519 public key, enumerateAllowances runs it through Address(),
 // which rejects anything malformed.
 const USER = "GCAWLISZMTHWMMHJE7BRYYNNKR4OL2PR4COXKH2MKGVDOH4BP6DMAHPE";
 const SPENDER = "GDLJJ5CGPWNOCBJMCPJY5HXDIAPV2UGQJWKUL35EVS7IR6JJZQ27WOPC";
 
-// The Soroban RPC rejects an out-of-window startLedger with a plain
-// `{ code, message }` object (not an Error), e.g.
-// "startLedger must be within the ledger range: 1000 - 2000".
-function rangeError(floor: number, ceil: number): { code: number; message: string } {
-  return {
-    code: -32600,
-    message: `startLedger must be within the ledger range: ${floor} - ${ceil}`,
-  };
-}
-
 // ── ScVal builders for synthetic approve events ──────────────────────────────
 const sym = (s: string): xdr.ScVal => nativeToScVal(s, { type: "symbol" });
 const i128 = (n: bigint): xdr.ScVal => nativeToScVal(n, { type: "i128" });
 const u32 = (n: number): xdr.ScVal => nativeToScVal(n, { type: "u32" });
 const addr = (g: string): xdr.ScVal => new Address(g).toScVal();
-
-// a valid contract C-address, and a Contract wrapper exposing .contractId()
-function contract(seed: number): Contract {
-  return new Contract(StrKey.encodeContract(Buffer.alloc(32, seed)));
-}
 
 // tuple-as-vec (sep-41 reference encoding)
 function vecValue(amount: bigint, liveUntil: number): xdr.ScVal {
@@ -46,113 +41,109 @@ interface EventOpts {
   from?: string;
   spender?: string;
   topicCount?: 3 | 4;
+  // position inside the ledger (tx/op/event order)
+  index?: number;
 }
 
-function approveEvent(
-  ledger: number,
-  value: xdr.ScVal,
-  opts: EventOpts = {},
-): rpc.Api.EventResponse {
-  const topics: xdr.ScVal[] = [
+function approveEvent(ledger: number, value: xdr.ScVal, opts: EventOpts = {}): FakeEvent {
+  const topic: xdr.ScVal[] = [
     sym("approve"),
     addr(opts.from ?? USER),
     addr(opts.spender ?? SPENDER),
   ];
-  if (opts.topicCount === 4) topics.push(sym("extra"));
+  if (opts.topicCount === 4) topic.push(sym("extra"));
   return {
-    contractId: contract(opts.contractSeed ?? 7),
-    topic: topics,
-    value,
     ledger,
-    // BaseEventResponse fields the decoder never reads
-    id: `${ledger}`,
-    type: "contract",
-    ledgerClosedAt: "2026-01-01T00:00:00Z",
-    transactionIndex: 0,
-    operationIndex: 0,
-    inSuccessfulContractCall: true,
-    txHash: "",
-  } as unknown as rpc.Api.EventResponse;
+    index: opts.index ?? 0,
+    contractId: StrKey.encodeContract(Buffer.alloc(32, opts.contractSeed ?? 7)),
+    topic,
+    value,
+  };
 }
 
-// build a mocked server that returns a single page of the given events
-function serverWithEvents(events: rpc.Api.EventResponse[], latestLedger = 100_000): rpc.Server {
-  const getEvents = vi.fn(async () => ({ events, cursor: "", latestLedger }));
-  return { getEvents } as unknown as rpc.Server;
+// an rpc that serves these events the way stellar-rpc does (windows, filters)
+function serverWithEvents(
+  events: FakeEvent[],
+  extra: Partial<FakeEventsRpcOptions> = {},
+): rpc.Server {
+  return fakeEventsRpc({ oldestLedger: 1, latestLedger: 100_000, events, ...extra }).server;
 }
 
-describe("enumerateAllowances retention clamp", () => {
-  it("retries at floor + margin (not the exact floor) when startLedger is below retention", async () => {
-    const attempted: number[] = [];
-    const getEvents = vi.fn(async (req: { startLedger?: number; cursor?: string }) => {
-      if (req.startLedger !== undefined) attempted.push(req.startLedger);
-      // first attempt is below the retained window -> reject with the range
-      if (attempted.length === 1) throw rangeError(1000, 2000);
-      return { events: [], cursor: "", latestLedger: 2000 };
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe("allowance scan range", () => {
+  it("starts at the rpc's reported retention floor instead of a request bound to fail", async () => {
+    const { server, requests } = fakeEventsRpc({
+      oldestLedger: 40_000,
+      latestLedger: 100_000,
+      events: [],
     });
-    const server = { getEvents } as unknown as rpc.Server;
-
-    // window (5000) is larger than retention, so startLedger lands below the floor
-    const recs = await enumerateAllowances(server, USER, 2000, 5000);
-
-    expect(recs).toEqual([]);
-    // first attempt was below the reported floor (1000)…
-    expect(attempted[0]).toBeLessThan(1000);
-    // …and the retry clamped to floor + margin, NOT the exact floor (which would
-    // race a ledger closing during the retry gap)
-    expect(attempted[1]).toBe(1060);
+    await enumerateAllowances(server, USER, 100_000);
+    expect(requests.length).toBeGreaterThan(0);
+    expect(Math.min(...requests.map((r) => r.startLedger!))).toBeGreaterThanOrEqual(40_000);
   });
 
-  it("does not retry when the first request succeeds", async () => {
-    const attempted: number[] = [];
-    const getEvents = vi.fn(async (req: { startLedger?: number }) => {
-      if (req.startLedger !== undefined) attempted.push(req.startLedger);
-      return { events: [], cursor: "", latestLedger: 5000 };
-    });
-    const server = { getEvents } as unknown as rpc.Server;
-
-    await enumerateAllowances(server, USER, 5000, 1000);
-
-    expect(attempted).toHaveLength(1);
-    expect(attempted[0]).toBe(4000);
+  it("runs the slices concurrently", async () => {
+    const { server } = fakeEventsRpc({ oldestLedger: 1, latestLedger: 100_000, events: [] });
+    let inFlight = 0;
+    let peak = 0;
+    const real = server.getEvents.bind(server);
+    server.getEvents = (async (req: Parameters<typeof real>[0]) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight -= 1;
+      return real(req);
+    }) as typeof server.getEvents;
+    await enumerateAllowances(server, USER, 100_000);
+    expect(peak).toBeGreaterThan(1);
   });
 
-  // Finding: retention-clamp retry was single-shot, a second range error on the
-  // retry propagated uncaught. The bounded loop must re-parse the fresh floor,
-  // re-clamp, and succeed on a subsequent attempt instead of throwing.
-  it("re-clamps and retries when the retry itself reports a further-advanced floor", async () => {
-    const attempted: number[] = [];
-    const getEvents = vi.fn(async (req: { startLedger?: number; cursor?: string }) => {
-      if (req.startLedger !== undefined) attempted.push(req.startLedger);
-      if (attempted.length === 1) throw rangeError(1000, 3000); // initial: floor 1000
-      if (attempted.length === 2) throw rangeError(1100, 3000); // retry: floor advanced to 1100
-      return { events: [], cursor: "", latestLedger: 3000 };
+  it("re-clamps a slice when the floor moved past it after the health read", async () => {
+    const fake = fakeEventsRpc({
+      oldestLedger: 1,
+      latestLedger: 50_000,
+      events: [approveEvent(30_000, vecValue(5n, 60_000))],
     });
-    const server = { getEvents } as unknown as rpc.Server;
-
-    const recs = await enumerateAllowances(server, USER, 3000, 5000);
-
-    expect(recs).toEqual([]);
-    // first retry clamped to 1000 + 60, second retry re-clamped to 1100 + 60
-    expect(attempted[1]).toBe(1060);
-    expect(attempted[2]).toBe(1160);
+    const health = await fake.server.getHealth();
+    // the host now retains less than it reported a moment ago
+    const moved = fakeEventsRpc({
+      oldestLedger: 5_000,
+      latestLedger: 50_000,
+      events: [approveEvent(30_000, vecValue(5n, 60_000))],
+    });
+    const server = {
+      getHealth: async () => health,
+      getEvents: moved.server.getEvents,
+    } as rpc.Server;
+    const recs = await enumerateAllowances(server, USER, 50_000, 50_000);
+    expect(recs.map((r) => r.amount)).toEqual([5n]);
+    expect(moved.requests.some((r) => r.startLedger === 5_060)).toBe(true);
   });
 
-  it("gives up (rethrows) after exhausting bounded retries on persistent range errors", async () => {
-    // floor keeps advancing past every clamp, so no attempt ever succeeds
-    let floor = 1000;
-    const getEvents = vi.fn(async (req: { startLedger?: number; cursor?: string }) => {
-      if (req.startLedger !== undefined) {
-        // advance the floor beyond whatever we just clamped to
-        floor = (req.startLedger ?? floor) + 100;
-      }
-      throw rangeError(floor, 9000);
-    });
-    const server = { getEvents } as unknown as rpc.Server;
+  it("reports a partial scan instead of returning it as complete", async () => {
+    vi.useFakeTimers();
+    const server = serverWithEvents(
+      [
+        approveEvent(99_000, vecValue(5n, 200_000)),
+        approveEvent(2_000, vecValue(9n, 200_000), { contractSeed: 8 }),
+      ],
+      { latencyMs: 1_000 },
+    );
+    const scanning = scanAllowances(server, USER, 100_000, 100_000, { budgetMs: 1_500 });
+    await vi.advanceTimersByTimeAsync(2_000);
+    const scan = await scanning;
+    expect(scan.records.map((r) => r.amount)).toEqual([5n]);
+    expect(scan.incomplete).toMatchObject({ reason: "budget", lastLedger: 100_000 });
 
-    await expect(enumerateAllowances(server, USER, 9000, 20_000)).rejects.toMatchObject({
-      message: expect.stringContaining("ledger range"),
-    });
+    const enumerating = enumerateAllowances(server, USER, 100_000, 100_000, { budgetMs: 1_500 });
+    const caught = enumerating.catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(2_000);
+    const err = await caught;
+    expect(err).toBeInstanceOf(AllowanceScanIncompleteError);
+    expect((err as AllowanceScanIncompleteError).partial.map((r) => r.amount)).toEqual([5n]);
   });
 });
 
@@ -192,7 +183,9 @@ describe("enumerateAllowances event decoding", () => {
       approveEvent(6_000, vecValue(0n, currentLedger + 100)),
     ]);
 
-    const recs = await enumerateAllowances(server, USER, currentLedger, currentLedger);
+    const recs = await enumerateAllowances(server, USER, currentLedger, currentLedger, {
+      includeZero: true,
+    });
 
     expect(recs).toHaveLength(1);
     const rec = recs[0] as AllowanceRecord;
@@ -200,18 +193,35 @@ describe("enumerateAllowances event decoding", () => {
     expect(rec.lastSeenLedger).toBe(6_000);
   });
 
-  it("ignores an out-of-order older event that arrives after the newer one", async () => {
+  it("takes the later of two approves in the same ledger, in either order", async () => {
     const currentLedger = 100_000;
-    // newer event first, then an older (lower-ledger) event for the same key
-    const server = serverWithEvents([
-      approveEvent(6_000, vecValue(0n, currentLedger + 100)),
-      approveEvent(5_000, vecValue(500n, currentLedger + 100)),
+    // revoke then re-approve within one ledger: the re-approve is live
+    const reapproved = serverWithEvents([
+      approveEvent(5_000, vecValue(0n, currentLedger + 100), { index: 1 }),
+      approveEvent(5_000, vecValue(5_000n, currentLedger + 100), { index: 2 }),
     ]);
+    const live = await enumerateAllowances(reapproved, USER, currentLedger, currentLedger);
+    expect(live.map((r) => r.amount)).toEqual([5_000n]);
 
+    // approve then revoke within one ledger: nothing is live
+    const revoked = serverWithEvents([
+      approveEvent(5_000, vecValue(5_000n, currentLedger + 100), { index: 1 }),
+      approveEvent(5_000, vecValue(0n, currentLedger + 100), { index: 2 }),
+    ]);
+    const after = await enumerateAllowances(revoked, USER, currentLedger, currentLedger, {
+      includeZero: true,
+    });
+    expect(after.map((r) => r.amount)).toEqual([0n]);
+  });
+
+  it("leaves out an allowance whose latest approve set it to zero, unless asked", async () => {
+    const currentLedger = 100_000;
+    const server = serverWithEvents([
+      approveEvent(5_000, vecValue(0n, currentLedger + 100)),
+      approveEvent(5_100, vecValue(3n, currentLedger + 100), { contractSeed: 9 }),
+    ]);
     const recs = await enumerateAllowances(server, USER, currentLedger, currentLedger);
-
-    expect(recs).toHaveLength(1);
-    expect((recs[0] as AllowanceRecord).amount).toBe(0n);
+    expect(recs.map((r) => r.amount)).toEqual([3n]);
   });
 
   it("decodes the scvMap fallback with the expiration_ledger alias", async () => {
@@ -280,5 +290,45 @@ describe("enumerateAllowances expiry classification", () => {
     });
     expect(included).toHaveLength(1);
     expect((included[0] as AllowanceRecord).expired).toBe(true);
+  });
+});
+
+describe("confirming allowances on chain", () => {
+  const record = (seed: number): AllowanceRecord => ({
+    contractId: StrKey.encodeContract(Buffer.alloc(32, seed % 250)),
+    spender: SPENDER,
+    amount: 1n,
+    live_until_ledger: 10,
+    lastSeenLedger: 1,
+    expired: false,
+  });
+
+  it("keeps a bounded number of reads in flight however many records there are", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    // the allowance() read is a simulateTransaction against the token
+    const server = {
+      simulateTransaction: async () => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await new Promise((r) => setTimeout(r, 1));
+        inFlight -= 1;
+        return { error: "not modelled", events: [], latestLedger: 1, id: "1", _parsed: true };
+      },
+    } as unknown as rpc.Server;
+    const records = Array.from({ length: 1_000 }, (_, i) => record(i));
+    const out = await confirmAllowancesOnChain(server, USER, records, TESTNET, USER);
+    expect(out).toHaveLength(1_000);
+    expect(peak).toBeLessThanOrEqual(CONFIRM_CONCURRENCY);
+    expect(out.every((r) => r.onChainAmount === null)).toBe(true);
+  });
+
+  it("drops records the chain reports as already zero", () => {
+    const rows = [
+      { ...record(1), onChainAmount: 0n },
+      { ...record(2), onChainAmount: 4n },
+      { ...record(3), onChainAmount: null },
+    ];
+    expect(withoutConfirmedZero(rows).map((r) => r.onChainAmount)).toEqual([4n, null]);
   });
 });

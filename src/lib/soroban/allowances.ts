@@ -1,14 +1,19 @@
 // sep-41 allowance enumeration via soroban rpc getEvents
 
-import { Address, rpc, xdr, type Horizon, type Transaction } from "@stellar/stellar-sdk";
+import {
+  Address,
+  rpc,
+  xdr,
+  type Account,
+  type Horizon,
+  type Transaction,
+} from "@stellar/stellar-sdk";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { fromScValAddress, fromScValI128, fromScValSymbol, fromScValU32 } from "./scval";
 import { allowance as readAllowance, buildApprove } from "./sep41";
-import {
-  MAX_RETENTION_RETRIES,
-  RETENTION_RETRY_MARGIN_LEDGERS,
-  parseRetentionFloor,
-} from "./event-retention";
+import { mapConcurrent } from "./concurrency";
+import { EVENT_RETENTION_WINDOW_LEDGERS } from "./event-retention";
+import { scanEventWindows, type EventScanIncomplete } from "./event-scan";
 
 // one active sep-41 allowance attributable to the user
 export interface AllowanceRecord {
@@ -34,7 +39,7 @@ export interface ConfirmedAllowanceRecord extends AllowanceRecord {
 }
 
 // true when a confirmed record's event-derived amount disagrees with the on-chain
-// amount — the event was fabricated or is stale, so the displayed limit is a lie.
+// amount: the event was fabricated or is stale, so the displayed limit is a lie.
 export function allowanceAmountMismatch(r: AllowanceRecord): boolean {
   return typeof r.onChainAmount === "bigint" && r.onChainAmount !== r.amount;
 }
@@ -44,6 +49,10 @@ export function allowanceAmountMismatch(r: AllowanceRecord): boolean {
 // leaves onChainAmount = null (shown as "unconfirmed") rather than dropping the
 // row. simSourcePublicKey is any valid G-address used only as the simulation
 // source (the read doesn't move funds and the source needn't exist on-chain).
+// any contract can emit approve events naming the user, so the record list is
+// attacker-sized: the reads run a few at a time, not all at once.
+export const CONFIRM_CONCURRENCY = 6;
+
 export async function confirmAllowancesOnChain(
   server: rpc.Server,
   ownerAddress: string,
@@ -51,8 +60,10 @@ export async function confirmAllowancesOnChain(
   network: NetworkConfig,
   simSourcePublicKey: string,
 ): Promise<ConfirmedAllowanceRecord[]> {
-  return Promise.all(
-    records.map(async (r): Promise<ConfirmedAllowanceRecord> => {
+  return mapConcurrent(
+    records,
+    CONFIRM_CONCURRENCY,
+    async (r): Promise<ConfirmedAllowanceRecord> => {
       try {
         const res = await readAllowance(
           server,
@@ -66,54 +77,82 @@ export async function confirmAllowancesOnChain(
       } catch {
         return { ...r, onChainAmount: null };
       }
-    }),
+    },
   );
 }
 
+// records whose on-chain read came back zero: spent through transfer_from (which
+// emits no approve event) or already revoked. nothing to revoke there.
+export function withoutConfirmedZero<T extends AllowanceRecord>(records: readonly T[]): T[] {
+  return records.filter((r) => r.onChainAmount !== 0n);
+}
+
 // Soroban RPC only retains events for ~7 days, so a wider window is not just
-// wasted work — it is dishonest, since anything older simply cannot be found via
-// getEvents. Match the real retention (~7 days of ledgers at 5s cadence:
-// 7 * 24 * 60 * 60 / 5 = 120_960). The retention-floor retry below still clamps
-// gracefully if a given RPC retains slightly less. NOTE: an allowance whose last
-// approve is older than this window is not discoverable by event scan alone; the
-// UI surfaces this ~7-day caveat so the empty/partial result isn't mistaken for
-// "no allowances exist".
-export const DEFAULT_SCAN_WINDOW_LEDGERS = 120_960;
+// wasted work: it is dishonest, since anything older simply cannot be found via
+// getEvents. NOTE: an allowance whose last approve is older than this window is
+// not discoverable by event scan alone; the UI surfaces this ~7-day caveat so the
+// empty/partial result isn't mistaken for "no allowances exist".
+export const DEFAULT_SCAN_WINDOW_LEDGERS = EVENT_RETENTION_WINDOW_LEDGERS;
 
 // human-facing description of the scan window, kept next to the constant so copy
 // and behavior can't drift. update both together.
 export const SCAN_WINDOW_DESCRIPTION = "about the last 7 days";
 
-// per-page event cap on the rpc
-const PAGE_LIMIT = 10_000;
+// the rpc reads at most 10,000 ledgers per getEvents call, so the window is cut
+// into slices of that size and a few run at once instead of 13 in a row. the
+// filter pins `from`, which keeps each slice cheap (about 0.1s on mainnet).
+const SCAN_WINDOW_SLICE_LEDGERS = 10_000;
+const SCAN_MIN_SLICE_LEDGERS = 625;
+const SCAN_CONCURRENCY = 4;
+// leaves room inside the caller's 30s discovery timeout
+const SCAN_BUDGET_MS = 20_000;
 
-// when getEvents reports our startLedger is below the retained event window, we
-// clamp to the floor it reports, plus this margin. The retention floor advances
-// continuously (~1 ledger / 5s), so clamping to the *exact* floor races: a single
-// ledger closing between the error and the retry would drop us back below it and
-// fail again. A small margin absorbs that (skipping a few ledgers at the very
-// oldest edge is immaterial for a best-effort "latest allowance state" scan).
-// retention-floor helpers are shared with the other event scanners
-// (RETENTION_RETRY_MARGIN_LEDGERS, MAX_RETENTION_RETRIES, parseRetentionFloor)
+export interface AllowanceScanOptions {
+  // keep records whose live_until_ledger has passed (stamped expired: true)
+  readonly includeExpired?: boolean;
+  // keep records whose latest approve set the amount to zero (a revoke)
+  readonly includeZero?: boolean;
+  readonly budgetMs?: number;
+}
 
-// enumerate active sep-41 allowances the user granted
-export async function enumerateAllowances(
+export interface AllowanceScan {
+  readonly records: AllowanceRecord[];
+  // set when the scan did not cover the whole window; an allowance whose latest
+  // approve falls in the uncovered part is missing or shows an older amount
+  readonly incomplete: EventScanIncomplete | null;
+}
+
+// thrown by enumerateAllowances for a partial scan, carrying what was found
+export class AllowanceScanIncompleteError extends Error {
+  readonly partial: readonly AllowanceRecord[];
+  readonly incomplete: EventScanIncomplete;
+  constructor(partial: readonly AllowanceRecord[], incomplete: EventScanIncomplete) {
+    super(
+      `allowance scan incomplete (${incomplete.reason}): ledgers ${incomplete.rangeStartLedger}-${incomplete.coveredFromLedger - 1} not covered; ${incomplete.detail}`,
+    );
+    this.name = "AllowanceScanIncompleteError";
+    this.partial = partial;
+    this.incomplete = incomplete;
+  }
+}
+
+// scan the user's sep-41 approve events and fold them into the latest allowance
+// per (token, spender)
+export async function scanAllowances(
   server: rpc.Server,
   userAddress: string,
   currentLedger: number,
   scanWindowLedgers: number = DEFAULT_SCAN_WINDOW_LEDGERS,
-  options: { includeExpired?: boolean } = {},
-): Promise<AllowanceRecord[]> {
-  const includeExpired = options.includeExpired === true;
+  options: AllowanceScanOptions = {},
+): Promise<AllowanceScan> {
   if (currentLedger <= 0) {
-    throw new RangeError(`enumerateAllowances: currentLedger must be > 0; got ${currentLedger}`);
+    throw new RangeError(`scanAllowances: currentLedger must be > 0; got ${currentLedger}`);
   }
   if (scanWindowLedgers < 1) {
     throw new RangeError(
-      `enumerateAllowances: scanWindowLedgers must be >= 1; got ${scanWindowLedgers}`,
+      `scanAllowances: scanWindowLedgers must be >= 1; got ${scanWindowLedgers}`,
     );
   }
-  let startLedger = Math.max(1, currentLedger - scanWindowLedgers);
 
   // rpc-level filter for sep-41 approve events
   const approveSymbolXdr = xdr.ScVal.scvSymbol("approve").toXdr("base64");
@@ -127,104 +166,51 @@ export async function enumerateAllowances(
     topics: [[approveSymbolXdr, fromAddressXdr, "*", "*"]],
   };
 
-  // latest-state accumulator keyed by `${contractId}|${spender}`
+  const scan = await scanEventWindows(server, [eventFilter3, eventFilter4], {
+    lastLedger: currentLedger,
+    lookbackLedgers: scanWindowLedgers,
+    windowLedgers: SCAN_WINDOW_SLICE_LEDGERS,
+    minWindowLedgers: SCAN_MIN_SLICE_LEDGERS,
+    concurrency: SCAN_CONCURRENCY,
+    budgetMs: options.budgetMs ?? SCAN_BUDGET_MS,
+  });
+
+  // the scan returns events in on-chain order (ledger, tx, op, event), so the
+  // last approve seen for a key is the one in force, even two in one ledger
   const latest = new Map<string, AllowanceRecord>();
-
-  // first page uses startLedger; subsequent pages use the returned cursor
-  let cursor: string | undefined;
-  // hard cap so a misbehaving rpc can't loop forever
-  const MAX_PAGES = 100;
-
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const request: rpc.Api.GetEventsRequest =
-      cursor === undefined
-        ? {
-            startLedger,
-            filters: [eventFilter3, eventFilter4],
-            limit: PAGE_LIMIT,
-          }
-        : {
-            cursor,
-            filters: [eventFilter3, eventFilter4],
-            limit: PAGE_LIMIT,
-          };
-
-    let resp: rpc.Api.GetEventsResponse;
-    try {
-      resp = await server.getEvents(request);
-    } catch (err) {
-      // testnet retention is ~7 days; if startLedger is before retention the
-      // rpc rejects with a "ledger range: N - M" error. Clamp to the reported
-      // floor (plus a margin) and retry. A single ledger closing during the
-      // retry gap could push us back below the floor, so re-parse the fresh
-      // floor and re-clamp on repeat failures, up to a bounded number of tries.
-      const floor = page === 0 ? parseRetentionFloor(err) : null;
-      if (floor === null || floor <= startLedger) {
-        throw err;
-      }
-      // clamp to the reported floor plus a margin so a ledger closing during
-      // the retry gap can't put us right back below the retention floor
-      startLedger = Math.min(currentLedger, floor + RETENTION_RETRY_MARGIN_LEDGERS);
-
-      let retryResp: rpc.Api.GetEventsResponse | undefined;
-      for (let attempt = 0; attempt < MAX_RETENTION_RETRIES; attempt++) {
-        const retryRequest: rpc.Api.GetEventsRequest = {
-          startLedger,
-          filters: [eventFilter3, eventFilter4],
-          limit: PAGE_LIMIT,
-        };
-        try {
-          retryResp = await server.getEvents(retryRequest);
-          break;
-        } catch (retryErr) {
-          const newFloor = parseRetentionFloor(retryErr);
-          // rethrow if it isn't a range error or the floor didn't advance past
-          // our clamped startLedger (re-clamping wouldn't make progress)
-          if (newFloor === null || newFloor <= startLedger) {
-            throw retryErr;
-          }
-          startLedger = Math.min(currentLedger, newFloor + RETENTION_RETRY_MARGIN_LEDGERS);
-          if (attempt === MAX_RETENTION_RETRIES - 1) {
-            throw retryErr;
-          }
-        }
-      }
-      // retryResp is always assigned on a successful break above; the loop
-      // otherwise throws. This guard satisfies the type checker.
-      if (retryResp === undefined) {
-        throw err;
-      }
-      resp = retryResp;
-    }
-    // process whatever events came back (might be 0, a topic-filtered query
-    for (const ev of resp.events) {
-      const decoded = tryDecodeApproveEvent(ev, userAddress);
-      if (decoded === null) continue;
-
-      const key = `${decoded.contractId}|${decoded.spender}`;
-      const prev = latest.get(key);
-      // compare ledgers explicitly in case of out-of-order pagination
-      if (prev === undefined || ev.ledger > prev.lastSeenLedger) {
-        latest.set(key, decoded);
-      }
-    }
-
-    // end-of-results only when there's no forward cursor. an empty page with
-    // a cursor means "no matches in this slice, keep paging"; must NOT break
-    if (!resp.cursor || resp.cursor === cursor) {
-      break;
-    }
-    cursor = resp.cursor;
+  for (const ev of scan.events) {
+    const decoded = tryDecodeApproveEvent(ev, userAddress);
+    if (decoded === null) continue;
+    latest.set(`${decoded.contractId}|${decoded.spender}`, decoded);
   }
 
   // stamp each record with its expiry and filter by default
-  const out: AllowanceRecord[] = [];
+  const records: AllowanceRecord[] = [];
   for (const rec of latest.values()) {
     const expired = rec.live_until_ledger < currentLedger;
-    if (expired && !includeExpired) continue;
-    out.push({ ...rec, expired });
+    if (expired && options.includeExpired !== true) continue;
+    // approve(0) is how a revoke looks; it leaves nothing to show or revoke
+    if (rec.amount === 0n && options.includeZero !== true) continue;
+    records.push({ ...rec, expired });
   }
-  return out;
+  return { records, incomplete: scan.incomplete };
+}
+
+// enumerate active sep-41 allowances the user granted. a scan that could not
+// cover the whole window throws AllowanceScanIncompleteError (with the partial
+// list) rather than returning a list that looks complete.
+export async function enumerateAllowances(
+  server: rpc.Server,
+  userAddress: string,
+  currentLedger: number,
+  scanWindowLedgers: number = DEFAULT_SCAN_WINDOW_LEDGERS,
+  options: AllowanceScanOptions = {},
+): Promise<AllowanceRecord[]> {
+  const scan = await scanAllowances(server, userAddress, currentLedger, scanWindowLedgers, options);
+  if (scan.incomplete !== null) {
+    throw new AllowanceScanIncompleteError(scan.records, scan.incomplete);
+  }
+  return scan.records;
 }
 
 // returns null if the event isn't an approve emitted by userAddress, or
@@ -325,7 +311,7 @@ export async function buildRevoke(
   spender: string,
   currentLedger: number,
   network: NetworkConfig,
-  sourceAccount: Horizon.AccountResponse,
+  sourceAccount: Horizon.AccountResponse | Account,
 ): Promise<Transaction> {
   return buildApprove(
     server,

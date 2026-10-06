@@ -1,7 +1,7 @@
 // Guard the auto-drain of standalone SEP-41 tokens against auth-entry smuggling.
 //
 // Held tokens are discovered by scanning `transfer`-to-the-account events, so the
-// list can include a token an ATTACKER airdropped — a fully attacker-controlled
+// list can include a token an ATTACKER airdropped, a fully attacker-controlled
 // contract. To sweep one, the close builds contractId.transfer(user, destination,
 // amount) and the user signs it. prepareTransaction attaches whatever
 // SorobanAuthorizationEntry tree the token's own simulation returns, and this
@@ -54,7 +54,7 @@ export function assertSafeTransferInvocation(tx: Transaction, expected: Expected
 
   // 2) every auth entry must authorize ONLY that same transfer. A hostile token
   //    that tries to move other balances must add either a sub-invocation or a
-  //    separate entry targeting a different contract/function — both rejected here.
+  //    separate entry targeting a different contract/function, both rejected here.
   const auth = ihf.auth ?? [];
   auth.forEach((entry, i) => {
     const cred = entry.credentials.type;
