@@ -5,6 +5,7 @@ import { StrKey } from "@stellar/stellar-sdk";
 
 import { Button, Checkbox, Notice } from "@/components/ui";
 import type { NetworkConfig } from "@/lib/config/networks";
+import { MAX_PRICE_IMPACT_BPS } from "@/lib/plan/price-impact";
 import type { HeldToken } from "@/lib/soroban/held-tokens";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { balance } from "@/lib/soroban/sep41";
@@ -204,9 +205,10 @@ export function StandaloneTokensCard({
                 Convert the selected token{selected.length === 1 ? "" : "s"} to XLM (Soroswap swap)
                 instead of sending {selected.length === 1 ? "it" : "them"} as-is. A token that
                 can&apos;t be converted is sent to your destination as-is, and if that transfer
-                fails too, the close stops before the merge. A conversion over the 2% price-impact
-                limit, or one that can&apos;t be priced, waits for your confirmation before anything
-                is signed. Leave off to keep the exact token.
+                fails too, the close stops before the merge. A conversion over the{" "}
+                {MAX_PRICE_IMPACT_BPS / 100}% price-impact limit, or one that can&apos;t be priced,
+                waits for your confirmation before anything is signed. Leave off to keep the exact
+                token.
               </span>
             }
           />
