@@ -94,9 +94,10 @@ export const soroswapPositionSchema: z.ZodType<SoroswapPositionSummary> = z.obje
   shareBalance: nonNegBigInt,
 });
 
-// parse an array of provider records with a per-item schema. Throws z.ZodError on
-// the first invalid record (fail-closed: the caller turns that into a per-protocol
-// discovery error, which blocks a clean close rather than merging around it).
+// parse an array of provider records with a per-item schema. the first invalid
+// record throws a zod error (fail-closed: the caller turns that into a
+// per-protocol discovery error, which blocks a clean close rather than merging
+// around it).
 export function parsePositions<T>(schema: z.ZodType<T>, raw: readonly unknown[]): T[] {
   return raw.map((r) => schema.parse(r));
 }

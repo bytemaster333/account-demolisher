@@ -28,7 +28,7 @@ function call(tx: Transaction): { contract: string; fn: string; args: xdr.ScVal[
   };
 }
 
-describe("integration: blend backstop exits simulate against mainnet (M-25, L-49)", () => {
+describe("integration: blend backstop exits simulate against mainnet (M-25)", () => {
   it("builds and simulates the queue and the unlocked withdraw on the pool's own backstop", async () => {
     const backstop = resolveKnownBackstop(MAINNET, BLEND_BACKSTOP_MAINNET_ID);
     const state = await withBlendFailover(MAINNET, (sdkNetwork) =>
@@ -48,16 +48,12 @@ describe("integration: blend backstop exits simulate against mainnet (M-25, L-49
       { poolId: FIXED_V2, liabilities: new Map(), collateral: new Map(), supply: new Map() },
       DEPOSITOR,
       account,
-      {
-        claimBackstopEmissions: state.accruedEmissions > 0n,
-        backstopShares: state.shares,
-        backstopWithdrawAmount: state.unlockedQ4W,
-      },
+      // the emissions claim is covered by blend-mainnet-backstop-claim; the
+      // queue and the withdraw never wait on it
+      { backstopShares: state.shares, backstopWithdrawAmount: state.unlockedQ4W },
     );
 
-    const kinds = steps.map((s) => s.kind);
-    expect(kinds.slice(-2)).toEqual(["backstop_queue_withdrawal", "backstop_withdraw"]);
-    if (state.accruedEmissions > 0n) expect(kinds[0]).toBe("backstop_claim_emissions");
+    expect(steps.map((s) => s.kind)).toEqual(["backstop_queue_withdrawal", "backstop_withdraw"]);
 
     for (const step of steps) {
       const c = call(step.transaction);

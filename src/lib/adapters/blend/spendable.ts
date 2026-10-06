@@ -5,6 +5,7 @@
 import { Asset, type Horizon } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
+import { decimalToStroops } from "@/lib/stellar/amount";
 
 // the network base reserve: 0.5 XLM on mainnet and testnet (horizon
 // ledgers[].base_reserve_in_stroops, checked 2026-10-02). raising it needs a
@@ -20,19 +21,6 @@ export function nativeMinimumBalance(
 ): bigint {
   const units = 2n + BigInt(subentryCount) + BigInt(numSponsoring) - BigInt(numSponsored);
   return units * BASE_RESERVE_STROOPS;
-}
-
-// a horizon decimal string ("12.3456789") in stroops
-export function decimalToStroops(s: string): bigint {
-  const trimmed = s.trim();
-  if (!/^-?\d+(\.\d{1,7})?$/u.test(trimmed)) {
-    throw new Error(`not a 7-decimal amount: "${s}"`);
-  }
-  const negative = trimmed.startsWith("-");
-  const abs = negative ? trimmed.slice(1) : trimmed;
-  const [intPart = "0", fracPart = ""] = abs.split(".");
-  const result = BigInt(intPart) * 10_000_000n + BigInt((fracPart + "0000000").slice(0, 7));
-  return negative ? -result : result;
 }
 
 export interface SpendableLine {

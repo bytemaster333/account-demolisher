@@ -19,6 +19,7 @@ import { discoverSoroswapPositions } from "@/lib/adapters/soroswap/discovery";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import type { rpc } from "@stellar/stellar-sdk";
 import type { NetworkConfig } from "@/lib/config/networks";
+import { errorMessage } from "@/lib/errors";
 import {
   type AquariusConcentratedPositionSummary,
   type AquariusPositionSummary,
@@ -217,7 +218,7 @@ export class DirectContractProvider implements IDeFiPositionProvider {
     } catch (e) {
       perPoolErrors.push(
         `Blend backstop check failed; could not confirm you have no backstop deposit ` +
-          `(${e instanceof Error ? e.message : String(e)}).`,
+          `(${errorMessage(e)}).`,
       );
     }
 
@@ -261,10 +262,10 @@ export class DirectContractProvider implements IDeFiPositionProvider {
 
     const sourceErrors: string[] = [];
     if (apiResult.status === "rejected") {
-      const apiMsg = reasonMessage(apiResult.reason);
+      const apiMsg = errorMessage(apiResult.reason);
       if (scanResult.status === "rejected") {
         throw new Error(
-          `Aquarius discovery failed: REST=${apiMsg}; event-scan fallback=${reasonMessage(scanResult.reason)}`,
+          `Aquarius discovery failed: REST=${apiMsg}; event-scan fallback=${errorMessage(scanResult.reason)}`,
         );
       }
       sourceErrors.push(
@@ -275,12 +276,12 @@ export class DirectContractProvider implements IDeFiPositionProvider {
 
     let concentrated: readonly AquariusConcentratedPositionSummary[] = [];
     if (concentratedResult.status === "rejected") {
-      sourceErrors.push(reasonMessage(concentratedResult.reason));
+      sourceErrors.push(errorMessage(concentratedResult.reason));
     } else {
       try {
         concentrated = parsePositions(aquariusConcentratedPositionSchema, concentratedResult.value);
       } catch (e) {
-        sourceErrors.push(`Aquarius concentrated position failed validation: ${reasonMessage(e)}`);
+        sourceErrors.push(`Aquarius concentrated position failed validation: ${errorMessage(e)}`);
       }
     }
 
@@ -360,10 +361,6 @@ function aquariusPoolToSummary(p: AquariusPool): AquariusPositionSummary {
   };
 }
 
-function reasonMessage(reason: unknown): string {
-  return reason instanceof Error ? reason.message : String(reason);
-}
-
 // settle with the protocol's result, or reject once the budget runs out. the
 // timer is cleared either way so nothing stays scheduled; the slow work itself
 // cannot be aborted, its late result is ignored.
@@ -383,7 +380,7 @@ function unwrap<T>(
   fallback: T,
 ): T {
   if (settled.status === "fulfilled") return settled.value;
-  errors.push({ protocol, message: reasonMessage(settled.reason) });
+  errors.push({ protocol, message: errorMessage(settled.reason) });
   return fallback;
 }
 

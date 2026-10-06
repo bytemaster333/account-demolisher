@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import {
   BackstopPoolUser,
   BackstopPoolV2,
@@ -6,11 +6,14 @@ import {
   EmissionDataV2,
   EmissionsV2,
   PoolBalance,
+  PoolV1,
+  PoolV2,
   UserBalance,
 } from "@blend-capital/blend-sdk";
 import { Asset } from "@stellar/stellar-sdk";
 
 import {
+  defaultBlendPoolLoader,
   estimateBackstopEmissions,
   loadBackstopDeposits,
   loadUserPositions,
@@ -153,6 +156,32 @@ describe("loadUserPositions surfaces per-pool failures via errors[]", () => {
     expect(a.errors[0]?.stage).toBe("user");
     expect(b.errors[0]?.stage).toBe("pool");
   });
+
+  // the soroban rpc client rejects with plain { code, message } objects (L-15)
+  it("keeps the message of a plain-object rpc rejection instead of [object Object]", async () => {
+    const rpcReject: BlendPoolLoader = {
+      async load() {
+        throw { code: -32600, message: "startLedger must be within the ledger range" };
+      },
+    };
+    const res = await loadUserPositions(TESTNET, USER, [POOL], rpcReject);
+    expect(res.errors[0]?.message).toContain("startLedger must be within the ledger range");
+    expect(res.errors[0]?.message).not.toContain("[object Object]");
+  });
+});
+
+describe("defaultBlendPoolLoader names both version attempts (L-15)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("reports plain-object rejections from both loads by their message", async () => {
+    vi.spyOn(PoolV2, "load").mockRejectedValue({ code: 1, message: "v2 reserve layout" });
+    vi.spyOn(PoolV1, "load").mockRejectedValue({ code: 2, message: "v1 reserve layout" });
+    const err: unknown = await defaultBlendPoolLoader
+      .load({ rpc: TESTNET.rpc, passphrase: TESTNET.passphrase }, POOL)
+      .catch((e: unknown) => e);
+    expect((err as Error).message).toContain("V2 attempt=v2 reserve layout");
+    expect((err as Error).message).toContain("V1 attempt=v1 reserve layout");
+  });
 });
 
 function stateLoader(
@@ -282,6 +311,22 @@ describe("loadBackstopDeposits", () => {
     );
     expect(res.deposits).toHaveLength(0);
     expect(res.errors[0]).toContain("backstop read failed");
+  });
+
+  it("keeps the message of a plain-object rpc rejection (L-15)", async () => {
+    const loader: BackstopDepositLoader = {
+      async loadUser() {
+        throw { code: -32600, message: "ledger entry archived" };
+      },
+    };
+    const res = await loadBackstopDeposits(
+      MAINNET,
+      USER,
+      [{ poolId: POOL_A, backstopId: BLEND_BACKSTOP_MAINNET_ID }],
+      loader,
+    );
+    expect(res.errors[0]).toContain("ledger entry archived");
+    expect(res.errors[0]).not.toContain("[object Object]");
   });
 });
 

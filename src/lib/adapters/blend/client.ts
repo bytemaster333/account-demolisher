@@ -14,6 +14,7 @@ import {
 } from "@blend-capital/blend-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
+import { errorMessage } from "@/lib/errors";
 import { isFailoverError } from "@/lib/soroban/rpc-client";
 
 import { resolveKnownBackstop, type BlendBackstopRef } from "./constants";
@@ -69,9 +70,10 @@ export const defaultBlendPoolLoader: BlendPoolLoader = {
       try {
         return await PoolV1.load(network, poolId);
       } catch (errV1) {
-        const msgV2 = errV2 instanceof Error ? errV2.message : String(errV2);
-        const msgV1 = errV1 instanceof Error ? errV1.message : String(errV1);
-        throw new Error(`Pool.load failed for ${poolId}: V2 attempt=${msgV2}; V1 attempt=${msgV1}`);
+        throw new Error(
+          `Pool.load failed for ${poolId}: V2 attempt=${errorMessage(errV2)}; ` +
+            `V1 attempt=${errorMessage(errV1)}`,
+        );
       }
     }
   },
@@ -107,7 +109,7 @@ export async function withBlendFailover<T>(
 class BlendLoadStageError extends Error {
   readonly stage: "pool" | "user";
   constructor(stage: "pool" | "user", cause: unknown) {
-    super(cause instanceof Error ? cause.message : String(cause));
+    super(errorMessage(cause));
     this.name = "BlendLoadStageError";
     this.stage = stage;
   }
@@ -211,7 +213,7 @@ export async function loadUserPositions(
       errors.push({
         poolId,
         stage: reason instanceof BlendLoadStageError ? reason.stage : "pool",
-        message: reason instanceof Error ? reason.message : String(reason),
+        message: errorMessage(reason),
       });
     }
   });
@@ -329,9 +331,7 @@ export async function loadBackstopDeposits(
     const poolId = pools[i]?.poolId ?? "<unknown>";
     if (result.status === "rejected") {
       const reason: unknown = result.reason;
-      errors.push(
-        `backstop read failed for pool ${poolId}: ${reason instanceof Error ? reason.message : String(reason)}`,
-      );
+      errors.push(`backstop read failed for pool ${poolId}: ${errorMessage(reason)}`);
       return;
     }
     const { backstop, state } = result.value;

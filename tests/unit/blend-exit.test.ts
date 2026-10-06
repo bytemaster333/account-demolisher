@@ -12,6 +12,7 @@ import {
 } from "@stellar/stellar-sdk";
 
 import {
+  BackstopClaimUnavailableError,
   BlndTrustlineMissingError,
   buildBackstopClaimTx,
   buildBackstopQueueTx,
@@ -366,6 +367,28 @@ function backstopLoader(state: Partial<BackstopUserState>): BackstopDepositLoade
   };
 }
 
+// simulate stand-ins for the backstop claim probe
+function simulateMint(lpOut: bigint): NonNullable<BuildExitSequenceDeps["simulate"]> {
+  return async () => ({
+    ok: true,
+    retval: xdr.ScVal.scvI128(new xdr.Int128Parts({ hi: 0n, lo: lpOut })),
+    transactionData: undefined as never,
+    minResourceFee: "0",
+    auth: [],
+    latestLedger: 1,
+  });
+}
+
+// what mainnet rpc returned on 2026-10-06 for every backstop claim: the
+// BLND-USDC comet traps inside dep_tokn_amt_in_get_lp_tokns_out
+const COMET_TRAP = "HostError: Error(WasmVm, InvalidAction)";
+const simulateTrap: NonNullable<BuildExitSequenceDeps["simulate"]> = async () => ({
+  ok: false,
+  error: COMET_TRAP,
+  diagnostic: [],
+  latestLedger: 1,
+});
+
 describe("Blend backstop exits target the pool's own backstop (C-07)", () => {
   const v1Pool = () =>
     makePool({
@@ -467,6 +490,7 @@ describe("Blend backstop exits target the pool's own backstop (C-07)", () => {
           unlockedQ4W: 300n,
           accruedEmissions: 7n,
         }),
+        simulate: simulateMint(1n),
         claimBackstopEmissions: true,
         backstopShares: 42n,
         backstopWithdrawAmount: 1n,
@@ -611,7 +635,11 @@ describe("Blend emissions claims (M-26, L-49)", () => {
       { poolId: POOL_V1 },
       USER,
       account([{ balance: "10.0000000" }]),
-      deps({ poolLoader: loaderFor(v1), backstopLoader: backstopLoader({ accruedEmissions: 7n }) }),
+      deps({
+        poolLoader: loaderFor(v1),
+        backstopLoader: backstopLoader({ accruedEmissions: 7n }),
+        simulate: simulateMint(1n),
+      }),
     );
     const { contract, fn, args } = invocation(built.transaction);
     expect(contract).toBe(BLEND_BACKSTOP_V1_MAINNET_ID);
@@ -676,6 +704,124 @@ describe("Blend emissions claims (M-26, L-49)", () => {
         }),
       ),
     ).rejects.toThrow(/no accrued backstop emissions/);
+  });
+});
+
+describe("a backstop claim that cannot run is reported, never swallowed (L-49)", () => {
+  const v2 = () =>
+    makePool({
+      version: "V2",
+      poolId: POOL_V2,
+      backstop: BLEND_BACKSTOP_MAINNET_ID,
+      reserves: [{ assetId: XLM_SAC, index: 0, dRate: V2_RATE_1, bRate: V2_RATE_1 }],
+    });
+  const v1 = () =>
+    makePool({
+      version: "V1",
+      poolId: POOL_V1,
+      backstop: BLEND_BACKSTOP_V1_MAINNET_ID,
+      reserves: [{ assetId: XLM_SAC, index: 0, dRate: V1_RATE_1, bRate: V1_RATE_1 }],
+    });
+
+  it("turns a trapping v2 claim simulation into a typed error carrying the accrued BLND", async () => {
+    const err: unknown = await buildBackstopClaimTx(
+      MAINNET,
+      { poolId: POOL_V2 },
+      USER,
+      account([{ balance: "10.0000000" }]),
+      deps({
+        poolLoader: loaderFor(v2()),
+        backstopLoader: backstopLoader({
+          shares: 4_629_467_817n,
+          accruedEmissions: 7_114_578_242n,
+        }),
+        simulate: simulateTrap,
+      }),
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BackstopClaimUnavailableError);
+    const e = err as BackstopClaimUnavailableError;
+    expect(e.poolId).toBe(POOL_V2);
+    expect(e.backstopId).toBe(BLEND_BACKSTOP_MAINNET_ID);
+    expect(e.accruedEmissions).toBe(7_114_578_242n);
+    expect(e.simulationError).toBe(COMET_TRAP);
+    expect(e.message).toContain("711.4578242 BLND");
+  });
+
+  it("probes the v1 claim too, so its trap is typed the same way", async () => {
+    let probed = 0;
+    const err: unknown = await buildBackstopClaimTx(
+      MAINNET,
+      { poolId: POOL_V1 },
+      USER,
+      account([{ balance: "10.0000000" }]),
+      deps({
+        poolLoader: loaderFor(v1()),
+        backstopLoader: backstopLoader({ shares: 68_959_544n, accruedEmissions: 292_690_900n }),
+        simulate: async (server, tx) => {
+          probed += 1;
+          const { contract, fn, args } = invocation(tx as Transaction);
+          expect([contract, fn]).toEqual([BLEND_BACKSTOP_V1_MAINNET_ID, "claim"]);
+          expect(scValToNative(args[2]!)).toBe(USER);
+          return simulateTrap(server, tx);
+        },
+      }),
+    ).catch((e: unknown) => e);
+    expect(probed).toBe(1);
+    expect(err).toBeInstanceOf(BackstopClaimUnavailableError);
+    expect((err as BackstopClaimUnavailableError).backstopId).toBe(BLEND_BACKSTOP_V1_MAINNET_ID);
+    expect((err as BackstopClaimUnavailableError).accruedEmissions).toBe(292_690_900n);
+  });
+
+  it("lets an rpc transport failure through as itself, never as a forfeitable claim", async () => {
+    const down = new Error("fetch failed: ECONNRESET");
+    const err: unknown = await buildBackstopClaimTx(
+      MAINNET,
+      { poolId: POOL_V2 },
+      USER,
+      account([{ balance: "10.0000000" }]),
+      deps({
+        poolLoader: loaderFor(v2()),
+        backstopLoader: backstopLoader({ shares: 1n, accruedEmissions: 7n }),
+        simulate: async () => {
+          throw down;
+        },
+      }),
+    ).catch((e: unknown) => e);
+    expect(err).toBe(down);
+    expect(err).not.toBeInstanceOf(BackstopClaimUnavailableError);
+  });
+
+  it("buildExitSequence surfaces the typed error instead of dropping the claim", async () => {
+    const err: unknown = await buildExitSequence(
+      MAINNET,
+      hydrationPosition(POOL_V2),
+      USER,
+      account([{ balance: "10.0000000" }]),
+      deps({
+        poolLoader: loaderFor(v2()),
+        backstopLoader: backstopLoader({ shares: 9n, accruedEmissions: 7n }),
+        simulate: simulateTrap,
+        claimBackstopEmissions: true,
+        backstopShares: 9n,
+      }),
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BackstopClaimUnavailableError);
+  });
+
+  it("queues the shares without the claim when the claim is left out, so the queue never waits on it", async () => {
+    const steps = await buildExitSequence(
+      MAINNET,
+      hydrationPosition(POOL_V2),
+      USER,
+      account([{ balance: "10.0000000" }]),
+      deps({
+        poolLoader: loaderFor(v2()),
+        backstopLoader: backstopLoader({ shares: 9n, accruedEmissions: 7n }),
+        simulate: simulateTrap,
+        backstopShares: 9n,
+      }),
+    );
+    expect(steps.map((s) => s.kind)).toEqual(["backstop_queue_withdrawal"]);
   });
 });
 
