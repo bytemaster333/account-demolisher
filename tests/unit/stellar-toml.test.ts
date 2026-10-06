@@ -33,6 +33,12 @@ describe("public/stellar.toml", () => {
     expect(keys.has("ORG_LICENSING_AUTHORITY")).toBe(false);
   });
 
+  it("names only the DeFi protocols the app still supports", () => {
+    // fxdao shut down on chain and was removed from the product (2026-10-06)
+    expect(toml).not.toMatch(/fxdao/i);
+    for (const name of ["Blend", "Aquarius", "Soroswap"]) expect(toml).toContain(name);
+  });
+
   it("contains no em dash", () => {
     // built from the code point so this file stays free of the character too
     expect(toml).not.toContain(String.fromCharCode(0x2014));
