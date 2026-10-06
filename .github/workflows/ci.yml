@@ -46,12 +46,12 @@ jobs:
       - name: Format check
         run: pnpm format:check
 
-      # the project writes no em dashes in code, comments, copy or config. the
+      # the project writes no em dashes in code, comments, copy, docs or config. the
       # character is spelled as its utf-8 bytes so this file does not match itself
       # and the pattern does not depend on the runner's locale.
       - name: No em dashes
         run: |
-          ! git grep -n $'\xe2\x80\x94' -- src tests public '*.ts' '*.tsx' '*.yml' '*.mjs' '*.mts' '*.sh' Dockerfile Caddyfile .env.example .dockerignore .gitignore
+          ! git grep -n $'\xe2\x80\x94' -- src tests public '*.ts' '*.tsx' '*.yml' '*.mjs' '*.mts' '*.sh' '*.md' '*.mdx' Dockerfile Caddyfile .env.example .dockerignore .gitignore
 
       # unit tests include the property-based fuzzing (fast-check) and adversarial
       # cases; they are pure/mocked, so no network is required
@@ -61,11 +61,11 @@ jobs:
       - name: Production build
         run: pnpm build
 
-  # Dependency audit gated as a release blocker: any high or critical advisory in
-  # the production tree fails the build (release.yml runs the same gate). Fixable
-  # transitive advisories are patched via the overrides in pnpm-workspace.yaml;
-  # nothing is suppressed, so low/moderate findings stay visible in the output.
-  # A newly-introduced high/critical will fail here.
+  # dependency audit as a release blocker: any high or critical advisory in the
+  # production tree fails the build (release.yml runs the same gate). fixable
+  # transitive advisories are patched through the overrides in
+  # pnpm-workspace.yaml; nothing is suppressed, so low and moderate findings stay
+  # visible in the output.
   audit:
     name: dependency audit (high/critical gate)
     runs-on: ubuntu-latest
@@ -83,9 +83,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm audit --prod --audit-level high
 
-  # Live-testnet integration suite: real round-trips against Horizon, Soroban RPC,
-  # and Friendbot (funds throwaway accounts and closes them for real). Kept as its
-  # own job because it depends on the public testnet being reachable.
+  # live testnet integration suite: real round trips against horizon, soroban rpc
+  # and friendbot (it funds throwaway accounts and closes them for real). its own
+  # job because it depends on the public testnet being reachable.
   integration:
     name: integration (live testnet)
     runs-on: ubuntu-latest
@@ -107,10 +107,10 @@ jobs:
       - name: Integration tests
         run: pnpm test:integration --exclude tests/integration/mainnet-discovery-timing.test.ts
 
-  # End-to-end + accessibility sweep against the built app. smoke/accessibility use
-  # no wallet; secret-key-close and walletconnect-close drive real testnet closes
-  # (a pasted key and a headless WalletConnect wallet). Own job: it installs a
-  # browser, and the WalletConnect spec self-skips unless the project id is set.
+  # end-to-end and accessibility sweep against the built app. smoke and
+  # accessibility use no wallet; secret-key-close and walletconnect-close drive
+  # real testnet closes (a pasted key and a headless walletconnect wallet). its
+  # own job because it installs a browser.
   e2e:
     name: e2e · accessibility
     runs-on: ubuntu-latest

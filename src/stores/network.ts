@@ -1,7 +1,6 @@
-// Client-selected Stellar network. Defaults to the build-time env, and can be
-// switched at runtime from the navbar (Testnet / Mainnet). Persisted to
-// localStorage in the switcher; initialised from env so server and first client
-// render agree (no hydration mismatch).
+// the stellar network the user picked. it starts from the build-time env, so the
+// server render and the first client render agree, and the navbar switcher
+// changes it at runtime and keeps the choice in localStorage.
 
 import { create } from "zustand";
 

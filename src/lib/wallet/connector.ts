@@ -96,15 +96,30 @@ export class WalletKitConnector implements Connector {
 // co-signer's account as the connected one. the session that existed before is
 // put back afterwards, or the kit is disconnected if there was none, whether the
 // signature succeeded or not.
+//
+// a teardown failure (an extension or the walletconnect relay refusing the
+// disconnect) goes to onTeardownError and never replaces run()'s outcome: a
+// signature that worked is still returned, and a signing error is still thrown
+// as itself. the caller shows the teardown failure so the co-signer can end the
+// connection in their wallet.
 export async function withScopedKitSession<T>(
   network: NetworkConfig,
   run: (connector: WalletKitConnector) => Promise<T>,
+  onTeardownError: (error: unknown) => void,
 ): Promise<T> {
   getKit(network);
   const before = snapshotKitSession();
+  let outcome: { ok: true; value: T } | { ok: false; error: unknown };
   try {
-    return await run(new WalletKitConnector(network));
-  } finally {
-    await restoreKitSessionSnapshot(before);
+    outcome = { ok: true, value: await run(new WalletKitConnector(network)) };
+  } catch (error) {
+    outcome = { ok: false, error };
   }
+  try {
+    await restoreKitSessionSnapshot(before);
+  } catch (error) {
+    onTeardownError(error);
+  }
+  if (!outcome.ok) throw outcome.error;
+  return outcome.value;
 }
