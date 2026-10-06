@@ -2,7 +2,8 @@
 //
 // a concentrated pool is called directly (withdraw_position, claim_all_position_fees),
 // not through the router, so each pool contract has to be on the allow-list as an
-// entry point. the lists below were enumerated on chain on 2026-10-02 through the
+// entry point. the lists below were enumerated on chain on 2026-10-02, and the
+// mainnet one re-checked against a fresh enumeration on 2026-10-06, through the
 // router's get_tokens_sets_count + get_pools_for_tokens_range, keeping every pool
 // whose contract instance runs the concentrated wasm below (router.pool_type answers
 // "concentrated" for them). the mainnet set matches the 37 pool_type=concentrated
