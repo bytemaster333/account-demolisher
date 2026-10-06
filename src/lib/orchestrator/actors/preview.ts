@@ -7,9 +7,16 @@ import { Asset } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
-import { generatePlan } from "@/lib/plan/generator";
+import { generatePlan, preparePlanFor } from "@/lib/plan/generator";
 import { NodeNotBuiltError, simulateNode, SimulationFailedError } from "@/lib/plan/simulator";
-import { topologicalOrder, type PlanNode, type PlanTree } from "@/lib/plan/tree";
+import {
+  buildPlanTree,
+  isSorobanNode,
+  nodeTransaction,
+  topologicalOrder,
+  type PlanNode,
+  type PlanTree,
+} from "@/lib/plan/tree";
 import {
   mediatorFundingCheck,
   planClaimableBalances,
@@ -18,7 +25,11 @@ import {
 } from "@/lib/plan/classic-batcher";
 import { hydratePlanTransactions } from "@/lib/plan/hydration";
 import { startMediatorFlow } from "@/lib/mediator/client";
-import { FORFEIT_PREFIX, surgeFeeBase } from "@/lib/orchestrator/executor";
+import {
+  checkRequiredSorobanStep,
+  isUnsafeStepError,
+  surgeFeeBase,
+} from "@/lib/orchestrator/executor";
 import { residueLineProblem, type DestinationLine } from "@/lib/orchestrator/residue";
 import { isNotFoundError } from "@/lib/orchestrator/submit";
 import { heldTokenDispositionWarnings } from "@/lib/orchestrator/warnings";
@@ -54,17 +65,26 @@ export interface PreviewInput {
   // agreed to sell although over the price-impact cap or unpriced
   readonly acceptedPriceImpactAssetKeys?: readonly string[];
   // pools whose accrued backstop emissions the user agreed to leave unclaimed
-  // because the claim can't run
+  // because the claim can't run; the plan queues their withdrawal without it
   readonly forfeitBackstopEmissionPoolIds?: readonly string[];
+  // answers to refused conversions, by held-token contract id: send it to the
+  // destination as-is instead, or leave it on the account
+  readonly sendHeldTokensAsIs?: readonly string[];
+  readonly leaveHeldTokens?: readonly string[];
   readonly deterministicDisposal?: boolean;
 }
 
-// a held token whose conversion was refused for its price. the close does not
-// start until the user decides: accept the price (add `key` to
-// acceptedPriceImpactAssetKeys), send the token as-is, or leave it out.
+// why a held-token conversion needs the user's answer
+export type ConversionRefusalKind = "price_impact" | "unpriced" | "requote_worse" | "no_route";
+
+// a held token whose conversion was refused. the close does not start until the
+// user decides: accept the price (add `key` to acceptedPriceImpactAssetKeys;
+// not offered for no_route), send the token as-is (sendHeldTokensAsIs), or
+// leave it (leaveHeldTokens).
 export interface RefusedConversion {
   readonly key: string;
   readonly contractId: string;
+  readonly refusal: ConversionRefusalKind;
   readonly reason: string;
 }
 
@@ -169,9 +189,6 @@ export async function simulatePreviewTree(
   }
 }
 
-// the step kind that claims accrued backstop emissions ahead of the queue
-const BACKSTOP_CLAIM_KIND = "ClaimBackstopEmissions";
-
 export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) => {
   const { audit, network } = input;
   // resolve real XLM-conversion paths so credit balances convert via path
@@ -191,20 +208,54 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
       .filter(isFrozenBalance)
       .flatMap((b) => (b.asset.kind === "credit" ? [pathKey(b.asset)] : [])),
   );
-  const unroutableBase = unroutableCredits(
-    audit,
-    paths,
-    input.returnToIssuerAssetKeys,
-    input.sendToDestinationAssetKeys,
-    {
-      ...(input.selectedClaimableBalanceIds !== undefined
-        ? { claimableBalanceIds: input.selectedClaimableBalanceIds }
-        : {}),
-      ...(input.acceptedPriceImpactAssetKeys
-        ? { acceptedPriceImpactAssetKeys: input.acceptedPriceImpactAssetKeys }
-        : {}),
-    },
-  ).filter((c) => !frozen.has(c.key));
+  // a plan that can only prepare the close (a backstop queue stays locked after
+  // this run) never merges: it needs no mediator flow and no classic batches
+  const prepare = preparePlanFor(input.positions);
+
+  // a frozen balance blocks the merge outright, and the batcher refuses to plan
+  // around it, so the review shows the freeze instead of a plan that would run
+  // the exits and then stop at the merge
+  if (prepare === undefined && frozen.size > 0) {
+    const merge = assessMergeability(audit, {
+      ledger: await fetchLedgerClock(network),
+      claimedBalanceIds: [],
+      transactionsBeforeMerge: 1,
+    });
+    return {
+      tree: buildPlanTree([]),
+      unroutableCredits: [],
+      heldTokenWarnings: [],
+      reviewNotes: [],
+      reviewBlockers: [merge.mergeable ? "A balance is frozen by its issuer." : merge.detail],
+      refusedConversions: [],
+      emissionForfeits: [],
+    };
+  }
+
+  const horizon = getHorizon(network);
+  // the per-op bid the executor starts the classic batches at; the batches'
+  // reserve checks (close marker, trustlines a claim opens) are sized for it
+  const classicFeePerOp = await surgeFeeBase(horizon);
+
+  // a run that only prepares the close disposes of no classic balance
+  const unroutableBase =
+    prepare !== undefined
+      ? []
+      : unroutableCredits(
+          audit,
+          paths,
+          input.returnToIssuerAssetKeys,
+          input.sendToDestinationAssetKeys,
+          {
+            ...(input.selectedClaimableBalanceIds !== undefined
+              ? { claimableBalanceIds: input.selectedClaimableBalanceIds }
+              : {}),
+            ...(input.acceptedPriceImpactAssetKeys
+              ? { acceptedPriceImpactAssetKeys: input.acceptedPriceImpactAssetKeys }
+              : {}),
+            feePerOpStroops: classicFeePerOp,
+          },
+        ).filter((c) => !frozen.has(c.key));
   // offer "send to destination" only where the destination can really take the
   // whole residue. an exchange close never offers it: the payment would reach the
   // exchange's shared address without the deposit memo.
@@ -225,7 +276,7 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
   // minted here only so the preview can build and check the real merge batch;
   // the executor mints the flow that is actually funded right before funding it.
   let mediator: { readonly flowToken: string; readonly mediatorPublicKey: string } | null = null;
-  if (input.useMediator) {
+  if (input.useMediator && prepare === undefined) {
     const flow = await startMediatorFlow(input.destination, {
       network: network.id,
       memo: input.memo ?? null,
@@ -246,7 +297,10 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
     useMediator: input.useMediator,
     selectedAllowances,
     paths,
-    networkPassphrase: network.passphrase,
+    // the emissions claims, the classic unwind and the backstop withdraw need
+    // the whole network, not just its passphrase
+    network,
+    classicFeePerOp,
     // sweep only the tokens the user opted in to; the generator ignores them for
     // a mediator close (an exchange can't receive a raw token)
     ...(input.selectedHeldTokens.length > 0 ? { heldTokens: input.selectedHeldTokens } : {}),
@@ -267,10 +321,15 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
     ...(input.acceptedPriceImpactAssetKeys
       ? { acceptedPriceImpactAssetKeys: input.acceptedPriceImpactAssetKeys }
       : {}),
+    ...(input.sendHeldTokensAsIs ? { sendHeldTokensAsIs: input.sendHeldTokensAsIs } : {}),
+    ...(input.leaveHeldTokens ? { leaveHeldTokens: input.leaveHeldTokens } : {}),
+    // an acknowledged forfeit plans the queue without the claim ahead of it
+    ...(input.forfeitBackstopEmissionPoolIds
+      ? { forfeitBackstopEmissionsPoolIds: input.forfeitBackstopEmissionPoolIds }
+      : {}),
   });
 
   const rpcServer = getRpc(network);
-  const horizon = getHorizon(network);
 
   // hydrate soroban nodes so the simulator has a built transaction to inspect.
   // a step that runs after other steps and can't be built against today's state
@@ -287,7 +346,6 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
   });
   const hydrationReason = new Map(failures.map((f) => [f.nodeId, f.reason]));
 
-  const classicFeePerOp = await surgeFeeBase(horizon);
   await simulatePreviewTree(tree, hydrationReason, {
     server: rpcServer,
     network,
@@ -295,13 +353,15 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
     fetchSourceAccount: async (pk) => horizon.loadAccount(pk),
     classicFeePerOp,
   });
+  refuseUnsafeSteps(tree, audit.accountId, network);
 
-  const emissionForfeits = settleBackstopClaims(tree, input);
-  const refusedConversions = priceRefusedConversions(tree);
+  const emissionForfeits = backstopClaimForfeits(tree);
+  const refusedConversions = refusedHeldTokenConversions(tree);
 
   const heldTokenWarnings = heldTokenDispositionWarnings(tree, {
     useMediator: input.useMediator,
     selectedCount: input.selectedHeldTokens.length,
+    refusedContractIds: new Set(refusedConversions.map((r) => r.contractId)),
   });
 
   const reviewNotes: string[] = [];
@@ -322,16 +382,39 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
     );
   }
 
+  // emissions accrued where nothing is deposited or queued any more are
+  // forfeited: claiming them would mint new backstop shares under a new lock
   for (const left of input.positions.backstopUnclaimedEmissions) {
     reviewNotes.push(
-      `${formatXlm(left.accruedEmissions)} BLND of backstop emissions for pool ${left.poolId} stay ` +
-        "unclaimed: claiming them would mint new backstop shares under a new withdrawal lock.",
+      `${formatXlm(left.accruedEmissions)} BLND of backstop emissions for pool ${left.poolId} are ` +
+        "forfeited: claiming them would mint new backstop shares under a new withdrawal lock.",
+    );
+  }
+  for (const f of tree.forfeitedBackstopEmissions ?? []) {
+    reviewNotes.push(
+      `${formatXlm(f.accruedEmissions)} BLND of backstop emissions for pool ${f.poolId} are ` +
+        "forfeited, as you chose: the claim can't run on chain today, so the withdrawal is " +
+        "queued without it.",
+    );
+  }
+  if (tree.prepareOnly !== undefined) {
+    reviewNotes.push(
+      `${tree.prepareOnly.reason} The withdrawal unlocks around ${tree.prepareOnly.unlocksAt
+        .toISOString()
+        .slice(0, 10)}.`,
     );
   }
 
   const finalNode = [...tree.allNodes.values()].find((n) => n.kind === "FinalClassicTx");
   if (finalNode !== undefined && finalNode.kind === "FinalClassicTx") {
     const md = finalNode.metadata;
+    if (md.closeMarker === false) {
+      reviewNotes.push(
+        "This account can't spare the 0.5 XLM the on-chain close marker briefly holds, so the " +
+          "close runs without it. The account is still closed, but the close is not counted " +
+          "as made with this app.",
+      );
+    }
     // the network's own checks on the merge, against what this plan really
     // claims and how many transactions the account still sources before it
     const clock = await fetchLedgerClock(network);
@@ -373,42 +456,71 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
   };
 });
 
-// a backstop emissions claim that could not be built (the claim traps in the
-// comet pool today) either stays a blocker that asks the user, or, when they
-// agreed to forfeit it, is skipped so the queue runs without it
-function settleBackstopClaims(tree: PlanTree, input: PreviewInput): EmissionForfeit[] {
-  const forfeited = new Set(input.forfeitBackstopEmissionPoolIds ?? []);
+// runs the sign-time checks of every required step (allow-listed contract, the
+// exact auth tree its call needs, the fee cap) on the transaction preview built.
+// a refused step is failed here, so confirmBlockers stops the close before any
+// independent exit runs. the token transfer and the allowance revoke have their
+// own guards at sign time and are best-effort.
+export function refuseUnsafeSteps(tree: PlanTree, user: string, network: NetworkConfig): void {
+  for (const node of tree.allNodes.values()) {
+    if (node.status !== "simulated" || !isSorobanNode(node)) continue;
+    if (node.kind === "TransferAsIs" || node.kind === "RevokeAllowance") continue;
+    const tx = nodeTransaction(node);
+    if (tx === undefined) continue;
+    try {
+      checkRequiredSorobanStep(node, tx, user, network);
+    } catch (err) {
+      node.status = "failed";
+      node.error = isUnsafeStepError(err)
+        ? `This step would not be signed: ${errorMessage(err)}`
+        : `This step could not be checked before signing: ${errorMessage(err)}`;
+    }
+  }
+}
+
+// a backstop emissions claim that could not be built: on mainnet the comet pool
+// deposit it makes currently traps. each stays a blocker until the user
+// acknowledges leaving the BLND unclaimed; the rebuilt plan then omits the claim
+// and queues the withdrawal without it.
+function backstopClaimForfeits(tree: PlanTree): EmissionForfeit[] {
   const out: EmissionForfeit[] = [];
   for (const node of tree.allNodes.values()) {
-    if ((node.kind as string) !== BACKSTOP_CLAIM_KIND || node.status !== "failed") continue;
-    const poolId = (node.metadata as { readonly poolId?: unknown }).poolId;
-    if (typeof poolId !== "string") continue;
-    const accrued =
-      input.positions.backstop.find((b) => b.poolId === poolId)?.accruedEmissions ?? null;
-    const amount = accrued === null ? "the accrued" : `${formatXlm(accrued)}`;
-    if (forfeited.has(poolId)) {
-      node.status = "skipped";
-      node.error = `${FORFEIT_PREFIX} you chose to leave ${amount} BLND of backstop emissions for pool ${poolId} unclaimed (${node.error ?? "the claim can't run"}).`;
-      continue;
-    }
-    out.push({ poolId, accruedEmissions: accrued, reason: node.error ?? "the claim can't run" });
+    if (node.kind !== "ClaimBackstopEmissions" || node.status !== "failed") continue;
+    out.push({
+      poolId: node.metadata.poolId,
+      accruedEmissions: node.metadata.accruedEmissions,
+      // the hydration error carries the whole simulation diagnostic; it stays
+      // on the node for the details view
+      reason: "the claim fails when simulated against the chain today",
+    });
   }
   return out;
 }
 
-// held-token conversions hydration refused for their price (over the impact cap
-// or with no reference price). hydration reports these with the price wording
-// below; any other failure of a conversion falls back to sending the token
-// as-is at execute time.
-function priceRefusedConversions(tree: PlanTree): RefusedConversion[] {
+// how hydration words each refusal (plan/hydration.ts hydrateConvert, and
+// adapters/soroswap/swap.ts NoSoroswapRouteError). its failures carry only the
+// message, so the kind is read from it.
+const REFUSAL_WORDING: readonly (readonly [RegExp, ConversionRefusalKind])[] = [
+  [/^No Soroswap route from /, "no_route"],
+  [/can't price a reference trade/, "unpriced"],
+  [/ price impact, over the /, "price_impact"],
+  [/ worse than the reviewed /, "requote_worse"],
+];
+
+// held-token conversions hydration refused: over the price-impact cap, with no
+// reference price, worse than the reviewed quote, or with no route at all. any
+// other failure of a conversion is retried at execute time and then falls back
+// to sending the token as-is.
+export function refusedHeldTokenConversions(tree: PlanTree): RefusedConversion[] {
   const out: RefusedConversion[] = [];
   for (const node of tree.allNodes.values()) {
     if (node.kind !== "ConvertSorobanToXLM" || node.status !== "failed") continue;
     if (node.metadata.asset.kind !== "contract") continue;
     const reason = node.error ?? "";
-    if (!/price impact|can't price a reference trade/i.test(reason)) continue;
+    const refusal = REFUSAL_WORDING.find(([wording]) => wording.test(reason))?.[1];
+    if (refusal === undefined) continue;
     const contractId = node.metadata.asset.contractId;
-    out.push({ key: `contract:${contractId}`, contractId, reason });
+    out.push({ key: `contract:${contractId}`, contractId, refusal, reason });
   }
   return out;
 }

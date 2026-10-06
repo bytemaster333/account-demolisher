@@ -12,7 +12,8 @@ import {
 import { AccountNotFoundError } from "@/lib/stellar/account-audit";
 import type { PlanNode, PlanTree } from "@/lib/plan/tree";
 import { soroswapPairFor } from "@/lib/soroban/defi-auth-guard";
-import { PriceImpactRefusedError } from "@/lib/plan/hydration";
+import { BackstopEmissionsClaimError, PriceImpactRefusedError } from "@/lib/plan/hydration";
+import { NoSoroswapRouteError } from "@/lib/adapters/soroswap/swap";
 import type { PathResultRef } from "@/lib/types/plan";
 import { EMPTY_POSITIONS } from "@/lib/adapters/positions/interface";
 
@@ -100,6 +101,12 @@ function accounts(seq = 100n): Map<string, FakeAccount> {
   return new Map([[USER, { seq, balances: [] }]]);
 }
 
+// the per-op bid of a signed classic batch. the merge batch carries the close
+// marker pair, so its total fee is three times the bid.
+function perOpFee(tx: Transaction): string {
+  return (BigInt(tx.fee) / BigInt(tx.operations.length)).toString();
+}
+
 let receiptN = 0;
 function receipt(): ConfirmationReceipt {
   receiptN += 1;
@@ -155,9 +162,14 @@ describe("FinalClassicTx prep reads ride out horizon blips", () => {
     expect(auditAccount).toHaveBeenCalledTimes(3);
     expect(t.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
     expect(out.receipts["final-classic-tx"]).toBeDefined();
-    // the merge really merges into the destination
+    // the merge really merges into the destination, after the close marker pair
     const merge = d.connector.signed[0]!;
-    expect(merge.operations[0]).toMatchObject({ type: "accountMerge", destination: DEST });
+    expect(merge.operations.map((o) => o.type)).toEqual([
+      "manageData",
+      "manageData",
+      "accountMerge",
+    ]);
+    expect(merge.operations[2]).toMatchObject({ type: "accountMerge", destination: DEST });
   });
 
   it("retries a 429 instead of failing on a rate limit", async () => {
@@ -264,8 +276,8 @@ describe("FinalClassicTx fee bid and in-call rebuilds", () => {
       table,
     );
     await run(tree(finalNode()), d);
-    // a single-op merge at 6970 stroops per op, not the 0.1 XLM cap
-    expect(d.connector.signed[0]!.fee).toBe("6970");
+    // 6970 stroops per op, not the 0.1 XLM cap
+    expect(perOpFee(d.connector.signed[0]!)).toBe("6970");
   });
 
   it("bids what most transactions paid while ledgers are not full", async () => {
@@ -284,7 +296,7 @@ describe("FinalClassicTx fee bid and in-call rebuilds", () => {
       table,
     );
     await run(tree(finalNode()), d);
-    expect(d.connector.signed[0]!.fee).toBe("100");
+    expect(perOpFee(d.connector.signed[0]!)).toBe("100");
   });
 
   it("bids the p90 once ledgers are at least half full", async () => {
@@ -301,7 +313,7 @@ describe("FinalClassicTx fee bid and in-call rebuilds", () => {
       table,
     );
     await run(tree(finalNode()), d);
-    expect(d.connector.signed[0]!.fee).toBe("17380");
+    expect(perOpFee(d.connector.signed[0]!)).toBe("17380");
   });
 
   it("caps the bid at what the account can spend above its reserves", async () => {
@@ -357,7 +369,7 @@ describe("FinalClassicTx fee bid and in-call rebuilds", () => {
       .mockResolvedValueOnce(receipt());
     const t = tree(finalNode());
     await run(t, d);
-    expect(d.connector.signed.map((tx) => tx.fee)).toEqual(["20000", "100"]);
+    expect(d.connector.signed.map(perOpFee)).toEqual(["20000", "100"]);
     expect(t.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
   });
 
@@ -393,7 +405,7 @@ describe("FinalClassicTx fee bid and in-call rebuilds", () => {
       .mockRejectedValueOnce(new SubmitRejectedError({ transaction: "tx_insufficient_fee" }, 400))
       .mockResolvedValueOnce(receipt());
     await run(tree(finalNode()), d);
-    expect(d.connector.signed.map((tx) => tx.fee)).toEqual(["100", "300"]);
+    expect(d.connector.signed.map(perOpFee)).toEqual(["100", "300"]);
   });
 
   it("rebuilds in sequence after tx_bad_seq, using the account's fresh sequence", async () => {
@@ -1687,5 +1699,201 @@ describe("the BLND trustline step", () => {
     await run(tree(node), d);
     expect(node.status).toBe("confirmed");
     expect(d.connector.signed[0]!.operations[0]!.type).toBe("changeTrust");
+  });
+});
+
+describe("the classic unwind ahead of the repays", () => {
+  const usdc = { kind: "credit" as const, code: "USDC", issuer: USDC_ISSUER };
+  const offer = {
+    id: "77",
+    selling: usdc,
+    buying: { kind: "native" as const },
+    amount: "10.0000000",
+    priceR: { n: 3, d: 2 },
+  };
+  const unwindNode = (): PlanNode =>
+    ({
+      id: "classic-unwind",
+      kind: "ClassicUnwind",
+      dependencies: [],
+      description: "unwind offers",
+      status: "simulated",
+      metadata: {
+        kind: "ClassicUnwind",
+        batches: [{ operations: [], destination: DEST }],
+        offerIds: ["77"],
+        poolIds: [],
+        repayAssets: [USDC_SAC],
+      },
+    }) as unknown as PlanNode;
+
+  it("cancels the offer that locks the repay asset, re-audits, then lets the close go on", async () => {
+    auditAccount
+      .mockResolvedValueOnce(makeAudit({ offers: [offer], subentryCount: 1 }))
+      .mockResolvedValue(makeAudit());
+    const t = tree(unwindNode(), finalNode(["classic-unwind"]));
+    const d = deps();
+    await run(t, d);
+    const cancel = d.connector.signed[0]!;
+    expect(cancel.operations).toHaveLength(1);
+    expect(cancel.operations[0]).toMatchObject({
+      type: "manageSellOffer",
+      amount: "0.0000000",
+      offerId: "77",
+    });
+    expect(t.allNodes.get("classic-unwind")!.status).toBe("confirmed");
+    expect(t.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
+    // the second audit found nothing left to unwind, so only one unwind batch
+    expect(d.submitClassic).toHaveBeenCalledTimes(2);
+  });
+
+  it("confirms without signing when nothing locks a repay asset any more", async () => {
+    const t = tree(unwindNode());
+    const d = deps();
+    await run(t, d);
+    expect(t.allNodes.get("classic-unwind")!.status).toBe("confirmed");
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
+  });
+
+  it("stops the close when the unwind fails, so nothing that depends on it runs", async () => {
+    auditAccount.mockResolvedValue(makeAudit({ offers: [offer], subentryCount: 1 }));
+    const t = tree(unwindNode(), finalNode(["classic-unwind"]));
+    const d = deps();
+    d.submitClassic.mockRejectedValue(
+      new SubmitRejectedError({ transaction: "tx_failed", operations: ["op_malformed"] }, 400),
+    );
+    await expect(run(t, d)).rejects.toThrow(/op_malformed/);
+    expect(t.allNodes.get("classic-unwind")!.status).toBe("failed");
+    expect(t.allNodes.get("final-classic-tx")!.status).toBe("pending");
+    expect(d.submitClassic).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a payout SAC whose trustline an earlier phase removed", () => {
+  it("is treated as the classic asset it is and not read through the token", async () => {
+    const withdraw = {
+      id: "withdraw",
+      kind: "WithdrawBlend",
+      dependencies: [],
+      description: "withdraw usdc",
+      status: "confirmed",
+      executed: { txHash: "W", ledger: 1 },
+      metadata: {
+        kind: "WithdrawBlend",
+        poolId: allowlisted("blend", "BlendPool"),
+        asset: USDC_SAC,
+        bucket: "supply",
+      },
+    } as PlanNode;
+    // the reviewed close removed the USDC line; the live audit no longer has it
+    const reviewed = [
+      {
+        operations: [
+          {
+            kind: "change_trust_remove",
+            summary: "Remove trustline USDC",
+            metadata: { asset: { kind: "credit", code: "USDC", issuer: USDC_ISSUER } },
+          },
+        ],
+        destination: DEST,
+      },
+    ];
+    // what the USDC SAC answers on chain for an account without the trustline
+    const read = vi.fn(async () => {
+      throw new Error("HostError: Error(Contract, #13) trustline entry is missing for account");
+    });
+    const t = tree(withdraw, finalNode(["withdraw"], { batches: reviewed }));
+    await run(t, deps({ readTokenBalance: read }));
+    expect(read).not.toHaveBeenCalled();
+    expect(t.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
+  });
+});
+
+describe("a refused conversion found at execute time asks the user", () => {
+  it("stops before signing when the token has no route any more", async () => {
+    const convert = {
+      id: "convert",
+      kind: "ConvertSorobanToXLM",
+      dependencies: [],
+      description: "convert",
+      status: "simulated",
+      metadata: {
+        kind: "ConvertSorobanToXLM",
+        asset: { kind: "contract", contractId: HOSTILE_TOKEN },
+        amount: 500n,
+      },
+    } as PlanNode;
+    const d = deps({
+      rebuildSorobanNode: async () => {
+        throw new NoSoroswapRouteError(HOSTILE_TOKEN, ["no pair holds it"]);
+      },
+    });
+    const t = tree(convert, finalNode(["convert"]));
+    await expect(run(t, d)).rejects.toMatchObject({ kind: "conversion_refused" });
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
+    expect(convert.status).toBe("failed");
+    expect(convert.error).toContain(HOSTILE_TOKEN);
+  });
+});
+
+describe("a backstop emissions claim that can no longer run", () => {
+  it("stops before signing and sends the user back to review the forfeit", async () => {
+    const pool = allowlisted("blend", "BlendPool");
+    const claim = {
+      id: "backstop-claim",
+      kind: "ClaimBackstopEmissions",
+      dependencies: [],
+      description: "claim backstop emissions",
+      status: "simulated",
+      metadata: { kind: "ClaimBackstopEmissions", poolId: pool, accruedEmissions: 7_114_578_242n },
+    } as PlanNode;
+    const queue = {
+      id: "backstop-queue",
+      kind: "BackstopQueue",
+      dependencies: ["backstop-claim"],
+      description: "queue",
+      status: "simulated",
+      metadata: { kind: "BackstopQueue", poolId: pool, shares: 10n, queueEndsAt: new Date(0) },
+    } as PlanNode;
+    const d = deps({
+      rebuildSorobanNode: async (n) => {
+        if (n.kind === "ClaimBackstopEmissions") {
+          throw new BackstopEmissionsClaimError(pool, 7_114_578_242n, "VM call trapped");
+        }
+        throw new Error("the queue must not be built");
+      },
+    });
+    const p = run(tree(claim, queue), d);
+    await expect(p).rejects.toMatchObject({ kind: "claim_unavailable" });
+    await expect(p).rejects.toThrow(/711\.4578242 BLND/);
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
+    expect(claim.status).toBe("failed");
+    expect(queue.status).toBe("simulated");
+  });
+});
+
+describe("the execute-time re-batch is bid at the real fee", () => {
+  it("keeps the close marker on a small account the 0.1 XLM per-op ceiling would refuse it", async () => {
+    // 1.6 XLM: one free base reserve after the merge's fees at 100 stroops per
+    // op, but not at the 1,000,000 stroop ceiling
+    auditAccount.mockResolvedValue(
+      makeAudit({
+        balances: [
+          {
+            asset: { kind: "native" },
+            amount: "1.6000000",
+            buyingLiabilities: "0",
+            sellingLiabilities: "0",
+          },
+        ],
+      }),
+    );
+    const d = deps();
+    await run(tree(finalNode()), d);
+    expect(d.connector.signed[0]!.operations.map((o) => o.type)).toEqual([
+      "manageData",
+      "manageData",
+      "accountMerge",
+    ]);
   });
 });
