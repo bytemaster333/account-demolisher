@@ -3,6 +3,7 @@ import type { FeeBumpTransaction, Transaction } from "@stellar/stellar-sdk";
 import { LEDGER_ID, type LedgerModule } from "@creit.tech/stellar-wallets-kit/modules/ledger";
 
 import {
+  applyKitTheme,
   getKit,
   restoreKitSessionSnapshot,
   snapshotKitSession,
@@ -23,11 +24,6 @@ export interface Connector {
     tx: Transaction | FeeBumpTransaction,
     networkPassphrase: string,
   ): Promise<{ signedXdr: string; signerPublicKey: string }>;
-  signAuthEntry(
-    authEntryXdr: string,
-    address: string,
-    networkPassphrase: string,
-  ): Promise<{ signedXdr: string; signerAddress: string }>;
 }
 
 // connector backed by the shared StellarWalletsKit handle. construction is
@@ -44,6 +40,7 @@ export class WalletKitConnector implements Connector {
 
   // opens the kit's authModal, returns the picked wallet's public key
   async connect(): Promise<{ publicKey: string }> {
+    applyKitTheme();
     const { address } = await this.kit.authModal();
     this.cachedAddress = address;
     return { publicKey: address };
@@ -89,23 +86,6 @@ export class WalletKitConnector implements Connector {
       throw (isLedger ? toLedgerSigningError(e) : null) ?? e;
     }
     return verifySignedEnvelope(tx, signedTxXdr, networkPassphrase, address);
-  }
-
-  // sep-43 soroban auth-entry sign. let underlying wallet errors propagate
-  // so the orchestrator can fall back
-  async signAuthEntry(
-    authEntryXdr: string,
-    address: string,
-    networkPassphrase: string,
-  ): Promise<{ signedXdr: string; signerAddress: string }> {
-    const { signedAuthEntry, signerAddress } = await this.kit.signAuthEntry(authEntryXdr, {
-      networkPassphrase,
-      address,
-    });
-    return {
-      signedXdr: signedAuthEntry,
-      signerAddress: signerAddress ?? address,
-    };
   }
 }
 

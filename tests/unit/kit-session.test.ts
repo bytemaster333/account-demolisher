@@ -7,7 +7,12 @@ import { MAINNET, TESTNET } from "@/lib/config/networks";
 // counts real WalletConnect constructions: building that module opens a relay
 // socket and makes AppKit report the page url to WalletConnect, so it must only
 // happen when the user actually uses WalletConnect
-const wc = vi.hoisted(() => ({ constructed: 0, address: "" }));
+const wc = vi.hoisted(() => ({
+  constructed: 0,
+  address: "",
+  closed: [] as string[],
+  disconnected: 0,
+}));
 
 vi.mock("@creit.tech/stellar-wallets-kit/modules/wallet-connect", async (importOriginal) => {
   const original =
@@ -24,13 +29,25 @@ vi.mock("@creit.tech/stellar-wallets-kit/modules/wallet-connect", async (importO
     async getAddress() {
       return { address: wc.address };
     }
-    async disconnect() {}
+    // like the real module: drop the session's paths, and when none are left
+    // do the kit's full disconnect, which resets the kit's session state
+    async closeSession(topic: string) {
+      wc.closed.push(topic);
+      const kit = await import("@creit.tech/stellar-wallets-kit");
+      kit.wcSessionPaths.value = kit.wcSessionPaths.value.filter((p) => p.topic !== topic);
+      if (kit.wcSessionPaths.value.length === 0) await kit.StellarWalletsKit.disconnect();
+    }
+    async disconnect() {
+      wc.disconnected++;
+    }
   }
   return { ...original, WalletConnectModule: CountingWalletConnectModule };
 });
 
 // two stand-in browser wallets instead of the kit's real extension modules,
 // which do not load under vitest
+const extensionDisconnects = vi.hoisted(() => [] as string[]);
+
 vi.mock("@creit.tech/stellar-wallets-kit/modules/utils", () => {
   const wallet = (productId: string) => ({
     moduleType: "HOT_WALLET",
@@ -44,6 +61,9 @@ vi.mock("@creit.tech/stellar-wallets-kit/modules/utils", () => {
     signAuthEntry: async () => ({ signedAuthEntry: "" }),
     signMessage: async () => ({ signedMessage: "" }),
     getNetwork: async () => ({ network: "", networkPassphrase: "" }),
+    disconnect: async () => {
+      extensionDisconnects.push(productId);
+    },
   });
   return { defaultModules: () => [wallet("freighter"), wallet("xbull")] };
 });
@@ -64,6 +84,9 @@ async function pageLoad(storage: Record<string, string>) {
   vi.resetModules();
   vi.restoreAllMocks();
   wc.constructed = 0;
+  wc.closed = [];
+  wc.disconnected = 0;
+  extensionDisconnects.length = 0;
   window.localStorage.clear();
   for (const [k, v] of Object.entries(storage)) window.localStorage.setItem(k, v);
   // read everything first: the kit mirrors each signal change back to storage
@@ -180,6 +203,113 @@ describe("co-signing does not replace the app's wallet session (L-106)", () => {
       }),
     ).rejects.toBe(boom);
     expect(window.localStorage.getItem(ADDRESS)).toBe(A);
+  });
+});
+
+describe("the co-signer's own wallet connection is closed afterwards", () => {
+  function pickInModal(moduleId: string, address: string) {
+    kitApi.selectedModuleId.value = moduleId;
+    kitApi.activeAddress.value = address;
+  }
+
+  // what the WalletConnect picker leaves behind: the started module and one more
+  // session path for the account the phone approved
+  async function pickWalletConnect(address: string, topic: string) {
+    const mod = kitApi.activeModules.value.find((m) => m.productId === "wallet_connect")!;
+    wc.address = address;
+    await mod.getAddress();
+    kitApi.wcSessionPaths.value = [...kitApi.wcSessionPaths.value, { publicKey: address, topic }];
+    pickInModal("wallet_connect", address);
+  }
+
+  it("disconnects a different extension the co-signer used, not the app's", async () => {
+    const { connector } = await pageLoad({ [ADDRESS]: A, [MODULE]: "freighter" });
+    await connector.withScopedKitSession(TESTNET, async () => pickInModal("xbull", B));
+    expect(extensionDisconnects).toEqual(["xbull"]);
+    expect(kitApi.activeAddress.value).toBe(A);
+    expect(kitApi.selectedModuleId.value).toBe("freighter");
+  });
+
+  it("leaves the app's extension alone when the co-signer used the same one", async () => {
+    const { connector } = await pageLoad({ [ADDRESS]: A, [MODULE]: "freighter" });
+    await connector.withScopedKitSession(TESTNET, async () => pickInModal("freighter", B));
+    expect(extensionDisconnects).toEqual([]);
+    expect(kitApi.activeAddress.value).toBe(A);
+  });
+
+  it("ends a co-signer's WalletConnect pairing and keeps the app's extension session", async () => {
+    const { connector } = await pageLoad({ [ADDRESS]: A, [MODULE]: "freighter" });
+    await connector.withScopedKitSession(TESTNET, () => pickWalletConnect(B, "topic-cosigner"));
+    expect(wc.closed).toEqual(["topic-cosigner"]);
+    expect(kitApi.activeAddress.value).toBe(A);
+    expect(kitApi.selectedModuleId.value).toBe("freighter");
+    expect(window.localStorage.getItem(ADDRESS)).toBe(A);
+    expect(kitApi.wcSessionPaths.value).toEqual([]);
+  });
+
+  it("closes only the co-signer's WalletConnect session when the app is on WalletConnect too", async () => {
+    const { connector } = await pageLoad({ [ADDRESS]: A, [MODULE]: "wallet_connect" });
+    kitApi.wcSessionPaths.value = [{ publicKey: A, topic: "topic-app" }];
+    await connector.withScopedKitSession(TESTNET, () => pickWalletConnect(B, "topic-cosigner"));
+    expect(wc.closed).toEqual(["topic-cosigner"]);
+    expect(wc.disconnected).toBe(0);
+    expect(kitApi.activeAddress.value).toBe(A);
+    expect(kitApi.selectedModuleId.value).toBe("wallet_connect");
+    expect(kitApi.wcSessionPaths.value).toEqual([{ publicKey: A, topic: "topic-app" }]);
+  });
+
+  it("still puts the app's session back when closing the co-signer's wallet fails", async () => {
+    const { connector, kit } = await pageLoad({ [ADDRESS]: A, [MODULE]: "freighter" });
+    kit.getKit(TESTNET);
+    const xbull = kitApi.activeModules.value.find((m) => m.productId === "xbull")!;
+    const refused = new Error("extension refused to disconnect");
+    vi.spyOn(xbull, "disconnect").mockRejectedValue(refused);
+    await expect(
+      connector.withScopedKitSession(TESTNET, async () => pickInModal("xbull", B)),
+    ).rejects.toBe(refused);
+    expect(kitApi.activeAddress.value).toBe(A);
+    expect(kitApi.selectedModuleId.value).toBe("freighter");
+  });
+});
+
+describe("the wallet picker follows the app theme (L-78)", () => {
+  async function openPicker(theme: string | undefined) {
+    const { connector } = await pageLoad({});
+    if (theme === undefined) delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = theme;
+    vi.spyOn(kitApi.StellarWalletsKit, "authModal").mockResolvedValue({ address: A });
+    await new connector.WalletKitConnector(TESTNET).connect();
+    return kitApi.theme.value;
+  }
+
+  it("uses the light palette in light mode", async () => {
+    const theme = await openPicker("light");
+    expect(theme.background).toBe("#ffffff");
+    expect(theme["foreground-strong"]).toBe("#15171a");
+    expect(theme["foreground-secondary"]).toBe("#646a71");
+    expect(theme.primary).toBe("#1f7a52");
+    expect(theme.danger).toBe("#b34a3f");
+  });
+
+  it("uses the dark palette in dark mode, with the AA-passing secondary text", async () => {
+    const theme = await openPicker("dark");
+    expect(theme.background).toBe("#141618");
+    expect(theme["foreground-secondary"]).toBe("#848a92");
+    expect(theme.gray).toBe("#848a92");
+  });
+
+  it("defaults to dark, like the page does before the theme is known", async () => {
+    const theme = await openPicker(undefined);
+    expect(theme.background).toBe("#141618");
+  });
+
+  it("switches when the theme changes between two openings", async () => {
+    expect((await openPicker("dark")).background).toBe("#141618");
+    document.documentElement.dataset.theme = "light";
+    vi.spyOn(kitApi.StellarWalletsKit, "authModal").mockResolvedValue({ address: A });
+    const { WalletKitConnector } = await import("@/lib/wallet/connector");
+    await new WalletKitConnector(TESTNET).connect();
+    expect(kitApi.theme.value.background).toBe("#ffffff");
   });
 });
 
