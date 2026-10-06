@@ -1,4 +1,5 @@
-// the in-house connector abstraction: the only signing surface anything
+// the in-house connector abstraction: the only signing surface the app uses,
+// whole transactions only
 import type { FeeBumpTransaction, Transaction } from "@stellar/stellar-sdk";
 import { LEDGER_ID, type LedgerModule } from "@creit.tech/stellar-wallets-kit/modules/ledger";
 

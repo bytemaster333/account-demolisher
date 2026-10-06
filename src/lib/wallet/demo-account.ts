@@ -195,8 +195,6 @@ export async function runDemoSetup(opts: RunDemoOptions): Promise<DemoAccountRes
   try {
     const aquaIssuer = Keypair.random();
     const yxlmIssuer = Keypair.random();
-    aquaIssuerKp = aquaIssuer;
-    yxlmIssuerKp = yxlmIssuer;
     const hash = await submitClassic(horizon, network, secret, publicKey, (b) =>
       b
         // 5 XLM each so the issuers have plenty for tx fees when they later mint
@@ -210,6 +208,9 @@ export async function runDemoSetup(opts: RunDemoOptions): Promise<DemoAccountRes
         .addOperation(Operation.changeTrust({ asset: new Asset("AQUA", aquaIssuer.publicKey()) }))
         .addOperation(Operation.changeTrust({ asset: new Asset("YXLM", yxlmIssuer.publicKey()) })),
     );
+    // only issuers that now exist on chain can mint in the credit step
+    aquaIssuerKp = aquaIssuer;
+    yxlmIssuerKp = yxlmIssuer;
     onFinish({ id: "trustlines", status: "done", txHash: hash, detail: "3 trustlines opened" });
   } catch (e) {
     onFinish({ id: "trustlines", status: "failed", error: errorMessage(e) });
@@ -409,7 +410,7 @@ export async function runDemoSetup(opts: RunDemoOptions): Promise<DemoAccountRes
     });
   }
 
-  // step 8: ready
+  // step 13: ready
   onStart("ready");
   const connector = new SecretKeyConnector(secret);
   const explorerUrl = explorerAccountUrl(network, publicKey);

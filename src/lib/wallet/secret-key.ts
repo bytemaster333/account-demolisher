@@ -13,8 +13,8 @@ import { verifySignedEnvelope } from "@/lib/wallet/signed-envelope";
 export class SecretKeyConnector implements Connector {
   public readonly kind: ConnectorKind = "secret";
 
-  // the raw s... seed. we don't cache the derived keypair. it's rebuilt
-  // per sign so the in-memory secret-key bytes live for one method call
+  // the raw s... seed, held for as long as this connector instance lives. the
+  // derived keypair is rebuilt per sign rather than cached next to it
   readonly #seed: string;
   readonly #publicKey: string;
 
