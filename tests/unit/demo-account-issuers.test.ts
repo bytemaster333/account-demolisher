@@ -35,7 +35,7 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
           },
         };
       }
-      return { hash: tx.hash().toString("hex") };
+      return { hash: Buffer.from(tx.hash()).toString("hex") };
     }
   }
   return { ...sdk, Horizon: { ...sdk.Horizon, Server: FakeHorizonServer } };
