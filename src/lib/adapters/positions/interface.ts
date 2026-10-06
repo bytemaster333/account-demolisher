@@ -101,8 +101,8 @@ export interface ProtocolPositions {
   readonly errors: readonly { protocol: string; message: string }[];
 }
 
-// only one provider now: our own on-chain discovery. (OctoPos/Orion REST shells
-// were removed. The chain doesn't index positions, so we probe contracts.)
+// one provider: our own on-chain discovery. the chain does not index positions,
+// so it probes each protocol's contracts.
 export type DeFiPositionProviderName = "direct";
 
 // common shape every position-discovery adapter implements
