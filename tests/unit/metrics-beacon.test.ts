@@ -73,7 +73,71 @@ describe("beacon", () => {
         throw new Error("boom");
       },
     });
-    expect(() => trackClose("mainnet", HASH)).not.toThrow();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(() => trackVisit("landing")).not.toThrow();
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it("retries a close while verification is unavailable (503), then stops", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal("window", {});
+      const statuses = [503, 503, 201];
+      const fetchSpy = vi.fn(() =>
+        Promise.resolve(new Response(null, { status: statuses.shift() ?? 201 })),
+      );
+      vi.stubGlobal("fetch", fetchSpy);
+
+      trackClose("mainnet", HASH);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(fetchSpy).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(fetchSpy).toHaveBeenCalledTimes(3);
+      const [url, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toBe("/api/metrics");
+      expect(JSON.parse(init.body as string)).toEqual({
+        type: "close",
+        network: "mainnet",
+        txHash: HASH,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives up on a close after a bounded number of retries and logs it", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal("window", {});
+      const fetchSpy = vi.fn(() => Promise.reject(new Error("offline")));
+      vi.stubGlobal("fetch", fetchSpy);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      trackClose("testnet", HASH);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(fetchSpy).toHaveBeenCalledTimes(5);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry a close the server refused (422)", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal("window", {});
+      const fetchSpy = vi.fn(() => Promise.resolve(new Response(null, { status: 422 })));
+      vi.stubGlobal("fetch", fetchSpy);
+      trackClose("testnet", HASH);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("is a no-op during SSR (no window)", () => {

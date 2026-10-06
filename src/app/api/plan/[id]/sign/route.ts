@@ -1,9 +1,9 @@
-// Add a co-signer's signature to a signing request. Body: { xdr } (the co-signer's
-// signed envelope). The relay keeps only signatures that are over THIS exact
+// add a co-signer's signature to a signing request. body: { xdr } (the co-signer's
+// signed envelope). the relay keeps only signatures that are over THIS exact
 // transaction and come from an authorized signer; everything else is rejected.
 
-import { createLimiter, getRemoteIp } from "@/server/rate-limit";
-import { readJsonCapped, MAX_JSON_BODY_BYTES, BodyTooLargeError } from "@/server/read-body";
+import { createLimiter, rateLimitByIp } from "@/server/rate-limit";
+import { readJsonCapped, MAX_PLAN_BODY_BYTES, BodyTooLargeError } from "@/server/read-body";
 import { addSignature } from "@/server/signing-relay";
 
 export const runtime = "nodejs";
@@ -22,15 +22,14 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
-  if (!limiter.take(getRemoteIp(request))) {
-    return json({ ok: false, code: "RATE_LIMITED", reason: "Too many requests." }, 429);
-  }
+  const limited = rateLimitByIp(limiter, request);
+  if (limited !== null) return limited;
 
   const { id } = await params;
 
   let xdr: string;
   try {
-    const raw = (await readJsonCapped(request, MAX_JSON_BODY_BYTES)) as unknown;
+    const raw = (await readJsonCapped(request, MAX_PLAN_BODY_BYTES)) as unknown;
     if (typeof raw !== "object" || raw === null)
       return json({ ok: false, reason: "Bad body." }, 400);
     const rec = raw as Record<string, unknown>;

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { metricEventSchema } from "@/lib/metrics/events";
+import { NETWORKS } from "@/lib/config/networks";
+import { METRIC_NETWORKS, metricEventSchema } from "@/lib/metrics/events";
 
 const HASH = "a".repeat(64);
 
@@ -29,6 +30,15 @@ describe("metricEventSchema", () => {
     expect(
       metricEventSchema.safeParse({ type: "close", network: "eth", txHash: HASH }).success,
     ).toBe(false);
+  });
+
+  it("accepts exactly the networks in the app config, nothing the config dropped", () => {
+    expect([...METRIC_NETWORKS].sort()).toEqual(Object.keys(NETWORKS).sort());
+    for (const id of Object.keys(NETWORKS)) {
+      expect(
+        metricEventSchema.safeParse({ type: "close", network: id, txHash: HASH }).success,
+      ).toBe(true);
+    }
   });
 
   it("rejects malformed tx hashes (wrong length, uppercase, non-hex)", () => {

@@ -73,7 +73,7 @@ describe("MetricsStore", () => {
     expect(snap.closes.recent).toHaveLength(2);
   });
 
-  it("is idempotent on tx hash — a duplicate close is not double counted", async () => {
+  it("is idempotent on tx hash, a duplicate close is not double counted", async () => {
     const store = new MetricsStore(dir);
     expect((await store.recordClose(close("c".repeat(64), "mainnet", "7"))).added).toBe(true);
     expect((await store.recordClose(close("c".repeat(64), "mainnet", "7"))).added).toBe(false);
@@ -111,5 +111,97 @@ describe("MetricsStore", () => {
     const snap = await reloaded.snapshot();
     expect(snap.closes.total).toBe(25);
     expect(snap.visits.total).toBe(25);
+  });
+});
+
+describe("MetricsStore durability (L-96)", () => {
+  it("retries a failed load instead of caching the failure", async () => {
+    // a file where the data directory should be makes mkdir fail
+    const blocked = path.join(dir, "data");
+    await fs.writeFile(blocked, "not a directory");
+    const store = new MetricsStore(blocked);
+    await expect(store.snapshot()).rejects.toThrow();
+    await fs.rm(blocked);
+    const snap = await store.snapshot();
+    expect(snap.closes.total).toBe(0);
+    await store.recordVisit("landing");
+    expect((await store.snapshot()).visits.total).toBe(1);
+  });
+
+  it("moves an unreadable counters.json aside and keeps the closes ledger", async () => {
+    const first = new MetricsStore(dir);
+    await first.recordClose(close("e".repeat(64), "mainnet", "9"));
+    await fs.writeFile(path.join(dir, "counters.json"), "{ not json");
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const second = new MetricsStore(dir);
+    const snap = await second.snapshot();
+    expect(snap.closes.total).toBe(1);
+    expect(snap.visits.total).toBe(0);
+    expect(err).toHaveBeenCalled();
+    const files = await fs.readdir(dir);
+    expect(files.some((f) => f.startsWith("counters.json.corrupt-"))).toBe(true);
+    await second.recordVisit("landing");
+    expect((await new MetricsStore(dir).snapshot()).visits.total).toBe(1);
+    err.mockRestore();
+  });
+
+  it("treats an empty counters.json (power loss before the data hit disk) the same way", async () => {
+    await fs.writeFile(path.join(dir, "counters.json"), "");
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const store = new MetricsStore(dir);
+    await expect(store.snapshot()).resolves.toMatchObject({ visits: { total: 0 } });
+    err.mockRestore();
+  });
+
+  it("keeps the close appended after a torn ledger line", async () => {
+    const torn = JSON.stringify(close("f".repeat(64), "mainnet", "1")).slice(0, 40);
+    await fs.writeFile(path.join(dir, "closes.jsonl"), torn);
+    const store = new MetricsStore(dir);
+    expect((await store.recordClose(close("1".repeat(64), "mainnet", "5"))).added).toBe(true);
+
+    const reloaded = new MetricsStore(dir);
+    const snap = await reloaded.snapshot();
+    expect(snap.closes.total).toBe(1);
+    expect(await reloaded.hasClose("1".repeat(64))).toBe(true);
+  });
+
+  it("does not count a close whose append failed", async () => {
+    const store = new MetricsStore(dir);
+    await store.snapshot();
+    // a directory where the ledger file should be makes the append fail
+    await fs.mkdir(path.join(dir, "closes.jsonl"));
+    await expect(store.recordClose(close("2".repeat(64), "mainnet", "5"))).rejects.toThrow();
+    expect(await store.hasClose("2".repeat(64))).toBe(false);
+    expect((await store.snapshot()).closes.total).toBe(0);
+  });
+});
+
+describe("MetricsStore daily close caps (M-52)", () => {
+  it("stops counting a network's closes for the day at its cap and logs it", async () => {
+    const store = new MetricsStore(dir);
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    for (let i = 0; i < 200; i++) {
+      const res = await store.recordClose(close(i.toString(16).padStart(64, "0"), "testnet", "1"));
+      expect(res.added).toBe(true);
+    }
+    const over = await store.recordClose(close("f".repeat(64), "testnet", "1"));
+    expect(over).toEqual({ added: false, reason: "daily_cap" });
+    expect(err).toHaveBeenCalledWith(expect.stringMatching(/daily close cap of 200/));
+
+    // mainnet has its own budget, and the next day starts over
+    expect((await store.recordClose(close("9".repeat(64), "mainnet", "1"))).added).toBe(true);
+    const tomorrow = { ...close("8".repeat(64), "testnet", "1"), recordedAt: 1_700_100_000_000 };
+    expect((await store.recordClose(tomorrow)).added).toBe(true);
+    err.mockRestore();
+  });
+
+  it("reports a duplicate distinctly from a cap", async () => {
+    const store = new MetricsStore(dir);
+    await store.recordClose(close("3".repeat(64), "mainnet", "1"));
+    expect(await store.recordClose(close("3".repeat(64), "mainnet", "1"))).toEqual({
+      added: false,
+      reason: "duplicate",
+    });
   });
 });

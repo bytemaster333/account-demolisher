@@ -9,7 +9,7 @@ vi.mock("server-only", () => ({}));
 vi.mock("@/server/close-verify", () => ({ verifyCloseTx: vi.fn() }));
 
 import { verifyCloseTx } from "@/server/close-verify";
-import { __resetMetricsStoreForTests } from "@/server/metrics-store";
+import { __resetMetricsStoreForTests, getMetricsStore } from "@/server/metrics-store";
 import { GET, POST } from "@/app/api/metrics/route";
 
 const TOKEN = "unit-test-admin-token-000";
@@ -92,7 +92,7 @@ describe("POST /api/metrics", () => {
     const dup = await post({ type: "close", network: "testnet", txHash: HASH });
     expect(dup.status).toBe(200);
     expect((await dup.json()).duplicate).toBe(true);
-    // verification only ran once — the dedupe short-circuits before re-verifying
+    // verification only ran once: the dedupe short-circuits before re-verifying
     expect(vi.mocked(verifyCloseTx)).toHaveBeenCalledTimes(1);
 
     const snap = await snapshot();
@@ -108,6 +108,28 @@ describe("POST /api/metrics", () => {
     const res = await post({ type: "close", network: "testnet", txHash: HASH });
     expect(res.status).toBe(422);
     expect((await snapshot()).closes).toMatchObject({ total: 0 });
+  });
+
+  it("does not answer ok once the network's daily close cap is reached", async () => {
+    const store = getMetricsStore();
+    const now = Date.now();
+    for (let i = 0; i < 200; i++) {
+      await store.recordClose({
+        ...okClose.close,
+        txHash: i.toString(16).padStart(64, "0"),
+        recordedAt: now,
+      });
+    }
+    vi.mocked(verifyCloseTx).mockResolvedValue({
+      ...okClose,
+      close: { ...okClose.close, txHash: "b".repeat(64) },
+    });
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await post({ type: "close", network: "testnet", txHash: "b".repeat(64) });
+    expect(res.status).toBe(429);
+    expect(await res.json()).toMatchObject({ ok: false, code: "DAILY_CAP" });
+    expect(err).toHaveBeenCalled();
+    err.mockRestore();
   });
 
   it("returns 503 (retryable) when verification is unavailable", async () => {

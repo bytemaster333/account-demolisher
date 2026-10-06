@@ -1,7 +1,8 @@
-// Fetch the current envelope for a signing request. Returns { network, xdr }.
-// Public data only; a co-signer verifies the transaction hash matches this id.
+// fetch the current state of a signing request: the envelope, the closing
+// account, the signer set and thresholds the relay checks against, and when it
+// expires. public data only; a co-signer checks the transaction hash matches the id.
 
-import { createLimiter, getRemoteIp } from "@/server/rate-limit";
+import { createLimiter, rateLimitByIp } from "@/server/rate-limit";
 import { getPlan } from "@/server/signing-relay";
 
 export const runtime = "nodejs";
@@ -15,15 +16,8 @@ export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
-  if (!limiter.take(getRemoteIp(request))) {
-    return new Response(
-      JSON.stringify({ ok: false, code: "RATE_LIMITED", reason: "Too many requests." }),
-      {
-        status: 429,
-        headers: { "content-type": "application/json" },
-      },
-    );
-  }
+  const limited = rateLimitByIp(limiter, request);
+  if (limited !== null) return limited;
   const { id } = await params;
   const plan = getPlan(id);
   if (plan === null) {

@@ -14,6 +14,7 @@ import {
   addSignature,
   getPlan,
   subscribe,
+  subscriberStatus,
 } from "@/server/signing-relay";
 
 const NET = Networks.TESTNET;
@@ -105,7 +106,7 @@ describe("signing-relay addSignature", () => {
     const a = Keypair.random();
     const dest = Keypair.random().publicKey();
     const id = __seedPlanForTests("testnet", signPartial(a.publicKey(), dest, a), [a.publicKey()]);
-    const res = addSignature(id, "A".repeat(20_000));
+    const res = addSignature(id, "A".repeat(30_000));
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.code).toBe("BAD_XDR");
@@ -124,7 +125,12 @@ describe("signing-relay subscribe", () => {
     ]);
 
     const seen: string[] = [];
-    const unsub = subscribe(id, (plan) => seen.push(plan.xdr));
+    const unsub = subscribe(
+      id,
+      (plan) => seen.push(plan.xdr),
+      () => {},
+      "203.0.113.1",
+    );
     expect(unsub).not.toBeNull();
 
     addSignature(id, signPartial(source, dest, b));
@@ -138,7 +144,38 @@ describe("signing-relay subscribe", () => {
   });
 
   it("returns null when subscribing to an unknown id", () => {
-    expect(subscribe("nope", () => {})).toBeNull();
+    expect(
+      subscribe(
+        "nope",
+        () => {},
+        () => {},
+        "203.0.113.1",
+      ),
+    ).toBeNull();
+  });
+
+  it("refuses a fourth stream from one client while other clients still get slots", () => {
+    const a = Keypair.random();
+    const dest = Keypair.random().publicKey();
+    const id = __seedPlanForTests("testnet", signPartial(a.publicKey(), dest, a), [a.publicKey()]);
+    const noop = (): void => {};
+    for (let i = 0; i < 3; i++) expect(subscribe(id, noop, noop, "198.51.100.9")).not.toBeNull();
+    expect(subscriberStatus(id, "198.51.100.9")).toBe("client-at-cap");
+    expect(subscribe(id, noop, noop, "198.51.100.9")).toBeNull();
+    expect(subscribe(id, noop, noop, "198.51.100.10")).not.toBeNull();
+  });
+
+  it("answers not-found for an expired plan before any stream is opened", () => {
+    const a = Keypair.random();
+    const dest = Keypair.random().publicKey();
+    const old = Date.now() - 73 * 60 * 60 * 1000;
+    const id = __seedPlanForTests(
+      "testnet",
+      signPartial(a.publicKey(), dest, a),
+      [a.publicKey()],
+      old,
+    );
+    expect(subscriberStatus(id, "198.51.100.9")).toBe("not-found");
   });
 });
 

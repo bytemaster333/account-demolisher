@@ -9,7 +9,11 @@ import {
   TransactionBuilder,
   xdr,
 } from "@stellar/stellar-sdk";
-import { mergeSignatures } from "@/lib/multisig/partial-xdr";
+import {
+  TooManySignaturesError,
+  canonicalizeSignatures,
+  mergeSignatures,
+} from "@/lib/multisig/partial-xdr";
 
 const NET = Networks.TESTNET;
 
@@ -168,5 +172,58 @@ describe("mergeSignatures", () => {
         /does not match any known signer/,
       );
     });
+  });
+});
+
+describe("canonicalizeSignatures", () => {
+  it("keeps one verified signature per expected signer and drops junk", () => {
+    const source = Keypair.random();
+    const other = Keypair.random();
+    const tx = TransactionBuilder.fromXdr(signPartial(source.publicKey(), "1", source), NET);
+    // five junk signatures plus a valid one from a key that is not a signer
+    for (let i = 0; i < 5; i++) {
+      tx.signatures.push(
+        new xdr.DecoratedSignature({
+          hint: Buffer.from([i, 1, 2, 3]),
+          signature: Buffer.alloc(64, i + 1),
+        }),
+      );
+    }
+    tx.sign(Keypair.random());
+    tx.sign(source); // a duplicate of the valid one
+    const out = canonicalizeSignatures(tx.toXdr(), NET, [source.publicKey(), other.publicKey()]);
+    const parsed = TransactionBuilder.fromXdr(out, NET);
+    expect(parsed.signatures).toHaveLength(1);
+    expect(source.verify(parsed.hash(), parsed.signatures[0]!.signature.toBytes())).toBe(true);
+    // a later co-signer still merges into the canonical envelope
+    const merged = mergeSignatures(out, [signPartial(source.publicKey(), "1", other)], NET, {
+      expectedSigners: [source.publicKey(), other.publicKey()],
+    });
+    expect(TransactionBuilder.fromXdr(merged, NET).signatures).toHaveLength(2);
+  });
+});
+
+describe("the 20-signature envelope limit", () => {
+  it("rejects the 21st signature with a clear error instead of an XDR write failure", () => {
+    const source = Keypair.random();
+    const keys = Array.from({ length: 21 }, () => Keypair.random());
+    const expectedSigners = keys.map((k) => k.publicKey());
+    let canonical = buildTx(source.publicKey(), "1").toXdr();
+    for (let i = 0; i < 20; i++) {
+      canonical = mergeSignatures(
+        canonical,
+        [signPartial(source.publicKey(), "1", keys[i]!)],
+        NET,
+        {
+          expectedSigners,
+        },
+      );
+    }
+    expect(TransactionBuilder.fromXdr(canonical, NET).signatures).toHaveLength(20);
+    expect(() =>
+      mergeSignatures(canonical, [signPartial(source.publicKey(), "1", keys[20]!)], NET, {
+        expectedSigners,
+      }),
+    ).toThrow(TooManySignaturesError);
   });
 });

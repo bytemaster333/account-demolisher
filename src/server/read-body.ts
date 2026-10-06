@@ -1,13 +1,21 @@
-// Read a request body with a hard byte cap. App-Router route handlers impose no
-// default body-size limit, so without this an oversized payload is fully buffered
-// (and, for JSON routes, parsed) before any per-route length check runs, a cheap
-// memory-exhaustion DoS. This rejects early on the declared Content-Length and
-// also enforces the cap while streaming, in case that header is absent or lying.
+// read a request body with a hard byte cap. route handlers have no default body
+// size limit, so a plain request.json() buffers and parses whatever arrives. this
+// rejects early on the declared Content-Length and enforces the cap while
+// streaming, in case that header is absent or lying.
+//
+// the early reject only helps because /api is excluded from the proxy.ts
+// matcher: a request that passes through the node proxy has its whole body
+// buffered by next before the route runs. the reverse proxy in front of the app
+// is the outer bound on body size.
 
-// generous ceiling for the JSON API routes. The largest legitimate payload is a
-// signed transaction envelope (bounded elsewhere to ~12000 XDR chars) plus small
-// JSON fields, so 16 KiB leaves headroom without allowing a memory-exhaustion body.
+// ceiling for the small JSON routes (mediator forward, soroswap quotes)
 export const MAX_JSON_BODY_BYTES = 16_384;
+
+// ceiling for the signing-request routes. the largest legitimate payload is a
+// fully signed bundle: 100 operations plus 20 signatures is about 20,100 base64
+// characters for the worst case (credit/credit offer cancels), plus small JSON
+// fields. see MAX_XDR_CHARS in signing-relay.ts.
+export const MAX_PLAN_BODY_BYTES = 32_768;
 
 export class BodyTooLargeError extends Error {
   constructor(public readonly limit: number) {
