@@ -21,6 +21,7 @@ import { getRpc } from "@/lib/soroban/rpc-client";
 import { balance as sep41Balance } from "@/lib/soroban/sep41";
 import { assembleSubmittable, simulate, SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
 import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
+import { stroopsToDecimal } from "@/lib/stellar/amount";
 
 import {
   defaultBackstopDepositLoader,
@@ -364,11 +365,44 @@ export async function buildBackstopWithdrawTx(
   return { transaction, shares: state.unlockedQ4W, backstop };
 }
 
+// the backstop claim fails in simulation against current chain state. on
+// 2026-10-06 every mainnet claim did, on both backstops: the BLND-USDC comet
+// traps (UnreachableCodeReached in dep_tokn_amt_in_get_lp_tokns_out) for any
+// amount. typed so the plan can show the accrued BLND and ask the user to
+// forfeit it before queueing without the claim. an rpc transport failure is
+// never this error, so a flaky endpoint is never read as a forfeit.
+export class BackstopClaimUnavailableError extends Error {
+  readonly poolId: string;
+  readonly backstopId: string;
+  // BLND, 7 decimals, as read on chain when the claim was probed
+  readonly accruedEmissions: bigint;
+  readonly simulationError: string;
+  constructor(
+    poolId: string,
+    backstopId: string,
+    accruedEmissions: bigint,
+    simulationError: string,
+  ) {
+    super(
+      `the Blend backstop ${backstopId} cannot claim the ${stroopsToDecimal(accruedEmissions)} ` +
+        `BLND accrued for pool ${poolId} right now (the claim fails in simulation: ` +
+        `${simulationError}); queueing the withdrawal without the claim forfeits that BLND`,
+    );
+    this.name = "BackstopClaimUnavailableError";
+    this.poolId = poolId;
+    this.backstopId = backstopId;
+    this.accruedEmissions = accruedEmissions;
+    this.simulationError = simulationError;
+  }
+}
+
 // claim backstop emissions. both backstop versions pay the claimed BLND into the
 // BLND-USDC comet pool and credit the LP back as new backstop shares for the
 // user (v1: claim(from, pool_addresses, to); v2: claim(from, pool_addresses,
-// min_lp_tokens_out)), so a claim is followed by queueing those shares. the v2
-// floor comes from simulating the claim, then the configured slippage.
+// min_lp_tokens_out)), so a claim is followed by queueing those shares. the
+// claim is simulated first on both versions so a trap comes back as
+// BackstopClaimUnavailableError; the v2 floor comes from that simulation, then
+// the configured slippage.
 export async function buildBackstopClaimTx(
   network: NetworkConfig,
   target: { readonly poolId: string },
@@ -383,6 +417,24 @@ export async function buildBackstopClaimTx(
   const server = deps.server ?? getRpc(network);
   const from = nativeToScVal(userPublicKey, { type: "address" });
   const pools = xdr.ScVal.scvVec([nativeToScVal(target.poolId, { type: "address" })]);
+  const v1Args = [from, pools, nativeToScVal(userPublicKey, { type: "address" })]; // to
+
+  const probe = buildUnpreparedCall(
+    network,
+    sourceAccount,
+    backstop.id,
+    "claim",
+    backstop.version === "V1" ? v1Args : [from, pools, nativeToScVal(0n, { type: "i128" })],
+  );
+  const sim = await (deps.simulate ?? simulate)(server, probe);
+  if (!sim.ok) {
+    throw new BackstopClaimUnavailableError(
+      target.poolId,
+      backstop.id,
+      state.accruedEmissions,
+      sim.error,
+    );
+  }
   if (backstop.version === "V1") {
     const transaction = await buildCallTx(
       network,
@@ -391,24 +443,11 @@ export async function buildBackstopClaimTx(
       deps,
       backstop.id,
       "claim",
-      [
-        from,
-        pools,
-        nativeToScVal(userPublicKey, { type: "address" }), // to
-      ],
+      v1Args,
     );
     return { transaction, backstop };
   }
 
-  const probe = buildUnpreparedCall(network, sourceAccount, backstop.id, "claim", [
-    from,
-    pools,
-    nativeToScVal(0n, { type: "i128" }),
-  ]);
-  const sim = await (deps.simulate ?? simulate)(server, probe);
-  if (!sim.ok) {
-    throw new Error(`could not simulate the Blend backstop claim: ${sim.error}`);
-  }
   if (sim.retval === null) {
     throw new Error("the Blend backstop claim simulation returned no LP amount");
   }
@@ -478,7 +517,9 @@ export interface BuildExitSequenceDeps extends BlendExitDeps {
   readonly backstopShares?: bigint;
   // when set, claim emissions for these reserve token ids
   readonly claimReserveIds?: readonly number[];
-  // when true, claim the backstop emissions ahead of the queue
+  // when true, claim the backstop emissions ahead of the queue. a claim that
+  // traps throws BackstopClaimUnavailableError and no step is built, so build
+  // the claim on its own when the queue must not wait on it.
   readonly claimBackstopEmissions?: boolean;
   // when > 0, withdraw the unlocked part of the queue. the amount withdrawn is
   // whatever is unlocked on chain at build time, which is returned in the step.
