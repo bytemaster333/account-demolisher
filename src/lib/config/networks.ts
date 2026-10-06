@@ -64,9 +64,8 @@ export function unsupportedNetwork(id: never): never {
 }
 
 // lenient: an unknown id (a dropped "futurenet" among them) becomes testnet.
-// kept only until its remaining callers, which live in other modules, move to
-// parseNetworkId / requireNetwork; signing-relay's createPlan still relies on
-// the fallback to answer BAD_NETWORK. new code must not use it.
+// kept only until its last callers (the allowances, sign and demolish pages and
+// AppShell) move to parseNetworkId / requireNetwork. new code must not use it.
 /** @deprecated use parseNetworkId or requireNetwork */
 export function resolveNetwork(id: string | undefined): NetworkConfig {
   return parseNetworkId(id) ?? TESTNET;
