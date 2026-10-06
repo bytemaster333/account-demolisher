@@ -10,7 +10,7 @@
 // the list; discovery reports it as an error so the merge stays blocked instead of
 // silently leaving the position behind.
 
-import type { NetworkConfig } from "@/lib/config/networks";
+import { unsupportedNetwork, type NetworkConfig } from "@/lib/config/networks";
 
 export interface AquariusConcentratedPool {
   readonly address: string;
@@ -639,8 +639,8 @@ export function getConcentratedPools(network: NetworkConfig): readonly AquariusC
       return MAINNET_CONCENTRATED_POOLS;
     case "testnet":
       return TESTNET_CONCENTRATED_POOLS;
-    case "futurenet":
-      throw new Error("Aquarius is not deployed on futurenet");
+    default:
+      return unsupportedNetwork(network.id);
   }
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { MAINNET, TESTNET, parseNetworkId, requireNetwork } from "@/lib/config/networks";
+import { MAINNET, NETWORKS, TESTNET, parseNetworkId, requireNetwork } from "@/lib/config/networks";
 
 describe("network id parsing", () => {
   it("maps the known ids", () => {
@@ -17,5 +17,13 @@ describe("network id parsing", () => {
 
   it("requireNetwork throws for an unknown id", () => {
     expect(() => requireNetwork("corrupted")).toThrow(/unknown Stellar network id "corrupted"/);
+  });
+});
+
+describe("supported networks", () => {
+  it("offers only mainnet and testnet", () => {
+    expect(Object.keys(NETWORKS).sort()).toEqual(["mainnet", "testnet"]);
+    expect(parseNetworkId("futurenet")).toBeNull();
+    expect(() => requireNetwork("futurenet")).toThrow(/unknown Stellar network id "futurenet"/);
   });
 });

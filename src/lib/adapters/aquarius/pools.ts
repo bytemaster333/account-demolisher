@@ -4,7 +4,7 @@
 // discoverConcentratedPositions in ./concentrated.
 import { Address, xdr, type rpc } from "@stellar/stellar-sdk";
 import { getAllowlistForNetwork, type AllowedContract } from "@/lib/config/contracts";
-import type { NetworkConfig } from "@/lib/config/networks";
+import { unsupportedNetwork, type NetworkConfig } from "@/lib/config/networks";
 import { balance as sep41Balance } from "@/lib/soroban/sep41";
 import {
   fromScValAddress,
@@ -29,8 +29,6 @@ export interface AquariusPool {
   readonly poolType: string;
   readonly tokens: readonly string[];
   readonly shareBalance: bigint;
-  // optional reward-availability hint for the claimWhen predicate
-  readonly hasRewards?: boolean;
 }
 
 export interface AquariusPoolProvider {
@@ -148,8 +146,8 @@ export function aquariusApiBaseUrlForNetwork(network: NetworkConfig): string {
       return AQUARIUS_API_MAINNET_BASE_URL;
     case "testnet":
       return AQUARIUS_API_TESTNET_BASE_URL;
-    case "futurenet":
-      throw new Error("Aquarius has no REST backend on futurenet");
+    default:
+      return unsupportedNetwork(network.id);
   }
 }
 
@@ -191,6 +189,20 @@ export interface AquariusAPIPoolProviderOptions {
   readonly timeoutMs?: number;
 }
 
+// thrown by getUserPools when some listed entries could not be resolved. the
+// message names each failed pool; partialPools holds the ones that did read, so
+// a caller can still plan their exits while it records the failure
+export class AquariusPartialPoolsError extends Error {
+  readonly partialPools: readonly AquariusPool[];
+  readonly failures: readonly string[];
+  constructor(failures: readonly string[], partialPools: readonly AquariusPool[]) {
+    super(`Aquarius API: ${failures.join("; ")}`);
+    this.name = "AquariusPartialPoolsError";
+    this.failures = failures;
+    this.partialPools = partialPools;
+  }
+}
+
 // REST-backed provider against aquarius's public API
 export class AquariusAPIPoolProvider implements AquariusPoolProvider {
   private readonly server: rpc.Server;
@@ -217,13 +229,14 @@ export class AquariusAPIPoolProvider implements AquariusPoolProvider {
     this.fetchImpl = fetchImpl;
   }
 
-  // standard pools only. throws when any listed entry could not be resolved (a
-  // failed share read is not "no shares") or when the API lists a concentrated
-  // pool that is not pinned, so the caller records a discovery error.
+  // standard pools only. throws AquariusPartialPoolsError when any listed entry
+  // could not be resolved (a failed share read is not "no shares") or when the
+  // API lists a concentrated pool that is not pinned, so the caller records a
+  // discovery error and still gets the pools that did read.
   async getUserPools(userPublicKey: string): Promise<AquariusPool[]> {
     const scan = await this.scanUserPools(userPublicKey);
     if (scan.errors.length > 0) {
-      throw new Error(`Aquarius API: ${scan.errors.join("; ")}`);
+      throw new AquariusPartialPoolsError(scan.errors, scan.standard);
     }
     return [...scan.standard];
   }

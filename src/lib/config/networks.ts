@@ -1,8 +1,8 @@
-// network constants for stellar mainnet/testnet/futurenet
+// network constants for stellar mainnet and testnet, the only supported targets
 
 import { Networks } from "@stellar/stellar-sdk";
 
-export type StellarNetwork = "mainnet" | "testnet" | "futurenet";
+export type StellarNetwork = "mainnet" | "testnet";
 
 export interface NetworkConfig {
   readonly id: StellarNetwork;
@@ -10,9 +10,9 @@ export interface NetworkConfig {
   // primary Soroban RPC endpoint
   readonly rpc: string;
   // additional CORS-enabled RPC endpoints, in preference order, that getRpc()
-  // fails over to when the primary rate-limits or faults. Each was verified to
+  // fails over to when the primary rate-limits or faults. each was verified to
   // (a) reflect a CORS header for browser use and (b) track the same ledger as
-  // the primary, so a failover doesn't read a stale chain state. Omitted where
+  // the primary, so a failover doesn't read a stale chain state. omitted where
   // no second endpoint is vetted.
   readonly rpcFallbacks?: readonly string[];
   readonly passphrase: string;
@@ -37,25 +37,16 @@ export const TESTNET: NetworkConfig = {
   friendbot: "https://friendbot.stellar.org",
 };
 
-export const FUTURENET: NetworkConfig = {
-  id: "futurenet",
-  horizon: "https://horizon-futurenet.stellar.org",
-  rpc: "https://rpc-futurenet.stellar.org",
-  passphrase: Networks.FUTURENET,
-  friendbot: "https://friendbot-futurenet.stellar.org",
-};
-
-export const NETWORKS: Record<StellarNetwork, NetworkConfig> = {
+export const NETWORKS: Readonly<Record<StellarNetwork, NetworkConfig>> = {
   mainnet: MAINNET,
   testnet: TESTNET,
-  futurenet: FUTURENET,
 };
 
 // the network for a known id, or null. never guesses: a persisted record or a
 // request naming a network we do not know must be rejected by the caller, not
 // silently resumed or signed on another network.
 export function parseNetworkId(id: string | null | undefined): NetworkConfig | null {
-  if (id === "mainnet" || id === "testnet" || id === "futurenet") return NETWORKS[id];
+  if (id === "mainnet" || id === "testnet") return NETWORKS[id];
   return null;
 }
 
@@ -65,11 +56,18 @@ export function requireNetwork(id: string | null | undefined): NetworkConfig {
   return network;
 }
 
-// lenient: an unknown id becomes testnet. kept only until its callers move to
-// parseNetworkId / requireNetwork; new code must not use it.
+// the default branch of a switch over network.id. the type system rules it out;
+// at run time it can only be reached through an unchecked cast or stale data,
+// which must fail rather than fall through to undefined
+export function unsupportedNetwork(id: never): never {
+  throw new Error(`unsupported Stellar network id "${String(id)}"`);
+}
+
+// lenient: an unknown id (a dropped "futurenet" among them) becomes testnet.
+// kept only until its remaining callers, which live in other modules, move to
+// parseNetworkId / requireNetwork; signing-relay's createPlan still relies on
+// the fallback to answer BAD_NETWORK. new code must not use it.
+/** @deprecated use parseNetworkId or requireNetwork */
 export function resolveNetwork(id: string | undefined): NetworkConfig {
-  if (id === "mainnet" || id === "testnet" || id === "futurenet") {
-    return NETWORKS[id];
-  }
-  return TESTNET;
+  return parseNetworkId(id) ?? TESTNET;
 }

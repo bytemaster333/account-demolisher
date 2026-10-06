@@ -12,6 +12,7 @@ import {
 import {
   AquariusAPIPoolProvider,
   AquariusEventScanPoolProvider,
+  AquariusPartialPoolsError,
 } from "@/lib/adapters/aquarius/pools";
 import { MAINNET_CONCENTRATED_POOLS } from "@/lib/adapters/aquarius/concentrated-pools";
 import { getAquariusRouterId } from "@/lib/adapters/aquarius/client";
@@ -109,8 +110,15 @@ describe("Aquarius REST provider", () => {
     expect(scan.standard.map((p) => p.poolAddress)).toEqual([POOL_OK]);
     expect(scan.errors).toHaveLength(1);
     expect(scan.errors[0]).toMatch(new RegExp(POOL_BROKEN));
-    // the list-returning form fails closed rather than returning a partial list
-    await expect(provider.getUserPools(USER)).rejects.toThrow(new RegExp(POOL_BROKEN));
+    // the list-returning form fails closed rather than returning a partial list,
+    // but hands over the pools it did read so the caller can still exit them
+    const err = await provider.getUserPools(USER).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AquariusPartialPoolsError);
+    expect((err as Error).message).toMatch(new RegExp(POOL_BROKEN));
+    expect((err as Error).message).toMatch(/trapped/);
+    expect((err as AquariusPartialPoolsError).partialPools.map((p) => p.poolAddress)).toEqual([
+      POOL_OK,
+    ]);
   });
 
   it("reports a concentrated pool that is not pinned (no in-app exit for it)", async () => {

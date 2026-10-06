@@ -6,7 +6,6 @@ import {
   BLEND_TESTNET_INFRASTRUCTURE,
   BLEND_TESTNET_POOLS,
 } from "@/lib/adapters/blend/pools";
-import { FXDAO_MAINNET_CONTRACTS, FXDAO_TESTNET_CONTRACTS } from "@/lib/adapters/fxdao/contracts";
 import {
   CONCENTRATED_POOLS_SOURCE,
   CONCENTRATED_POOLS_VERIFIED_AT,
@@ -14,7 +13,7 @@ import {
   TESTNET_CONCENTRATED_POOLS,
   type AquariusConcentratedPool,
 } from "@/lib/adapters/aquarius/concentrated-pools";
-import type { NetworkConfig } from "@/lib/config/networks";
+import { unsupportedNetwork, type NetworkConfig } from "@/lib/config/networks";
 
 // entrypoint: a contract an adapter invokes as the root of a transaction it asks
 // the user to sign. token / infrastructure: known contracts (SACs, factories,
@@ -40,13 +39,6 @@ const BLEND_ENTRYPOINT_INFRASTRUCTURE = new Set(["backstop", "backstopV2"]);
 function blendInfrastructureRole(name: string): AllowedContractRole {
   if (BLEND_ENTRYPOINT_INFRASTRUCTURE.has(name)) return "entrypoint";
   return /SAC|^BLND$|^USDC$|LP\)$/.test(name) ? "token" : "infrastructure";
-}
-
-// fxdao: only the vaults contract is invoked (pay_debt); the rest are the
-// synthetic-stablecoin SACs, the oracle and the locking pool
-function fxdaoRole(name: string): AllowedContractRole {
-  if (name === "VaultsContract") return "entrypoint";
-  return /SAC/.test(name) ? "token" : "infrastructure";
 }
 
 function concentratedEntry(pool: AquariusConcentratedPool): AllowedContract {
@@ -79,18 +71,6 @@ const BLEND_ALLOWLIST_ENTRIES: readonly AllowedContract[] = [
     source: entry.source,
   })),
 ];
-
-// fxdao mainnet vault contract + synthetic-stablecoin sacs, mirrored from
-const FXDAO_ALLOWLIST_ENTRIES: readonly AllowedContract[] = FXDAO_MAINNET_CONTRACTS.map(
-  (entry): AllowedContract => ({
-    id: entry.id,
-    name: `FxDAO::${entry.name}`,
-    protocol: "fxdao",
-    role: fxdaoRole(entry.name),
-    verified_at: entry.verified_at,
-    source: entry.source,
-  }),
-);
 
 // soroswap mainnet router + factory, from the protocol's own published
 // deployment file (re-verified against upstream 2026-08-23)
@@ -127,11 +107,12 @@ export const MAINNET_ALLOWLIST: readonly AllowedContract[] = [
       "docs.aqua.network/developers/code-examples/prerequisites-and-basics (mainnet AMM contract id); cross-confirmed against AquaToken/soroban-amm liquidity_pool_router",
   },
   ...MAINNET_CONCENTRATED_POOLS.map(concentratedEntry),
-  // fxdao (www.fxdao.io/docs/addresses/)
-  ...FXDAO_ALLOWLIST_ENTRIES,
+  // fxdao is not listed: the protocol shut down on chain (2026-10-06: the vaults
+  // contract CCUN4RXU... only exports evict and upgrade, panic_mode is set and
+  // every denomination has zero vaults), so there is nothing left to exit
 ];
 
-// testnet allow-list, mirrors the four protocols on stellar testnet
+// testnet allow-list, mirrors the three protocols on stellar testnet
 
 // blend testnet infrastructure (factory, backstopV2, emitter, tokens…) is
 // snapshotted in blend/pools.ts and shared with backstop resolution.
@@ -176,19 +157,6 @@ const TESTNET_SOROSWAP_ENTRIES: readonly AllowedContract[] = [
   },
 ];
 
-// fxdao testnet contracts (vault + synthetic-stablecoin SACs + oracle) are
-// snapshotted in fxdao/contracts.ts and shared with discovery so ids live once.
-const TESTNET_FXDAO_ENTRIES: readonly AllowedContract[] = FXDAO_TESTNET_CONTRACTS.map(
-  (entry): AllowedContract => ({
-    id: entry.id,
-    name: `FxDAO::${entry.name}`,
-    protocol: "fxdao",
-    role: fxdaoRole(entry.name),
-    verified_at: entry.verified_at,
-    source: entry.source,
-  }),
-);
-
 // aquarius testnet entries
 const TESTNET_AQUARIUS_ENTRIES: readonly AllowedContract[] = [
   {
@@ -216,7 +184,6 @@ export const TESTNET_ALLOWLIST: readonly AllowedContract[] = [
   ...TESTNET_SOROSWAP_ENTRIES,
   ...TESTNET_BLEND_ENTRIES,
   ...TESTNET_AQUARIUS_ENTRIES,
-  ...TESTNET_FXDAO_ENTRIES,
 ];
 
 function idsWithRole(list: readonly AllowedContract[], role?: AllowedContractRole) {
@@ -228,16 +195,15 @@ const TESTNET_KNOWN_IDS: ReadonlySet<string> = idsWithRole(TESTNET_ALLOWLIST);
 const MAINNET_ENTRYPOINT_IDS: ReadonlySet<string> = idsWithRole(MAINNET_ALLOWLIST, "entrypoint");
 const TESTNET_ENTRYPOINT_IDS: ReadonlySet<string> = idsWithRole(TESTNET_ALLOWLIST, "entrypoint");
 
-// every curated contract for the given network, entry points and labels alike.
-// futurenet returns empty
+// every curated contract for the given network, entry points and labels alike
 export function getAllowlistForNetwork(network: NetworkConfig): readonly AllowedContract[] {
   switch (network.id) {
     case "mainnet":
       return MAINNET_ALLOWLIST;
     case "testnet":
       return TESTNET_ALLOWLIST;
-    case "futurenet":
-      return [];
+    default:
+      return unsupportedNetwork(network.id);
   }
 }
 
@@ -249,8 +215,8 @@ export function isAllowedRootTarget(contractId: string, network: NetworkConfig):
       return MAINNET_ENTRYPOINT_IDS.has(contractId);
     case "testnet":
       return TESTNET_ENTRYPOINT_IDS.has(contractId);
-    case "futurenet":
-      return false;
+    default:
+      return unsupportedNetwork(network.id);
   }
 }
 
@@ -262,16 +228,18 @@ export function isKnownContract(contractId: string, network: NetworkConfig): boo
       return MAINNET_KNOWN_IDS.has(contractId);
     case "testnet":
       return TESTNET_KNOWN_IDS.has(contractId);
-    case "futurenet":
-      return false;
+    default:
+      return unsupportedNetwork(network.id);
   }
 }
 
 // the predicate allowlist.ts applies before signing, so it answers the root-target
-// question. an omitted network still reads as mainnet only because callers in
-// other modules (scam-heuristics passes none) have not moved to isAllowedRootTarget
-// / isKnownContract with an explicit network yet; new code must not call this.
-export function isAllowedContract(contractId: string, network?: NetworkConfig): boolean {
-  if (network === undefined) return MAINNET_ENTRYPOINT_IDS.has(contractId);
+// question. there is no default network: the parameter still admits undefined
+// only because allowlist.ts forwards an optional one, and undefined is refused
+// rather than read as mainnet.
+export function isAllowedContract(contractId: string, network: NetworkConfig | undefined): boolean {
+  if (network === undefined) {
+    throw new Error(`isAllowedContract(${contractId}): no network given; refusing to guess one`);
+  }
   return isAllowedRootTarget(contractId, network);
 }

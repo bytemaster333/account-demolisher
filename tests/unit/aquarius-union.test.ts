@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { StrKey } from "@stellar/stellar-sdk";
 
+import { AquariusPartialPoolsError } from "@/lib/adapters/aquarius/pools";
 import { DirectContractProvider } from "@/lib/adapters/positions/direct";
 import { TESTNET } from "@/lib/config/networks";
 
@@ -15,7 +16,13 @@ const IDX_B = "b".repeat(64);
 const IDX_HIDDEN = "c".repeat(64);
 
 function aqPool(poolIndex: string) {
-  return { poolIndex, poolType: "constant_product", tokens: [TOKEN], shareBalance: 100n };
+  return {
+    poolIndex,
+    poolAddress: StrKey.encodeContract(Buffer.alloc(32, poolIndex.charCodeAt(0))),
+    poolType: "constant_product",
+    tokens: [TOKEN],
+    shareBalance: 100n,
+  };
 }
 
 // A provider whose Aquarius primary (REST) / fallback (on-chain scan) return the
@@ -32,7 +39,6 @@ function provider(primary: () => unknown, fallback: () => unknown) {
     blendPoolIds: [],
     blendLoadUserPositions: (async () => ({ positions: [], errors: [] })) as never,
     blendLoadBackstopDeposits: (async () => ({ deposits: [], errors: [] })) as never,
-    fxdaoGetUserVaults: (async () => []) as never,
   });
 }
 
@@ -53,13 +59,28 @@ describe("Aquarius discovery union (SEC-05: a spoofed-empty API can't hide a poo
     expect(new Set(positions.aquarius.map((x) => x.poolIndex))).toEqual(new Set([IDX_A, IDX_B]));
   });
 
-  it("errors on aquarius only when BOTH sources fail (fail-closed)", async () => {
+  it("records an aquarius error when both sources fail (fail-closed)", async () => {
     const boom = () => {
       throw new Error("down");
     };
     const positions = await provider(boom, boom).getPositions(USER, TESTNET);
     expect(positions.aquarius).toEqual([]);
     expect(positions.errors.some((e) => e.protocol === "aquarius")).toBe(true);
+  });
+
+  it("records an error when only the REST source fails, keeping the pools it did read", async () => {
+    const positions = await provider(
+      () => {
+        throw new AquariusPartialPoolsError(
+          ["could not read shares in pool CPOOL (HostError: trapped)"],
+          [aqPool(IDX_A)],
+        );
+      },
+      () => [aqPool(IDX_B)],
+    ).getPositions(USER, TESTNET);
+    expect(new Set(positions.aquarius.map((x) => x.poolIndex))).toEqual(new Set([IDX_A, IDX_B]));
+    const err = positions.errors.find((e) => e.protocol === "aquarius");
+    expect(err?.message).toMatch(/CPOOL/);
   });
 
   it("still returns the API result when only the on-chain scan fails", async () => {
