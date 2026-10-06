@@ -137,8 +137,6 @@ export const DEMO_STEPS: readonly DemoStep[] = [
   },
 ];
 
-export type DemoStepStatus = "pending" | "active" | "done" | "failed" | "skipped";
-
 export interface DemoStepResult {
   readonly id: DemoStepId;
   readonly status: "done" | "failed" | "skipped";
@@ -420,9 +418,25 @@ export async function runDemoSetup(opts: RunDemoOptions): Promise<DemoAccountRes
   return { publicKey, connector, explorerUrl };
 }
 
-async function friendbotFund(friendbotUrl: string, address: string): Promise<void> {
+export const FRIENDBOT_TIMEOUT_MS = 20_000;
+
+export async function friendbotFund(
+  friendbotUrl: string,
+  address: string,
+  timeoutMs: number = FRIENDBOT_TIMEOUT_MS,
+): Promise<void> {
   const url = `${friendbotUrl}?addr=${encodeURIComponent(address)}`;
-  const res = await fetch(url, { method: "GET" });
+  let res: Response;
+  try {
+    // a hung friendbot would otherwise keep the setup spinner going forever
+    res = await fetch(url, { method: "GET", signal: AbortSignal.timeout(timeoutMs) });
+  } catch (e) {
+    const name = (e as { name?: unknown } | null)?.name;
+    if (name === "TimeoutError" || name === "AbortError") {
+      throw new Error(`Friendbot did not respond within ${timeoutMs / 1000} seconds.`);
+    }
+    throw e;
+  }
   if (!res.ok) {
     let detail = "";
     try {

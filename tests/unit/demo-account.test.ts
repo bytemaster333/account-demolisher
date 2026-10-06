@@ -1,4 +1,6 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo, Socket } from "node:net";
+import { describe, it, expect, vi, afterAll, afterEach, beforeAll } from "vitest";
 import {
   Account,
   Address,
@@ -16,7 +18,9 @@ import {
 
 import { MAINNET, TESTNET, type NetworkConfig } from "@/lib/config/networks";
 import {
+  FRIENDBOT_TIMEOUT_MS,
   assertDemoSorobanTx,
+  friendbotFund,
   isDemoNetwork,
   runDemoSetup,
   sizeLiquidityDeposit,
@@ -75,6 +79,41 @@ describe("demo network gate (L-108)", () => {
       runDemoSetup({ network: futurenet, onStart: () => {}, onFinish: () => {} }),
     ).rejects.toThrow(/testnet only/);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("friendbot that never answers (L-77)", () => {
+  // a real socket that accepts the request and then says nothing, which is what
+  // a hung friendbot looks like to fetch
+  let server: Server;
+  let url: string;
+  const open = new Set<Socket>();
+
+  beforeAll(async () => {
+    server = createServer(() => {});
+    server.on("connection", (s) => {
+      open.add(s);
+      s.on("close", () => open.delete(s));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
+  });
+
+  afterAll(async () => {
+    for (const s of open) s.destroy();
+    await new Promise((resolve) => server.close(resolve));
+  });
+
+  it("gives up after the timeout with a clear error instead of waiting forever", async () => {
+    const started = Date.now();
+    await expect(friendbotFund(url, demo.publicKey(), 300)).rejects.toThrow(
+      "Friendbot did not respond within 0.3 seconds.",
+    );
+    expect(Date.now() - started).toBeLessThan(3_000);
+  });
+
+  it("waits 20 seconds by default", () => {
+    expect(FRIENDBOT_TIMEOUT_MS).toBe(20_000);
   });
 });
 
