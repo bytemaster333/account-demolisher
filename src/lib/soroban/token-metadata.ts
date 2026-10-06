@@ -1,0 +1,94 @@
+// symbol() and decimals() for the allowance list, read through one shared queue.
+//
+// any contract can emit an approve event naming the user, so the number of rows
+// (and of tokens to describe) is the attacker's to choose. each row asking for
+// its own metadata on mount would fire two simulations per row at once; here
+// every row's read waits for one of a few slots, a contract is read once however
+// many rows show it, and a row that unmounts before its turn drops its read.
+
+import type { rpc } from "@stellar/stellar-sdk";
+
+import type { NetworkConfig } from "@/lib/config/networks";
+import { createSemaphore } from "./concurrency";
+import { decimals as sep41Decimals, symbol as sep41Symbol } from "./sep41";
+
+export interface TokenMetadata {
+  // the token's own text, unsanitized: render it through safeDisplay
+  readonly symbol: string;
+  readonly decimals: number;
+}
+
+// simulations in flight at once across every caller (each read runs symbol and
+// then decimals in one slot)
+export const TOKEN_METADATA_CONCURRENCY = 4;
+
+const slots = createSemaphore(TOKEN_METADATA_CONCURRENCY);
+
+interface Entry {
+  readonly promise: Promise<TokenMetadata>;
+  // aborts the queued read once every caller waiting on it has gone
+  readonly controller: AbortController;
+  interested: number;
+}
+
+const entries = new WeakMap<rpc.Server, Map<string, Entry>>();
+
+export async function readTokenMetadata(
+  server: rpc.Server,
+  contractId: string,
+  sourcePublicKey: string,
+  network: NetworkConfig,
+  opts: { readonly signal?: AbortSignal } = {},
+): Promise<TokenMetadata> {
+  const { signal } = opts;
+  if (signal?.aborted) throw abortReason(signal);
+
+  let perServer = entries.get(server);
+  if (perServer === undefined) {
+    perServer = new Map();
+    entries.set(server, perServer);
+  }
+  let entry = perServer.get(contractId);
+  if (entry === undefined) {
+    const controller = new AbortController();
+    const promise = slots.run(async () => {
+      const symbol = await sep41Symbol(server, contractId, sourcePublicKey, network);
+      const decimals = await sep41Decimals(server, contractId, sourcePublicKey, network);
+      return { symbol, decimals };
+    }, controller.signal);
+    const created: Entry = { promise, controller, interested: 0 };
+    const cache = perServer;
+    // a failed or dropped read is forgotten, so the next caller tries again
+    promise.catch(() => {
+      if (cache.get(contractId) === created) cache.delete(contractId);
+    });
+    perServer.set(contractId, created);
+    entry = created;
+  }
+
+  const shared = entry;
+  shared.interested += 1;
+  if (signal === undefined) return shared.promise;
+  return new Promise<TokenMetadata>((resolve, reject) => {
+    const onAbort = (): void => {
+      shared.interested -= 1;
+      if (shared.interested === 0) shared.controller.abort();
+      reject(abortReason(signal));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    shared.promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      },
+    );
+  });
+}
+
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
+}
