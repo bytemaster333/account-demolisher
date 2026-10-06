@@ -41,6 +41,7 @@ import { residueLineProblem, type DestinationLine } from "@/lib/orchestrator/res
 import {
   createClassicSubmitter,
   createSorobanSubmitter,
+  isNotFoundError,
   txHashHex,
   txMaxTime,
 } from "@/lib/orchestrator/submit";
@@ -475,8 +476,7 @@ export async function fetchDestinationUsableKeys(
     const account = await getHorizon(network).loadAccount(destination);
     lines = account.balances as readonly DestinationLine[];
   } catch (err) {
-    const status = (err as { response?: { status?: unknown } } | null)?.response?.status;
-    if (status === 404) return new Set();
+    if (isNotFoundError(err)) return new Set();
     throw err;
   }
   const usable = new Set<string>();
@@ -751,8 +751,7 @@ async function lookupHorizonTransaction(
       ? { status: "success", ledger: record.ledger_attr }
       : { status: "failed" };
   } catch (err) {
-    const status = (err as { response?: { status?: unknown } } | null)?.response?.status;
-    if (status !== 404) throw err;
+    if (!isNotFoundError(err)) throw err;
   }
   if (maxTime === null) return { status: "pending" };
   const page = await horizon.ledgers().order("desc").limit(1).call();

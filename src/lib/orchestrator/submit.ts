@@ -4,6 +4,7 @@
 
 import {
   FeeBumpTransaction,
+  NotFoundError,
   TransactionBuilder,
   xdr,
   type Horizon,
@@ -77,7 +78,7 @@ export function createClassicSubmitter(
         throw new SubmitRejectedError({ transaction: resultCodeOf(record.result_xdr) }, undefined);
       } catch (err) {
         if (err instanceof SubmitRejectedError) throw err;
-        if (statusOf(err) === 404 && maxTime !== null) {
+        if (isNotFoundError(err) && maxTime !== null) {
           const closedAt = await latestCloseTime(horizon);
           if (closedAt !== null && closedAt > maxTime) {
             throw new CloseFailure(
@@ -190,6 +191,12 @@ export function createSorobanSubmitter(
     }
     return { txHash: send.hash, ledger: result.ledger };
   };
+}
+
+// horizon's call builders reject a 404 with NotFoundError, whose `response` is
+// the problem json; other paths keep the http response
+export function isNotFoundError(err: unknown): boolean {
+  return err instanceof NotFoundError || statusOf(err) === 404;
 }
 
 function statusOf(err: unknown): number | undefined {
