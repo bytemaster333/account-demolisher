@@ -14,7 +14,6 @@ const MED = Keypair.random().publicKey();
 const POOL_ID = "pool0000000000000000000000000000000000000000000000000000000000aa";
 const ASSET_A = "casset0000000000000000000000000000000000000000000000000000000001";
 const ASSET_B = "casset0000000000000000000000000000000000000000000000000000000002";
-const DENOM = "USDC";
 
 function makeAudit(over: Partial<AccountAudit> = {}): AccountAudit {
   return {
@@ -46,15 +45,16 @@ function emptyPositions(over: Partial<ProtocolPositions> = {}): ProtocolPosition
     blend: [],
     backstop: [],
     aquarius: [],
+    aquariusConcentrated: [],
     soroswap: [],
-    fxdao: [],
+    backstopUnclaimedEmissions: [],
     errors: [],
     ...over,
   };
 }
 
-// one blend pool with both a liability and a collateral entry, and one fxdao
-// vault carrying both debt and collateral, so every ordering edge is exercised.
+// one blend pool with both a liability and a collateral entry, so every ordering
+// edge is exercised.
 function richPositions(): ProtocolPositions {
   return emptyPositions({
     blend: [
@@ -66,7 +66,6 @@ function richPositions(): ProtocolPositions {
         emissionReserveTokenIds: [2, 3],
       },
     ],
-    fxdao: [{ denomination: DENOM, debt: 50n, collateral: 300n }],
   });
 }
 
@@ -124,18 +123,6 @@ describe("generatePlan, protocol ordering invariants", () => {
     expect(dependsOn(tree, withdrawId, repayId)).toBe(true);
     const order = topologicalOrder(tree);
     expect(indexOf(order, repayId)).toBeLessThan(indexOf(order, withdrawId));
-  });
-
-  it("emits a single FxDAO pay-debt node and no separate redeem node", () => {
-    const tree = generatePlan(makeAudit(), richPositions(), [], DEST);
-    // pay_debt (full) closes the vault and reclaims collateral in one call
-    expect(tree.allNodes.has(id("fxdao-pay-debt", DENOM))).toBe(true);
-    // the old RedeemFxDAO node is gone, redeem() acts on the lowest vault, not
-    // the caller's, so it was never a correct close-your-vault step
-    expect(tree.allNodes.has(id("fxdao-redeem", DENOM))).toBe(false);
-    for (const node of tree.allNodes.values()) {
-      expect(node.kind).not.toBe("RedeemFxDAO");
-    }
   });
 
   it("wires and orders Blend emissions claim after its withdraws and before the merge", () => {
@@ -428,7 +415,6 @@ describe("M-23: repays run after the exits that can fund them", () => {
     ],
     aquarius: [{ poolIndex: SHARED_INDEX, shareBalance: 10n, tokens: [TOKEN_X, TOKEN_Y] }],
     soroswap: [{ pair: { tokenA: TOKEN_X, tokenB: TOKEN_Z }, shareBalance: 5n }],
-    fxdao: [{ denomination: DENOM, debt: 50n, collateral: 300n }],
   });
   const tree = generatePlan(makeAudit(), positions, [], DEST);
   const funding = [
@@ -437,10 +423,9 @@ describe("M-23: repays run after the exits that can fund them", () => {
     id("blend-withdraw-supply", OTHER_POOL, ASSET_B),
   ];
 
-  it("makes Blend repays and FxDAO debt payments depend on LP and debt-free Blend exits", () => {
-    for (const repay of [id("blend-repay", POOL_ID, ASSET_A), id("fxdao-pay-debt", DENOM)]) {
-      for (const exit of funding) expect(dependsOn(tree, repay, exit)).toBe(true);
-    }
+  it("makes Blend repays depend on LP and debt-free Blend exits", () => {
+    const repay = id("blend-repay", POOL_ID, ASSET_A);
+    for (const exit of funding) expect(dependsOn(tree, repay, exit)).toBe(true);
     const order = topologicalOrder(tree);
     for (const exit of funding) {
       expect(indexOf(order, exit)).toBeLessThan(

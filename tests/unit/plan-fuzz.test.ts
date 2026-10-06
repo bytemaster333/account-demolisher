@@ -19,8 +19,9 @@ const emptyPositions = (): ProtocolPositions => ({
   blend: [],
   backstop: [],
   aquarius: [],
+  aquariusConcentrated: [],
   soroswap: [],
-  fxdao: [],
+  backstopUnclaimedEmissions: [],
   errors: [],
 });
 
@@ -147,7 +148,7 @@ const arbAudit: fc.Arbitrary<AccountAudit> = fc
     } as unknown as AccountAudit;
   });
 
-// randomized DeFi positions across all four protocols + the Blend backstop, so
+// randomized DeFi positions across the protocols + the Blend backstop, so
 // the stranding invariant is asserted over accounts that also carry Soroban
 // positions (not just classic subentries). All contract-id-shaped fields use
 // valid StrKey C... ids so plan generation sees well-formed input.
@@ -180,20 +181,14 @@ const arbSoroswapPos = fc.record({
   pair: fc.record({ tokenA: arbContractId, tokenB: arbContractId }),
   shareBalance: arbBig,
 });
-const arbFxdaoPos = fc.record({
-  denomination: fc.constantFrom("USDx", "EURx", "GBPx", "FXG"),
-  debt: fc.oneof(fc.constant(0n), arbBig),
-  collateral: arbBig,
-});
 
 const arbPositions: fc.Arbitrary<ProtocolPositions> = fc.record({
   blend: fc.array(arbBlendPos, { maxLength: 2 }),
   backstop: fc.array(arbBackstopPos, { maxLength: 1 }),
   aquarius: fc.array(arbAquariusPos, { maxLength: 2 }),
+  aquariusConcentrated: fc.constant([]),
   soroswap: fc.array(arbSoroswapPos, { maxLength: 2 }),
-  // one vault per denomination, as on-chain discovery returns it (the pay-debt
-  // node id is keyed by denomination, so duplicates can't occur in practice)
-  fxdao: fc.uniqueArray(arbFxdaoPos, { maxLength: 4, selector: (p) => p.denomination }),
+  backstopUnclaimedEmissions: fc.constant([]),
   errors: fc.constant([] as { protocol: string; message: string }[]),
 }) as fc.Arbitrary<ProtocolPositions>;
 

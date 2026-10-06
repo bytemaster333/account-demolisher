@@ -15,7 +15,6 @@ import type { HeldToken } from "@/lib/soroban/held-tokens";
 import type {
   AquariusPositionSummary,
   BlendPositionSummary,
-  FxDAOPositionSummary,
   ProtocolPositions,
   SoroswapPositionSummary,
 } from "@/lib/adapters/positions/interface";
@@ -213,35 +212,11 @@ export function generatePlan(
     if (ids.length > 0) blendRepayIdsByPool.set(pool.poolId, ids);
   }
 
-  // fxdao debt payments, one per vault with debt > 0. A full pay_debt closes the
-  // vault and reclaims its collateral in one call. No follow-up node needed.
-  for (const vault of positions.fxdao) {
-    if (vault.debt <= 0n) continue;
-    nodes.push({
-      id: makeId("fxdao-pay-debt", vault.denomination),
-      kind: "PayFxDAODebt",
-      dependencies: [...fundingExitIds],
-      status: "pending",
-      // a full pay_debt closes the vault AND releases its collateral in one call
-      description: `Close FxDAO ${vault.denomination} vault (repay ${vault.debt.toString()}, reclaim ${vault.collateral.toString()} collateral)`,
-      metadata: {
-        kind: "PayFxDAODebt",
-        vaultDenomination: vault.denomination,
-        debt: vault.debt,
-        collateral: vault.collateral,
-      },
-    });
-  }
-
   // blend collateral + supply withdraws from pools with debt; after its repays
   for (const pool of positions.blend) {
     if (!poolHasDebt(pool)) continue;
     addBlendWithdraws(pool, blendRepayIdsByPool.get(pool.poolId) ?? []);
   }
-
-  // (No separate FxDAO redeem step: pay_debt above already reclaims the vault's
-  // collateral. redeem() is an unrelated protocol op that burns stablecoin
-  // against the lowest vault in the list, not a way to close your own vault.)
 
   // blend emissions, one per pool, after its withdraws. Emitted only when the
   // user actually has accrued emissions to claim, and targeting the SPECIFIC
@@ -561,9 +536,4 @@ function shortAddr(s: string): string {
   return `${s.slice(0, 6)}...${s.slice(-4)}`;
 }
 
-export type {
-  BlendPositionSummary,
-  AquariusPositionSummary,
-  SoroswapPositionSummary,
-  FxDAOPositionSummary,
-};
+export type { BlendPositionSummary, AquariusPositionSummary, SoroswapPositionSummary };

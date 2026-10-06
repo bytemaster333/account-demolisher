@@ -35,7 +35,6 @@ export type PlanNodeStatus =
 export type PlanNodeKind =
   | "RevokeAllowance"
   | "RepayBlend"
-  | "PayFxDAODebt"
   | "WithdrawBlend"
   | "WithdrawAquarius"
   | "WithdrawSoroswapLp"
@@ -75,16 +74,6 @@ export interface RepayBlendMetadata {
   readonly poolId: string;
   readonly asset: string;
   readonly amount: bigint;
-  readonly transaction?: Transaction;
-}
-
-export interface PayFxDAODebtMetadata {
-  readonly kind: "PayFxDAODebt";
-  readonly vaultDenomination: string;
-  readonly debt: bigint;
-  // the vault's collateral, needed to reconstruct the on-chain vault_key.index
-  // (index = 1e9 * collateral / debt) that pay_debt's validator checks against
-  readonly collateral: bigint;
   readonly transaction?: Transaction;
 }
 
@@ -208,10 +197,6 @@ export interface RepayBlendNode extends PlanNodeBase {
   readonly kind: "RepayBlend";
   readonly metadata: RepayBlendMetadata;
 }
-export interface PayFxDAODebtNode extends PlanNodeBase {
-  readonly kind: "PayFxDAODebt";
-  readonly metadata: PayFxDAODebtMetadata;
-}
 export interface WithdrawBlendNode extends PlanNodeBase {
   readonly kind: "WithdrawBlend";
   readonly metadata: WithdrawBlendMetadata;
@@ -256,7 +241,6 @@ export interface MediatorForwardNode extends PlanNodeBase {
 export type PlanNode =
   | RevokeAllowanceNode
   | RepayBlendNode
-  | PayFxDAODebtNode
   | WithdrawBlendNode
   | WithdrawAquariusNode
   | WithdrawSoroswapLpNode
@@ -416,7 +400,6 @@ export function isSorobanNode(node: PlanNode): boolean {
   switch (node.kind) {
     case "RevokeAllowance":
     case "RepayBlend":
-    case "PayFxDAODebt":
     case "WithdrawBlend":
     case "WithdrawAquarius":
     case "WithdrawSoroswapLp":

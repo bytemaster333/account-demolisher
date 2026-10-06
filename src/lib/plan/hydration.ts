@@ -19,12 +19,6 @@ import {
 import { poolIndexHexToBytes } from "@/lib/adapters/aquarius/pools";
 import { removeLiquidityByContractIds } from "@/lib/adapters/soroswap/lp";
 import { buildSwapToXLM } from "@/lib/adapters/soroswap/swap";
-import { buildVaultExit } from "@/lib/adapters/fxdao/exit";
-import {
-  findPrevVaultKey as defaultFindPrevVaultKey,
-  type VaultKey,
-} from "@/lib/adapters/fxdao/prev-key";
-import { getFxDAOVaultsContractIdForNetwork } from "@/lib/adapters/fxdao/contracts";
 import { buildRevoke } from "@/lib/soroban/allowances";
 import { balance as readTokenBalance, buildTransfer } from "@/lib/soroban/sep41";
 import { simulate } from "@/lib/soroban/simulate";
@@ -63,8 +57,6 @@ export interface HydrationAdapterOverrides {
   readonly aquariusWithdraw?: typeof aquariusWithdraw;
   readonly aquariusClaim?: typeof aquariusClaim;
   readonly removeLiquidityByContractIds?: typeof removeLiquidityByContractIds;
-  readonly buildVaultExit?: typeof buildVaultExit;
-  readonly findPrevVaultKey?: typeof defaultFindPrevVaultKey;
   readonly buildSwapToXLM?: typeof buildSwapToXLM;
   readonly buildTransfer?: typeof buildTransfer;
   readonly readTokenBalance?: typeof readTokenBalance;
@@ -363,34 +355,6 @@ async function hydrateNode(
       return;
     }
 
-    case "PayFxDAODebt": {
-      const sourceAccount = await getSourceAccount();
-      const fn = a.buildVaultExit ?? buildVaultExit;
-      const prevKey = await resolveFxDaoPrevKey(
-        deps,
-        userPublicKey,
-        node.metadata.vaultDenomination,
-        a.findPrevVaultKey,
-      );
-      const exit = await fn(
-        {
-          denomination: node.metadata.vaultDenomination,
-          debt: node.metadata.debt,
-          // collateral is needed to reconstruct the vault_key.index the pay_debt
-          // validator checks (index = 1e9 * collateral / debt). A full repayment
-          // then releases that collateral to the owner in the same call.
-          collateral: node.metadata.collateral,
-        },
-        userPublicKey,
-        deps.network,
-        sourceAccount,
-        prevKey,
-        { server: deps.rpc },
-      );
-      setTransaction(node, exit.payDebt);
-      return;
-    }
-
     case "ConvertSorobanToXLM": {
       const fn = a.buildSwapToXLM ?? buildSwapToXLM;
       const deadline = Math.floor(Date.now() / 1000) + 300; // 5 min
@@ -489,7 +453,6 @@ function nodeHasTransaction(node: PlanNode): boolean {
   switch (node.kind) {
     case "RevokeAllowance":
     case "RepayBlend":
-    case "PayFxDAODebt":
     case "WithdrawBlend":
     case "WithdrawAquarius":
     case "WithdrawSoroswapLp":
@@ -511,7 +474,6 @@ function clearTransaction(node: PlanNode): void {
   switch (node.kind) {
     case "RevokeAllowance":
     case "RepayBlend":
-    case "PayFxDAODebt":
     case "WithdrawBlend":
     case "WithdrawAquarius":
     case "WithdrawSoroswapLp":
@@ -538,7 +500,6 @@ function setTransaction(node: PlanNode, tx: Transaction): void {
   switch (node.kind) {
     case "RevokeAllowance":
     case "RepayBlend":
-    case "PayFxDAODebt":
     case "WithdrawBlend":
     case "WithdrawAquarius":
     case "WithdrawSoroswapLp":
@@ -683,25 +644,4 @@ function synthesizeBlendPositionForPool(metadata: { readonly poolId: string }): 
     supply: new Map(),
     emissions: new Map(),
   };
-}
-
-// resolve the user's predecessor in the fxdao vault linked list
-// returns null if the user is the head (or list is empty)
-async function resolveFxDaoPrevKey(
-  deps: HydrationDeps,
-  userPublicKey: string,
-  denomination: string,
-  override?: typeof defaultFindPrevVaultKey,
-): Promise<VaultKey | null> {
-  const fn = override ?? defaultFindPrevVaultKey;
-  const vaultsContractId = resolveFxDaoVaultsId(deps.network);
-  return fn(vaultsContractId, userPublicKey, denomination, deps.network, { server: deps.rpc });
-}
-
-function resolveFxDaoVaultsId(network: NetworkConfig): string {
-  const id = getFxDAOVaultsContractIdForNetwork(network);
-  if (id === null) {
-    throw new Error(`FxDAO has no published ${network.id} deployment`);
-  }
-  return id;
 }

@@ -71,8 +71,6 @@ function getSorobanTransaction(node: PlanNode): Transaction | undefined {
       return node.metadata.transaction;
     case "RepayBlend":
       return node.metadata.transaction;
-    case "PayFxDAODebt":
-      return node.metadata.transaction;
     case "WithdrawBlend":
       return node.metadata.transaction;
     case "WithdrawAquarius":
