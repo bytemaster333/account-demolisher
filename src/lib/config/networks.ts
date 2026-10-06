@@ -51,6 +51,22 @@ export const NETWORKS: Record<StellarNetwork, NetworkConfig> = {
   futurenet: FUTURENET,
 };
 
+// the network for a known id, or null. never guesses: a persisted record or a
+// request naming a network we do not know must be rejected by the caller, not
+// silently resumed or signed on another network.
+export function parseNetworkId(id: string | null | undefined): NetworkConfig | null {
+  if (id === "mainnet" || id === "testnet" || id === "futurenet") return NETWORKS[id];
+  return null;
+}
+
+export function requireNetwork(id: string | null | undefined): NetworkConfig {
+  const network = parseNetworkId(id);
+  if (network === null) throw new Error(`unknown Stellar network id "${String(id)}"`);
+  return network;
+}
+
+// lenient: an unknown id becomes testnet. kept only until its callers move to
+// parseNetworkId / requireNetwork; new code must not use it.
 export function resolveNetwork(id: string | undefined): NetworkConfig {
   if (id === "mainnet" || id === "testnet" || id === "futurenet") {
     return NETWORKS[id];

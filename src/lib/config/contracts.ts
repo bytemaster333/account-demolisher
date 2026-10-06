@@ -268,9 +268,9 @@ export function isKnownContract(contractId: string, network: NetworkConfig): boo
 }
 
 // the predicate allowlist.ts applies before signing, so it answers the root-target
-// question. callers outside this module still pass the network optionally; an
-// omitted network keeps the old mainnet reading until those callers move to
-// isAllowedRootTarget / isKnownContract with an explicit network.
+// question. an omitted network still reads as mainnet only because callers in
+// other modules (scam-heuristics passes none) have not moved to isAllowedRootTarget
+// / isKnownContract with an explicit network yet; new code must not call this.
 export function isAllowedContract(contractId: string, network?: NetworkConfig): boolean {
   if (network === undefined) return MAINNET_ENTRYPOINT_IDS.has(contractId);
   return isAllowedRootTarget(contractId, network);
