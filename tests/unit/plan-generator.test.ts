@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { Asset, Keypair, StrKey } from "@stellar/stellar-sdk";
 import { TESTNET } from "@/lib/config/networks";
-import { finalBatchOptions, generatePlan } from "@/lib/plan/generator";
+import { finalBatchOptions, generatePlan, preparePlanFor } from "@/lib/plan/generator";
 import { planExitPayoutTokens, topologicalOrder, type PlanTree } from "@/lib/plan/tree";
 import type { AccountAudit } from "@/lib/types/account";
 import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
@@ -934,5 +934,24 @@ describe("decision 3: per-token answers to a refused conversion", () => {
     expect(tree.allNodes.has(id("drain-token", B))).toBe(false);
     expect(tree.allNodes.has(id("convert-token", B))).toBe(false);
     expect(tree.allNodes.get(id("convert-token", C))?.kind).toBe("ConvertSorobanToXLM");
+  });
+});
+
+describe("PLCL-30: callers can tell a prepare-only plan before minting a mediator", () => {
+  const NOW = 1_700_000_000_000;
+  const locked = emptyPositions({
+    backstop: [{ poolId: POOL_ID, shares: 5n, queuedForWithdrawal: 0n }],
+  });
+
+  it("reports the unlock date for positions that keep a locked queue, and nothing otherwise", () => {
+    expect(preparePlanFor(locked, NOW)?.unlocksAt.getTime()).toBe(NOW + 17 * 24 * 60 * 60 * 1000);
+    expect(preparePlanFor(emptyPositions(), NOW)).toBeUndefined();
+  });
+
+  it("plans an exchange close's prepare run without a mediator or flow token", () => {
+    const tree = generatePlan(makeAudit(), locked, [], DEST, { now: NOW, useMediator: true });
+    expect(tree.prepareOnly).toBeDefined();
+    expect(tree.allNodes.has("mediator-forward")).toBe(false);
+    expect(tree.allNodes.has(id("backstop-queue", POOL_ID))).toBe(true);
   });
 });

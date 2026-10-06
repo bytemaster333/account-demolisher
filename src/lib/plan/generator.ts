@@ -110,10 +110,13 @@ export function generatePlan(
   opts: GeneratePlanOptions = {},
 ): PlanTree {
   const useMediator = opts.useMediator === true;
-  if (useMediator && !opts.mediatorPublicKey) {
+  // a plan that only prepares the close never merges, so it needs no mediator
+  const now = opts.now ?? Date.now();
+  const merges = preparePlanFor(positions, now) === undefined;
+  if (useMediator && merges && !opts.mediatorPublicKey) {
     throw new Error("generatePlan: useMediator=true requires opts.mediatorPublicKey");
   }
-  if (useMediator && !opts.flowToken) {
+  if (useMediator && merges && !opts.flowToken) {
     // the merge funds + drains an ephemeral mediator; without the flow token the
     // forward out of it can never be co-signed, stranding the funds
     throw new Error("generatePlan: useMediator=true requires opts.flowToken");
@@ -374,10 +377,9 @@ export function generatePlan(
   // plan then only prepares the close.
   const forfeit = new Set(opts.forfeitBackstopEmissionsPoolIds ?? []);
   const forfeited: ForfeitedBackstopEmissions[] = [];
-  const backstopNow = opts.now ?? Date.now();
+  const backstopNow = now;
   const backstopPayoutIds: string[] = [];
   const backstopPayoutTokens: string[] = [];
-  let unlocksAt: Date | null = null;
   for (const bs of positions.backstop) {
     const duration = bs.queueDurationSeconds ?? BACKSTOP_QUEUE_DURATION_SECONDS;
     const queueEndsAt = new Date(backstopNow + duration * 1000);
@@ -438,22 +440,8 @@ export function generatePlan(
       backstopPayoutIds.push(id);
       backstopPayoutTokens.push(lpToken);
     }
-    // what stays locked once this plan has run: new queues, and the part of an
-    // existing queue that has not unlocked yet
-    if (bs.shares > 0n || bs.queuedForWithdrawal > unlocked) {
-      if (unlocksAt === null || queueEndsAt > unlocksAt) unlocksAt = queueEndsAt;
-    }
   }
-  const prepareOnly: PreparePlan | undefined =
-    unlocksAt === null
-      ? undefined
-      : {
-          unlocksAt,
-          reason:
-            "A Blend backstop withdrawal stays locked after this run, and the account must " +
-            "exist to receive it. This run queues it and unwinds everything else; come back " +
-            "after the unlock date to withdraw it and finish the close.",
-        };
+  const prepareOnly = preparePlanFor(positions, backstopNow);
 
   // standalone SEP-41 tokens: sweep each to the destination before the merge so a
   // custom token held in contract storage isn't stranded on the deleted account.
@@ -627,6 +615,32 @@ export function generatePlan(
   }
 
   return buildPlanTree(nodes, extras);
+}
+
+// whether a plan for these positions can only prepare the close: a backstop
+// queue stays locked after it runs (new queues, and the part of an existing one
+// that has not unlocked), and the account must exist to receive it. callers can
+// ask before minting anything only a full close uses, such as a mediator flow.
+export function preparePlanFor(
+  positions: ProtocolPositions,
+  now: number = Date.now(),
+): PreparePlan | undefined {
+  let unlocksAt: Date | null = null;
+  for (const bs of positions.backstop) {
+    const unlocked = bs.unlockedQueuedForWithdrawal ?? 0n;
+    if (bs.shares <= 0n && bs.queuedForWithdrawal <= unlocked) continue;
+    const duration = bs.queueDurationSeconds ?? BACKSTOP_QUEUE_DURATION_SECONDS;
+    const queueEndsAt = new Date(now + duration * 1000);
+    if (unlocksAt === null || queueEndsAt > unlocksAt) unlocksAt = queueEndsAt;
+  }
+  if (unlocksAt === null) return undefined;
+  return {
+    unlocksAt,
+    reason:
+      "A Blend backstop withdrawal stays locked after this run, and the account must " +
+      "exist to receive it. This run queues it and unwinds everything else; come back " +
+      "after the unlock date to withdraw it and finish the close.",
+  };
 }
 
 // the batch options a FinalClassicTx was reviewed with, for the execute-time
