@@ -26,8 +26,10 @@
 //    with a transaction that could never be submitted.
 //  - capacity is split per network and capped per closing account, so free
 //    testnet accounts can't fill the slots mainnet users need. a new request
-//    for an account replaces its oldest one at the cap: requests for the same
-//    account share a sequence number, so at most one of them can ever land.
+//    for an account replaces one of its requests at the cap, the one with the
+//    least signer weight collected: requests for the same account share a
+//    sequence number, so at most one of them can ever land. a signer can still
+//    push out a request holding no more weight than their own signature.
 
 import { StrKey, TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
 
@@ -425,15 +427,17 @@ export async function createPlan(network: string, xdr: string): Promise<CreateRe
   }
 
   // the account's other requests: one whose sequence number is already used can
-  // never be submitted, and at the per-account cap the oldest gives way. the
-  // rest share this request's sequence number, so only one could land anyway.
+  // never be submitted, and at the per-account cap the one with the least signer
+  // weight collected gives way (the oldest among equals), so a single signer
+  // publishing new closes can't push out a request others have already signed.
+  // the rest share this request's sequence number, so only one could land anyway.
   const mine = [...plans].filter(([, r]) => r.network === net.id && r.account === decoded.source);
   const live: [string, PlanRecord][] = [];
   for (const [otherId, other] of mine) {
     if (other.sequence <= BigInt(accountSequence)) drop(otherId, other);
     else live.push([otherId, other]);
   }
-  live.sort(([, x], [, y]) => x.createdAt - y.createdAt);
+  live.sort(([, x], [, y]) => x.weight - y.weight || x.createdAt - y.createdAt);
   while (live.length >= MAX_PLANS_PER_ACCOUNT) {
     const [oldestId, oldest] = live.shift()!;
     drop(oldestId, oldest);

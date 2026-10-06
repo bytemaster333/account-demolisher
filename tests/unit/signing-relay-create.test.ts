@@ -200,6 +200,34 @@ describe("createPlan", () => {
     expect(getPlan(fourth.ok ? fourth.id : "")).not.toBeNull();
   });
 
+  it("at the cap gives way with the request that has collected the least weight", async () => {
+    // one signer below the threshold publishing new closes must not be able to
+    // push out a request other signers have already signed
+    const a = newAccount(3);
+    const [c1, , attacker] = a.cosigners;
+    loadAccount.mockResolvedValue(
+      accountResponse({ ...a, thresholds: { low: 1, med: 1, high: 4 } }),
+    );
+    const targetTx = buildClose(a, { memo: "target" });
+    const target = await createPlan("testnet", signedBy(targetTx, a.kp));
+    const targetId = target.ok ? target.id : "";
+    expect(addSignature(targetId, signedBy(targetTx, c1!)).ok).toBe(true);
+
+    const spam: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const res = await createPlan(
+        "testnet",
+        signedBy(buildClose(a, { memo: `spam${i}` }), attacker!),
+      );
+      expect(res.ok).toBe(true);
+      spam.push(res.ok ? res.id : "");
+    }
+    expect(getPlan(targetId)).not.toBeNull();
+    expect(TransactionBuilder.fromXdr(getPlan(targetId)!.xdr, NET).signatures).toHaveLength(2);
+    // the newest two spam requests remain next to the target
+    expect(spam.map((id) => getPlan(id) !== null)).toEqual([false, false, false, true, true]);
+  });
+
   it("drops an account's requests whose sequence number has already been used", async () => {
     const a = newAccount();
     loadAccount.mockResolvedValueOnce(accountResponse(a));
