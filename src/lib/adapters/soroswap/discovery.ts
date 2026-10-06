@@ -1,25 +1,25 @@
-// on-chain Soroswap LP discovery: our own position finder, no third-party API.
+// on-chain soroswap LP discovery: our own position finder, no third-party API.
 //
-// Soroswap has no per-user position index: every pair is its own LP-token
+// soroswap has no per-user position index: every pair is its own LP-token
 // contract, so in principle you must inspect the user's balance on every pair.
-// Naively that is two `simulateTransaction` round-trips per pair (all_pairs(i) to
-// resolve the address, then balance(user)), which is O(pairs) heavy RPC calls and
+// naively that is two `simulateTransaction` round-trips per pair (all_pairs(i) to
+// resolve the address, then balance(user)), which is O(pairs) heavy rpc calls and
 // blows the discovery timeout once a factory has a few hundred pairs.
 //
-// Instead we read the same storage directly with `getLedgerEntries`, which fetches
-// up to ~200 ledger keys per call. Both key layouts below were validated against
-// the contracts' OWN simulation footprints (the keys balance()/all_pairs() read):
+// instead we read the same storage directly with `getLedgerEntries`, which fetches
+// up to ~200 ledger keys per call. both key layouts below were validated against
+// the contracts' own simulation footprints (the keys balance()/all_pairs() read):
 //   factory  persistent  Vec[Symbol("PairAddressesNIndexed"), U32(index)] -> Address(pair)
 //   pair     persistent  Vec[Symbol("Balance"), Address(user)]            -> i128 shares
-// So the whole factory enumerates + filters in a handful of batched reads, and we
-// fall back to the authoritative simulate for anything the bulk read can't resolve.
-// Archived (evicted) entries are not a blind spot: stellar-rpc's getLedgerEntries
+// so the whole factory enumerates and filters in a handful of batched reads, and
+// anything the bulk read can't resolve goes to the authoritative simulate.
+// archived (evicted) entries are not a blind spot: stellar-rpc's getLedgerEntries
 // (cmd/stellar-rpc/internal/ledgerentries) drops only keys core reports as
 // LedgerEntryStateNotFound and returns archived ones with liveUntilLedgerSeq 0, so
 // a long-dormant LP balance still comes back as a candidate and is then read by
 // the balance() simulation (which restores archived footprint entries).
 //
-// Pair-token ABI (verified against docs.soroswap.finance):
+// pair-token ABI (verified against docs.soroswap.finance):
 //   SoroswapFactory.all_pairs_length() -> u32
 //   SoroswapFactory.all_pairs(n: u32)  -> Address
 //   SoroswapPair.balance(id: Address)  -> i128   (LP shares)
@@ -54,7 +54,7 @@ export interface SoroswapDiscoveryDeps {
   ) => Promise<readonly string[]>;
 }
 
-// The bulk read is cheap per pair, so the cap only exists to bound a pathological
+// the bulk read is cheap per pair, so the cap only exists to bound a pathological
 // factory; keep it generous.
 const DEFAULT_MAX_PAIRS = 10_000;
 const DEFAULT_BATCH_SIZE = 190;
@@ -125,8 +125,8 @@ export async function discoverSoroswapPositions(
   return positions;
 }
 
-// Reads Address(pair) for indices 0..pairCount-1 from the factory's persistent
-// storage via getLedgerEntries. Any index the bulk read doesn't return (unexpected,
+// reads Address(pair) for indices 0..pairCount-1 from the factory's persistent
+// storage via getLedgerEntries. any index the bulk read doesn't return (unexpected,
 // but possible if an entry were archived) falls back to the authoritative
 // all_pairs(i) simulate so enumeration is never silently short.
 async function resolvePairAddresses(
@@ -184,10 +184,10 @@ async function resolvePairAddresses(
   return addresses;
 }
 
-// Returns the subset of pairs for which the user has a persistent Balance entry.
+// returns the subset of pairs for which the user has a persistent Balance entry.
 // getLedgerEntries returns every key that exists, archived ones included (with
 // liveUntilLedgerSeq 0), so a returned entry means a (possibly non-zero) balance
-// and absence means definitively zero. The exact amount is confirmed by simulate
+// and absence means definitively zero. the exact amount is confirmed by simulate
 // in the caller.
 async function filterPairsWithBalance(
   server: rpc.Server,

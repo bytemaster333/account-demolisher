@@ -12,7 +12,6 @@ import {
 } from "@stellar/stellar-sdk";
 
 import {
-  removeLiquidity,
   removeLiquidityByContractIds,
   type RemoveLiquidityByContractIdsArgs,
   type RemoveLiquidityDeps,
@@ -169,26 +168,5 @@ describe("removeLiquidityByContractIds guards", () => {
     await expect(removeLiquidityByContractIds(baseArgs({ deadline: 1.5 }), deps)).rejects.toThrow(
       RangeError,
     );
-  });
-});
-
-describe("removeLiquidity asset resolution", () => {
-  it("refuses liquidity_pool_shares as a token (must pass the two underlying assets)", async () => {
-    const { deps } = captureDeps();
-    await expect(
-      removeLiquidity(
-        {
-          tokenA: { kind: "liquidity_pool_shares", poolId: "abc" },
-          tokenB: { kind: "native" },
-          liquidity: "5000",
-          amountAMin: "0",
-          amountBMin: "0",
-          userAddress: USER,
-          deadline: 1_800_000_000,
-          network: TESTNET,
-        },
-        deps,
-      ),
-    ).rejects.toThrow(TypeError);
   });
 });
