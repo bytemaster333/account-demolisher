@@ -5,21 +5,16 @@ import {
   Asset,
   BASE_FEE,
   LiquidityPoolAsset,
-  Memo,
   Operation,
+  StrKey,
   TransactionBuilder,
   xdr,
 } from "@stellar/stellar-sdk";
 import type { NetworkConfig } from "@/lib/config/networks";
+import { DEFAULT_TX_VALIDITY_SECONDS } from "@/lib/stellar/ledger-clock";
+import { toSdkMemo } from "@/lib/stellar/memo";
 import type { AssetIdentifier } from "@/lib/types/account";
-import type {
-  BatchedOperation,
-  ClassicBatch,
-  ClassicMemo,
-  TransactionBuildResult,
-} from "@/lib/types/plan";
-
-const FIVE_MINUTES_SECONDS = 300;
+import type { BatchedOperation, ClassicBatch, TransactionBuildResult } from "@/lib/types/plan";
 
 export function buildClassicTransaction(
   batch: ClassicBatch,
@@ -30,7 +25,11 @@ export function buildClassicTransaction(
   // default is short. A multisig signing plan circulates for hours/days, so its
   // builder passes a much longer window (the tx must still be valid when the last
   // co-signer signs).
-  timeoutSeconds: number = FIVE_MINUTES_SECONDS,
+  timeoutSeconds: number = DEFAULT_TX_VALIDITY_SECONDS,
+  // close time (unix seconds) of the latest ledger, from fetchLedgerClock or
+  // AccountAuditResult.ledger. when given, maxTime is anchored to the network's
+  // clock instead of the browser's, which may be minutes off.
+  ledgerCloseTime?: number,
 ): TransactionBuildResult {
   if (batch.operations.length === 0) {
     throw new Error("buildClassicTransaction: batch has no operations");
@@ -53,7 +52,14 @@ export function buildClassicTransaction(
     builder.addOperation(addOperation(op));
   }
 
-  builder.setTimeout(timeoutSeconds);
+  if (ledgerCloseTime === undefined) {
+    builder.setTimeout(timeoutSeconds);
+  } else {
+    if (!Number.isSafeInteger(ledgerCloseTime) || ledgerCloseTime <= 0) {
+      throw new Error(`buildClassicTransaction: invalid ledger close time ${ledgerCloseTime}`);
+    }
+    builder.setTimebounds(0, ledgerCloseTime + timeoutSeconds);
+  }
 
   const tx = builder.build();
   const envelopeXdr = tx.toEnvelope().toXdr("base64");
@@ -82,19 +88,6 @@ function computeFee(base: number, opCount: number): string {
     );
   }
   return total.toString();
-}
-
-function toSdkMemo(memo: ClassicMemo): Memo {
-  switch (memo.type) {
-    case "text":
-      return Memo.text(memo.value);
-    case "id":
-      return Memo.id(memo.value);
-    case "hash":
-      return Memo.hash(memo.value);
-    case "return":
-      return Memo.return(memo.value);
-  }
 }
 
 function addOperation(op: BatchedOperation): xdr.Operation {
@@ -141,10 +134,7 @@ function addOperation(op: BatchedOperation): xdr.Operation {
     case "path_payment_strict_send": {
       const sendAsset = toAsset(requireAsset(op.metadata, "sendAsset"));
       const destAsset = toAsset(requireAsset(op.metadata, "destAsset"));
-      const rawPath = op.metadata["path"];
-      const pathAssets = Array.isArray(rawPath)
-        ? rawPath.map((a) => toAsset(a as AssetIdentifier))
-        : [];
+      const pathAssets = requirePath(op.metadata).map(toAsset);
       return Operation.pathPaymentStrictSend({
         sendAsset,
         sendAmount: requireString(op.metadata, "sendAmount"),
@@ -205,22 +195,70 @@ function buildSetOptions(op: BatchedOperation): xdr.Operation {
   const signerKey = op.metadata["signerKey"];
   if (typeof signerKey === "string") {
     return Operation.setOptions({
-      signer: { ed25519PublicKey: signerKey, weight: 0 },
+      signer: { ...signerRemoval(signerKey, op.metadata["signerType"]), weight: 0 },
       ...(op.source ? { source: op.source } : {}),
     });
   }
-  const t = op.metadata["thresholds"] as
-    { low?: number; medium?: number; high?: number; masterWeight?: number } | undefined;
-  const low = t?.low ?? 0;
-  const medium = t?.medium ?? 0;
-  const high = t?.high ?? 0;
-  const masterWeight = t?.masterWeight ?? 1;
+  // a privileged op: every field must be present and in range rather than
+  // defaulted, so a batcher bug fails the build instead of resetting weights
+  const t = op.metadata["thresholds"];
+  if (typeof t !== "object" || t === null) {
+    throw new Error("set_options threshold reset requires metadata.thresholds");
+  }
+  const thresholds = t as Record<string, unknown>;
   return Operation.setOptions({
-    masterWeight,
-    lowThreshold: low,
-    medThreshold: medium,
-    highThreshold: high,
+    masterWeight: requireWeight(thresholds, "masterWeight"),
+    lowThreshold: requireWeight(thresholds, "low"),
+    medThreshold: requireWeight(thresholds, "medium"),
+    highThreshold: requireWeight(thresholds, "high"),
     ...(op.source ? { source: op.source } : {}),
+  });
+}
+
+// horizon reports each signer by its strkey (G..., T..., X..., P...) and its
+// type; set_options takes each type in its own field
+function signerRemoval(
+  key: string,
+  signerType: unknown,
+):
+  | { ed25519PublicKey: string }
+  | { preAuthTx: Uint8Array }
+  | { sha256Hash: Uint8Array }
+  | { ed25519SignedPayload: string } {
+  switch (signerType) {
+    case "ed25519_public_key":
+      return { ed25519PublicKey: key };
+    case "preauth_tx":
+      return { preAuthTx: StrKey.decodePreAuthTx(key) };
+    case "sha256_hash":
+      return { sha256Hash: StrKey.decodeSha256Hash(key) };
+    case "ed25519_signed_payload":
+      return { ed25519SignedPayload: key };
+    default:
+      throw new Error(`Unsupported signer type for removal: ${String(signerType)}`);
+  }
+}
+
+function requireWeight(t: Record<string, unknown>, key: string): number {
+  const v = t[key];
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 0 || v > 255) {
+    throw new Error(`set_options thresholds.${key} must be an integer 0-255; got ${String(v)}`);
+  }
+  return v;
+}
+
+function requirePath(meta: Record<string, unknown>): AssetIdentifier[] {
+  const raw = meta["path"];
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    throw new Error("path_payment metadata.path must be an array of assets");
+  }
+  return raw.map((entry, i) => {
+    const kind = (entry as { kind?: unknown } | null)?.kind;
+    if (typeof entry !== "object" || entry === null || (kind !== "native" && kind !== "credit")) {
+      throw new Error(`path_payment metadata.path[${i}] is not a native or credit asset`);
+    }
+    return entry as AssetIdentifier;
   });
 }
 

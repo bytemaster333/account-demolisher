@@ -19,12 +19,19 @@ const future = (secondsAfter: number): string => String(NOW_EPOCH_SECONDS + seco
 
 describe("evaluatePredicate", () => {
   describe("unconditional / degenerate inputs", () => {
-    it("treats a null predicate as unconditionally claimable", () => {
-      expect(evaluatePredicate(null, NOW)).toBe(true);
+    // horizon always emits a predicate, so a missing one is malformed input and
+    // must not be read as "claimable"
+    it("does not treat a null predicate as claimable", () => {
+      expect(evaluatePredicate(null, NOW)).toBe(false);
     });
 
-    it("treats an undefined predicate as unconditionally claimable", () => {
-      expect(evaluatePredicate(undefined, NOW)).toBe(true);
+    it("does not treat an undefined predicate as claimable", () => {
+      expect(evaluatePredicate(undefined, NOW)).toBe(false);
+    });
+
+    it("does not treat { unconditional: undefined } or null as claimable", () => {
+      expect(evaluatePredicate({ unconditional: undefined }, NOW)).toBe(false);
+      expect(evaluatePredicate({ unconditional: null }, NOW)).toBe(false);
     });
 
     it("returns false for a non-object predicate", () => {
@@ -111,9 +118,55 @@ describe("evaluatePredicate", () => {
     });
   });
 
+  describe("far-future abs_before (horizon expanded-year strings)", () => {
+    // horizon renders years past 9999 as an expanded-year rfc3339 string that
+    // Date.parse rejects, and also sends abs_before_epoch. rel_before INT64_MAX is
+    // stored by core as abs_before INT64_MAX and lands here too.
+    const int64Max = {
+      abs_before: "+292277026596-12-04T15:30:07Z",
+      abs_before_epoch: "9223372036854775807",
+    };
+    const year10000 = { abs_before: "+10000-01-01T00:00:00Z", abs_before_epoch: "253402300800" };
+
+    it("treats an INT64_MAX abs_before as claimable", () => {
+      expect(evaluatePredicate(int64Max, NOW)).toBe(true);
+    });
+
+    it("treats a year-10000 abs_before as claimable", () => {
+      expect(evaluatePredicate(year10000, NOW)).toBe(true);
+    });
+
+    it("treats an expanded-year string with no epoch as far future", () => {
+      expect(evaluatePredicate({ abs_before: "+10000-01-01T00:00:00Z" }, NOW)).toBe(true);
+      expect(evaluatePredicate({ not: { abs_before: "+10000-01-01T00:00:00Z" } }, NOW)).toBe(false);
+    });
+
+    it("is not claimable under not() of a far-future bound", () => {
+      expect(evaluatePredicate({ not: int64Max }, NOW)).toBe(false);
+      expect(evaluatePredicate({ not: year10000 }, NOW)).toBe(false);
+    });
+
+    it("prefers abs_before_epoch over the string form", () => {
+      expect(evaluatePredicate({ abs_before: "garbage", abs_before_epoch: future(60) }, NOW)).toBe(
+        true,
+      );
+      expect(evaluatePredicate({ abs_before: "garbage", abs_before_epoch: past(60) }, NOW)).toBe(
+        false,
+      );
+    });
+  });
+
+  describe("unreadable leaves fail closed in both directions", () => {
+    it("does not flip an unparseable bound into claimable under not()", () => {
+      expect(evaluatePredicate({ not: { abs_before: "not-a-date" } }, NOW)).toBe(false);
+      expect(evaluatePredicate({ not: { mystery: 1 } }, NOW)).toBe(false);
+      expect(evaluatePredicate({ not: { rel_before: "10" } }, NOW)).toBe(false);
+    });
+  });
+
   describe("relative-time predicate (rel_before / relBefore)", () => {
-    // The record-creation time is not available to the evaluator, so relative
-    // predicates are honestly reported as non-claimable rather than guessed.
+    // core stores rel_before as abs_before at creation, so horizon never returns
+    // it; a raw one is unreadable and never counts as claimable.
     it("returns false for rel_before regardless of value (snake_case)", () => {
       expect(evaluatePredicate({ rel_before: "0" }, NOW)).toBe(false);
       expect(evaluatePredicate({ rel_before: "99999999" }, NOW)).toBe(false);
@@ -295,5 +348,39 @@ describe("filterClaimableNow", () => {
 
   it("returns an empty list for empty input", () => {
     expect(filterClaimableNow([], USER, NOW)).toEqual([]);
+  });
+
+  // a claim is signed and submitted some time after the audit, so it has to stay
+  // claimable for the whole validity window of the transaction, not only at the
+  // ledger close time the audit read
+  describe("validity window", () => {
+    const WINDOW = 300;
+
+    it("skips a balance whose abs_before falls inside the window", () => {
+      const entries = [cb({ id: "a", predicate: { abs_before: future(120) } })];
+      expect(filterClaimableNow(entries, USER, NOW, WINDOW)).toHaveLength(0);
+      // still claimable at the instant itself
+      expect(filterClaimableNow(entries, USER, NOW)).toHaveLength(1);
+    });
+
+    it("keeps a balance whose abs_before is beyond the window", () => {
+      const entries = [cb({ id: "a", predicate: { abs_before: future(WINDOW + 1) } })];
+      expect(filterClaimableNow(entries, USER, NOW, WINDOW)).toHaveLength(1);
+    });
+
+    it("skips a balance that only opens inside the window", () => {
+      const entries = [cb({ id: "a", predicate: { not: { abs_before: future(60) } } })];
+      expect(filterClaimableNow(entries, USER, NOW, WINDOW)).toHaveLength(0);
+    });
+
+    it("keeps a balance that opened before the window and stays open", () => {
+      const entries = [cb({ id: "a", predicate: { not: { abs_before: past(60) } } })];
+      expect(filterClaimableNow(entries, USER, NOW, WINDOW)).toHaveLength(1);
+    });
+
+    it("rejects a negative or fractional window", () => {
+      expect(() => filterClaimableNow([], USER, NOW, -1)).toThrow();
+      expect(() => filterClaimableNow([], USER, NOW, 1.5)).toThrow();
+    });
   });
 });

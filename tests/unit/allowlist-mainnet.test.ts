@@ -43,7 +43,7 @@ function mainnetTx(op: xdr.Operation) {
     .build();
 }
 
-describe("mainnet allow-list — sign-time enforcement", () => {
+describe("mainnet allow-list: sign-time enforcement", () => {
   it("passes an invocation of an allow-listed MAINNET contract", () => {
     const t = mainnetTx(new Contract(MAINNET_ROUTER).call("swap"));
     expect(getViolations(t, MAINNET)).toEqual([]);
@@ -68,7 +68,7 @@ describe("mainnet allow-list — sign-time enforcement", () => {
   });
 });
 
-describe("mainnet allow-list — completeness and provenance", () => {
+describe("mainnet allow-list: completeness and provenance", () => {
   it("covers all four DeFi protocols", () => {
     const protocols = new Set(MAINNET_ALLOWLIST.map((c) => c.protocol));
     for (const p of ["blend", "aquarius", "soroswap", "fxdao"]) {
@@ -100,7 +100,7 @@ describe("mainnet allow-list — completeness and provenance", () => {
   });
 });
 
-describe("allow-list — network isolation", () => {
+describe("allow-list: network isolation", () => {
   it("a mainnet id is allowed on mainnet and rejected on testnet", () => {
     expect(isAllowedContract(MAINNET_ROUTER, MAINNET)).toBe(true);
     expect(isAllowedContract(MAINNET_ROUTER, TESTNET)).toBe(false);

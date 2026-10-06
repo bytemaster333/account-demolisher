@@ -2,16 +2,19 @@ import { describe, it, expect } from "vitest";
 import type { CexInfo, MemoLike } from "@/lib/safety/cex-registry";
 import {
   KNOWN_CEXES,
+  destinationRequiresMediator,
+  isSep29MemoRequired,
   lookupCex,
   requireMemoEnforcement,
   validateMemoFormat,
 } from "@/lib/safety/cex-registry";
+import { memoHashBytes } from "@/lib/stellar/memo";
 
 // cex-registry is the last line of defense against depositing to an exchange
 // hot wallet without the per-user memo that routes the funds. These tests pin
-// the registry lookups and the STRICT memo shape-validator that lives in this
-// module (distinct from the weaker requireMemoEnforcement in
-// memo-enforcement.ts, which takes a CexInfo rather than a destination string).
+// the registry lookups, the SEP-29 memo-required check, requireMemoEnforcement
+// and validateMemoFormat, the memo shape validator every destination goes
+// through.
 
 // Real entries read directly from the source registry.
 const KRAKEN_TEXT = "GA5XIGA5C7QTPTWXQHY6MCJRMTRZDOSHR6EFIBNDQTCQHG262N4GGKTM";
@@ -184,13 +187,10 @@ describe("requireMemoEnforcement, text memo validation", () => {
   });
 });
 
-// The switch handles "hash" and "return", validating 32 bytes as either 64 hex
-// chars or 44 base64 chars. NOTE: no registry entry declares memoType "hash" or
-// "return", and the earlier type-match guard requires memo.type === cex.memoType.
-// So these branches are UNREACHABLE via requireMemoEnforcement with the current
-// registry: a hash/return memo is rejected on the type mismatch before the
-// switch. These tests document that observable behavior rather than the (dead)
-// shape-validation logic. See cex-registry.ts:165 (guard) and :220-232 (branch).
+// No registry entry declares memoType "hash" or "return", and requireMemoEnforcement
+// checks memo.type against cex.memoType before it validates the value's shape, so
+// a hash or return memo to a registry exchange is refused on the type mismatch.
+// These tests pin that observable behavior.
 describe("requireMemoEnforcement, hash/return branches are gated out by type", () => {
   it("rejects a well-formed 64-char hex hash memo at a text CEX on type mismatch", () => {
     const hex = "a".repeat(64);
@@ -239,5 +239,73 @@ describe("validateMemoFormat (shape validation for ALL destinations)", () => {
 
   it("rejects an empty value", () => {
     expect(validateMemoFormat("id", "  ")).not.toBeNull();
+  });
+
+  // a memo the validator passes must be one the builder can encode
+  it("accepts exactly the hash/return values the memo builder can encode", () => {
+    const b64 = Buffer.from(Uint8Array.from({ length: 32 }, (_, i) => i)).toString("base64");
+    for (const value of [b64, "0123456789abcdef".repeat(4), "A".repeat(43) + "="]) {
+      expect(validateMemoFormat("hash", value)).toBeNull();
+      expect(() => memoHashBytes(value)).not.toThrow();
+    }
+    for (const value of ["A".repeat(44), "deadbeef", Buffer.alloc(31).toString("base64")]) {
+      expect(validateMemoFormat("hash", value)).not.toBeNull();
+      expect(() => memoHashBytes(value)).toThrow();
+    }
+  });
+});
+
+// SEP-29: an account publishes config.memo_required = "1" (base64 "MQ==") to say
+// deposits without a memo are not credited
+const UNLISTED = "GCZLCMUM4Q4H324CTT3753P6656CYR4KPLHYFPGYPGE6JVHONGLNRDI5";
+
+describe("isSep29MemoRequired", () => {
+  it("reads the config.memo_required data entry the way the sdk does", () => {
+    expect(isSep29MemoRequired({ "config.memo_required": "MQ==" })).toBe(true);
+    expect(isSep29MemoRequired({ "config.memo_required": "MA==" })).toBe(false);
+    expect(isSep29MemoRequired({ other: "MQ==" })).toBe(false);
+    expect(isSep29MemoRequired({})).toBe(false);
+  });
+});
+
+describe("destinationRequiresMediator", () => {
+  it("routes a registry exchange through the mediator", () => {
+    expect(destinationRequiresMediator(KRAKEN_TEXT, false)).toBe(true);
+  });
+
+  it("routes an unlisted SEP-29 memo-required destination through the mediator", () => {
+    expect(destinationRequiresMediator(UNLISTED, true)).toBe(true);
+  });
+
+  it("merges directly into an ordinary destination", () => {
+    expect(destinationRequiresMediator(UNLISTED, false)).toBe(false);
+  });
+});
+
+describe("requireMemoEnforcement for SEP-29 destinations", () => {
+  it("refuses an unlisted SEP-29 destination without a memo", () => {
+    const res = requireMemoEnforcement(UNLISTED, undefined, { sep29MemoRequired: true });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toContain("requires a memo");
+  });
+
+  it("refuses a malformed memo for an unlisted SEP-29 destination", () => {
+    const res = requireMemoEnforcement(UNLISTED, memo("id", "abc"), { sep29MemoRequired: true });
+    expect(res.ok).toBe(false);
+  });
+
+  it("accepts any well-formed memo type for an unlisted SEP-29 destination", () => {
+    expect(
+      requireMemoEnforcement(UNLISTED, memo("text", "user-42"), { sep29MemoRequired: true }),
+    ).toEqual({ ok: true });
+    expect(requireMemoEnforcement(UNLISTED, memo("id", "42"), { sep29MemoRequired: true })).toEqual(
+      { ok: true },
+    );
+  });
+
+  it("does not demand a memo from an ordinary destination", () => {
+    expect(requireMemoEnforcement(UNLISTED, undefined, { sep29MemoRequired: false })).toEqual({
+      ok: true,
+    });
   });
 });

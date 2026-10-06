@@ -41,7 +41,7 @@ function tx(op: xdr.Operation) {
     .build();
 }
 
-describe("assertTransactionAllowed — sign-time allow-list gate fires", () => {
+describe("assertTransactionAllowed: sign-time allow-list gate fires", () => {
   it("passes a classical-only transaction (no contract invocations)", () => {
     const t = tx(Operation.payment({ destination: SOURCE, asset: Asset.native(), amount: "1" }));
     expect(() => assertTransactionAllowed(t, TESTNET)).not.toThrow();
@@ -112,6 +112,90 @@ describe("assertTransactionAllowed — sign-time allow-list gate fires", () => {
     const t = tx(invokeWithAuth([entry]));
     expect(() => assertTransactionAllowed(t, TESTNET)).toThrow(AllowlistViolation);
     expect(getViolations(t, TESTNET)[0]!.reason).toMatch(/authorization entry authorizes/i);
+  });
+
+  function createContractV2Fn() {
+    return xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeCreateContractV2HostFn(
+      new xdr.CreateContractArgsV2({
+        contractIdPreimage: xdr.ContractIdPreimage.contractIdPreimageFromAddress(
+          new xdr.ContractIdPreimageFromAddress({
+            address: Address.fromString(ALLOWED_ROUTER).toScAddress(),
+            salt: Buffer.alloc(32, 2),
+          }),
+        ),
+        executable: xdr.ContractExecutable.contractExecutableWasm(hash(Buffer.from("y"))),
+        constructorArgs: [],
+      }),
+    );
+  }
+
+  function routerFn() {
+    return xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeContractFn(
+      new xdr.InvokeContractArgs({
+        contractAddress: Address.fromString(ALLOWED_ROUTER).toScAddress(),
+        functionName: "swap",
+        args: [],
+      }),
+    );
+  }
+
+  it("BLOCKS a CreateContractV2 authorization at the root", () => {
+    const entry = new xdr.SorobanAuthorizationEntry({
+      credentials: sourceCreds,
+      rootInvocation: new xdr.SorobanAuthorizedInvocation({
+        function: createContractV2Fn(),
+        subInvocations: [],
+      }),
+    });
+    expect(getViolations(tx(invokeWithAuth([entry])), TESTNET)[0]!.reason).toMatch(
+      /authorizes contract creation/,
+    );
+  });
+
+  it("BLOCKS contract creation nested in a sub-invocation", () => {
+    const entry = new xdr.SorobanAuthorizationEntry({
+      credentials: sourceCreds,
+      rootInvocation: new xdr.SorobanAuthorizedInvocation({
+        function: routerFn(),
+        subInvocations: [
+          new xdr.SorobanAuthorizedInvocation({
+            function: routerFn(),
+            subInvocations: [
+              new xdr.SorobanAuthorizedInvocation({
+                function: createContractV2Fn(),
+                subInvocations: [],
+              }),
+            ],
+          }),
+        ],
+      }),
+    });
+    expect(getViolations(tx(invokeWithAuth([entry])), TESTNET)[0]!.reason).toMatch(
+      /authorizes contract creation/,
+    );
+  });
+
+  // an invocation whose function cannot be read must refuse, never pass
+  it("BLOCKS an auth entry whose invocation function cannot be read", () => {
+    const entry = new xdr.SorobanAuthorizationEntry({
+      credentials: sourceCreds,
+      rootInvocation: new xdr.SorobanAuthorizedInvocation({
+        function: routerFn(),
+        subInvocations: [
+          new xdr.SorobanAuthorizedInvocation({ function: routerFn(), subInvocations: [] }),
+        ],
+      }),
+    });
+    const t = tx(invokeWithAuth([entry]));
+    const decoded = (t.operations[0] as Operation.InvokeHostFunction).auth![0]!;
+    Object.defineProperty(decoded.rootInvocation.subInvocations[0]!, "function", {
+      get() {
+        throw new Error("unreadable");
+      },
+    });
+    const v = getViolations(t, TESTNET);
+    expect(v).toHaveLength(1);
+    expect(v[0]!.reason).toMatch(/Could not inspect a Soroban authorization entry/);
   });
 
   it("ALLOWS an auth entry that authorizes a normal token sub-invocation", () => {

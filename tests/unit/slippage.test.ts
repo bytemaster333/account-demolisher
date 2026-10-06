@@ -7,9 +7,11 @@ import {
   MAX_SLIPPAGE_BPS,
   MIN_SLIPPAGE_BPS,
   isMarketSellAcceptable,
+  parseMinMarketOutEnv,
+  parseSlippageBpsEnv,
   resolveConfiguredSlippageBps,
   resolveMinMarketOutStroops,
-  SlippageGuardTripped,
+  SlippageConfigError,
 } from "@/lib/safety/slippage";
 
 // central slippage policy: converts an expected output + a bps tolerance into
@@ -111,37 +113,7 @@ describe("applySlippageMin", () => {
   });
 });
 
-describe("SlippageGuardTripped", () => {
-  it("is an Error subclass carrying the structured fields", () => {
-    const err = new SlippageGuardTripped({
-      expected: "1000",
-      minimumAccepted: "990",
-      actual: "980",
-      slippageBps: 100,
-    });
-    expect(err).toBeInstanceOf(Error);
-    expect(err.name).toBe("SlippageGuardTripped");
-    expect(err.expected).toBe("1000");
-    expect(err.minimumAccepted).toBe("990");
-    expect(err.actual).toBe("980");
-    expect(err.slippageBps).toBe(100);
-  });
-
-  it("renders a message referencing the actual, minimum, expected and bps", () => {
-    const err = new SlippageGuardTripped({
-      expected: "1000",
-      minimumAccepted: "990",
-      actual: "980",
-      slippageBps: 100,
-    });
-    expect(err.message).toContain("980");
-    expect(err.message).toContain("990");
-    expect(err.message).toContain("1000");
-    expect(err.message).toContain("100 bps");
-  });
-});
-
-describe("resolveConfiguredSlippageBps — single configurable policy", () => {
+describe("resolveConfiguredSlippageBps single configurable policy", () => {
   const KEY = "NEXT_PUBLIC_SLIPPAGE_BPS";
   const orig = process.env[KEY];
   afterEach(() => {
@@ -161,11 +133,29 @@ describe("resolveConfiguredSlippageBps — single configurable policy", () => {
     expect(resolveConfiguredSlippageBps()).toBe(250);
   });
 
-  it("falls back to the default on out-of-range / non-integer / garbage (never throws)", () => {
-    for (const bad of ["9999", "5", "1.5", "abc", "-100"]) {
+  // a set but unusable value is an operator mistake on a money path; silently
+  // using the default would hide it
+  it("throws a config error on out-of-range / non-integer / garbage values", () => {
+    for (const bad of ["1000", "9999", "5", "1.5", "abc", "-100", "1e2"]) {
       process.env[KEY] = bad;
-      expect(resolveConfiguredSlippageBps()).toBe(DEFAULT_SLIPPAGE_BPS);
+      expect(() => resolveConfiguredSlippageBps()).toThrow(SlippageConfigError);
+      expect(() => resolveConfiguredSlippageBps()).toThrow(KEY);
     }
+  });
+});
+
+describe("env parsers for the build-time schema", () => {
+  it("parses NEXT_PUBLIC_SLIPPAGE_BPS", () => {
+    expect(parseSlippageBpsEnv(undefined)).toBe(DEFAULT_SLIPPAGE_BPS);
+    expect(parseSlippageBpsEnv("")).toBe(DEFAULT_SLIPPAGE_BPS);
+    expect(parseSlippageBpsEnv(" 250 ")).toBe(250);
+    expect(() => parseSlippageBpsEnv("501")).toThrow(SlippageConfigError);
+  });
+
+  it("parses NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS", () => {
+    expect(parseMinMarketOutEnv(undefined)).toBe(0n);
+    expect(parseMinMarketOutEnv("20000000")).toBe(20_000_000n);
+    expect(() => parseMinMarketOutEnv("2.5")).toThrow(SlippageConfigError);
   });
 });
 
@@ -182,10 +172,13 @@ describe("value-destroying-sell floor (isMarketSellAcceptable / resolveMinMarket
     expect(resolveMinMarketOutStroops()).toBe(0n);
     process.env[KEY] = "5000";
     expect(resolveMinMarketOutStroops()).toBe(5000n);
-    process.env[KEY] = "-1";
-    expect(resolveMinMarketOutStroops()).toBe(0n);
-    process.env[KEY] = "garbage";
-    expect(resolveMinMarketOutStroops()).toBe(0n);
+  });
+
+  it("throws a config error on a malformed floor instead of using 0", () => {
+    for (const bad of ["-1", "garbage", "1.5"]) {
+      process.env[KEY] = bad;
+      expect(() => resolveMinMarketOutStroops()).toThrow(SlippageConfigError);
+    }
   });
 
   it("refuses a sell that nets nothing after the haircut (dust)", () => {

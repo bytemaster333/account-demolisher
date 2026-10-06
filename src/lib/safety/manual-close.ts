@@ -1,8 +1,8 @@
 // "Manual close required" advisory for protocols this tool cannot auto-unwind.
 //
 // Automated unwinding covers exactly Blend, Aquarius, Soroswap, and FxDAO. Any
-// OTHER on-chain position — a pool share, a loan/vault receipt, or a staked
-// balance in a protocol we don't support — can't be detected or unwound here.
+// OTHER on-chain position (a pool share, a loan/vault receipt, or a staked
+// balance in a protocol we don't support) can't be detected or unwound here.
 // There is no general "what protocols has this account used" scan, but a held
 // SEP-41 token from an UNRECOGNIZED contract is the visible fingerprint of one:
 // protocols hand out receipt/share/staked tokens, and those surface as standalone
@@ -27,7 +27,7 @@ export function manualCloseRequiredNotice(counts: {
     `Manual close required for unsupported protocols: this close only auto-unwinds ` +
     `${SUPPORTED_DEFI_PROTOCOLS.join(", ")}. The account holds ${total} ${noun} from ` +
     `contract${total === 1 ? "" : "s"} we don't recognize. If any is a position in another DeFi ` +
-    `app — a pool share, a loan or vault receipt, or a staked balance — unwind it in that app ` +
+    `app (a pool share, a loan or vault receipt, or a staked balance), unwind it in that app ` +
     `first; we can only move the ${noun} as-is, which may not reclaim the underlying value.`
   );
 }

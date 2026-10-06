@@ -1,3 +1,5 @@
+import { AccountRequiresMemoError } from "@stellar/stellar-sdk";
+
 // Extract a human-readable message from an unknown thrown value.
 //
 // Not every rejection is an `Error`. The Soroban RPC client in
@@ -20,4 +22,21 @@ export function errorMessage(err: unknown, fallback?: string): string {
     return (err as { message: string }).message;
   }
   return fallback ?? String(err);
+}
+
+// Describe a rejected Horizon submission. Horizon's result codes when it ran the
+// transaction; otherwise the error's own message, so a refusal that never reached
+// Horizon (the sdk's SEP-29 memo check, a network failure) is not reduced to a
+// bare "no result codes".
+export function describeSubmitError(err: unknown): string {
+  if (err instanceof AccountRequiresMemoError) {
+    return (
+      `destination ${err.accountId} requires a memo (SEP-29 config.memo_required), and the ` +
+      `transaction has none (operation ${err.operationIndex})`
+    );
+  }
+  const codes = (err as { response?: { data?: { extras?: { result_codes?: unknown } } } } | null)
+    ?.response?.data?.extras?.result_codes;
+  if (codes !== undefined && codes !== null) return JSON.stringify(codes);
+  return errorMessage(err);
 }
