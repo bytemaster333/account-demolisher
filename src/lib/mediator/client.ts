@@ -3,6 +3,7 @@
 
 import { StrKey } from "@stellar/stellar-sdk";
 
+import { errorMessage } from "@/lib/errors";
 import {
   encodeMemoCommitment,
   forwardMemoToSdk,
@@ -60,7 +61,7 @@ async function send(url: string, init: RequestInit, signal?: AbortSignal) {
     return { response, body: await readJson(response) } as const;
   } catch (err) {
     return {
-      error: err instanceof Error ? err.message : "Failed to reach mediator endpoint.",
+      error: errorMessage(err, "Failed to reach mediator endpoint."),
     } as const;
   }
 }
@@ -159,7 +160,7 @@ export async function startMediatorFlow(
     return {
       ok: false,
       code: "INVALID_MEMO",
-      reason: err instanceof Error ? err.message : "The deposit memo is malformed.",
+      reason: errorMessage(err, "The deposit memo is malformed."),
     };
   }
 

@@ -1,6 +1,8 @@
 // response helpers shared by the mediator routes. the folder is private (leading
 // underscore), so next never routes it.
 
+import { errorMessage } from "@/lib/errors";
+
 const ALLOWED_METHODS = "GET, POST, OPTIONS";
 
 // local dev origins; the project itself runs on 3002
@@ -105,6 +107,6 @@ const SEED_PATTERN = /S[A-Z2-7]{55}/gu;
 
 // operators get the reason on the server log, the client only a generic code
 export function logMediatorError(context: string, err: unknown): void {
-  const message = err instanceof Error ? err.message : String(err);
+  const message = errorMessage(err);
   console.error(`[mediator] ${context}: ${message.replace(SEED_PATTERN, "[redacted seed]")}`);
 }
