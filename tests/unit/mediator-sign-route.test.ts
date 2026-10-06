@@ -436,4 +436,48 @@ describe("misconfigured MEDIATOR_SECRET", () => {
       vi.resetModules();
     }
   });
+
+  it("charges POSTs to the client address before logging, so junk can't flood the log", async () => {
+    vi.resetModules();
+    process.env.MEDIATOR_SECRET = `S${"A".repeat(54)}Q`;
+    const errors: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    });
+    // well formed, so the route has to reach the hmac (and the secret) to judge it
+    const token = [
+      "v2",
+      "a".repeat(32),
+      "1",
+      "testnet",
+      CEX,
+      encodeMemoCommitment(Memo.none()),
+      "b".repeat(64),
+    ].join(".");
+    const sendFrom = (handler: (r: Request) => Promise<Response>, path: string, body: unknown) =>
+      handler(
+        new Request(`http://localhost${path}`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-forwarded-for": "10.55.0.1" },
+          body: JSON.stringify(body),
+        }),
+      );
+    try {
+      const sign = await import("@/app/api/mediator/sign/route");
+      const reissue = await import("@/app/api/mediator/reissue/route");
+      for (const [handler, path, body] of [
+        [sign.POST, "/api/mediator/sign", { envelopeXdr: "AAAA", flowToken: token }],
+        [reissue.POST, "/api/mediator/reissue", { flowToken: token }],
+      ] as const) {
+        errors.length = 0;
+        const statuses: number[] = [];
+        for (let i = 0; i < 8; i++) statuses.push((await sendFrom(handler, path, body)).status);
+        expect(statuses).toEqual([500, 500, 500, 500, 500, 429, 429, 429]);
+        expect(errors).toHaveLength(5);
+      }
+    } finally {
+      process.env.MEDIATOR_SECRET = MASTER;
+      vi.resetModules();
+    }
+  });
 });
