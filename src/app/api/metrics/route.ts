@@ -1,4 +1,4 @@
-// Aggregate usage metrics. POST records a visit / funnel step / verified close;
+// aggregate usage metrics. POST records a visit / funnel step / verified close;
 // GET returns the aggregate snapshot behind an admin bearer token.
 //
 // a close is counted only after verifyCloseTx confirms a successful merge that

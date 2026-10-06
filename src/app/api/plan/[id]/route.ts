@@ -1,5 +1,6 @@
-// Fetch the current envelope for a signing request. Returns { network, xdr }.
-// Public data only; a co-signer verifies the transaction hash matches this id.
+// fetch the current state of a signing request: the envelope, the closing
+// account, the signer set and thresholds the relay checks against, and when it
+// expires. public data only; a co-signer checks the transaction hash matches the id.
 
 import { createLimiter, rateLimitByIp } from "@/server/rate-limit";
 import { getPlan } from "@/server/signing-relay";

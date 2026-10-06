@@ -1,5 +1,5 @@
-// Add a co-signer's signature to a signing request. Body: { xdr } (the co-signer's
-// signed envelope). The relay keeps only signatures that are over THIS exact
+// add a co-signer's signature to a signing request. body: { xdr } (the co-signer's
+// signed envelope). the relay keeps only signatures that are over THIS exact
 // transaction and come from an authorized signer; everything else is rejected.
 
 import { createLimiter, rateLimitByIp } from "@/server/rate-limit";

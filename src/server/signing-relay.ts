@@ -191,7 +191,7 @@ function isClassicTransaction(tx: Transaction | { innerTransaction?: unknown }):
   return candidate.feeSource === undefined && candidate.innerTransaction === undefined;
 }
 
-// number of decorated signatures on an envelope; -1 if it can't be parsed. Used
+// number of decorated signatures on an envelope; -1 if it can't be parsed. used
 // to only wake SSE subscribers when a signature was actually added.
 function signatureCount(xdr: string, passphrase: string): number {
   try {
@@ -220,11 +220,11 @@ function signersOf(tx: Transaction, signerKeys: readonly string[]): string[] {
   return out;
 }
 
-// decode a close and identify the account it actually closes. The account is the
+// decode a close and identify the account it actually closes. the account is the
 // accountMerge operation's effective source (op.source ?? tx.source), not blindly
 // tx.source, and every operation must share that same effective source, so an
 // attacker can't fetch the signer set of an account they control while merging a
-// victim account. Muxed / non-ed25519 sources are rejected.
+// victim account. muxed / non-ed25519 sources are rejected.
 function decodeClose(xdr: string, passphrase: string): { tx: Transaction; source: string } | null {
   let tx: Transaction;
   try {
@@ -277,7 +277,7 @@ function countPlans(pred: (rec: PlanRecord) => boolean): number {
   return n;
 }
 
-// publish a close transaction. Returns its id (the transaction hash). The account
+// publish a close transaction. returns its id (the transaction hash). the account
 // is read from Horizon to learn its authorized signers, which bound the merge.
 export async function createPlan(network: string, xdr: string): Promise<CreateResult> {
   const now = Date.now();
@@ -337,7 +337,7 @@ export async function createPlan(network: string, xdr: string): Promise<CreateRe
   const id = Buffer.from(decoded.tx.hash()).toString("hex");
   const existing = plans.get(id);
   if (existing !== undefined) {
-    // same transaction re-published: merge in any new signatures. A malformed
+    // same transaction re-published: merge in any new signatures. a malformed
     // re-publish is rejected rather than silently reporting success.
     const merged = mergeInto(existing, xdr);
     return merged.ok ? { ok: true, id } : merged;
@@ -376,7 +376,7 @@ export async function createPlan(network: string, xdr: string): Promise<CreateRe
 
   const signerKeys = signers.map((s) => s.key);
   // proof of control: only an account's own authorized signer may open a request
-  // to close it. This binds a slot to a real signer, so nobody can fill the store
+  // to close it. this binds a slot to a real signer, so nobody can fill the store
   // with unsigned closes for accounts they don't control.
   if (signersOf(decoded.tx, signerKeys).length === 0) {
     return {
@@ -440,7 +440,7 @@ export function getPlan(id: string): PlanPublic | null {
   return rec === undefined ? null : toPublic(rec);
 }
 
-// add a co-signer's signatures. Only signatures that (a) are over exactly this
+// add a co-signer's signatures. only signatures that (a) are over exactly this
 // transaction and (b) come from an authorized signer are kept; everything else
 // is rejected by mergeSignatures.
 export function addSignature(id: string, partialXdr: string): SignResult {

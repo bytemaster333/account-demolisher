@@ -1,5 +1,5 @@
-// Publish a multisig close transaction for co-signing. Body: { network, xdr }.
-// Returns { id } (the transaction hash). No secret material is accepted or stored.
+// publish a multisig close transaction for co-signing. body: { network, xdr }.
+// returns { id } (the transaction hash). no secret material is accepted or stored.
 
 import { createLimiter, rateLimitByIp } from "@/server/rate-limit";
 import { readJsonCapped, MAX_PLAN_BODY_BYTES, BodyTooLargeError } from "@/server/read-body";

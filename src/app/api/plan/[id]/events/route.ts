@@ -1,6 +1,6 @@
-// Server-Sent Events stream for a signing request. The initiator's page opens
+// Server-Sent Events stream for a signing request. the initiator's page opens
 // this and receives the full envelope the instant any signature is accepted, so
-// progress updates live with no polling. Emits public data only (the envelope).
+// progress updates live with no polling. emits public data only (the envelope).
 
 import { createLimiter, getRemoteIp, rateLimitByIp } from "@/server/rate-limit";
 import { getPlan, subscribe, subscriberStatus, type PlanPublic } from "@/server/signing-relay";
@@ -68,7 +68,7 @@ export async function GET(
       };
 
       // subscribe before snapshotting so no accepted signature is missed; each
-      // event is a full envelope, so out-of-order delivery still converges. The
+      // event is a full envelope, so out-of-order delivery still converges. the
       // relay calls `cleanup` if the plan is swept while this stream is open.
       unsubscribe = subscribe(id, send, cleanup, clientKey);
       if (unsubscribe === null) {

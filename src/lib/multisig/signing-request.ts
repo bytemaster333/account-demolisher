@@ -93,7 +93,7 @@ export interface RequiredSigner {
 }
 
 // the account's ed25519 signer set that can actually sign a transaction (weight
-// > 0). Hash/preauth signers can't produce a signature, so they're excluded.
+// > 0). hash/preauth signers can't produce a signature, so they're excluded.
 export function requiredSigners(audit: AccountAudit): readonly RequiredSigner[] {
   return audit.signers
     .filter((s) => s.type === "ed25519_public_key" && s.weight > 0)
@@ -117,7 +117,7 @@ export function closeThreshold(audit: AccountAudit): number {
   return thresholdForClose(audit.thresholds);
 }
 
-// build the single bundled closure transaction for a multisig account. Throws if
+// build the single bundled closure transaction for a multisig account. throws if
 // the close doesn't fit in exactly one classic transaction (assessBundleability
 // gates this up front). Deterministic-only: never a market sell that could fail
 // and sink the signed bundle after everyone has already signed.
@@ -617,7 +617,7 @@ function stroopsToXlm(stroops: string): string {
   return `${whole}.${frac}`;
 }
 
-// decode a signing request's transaction into a plain-language summary. Returns
+// decode a signing request's transaction into a plain-language summary. returns
 // null for anything that isn't a classic transaction (fee-bumps have no ops).
 export function inspectClose(xdrStr: string, passphrase: string): CloseInspection | null {
   let tx: Transaction;
@@ -632,7 +632,7 @@ export function inspectClose(xdrStr: string, passphrase: string): CloseInspectio
   const mergeOp = rawOps.find((o) => o.type === "accountMerge");
 
   // the account being closed is the accountMerge op's EFFECTIVE source
-  // (op.source ?? tx.source), NOT blindly tx.source. The relay binds the signer
+  // (op.source ?? tx.source), NOT blindly tx.source. the relay binds the signer
   // set to that account, so /sign must display and audit the same one.
   const closingSource = mergeOp?.source ?? tx.source;
   const ctx: InspectContext = { mergeDestination: mergeOp?.destination ?? null };
@@ -656,8 +656,8 @@ export function inspectClose(xdrStr: string, passphrase: string): CloseInspectio
 }
 
 // ── signature accounting (local, no server) ──────────────────────────────────
-// Who among the required signers has already signed this envelope, derived from
-// the transaction's own decorated signatures. Each candidate key is confirmed by
+// who among the required signers has already signed this envelope, derived from
+// the transaction's own decorated signatures. each candidate key is confirmed by
 // verifying its signature over the transaction hash, not just a hint match.
 
 export function signedSigners(
@@ -683,7 +683,7 @@ export function signedSigners(
     }
     // verify by signature, hint-agnostic, to match the relay's signer counting
     // (a wallet with an unusual hint would otherwise be counted here but not
-    // there, or vice-versa). The hint is not authoritative; the signature is.
+    // there, or vice-versa). the hint is not authoritative; the signature is.
     const signed = tx.signatures.some((ds) => kp.verify(hash, ds.signature.toBytes()));
     if (signed) out.push(key);
   }
