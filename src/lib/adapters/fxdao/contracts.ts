@@ -1,5 +1,8 @@
-// frozen snapshot of fxdao's mainnet soroban deployments
-import type { NetworkConfig } from "@/lib/config/networks";
+// fxdao's former soroban deployments. fxdao is no longer supported: on mainnet
+// the vaults contract now runs an evict-only wasm (spec: evict, upgrade) with
+// panic_mode set and zero vaults, and none of the testnet ids exist any more
+// (read 2026-10-06). nothing here is discovered or called; the ids remain only
+// because the allow-list and the auth guard still import them.
 
 // one entry in the fxdao mainnet contract registry
 export interface FxDAOContractEntry {
@@ -115,36 +118,3 @@ export const FXDAO_TESTNET_CONTRACTS: readonly FxDAOContractEntry[] = Object.fre
     source: FXDAO_TESTNET_SOURCE,
   } satisfies FxDAOContractEntry),
 ]);
-
-// mainnet stable-asset issuer (classical stellar account). classical trustlines for USDx/EURx/GBPx target this
-export const FXDAO_MAINNET_STABLE_ISSUER =
-  "GAVH5ZWACAY2PHPUG4FL3LHHJIYIHOFPSIUGM2KHK25CJWXHAV6QKDMN" as const;
-
-// canonical soroban symbol denominations recognised by the on-chain VaultsContract
-export const FXDAO_KNOWN_DENOMINATIONS: readonly string[] = Object.freeze(["USD", "EUR", "GBP"]);
-
-// resolve the single mainnet VaultsContract id
-export function getFxDAOVaultsContractId(): string {
-  const entry = FXDAO_MAINNET_CONTRACTS.find((c) => c.kind === "vaults");
-  if (!entry) {
-    throw new Error(
-      "FxDAO VaultsContract not in FXDAO_MAINNET_CONTRACTS: upstream addresses unverified",
-    );
-  }
-  return entry.id;
-}
-
-// resolve the VaultsContract id for a network, or null where FxDAO has no
-// published deployment (futurenet). Used by discovery AND the exit hydration so
-// both target the SAME contract per network.
-export function getFxDAOVaultsContractIdForNetwork(network: NetworkConfig): string | null {
-  const registry =
-    network.id === "mainnet"
-      ? FXDAO_MAINNET_CONTRACTS
-      : network.id === "testnet"
-        ? FXDAO_TESTNET_CONTRACTS
-        : null;
-  if (registry === null) return null;
-  const entry = registry.find((c) => c.kind === "vaults");
-  return entry ? entry.id : null;
-}
