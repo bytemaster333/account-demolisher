@@ -422,3 +422,39 @@ describe("FxDAO is no longer discovered", () => {
     );
   });
 });
+
+// the soroban rpc client rejects with plain { code, message } objects (L-15)
+describe("plain-object rpc rejections keep their message", () => {
+  const rpcReject = (message: string) => () => Promise.reject({ code: -32600, message });
+
+  it("names the blend backstop failure", async () => {
+    const positions = await provider({
+      blendPoolIds: [POOL_V2],
+      blendLoadUserPositions: async () => ({
+        positions: [snapshot({ poolId: POOL_V2 })],
+        errors: [],
+      }),
+      blendLoadBackstopDeposits: rpcReject("backstop entry archived"),
+    }).getPositions(USER, MAINNET);
+    const msg = positions.errors.find((e) => e.protocol === "blend")?.message ?? "";
+    expect(msg).toContain("backstop entry archived");
+    expect(msg).not.toContain("[object Object]");
+  });
+
+  it("names both aquarius sources when both reject", async () => {
+    const positions = await provider(
+      aquarius(rpcReject("rest 503"), rpcReject("scan window")),
+    ).getPositions(USER, MAINNET);
+    const msg = positions.errors.find((e) => e.protocol === "aquarius")?.message ?? "";
+    expect(msg).toContain("rest 503");
+    expect(msg).toContain("scan window");
+    expect(msg).not.toContain("[object Object]");
+  });
+
+  it("names a concentrated read failure when the other sources answer", async () => {
+    const positions = await provider({
+      aquariusDiscoverConcentrated: rpcReject("pool read 429"),
+    }).getPositions(USER, MAINNET);
+    expect(positions.errors.find((e) => e.protocol === "aquarius")?.message).toBe("pool read 429");
+  });
+});
