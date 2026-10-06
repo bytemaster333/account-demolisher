@@ -8,12 +8,18 @@
 import { useEffect, useId, useRef, useState } from "react";
 
 import { AddressActions } from "@/components/ui";
+import type { ClassicMemo } from "@/lib/types/plan";
 
 export interface TypedConfirmationProps {
   // full destination g-address; the last 4 chars are the required confirmation string
   readonly destination: string;
   // stellar.expert link for the destination, so the user can inspect it
   readonly explorerUrl?: string;
+  // the reviewed memo, shown under the destination so a mistyped one is still
+  // visible at this last gate. null shows "No memo"; leave it out to show nothing.
+  readonly memo?: ClassicMemo | null;
+  // an exchange close: the mediator puts the memo on its forward to the exchange
+  readonly memoViaMediator?: boolean;
   // delay before confirm enables. defaults to 4000ms
   readonly delayMs?: number;
   // receives the last-4 chars the user re-typed; the flow machine re-checks it
@@ -29,6 +35,8 @@ const TICK_MS = 100;
 export function TypedConfirmation({
   destination,
   explorerUrl,
+  memo,
+  memoViaMediator = false,
   delayMs = DEFAULT_DELAY_MS,
   onConfirm,
   onCancel,
@@ -238,7 +246,7 @@ export function TypedConfirmation({
             borderRadius: 12,
             background: "var(--surface-2)",
             border: "1px solid var(--border)",
-            marginBottom: 20,
+            marginBottom: memo === undefined ? 20 : 10,
           }}
         >
           <div style={{ font: "500 13px/1.5 'Geist Mono', monospace", wordBreak: "break-all" }}>
@@ -254,6 +262,30 @@ export function TypedConfirmation({
             <AddressActions value={destination} href={explorerUrl} label="destination" />
           ) : null}
         </div>
+        {memo !== undefined ? (
+          <p
+            data-testid="typed-confirmation-memo"
+            style={{
+              margin: "0 0 20px",
+              fontSize: 13,
+              lineHeight: 1.5,
+              color: "var(--fg-2)",
+              wordBreak: "break-all",
+            }}
+          >
+            {memo === null ? (
+              "No memo"
+            ) : (
+              <>
+                Memo ({memo.type.toUpperCase()}):{" "}
+                <span style={{ font: "600 13px/1.5 'Geist Mono', monospace", color: "var(--fg)" }}>
+                  {memo.value}
+                </span>
+                {memoViaMediator ? " (the mediator adds it to its forward to the exchange)" : null}
+              </>
+            )}
+          </p>
+        ) : null}
         <label
           htmlFor={inputId}
           style={{
