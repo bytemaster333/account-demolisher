@@ -22,10 +22,12 @@ import type {
 import { NETWORKS, type NetworkConfig } from "@/lib/config/networks";
 import { stroopsToDecimal } from "@/lib/stellar/amount";
 import {
+  auditAfterUnwind,
   batchClassicDemolition,
   closeMarkerPlanned,
   planClaimableBalances,
   planClassicUnwind,
+  type ClassicUnwindTargets,
 } from "@/lib/plan/classic-batcher";
 import { BACKSTOP_QUEUE_DURATION_SECONDS } from "@/lib/adapters/blend/constants";
 import { blndTrustlineRequirement } from "@/lib/adapters/blend/emissions-check";
@@ -133,6 +135,33 @@ export function generatePlan(
   const selectedAllowances = new Set(opts.selectedAllowances ?? []);
   const acceptedPriceImpact = new Set(opts.acceptedPriceImpactAssetKeys ?? []);
   const nodes: PlanNode[] = [];
+
+  // the pool emissions claims are paid in BLND with a SAC transfer, so an account
+  // without a BLND trustline opens one first. it goes ahead of every other step:
+  // the reserve it locks is checked when it is built, against XLM nothing else
+  // in the run has spent yet.
+  const claimingPools = positions.blend.filter((p) => p.emissionReserveTokenIds.length > 0);
+  let blndTrustlineId: string | null = null;
+  if (claimingPools.length > 0) {
+    const requirement = blndTrustlineRequirement(
+      audit,
+      positions.blend,
+      requireNetwork("the Blend emissions claims"),
+    );
+    if (requirement?.reason === "missing") {
+      blndTrustlineId = "blnd-trustline";
+      nodes.push({
+        id: blndTrustlineId,
+        kind: "AddBlndTrustline",
+        dependencies: [],
+        status: "pending",
+        description:
+          "Add a BLND trustline so the Blend emissions can be claimed " +
+          "(0.5 XLM reserve, released when the close removes the line)",
+        metadata: { kind: "AddBlndTrustline", code: requirement.code, issuer: requirement.issuer },
+      });
+    }
+  }
 
   // allowance revocations
   for (const allowance of allowances) {
@@ -246,10 +275,12 @@ export function generatePlan(
     ),
   ];
   const repayDeps = [...fundingExitIds];
+  let unwound: ClassicUnwindTargets | null = null;
   if (repayAssets.length > 0 && (audit.offers.length > 0 || audit.poolShares.length > 0)) {
     const net = requireNetwork("the classic unwind ahead of a Blend repay");
     const unwind = planClassicUnwind(audit, repayAssets, net.passphrase, destination);
     if (unwind.batches.length > 0) {
+      unwound = { offerIds: unwind.offerIds, poolIds: unwind.poolIds, destination };
       const id = "classic-unwind";
       nodes.push({
         id,
@@ -265,6 +296,7 @@ export function generatePlan(
           offerIds: unwind.offerIds,
           poolIds: unwind.poolIds,
           repayAssets,
+          destination,
         },
       });
       repayDeps.push(id);
@@ -302,33 +334,10 @@ export function generatePlan(
     addBlendWithdraws(pool, blendRepayIdsByPool.get(pool.poolId) ?? []);
   }
 
-  // blend emissions, one per pool, after its withdraws. Emitted only when the
-  // user actually has accrued emissions to claim, and targeting the SPECIFIC
-  // reserve_token_ids that carry them. The pool pays BLND with a SAC transfer,
-  // so an account without a BLND trustline opens one first.
+  // blend emissions, one per pool, after its withdraws and the BLND trustline.
+  // Emitted only when the user actually has accrued emissions to claim, and
+  // targeting the SPECIFIC reserve_token_ids that carry them.
   const rewardClaimIds: string[] = [];
-  const claimingPools = positions.blend.filter((p) => p.emissionReserveTokenIds.length > 0);
-  let blndTrustlineId: string | null = null;
-  if (claimingPools.length > 0) {
-    const requirement = blndTrustlineRequirement(
-      audit,
-      positions.blend,
-      requireNetwork("the Blend emissions claims"),
-    );
-    if (requirement?.reason === "missing") {
-      blndTrustlineId = "blnd-trustline";
-      nodes.push({
-        id: blndTrustlineId,
-        kind: "AddBlndTrustline",
-        dependencies: [],
-        status: "pending",
-        description:
-          "Add a BLND trustline so the Blend emissions can be claimed " +
-          "(0.5 XLM reserve, released when the close removes the line)",
-        metadata: { kind: "AddBlndTrustline", code: requirement.code, issuer: requirement.issuer },
-      });
-    }
-  }
   for (const pool of claimingPools) {
     const reserveTokenIds = pool.emissionReserveTokenIds;
     const id = makeId("blend-claim", pool.poolId);
@@ -385,6 +394,8 @@ export function generatePlan(
     const queueEndsAt = new Date(backstopNow + duration * 1000);
     const accrued = bs.accruedEmissions ?? 0n;
     const unlocked = bs.unlockedQueuedForWithdrawal ?? 0n;
+    // the backstop discovery read from the pool; every build must target it
+    const backstopRef = bs.backstopId !== undefined ? { backstopId: bs.backstopId } : {};
     let claimId: string | null = null;
     if (bs.shares > 0n && accrued > 0n) {
       if (forfeit.has(bs.poolId)) {
@@ -403,6 +414,7 @@ export function generatePlan(
             kind: "ClaimBackstopEmissions",
             poolId: bs.poolId,
             accruedEmissions: accrued,
+            ...backstopRef,
           },
         });
       }
@@ -421,6 +433,7 @@ export function generatePlan(
           poolId: bs.poolId,
           shares: bs.shares,
           queueEndsAt,
+          ...backstopRef,
         },
       });
     }
@@ -435,13 +448,44 @@ export function generatePlan(
         description:
           `Withdraw the unlocked Blend backstop queue for pool ${shortAddr(bs.poolId)} ` +
           `(${unlocked.toString()} shares, paid out as BLND-USDC LP tokens)`,
-        metadata: { kind: "BackstopWithdraw", poolId: bs.poolId, amount: unlocked, lpToken },
+        metadata: {
+          kind: "BackstopWithdraw",
+          poolId: bs.poolId,
+          amount: unlocked,
+          lpToken,
+          ...backstopRef,
+        },
       });
       backstopPayoutIds.push(id);
       backstopPayoutTokens.push(lpToken);
     }
   }
   const prepareOnly = preparePlanFor(positions, backstopNow);
+
+  // an exchange close forwards only XLM. a token an exit pays out that is not a
+  // classic balance of this account (the backstop's LP token, a pool token with
+  // no trustline here) could not be swept anywhere, and the merge guard would
+  // stop the close after every exit had run. refused here, before anything runs;
+  // a prepare-only run keeps the account open, so its payouts stay with it.
+  if (useMediator && prepareOnly === undefined) {
+    const payouts = [...exitPayoutTokens(positions), ...backstopPayoutTokens];
+    if (payouts.length > 0) {
+      const net = requireNetwork("the DeFi exits of an exchange close");
+      const classic = classicSacIds(audit, net.passphrase);
+      const stuck = [...new Set(payouts)].filter((t) => !classic.has(t));
+      if (stuck.length > 0) {
+        const comet = backstopPayoutTokens[0];
+        const names = stuck.map((t) =>
+          t === comet ? `the Blend backstop's BLND-USDC LP token ${shortAddr(t)}` : shortAddr(t),
+        );
+        throw new Error(
+          `An exchange close can only forward XLM, and the DeFi exits in this plan pay out ` +
+            `tokens this account does not hold as classic balances (${names.join(", ")}). ` +
+            `Close to your own Stellar address instead, or exit those positions first.`,
+        );
+      }
+    }
+  }
 
   // standalone SEP-41 tokens: sweep each to the destination before the merge so a
   // custom token held in contract storage isn't stranded on the deleted account.
@@ -533,9 +577,12 @@ export function generatePlan(
   // the execute-time re-batch can't claim a balance that appeared after review.
   const finalId = "final-classic-tx";
   const feePerOp = opts.classicFeePerOp;
+  // the unwind runs first, so the final batches are previewed without the offers
+  // and pool shares it already cleared
+  const finalAudit = unwound === null ? audit : auditAfterUnwind(audit, unwound, feePerOp);
   const claimableBalanceIds =
     opts.selectedClaimableBalanceIds ??
-    planClaimableBalances(audit, undefined, {
+    planClaimableBalances(finalAudit, undefined, {
       ...(feePerOp !== undefined ? { feePerOpStroops: feePerOp } : {}),
     }).claimed.map((cb) => cb.id);
   const reviewedReferenceQuotes = quotesOf(opts.paths, (p) => p.reference);
@@ -567,7 +614,7 @@ export function generatePlan(
     ...(opts.memo ? { memo: opts.memo } : {}),
   };
   const batches: readonly ClassicBatch[] = batchClassicDemolition(
-    audit,
+    finalAudit,
     finalBatchOptions(finalMetadata, {
       ...(feePerOp !== undefined ? { feePerOpStroops: feePerOp } : {}),
     }),
@@ -621,6 +668,8 @@ export function generatePlan(
 // queue stays locked after it runs (new queues, and the part of an existing one
 // that has not unlocked), and the account must exist to receive it. callers can
 // ask before minting anything only a full close uses, such as a mediator flow.
+// discovery does not report when an existing queue entry expires, so it is dated
+// a full queue duration from now: the date is the latest it can unlock.
 export function preparePlanFor(
   positions: ProtocolPositions,
   now: number = Date.now(),
@@ -638,8 +687,8 @@ export function preparePlanFor(
     unlocksAt,
     reason:
       "A Blend backstop withdrawal stays locked after this run, and the account must " +
-      "exist to receive it. This run queues it and unwinds everything else; come back " +
-      "after the unlock date to withdraw it and finish the close.",
+      "exist to receive it. This run queues it and unwinds everything else. It unlocks " +
+      "by the date shown at the latest; come back then to withdraw it and finish the close.",
   };
 }
 

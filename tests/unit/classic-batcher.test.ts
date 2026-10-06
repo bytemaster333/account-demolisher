@@ -3,6 +3,7 @@ import { Account, Keypair, type Horizon, type Transaction } from "@stellar/stell
 import {
   applySlippage,
   batchClassicDemolition,
+  buildClassicUnwindBatches,
   closeMarkerPlanned,
   mediatorFundingCheck,
   MAX_OPS_PER_TX,
@@ -1065,17 +1066,31 @@ describe("H-09: claimable balances of untrusted assets are collected with a new 
     const own = { kind: "credit", code: "MINE", issuer: ACC } as const;
     const audit = makeAudit({
       balances: [nativeLine("10")],
-      // the audit tags the account's own auth_required flag; an issuer never
-      // needs a line, and change_trust on its own asset is op_malformed
-      claimableBalances: [usdcCb(CB_ID(4), "5", { asset: own, issuerAuthRequired: true })],
+      // an issuer never needs a line, and change_trust on its own asset is
+      // op_malformed; whatever auth flag the audit carries is beside the point
+      claimableBalances: [
+        usdcCb(CB_ID(4), "5", { asset: own, issuerAuthRequired: true, issuedByAccount: true }),
+      ],
     });
     const plan = planClaimableBalances(audit, undefined);
     expect(plan.claimed.map((c) => c.id)).toEqual([CB_ID(4)]);
     expect(plan.trustlineChanges).toEqual([]);
-    const ops = allOps(batchClassicDemolition(audit, directOptions));
-    expect(ops.map((o) => o.kind)).not.toContain("change_trust_add");
-    expect(ops.some(isClaim)).toBe(true);
+    const batches = batchClassicDemolition(audit, directOptions);
+    const ops = allOps(batches);
+    expect(ops.filter(isClaim)).toHaveLength(1);
+    // the claim burns the asset: nothing to add, sell, pay or remove for it
+    const touchesOwn = ops.filter(
+      (o) =>
+        !isClaim(o) &&
+        [o.metadata.asset, o.metadata.sendAsset].some(
+          (a) => (a as { code?: string } | undefined)?.code === "MINE",
+        ),
+    );
+    expect(touchesOwn).toEqual([]);
     expect(unroutableCredits(audit, undefined)).toEqual([]);
+    expect(built(batches[batches.length - 1]!).operations.map((o) => o.type)).toContain(
+      "claimClaimableBalance",
+    );
   });
 
   it("raises a full trustline to the maximum limit before claiming into it", () => {
@@ -1198,5 +1213,116 @@ describe("M-18: a conversion is bound to the full-size quote the user reviewed",
   it("still sells within the slippage tolerance of the reviewed quote", () => {
     const kinds = allOps(batchClassicDemolition(audit, opts, quoted("3680000"))).map((o) => o.kind);
     expect(kinds).toContain("path_payment_strict_send");
+  });
+});
+
+describe("M-52: the close marker never pushes the merge transaction over the op limit", () => {
+  const tokens = (n: number) =>
+    Array.from(
+      { length: n },
+      (_, i) => ({ kind: "credit", code: `T${i}`, issuer: ISSUER }) as const,
+    );
+  // a direct memo close sending every token to the destination keeps each payment
+  // and its trustline removal in the merge transaction with the memo
+  const close = (n: number) =>
+    batchClassicDemolition(
+      makeAudit({
+        balances: [
+          nativeLine("1000"),
+          ...tokens(n).map((asset) => ({
+            asset,
+            amount: "1",
+            limit: "100",
+            buyingLiabilities: "0",
+            sellingLiabilities: "0",
+          })),
+        ],
+      }),
+      {
+        ...directOptions,
+        memo: { type: "id", value: "7" },
+        sendToDestinationAssetKeys: tokens(n).map((t) => `${t.code}:${t.issuer}`),
+      },
+    );
+
+  it("leaves the marker out when the merge group already fills the transaction", () => {
+    const batches = close(49);
+    expect(closeMarkerPlanned(batches)).toBe(false);
+    const final = batches[batches.length - 1]!.operations;
+    expect(final).toHaveLength(99);
+    expect(final[final.length - 1]!.kind).toBe("account_merge");
+  });
+
+  it("keeps the marker while the transaction has room for it", () => {
+    const batches = close(48);
+    expect(closeMarkerPlanned(batches)).toBe(true);
+    expect(batches[batches.length - 1]!.operations).toHaveLength(MAX_OPS_PER_TX - 1);
+  });
+});
+
+describe("L-24: an exchange's internal wallet is never a close destination", () => {
+  it("refuses an Upbit cold wallet before planning anything", () => {
+    const upbitCold = "GAGL7APMF7BZT6AVGNLBXKCMEHHLKPOL6PADWSLWFVYULGHPQQSIUU2W";
+    const audit = makeAudit({ balances: [nativeLine("10")] });
+    expect(() =>
+      batchClassicDemolition(audit, { destination: upbitCold, useMediator: false }),
+    ).toThrow(/Upbit ColdStorage, an exchange internal wallet, not a deposit address/);
+    expect(() =>
+      batchClassicDemolition(audit, {
+        destination: upbitCold,
+        useMediator: true,
+        mediatorPublicKey: MED,
+      }),
+    ).toThrow(/an exchange internal wallet/);
+  });
+});
+
+describe("M-23: the classic unwind is rebuilt from the state at execute time", () => {
+  const offer = (id: string) => ({
+    id,
+    selling: USDC,
+    buying: { kind: "native" } as const,
+    amount: "5",
+    priceR: { n: 1, d: 1 },
+  });
+  const pool = (shareBalance: string) => ({
+    poolId: POOL_ID,
+    poolType: "constant_product",
+    shareBalance,
+    totalShares: "100.0000000",
+    shareLimit: "100.0000000",
+    fee: 30,
+    reserves: [
+      { asset: { kind: "native" } as const, amount: "50.0000000" },
+      { asset: USDC, amount: "80.0000000" },
+    ],
+  });
+  const reviewed = { offerIds: ["11", "12"], poolIds: [POOL_ID], destination: DEST };
+
+  it("cancels the reviewed offers still open and withdraws the reviewed pools at fresh floors", () => {
+    // 13 appeared after the review; 12 is already gone
+    const fresh = makeAudit({
+      offers: [offer("11"), offer("13")],
+      poolShares: [pool("10.0000000")],
+    });
+    const batches = buildClassicUnwindBatches(fresh, reviewed);
+    const ops = allOps(batches);
+    expect(ops.map((o) => [o.kind, o.metadata.liquidityPoolId ?? o.metadata.offerId])).toEqual([
+      ["liquidity_pool_withdraw", POOL_ID],
+      ["manage_sell_offer_cancel", "11"],
+    ]);
+    // the holder's tenth of today's reserves, less the slippage tolerance
+    expect(ops[0]!.metadata.minAmountA).toBe(applySlippage("5"));
+    expect(ops[0]!.metadata.minAmountB).toBe(applySlippage("8"));
+    expect(batches.every((b) => b.memo === undefined && b.mediator === undefined)).toBe(true);
+    expect(built(batches[0]!).operations.map((o) => o.type)).toEqual([
+      "liquidityPoolWithdraw",
+      "manageSellOffer",
+    ]);
+  });
+
+  it("builds nothing once every reviewed offer and pool is already unwound", () => {
+    const fresh = makeAudit({ offers: [offer("13")], poolShares: [pool("0.0000000")] });
+    expect(buildClassicUnwindBatches(fresh, reviewed)).toEqual([]);
   });
 });

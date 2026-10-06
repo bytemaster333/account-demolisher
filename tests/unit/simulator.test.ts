@@ -255,6 +255,7 @@ describe("simulator: classic nodes outside the final batch", () => {
           offerIds: [],
           poolIds: [],
           repayAssets: [],
+          destination: DEST,
         },
       },
       baseDeps(),
