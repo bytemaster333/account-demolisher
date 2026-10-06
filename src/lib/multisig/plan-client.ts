@@ -50,11 +50,16 @@ function isNumber(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
 }
 
+// the networks the relay serves (its NETWORK_BUDGET in src/server/signing-relay.ts)
+function isRelayNetwork(v: unknown): v is StellarNetwork {
+  return v === "mainnet" || v === "testnet";
+}
+
 // validate a relay plan payload; null when it isn't one
 export function parseRelayPlan(raw: unknown): RelayPlan | null {
   if (typeof raw !== "object" || raw === null) return null;
   const r = raw as Record<string, unknown>;
-  if (typeof r.network !== "string" || typeof r.xdr !== "string" || typeof r.account !== "string")
+  if (!isRelayNetwork(r.network) || typeof r.xdr !== "string" || typeof r.account !== "string")
     return null;
   if (!Array.isArray(r.signers) || !isNumber(r.expiresAt)) return null;
   const signers: RelaySigner[] = [];
@@ -68,7 +73,7 @@ export function parseRelayPlan(raw: unknown): RelayPlan | null {
   if (typeof t !== "object" || t === null) return null;
   if (!isNumber(t.low) || !isNumber(t.med) || !isNumber(t.high)) return null;
   return {
-    network: r.network as StellarNetwork,
+    network: r.network,
     xdr: r.xdr,
     account: r.account,
     signers,
