@@ -22,7 +22,7 @@ export interface AquariusConcentratedPool {
 
 export const CONCENTRATED_POOLS_VERIFIED_AT = "2026-10-06";
 export const CONCENTRATED_POOLS_SOURCE =
-  "on-chain AquariusAmmRouter get_pools_for_tokens_range enumeration filtered by contract instance wasm; both sets cross-checked against the amm-api pool_type=concentrated listing";
+  "on-chain AquariusAmmRouter get_pools_for_tokens_range enumeration filtered by contract instance wasm; both sets cross-checked against the amm-api.aqua.network pool_type=concentrated listing";
 
 // the wasm the pinned pools run (soroban-liquidity-pool-concentrated-contract). the
 // pools are upgradable by aquarius: on 2026-10-02 the mainnet ones ran 12fca5a7...,

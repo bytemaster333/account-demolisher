@@ -82,12 +82,18 @@ function errorMessage(err: unknown): string {
   return typeof m === "string" ? m : String(err);
 }
 
+// the sdk http clients' own wording for a non-2xx answer. an error rethrown as a
+// plain Error somewhere along the way keeps only this message, so the status is
+// read from it too, but only when the whole message is exactly that phrase
+const HTTP_STATUS_MESSAGE = /^Request failed with status code (\d{3})$/;
+
 function extractHttpStatus(err: unknown): number | null {
   const e = err as { response?: { status?: unknown }; status?: unknown; statusCode?: unknown };
   for (const candidate of [e?.response?.status, e?.status, e?.statusCode]) {
     if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
   }
-  return null;
+  const m = HTTP_STATUS_MESSAGE.exec(errorMessage(err));
+  return m ? Number(m[1]) : null;
 }
 
 function isBadSeq(res: rpc.Api.SendTransactionResponse): boolean {

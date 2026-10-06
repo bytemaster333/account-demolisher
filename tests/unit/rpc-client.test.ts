@@ -126,6 +126,14 @@ describe("isFailoverError reads json-rpc error objects and real http statuses on
     );
   });
 
+  it("reads the status from the http client's exact message when the response was dropped", () => {
+    expect(isFailoverError(new Error("Request failed with status code 429"))).toBe(true);
+    expect(isFailoverError(new Error("Request failed with status code 400"))).toBe(false);
+    expect(
+      isFailoverError(new Error("simulate: Request failed with status code 503 at #1504")),
+    ).toBe(false);
+  });
+
   it("reads the status of an axios-shaped error", () => {
     expect(isFailoverError({ message: "x", response: { status: 503 } })).toBe(true);
   });
