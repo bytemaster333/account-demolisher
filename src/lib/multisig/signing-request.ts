@@ -38,6 +38,10 @@ export interface CloseDisposal {
   // pathKey()s of credit assets to return to their issuer
   readonly returnToIssuerAssetKeys?: readonly string[];
   readonly memo?: ClassicMemo;
+  // the claimable balances the reviewed plan claims. an empty list claims
+  // none; leaving it out claims every balance claimable now, which is only
+  // right when nothing was reviewed.
+  readonly claimableBalanceIds?: readonly string[];
 }
 
 export interface BundleabilityResult {
@@ -49,15 +53,17 @@ const POOL_SHARE_REASON =
   "This account holds a liquidity pool share, which must be withdrawn in its own transaction first. Withdraw it, or close with all signers present.";
 
 // can this close be expressed as ONE signable classic transaction? Soroban
-// positions and allowance revocations each need their own transaction, the
-// exchange-mediator flow is multi-step, and a classic pool share is withdrawn in
-// its own leading batch, so none of those can be bundled into a single signing
-// request; those accounts must be closed with all signers present.
+// positions, allowance revocations and standalone token moves each need their
+// own transaction, the exchange-mediator flow is multi-step, and a classic pool
+// share is withdrawn in its own leading batch, so none of those can be bundled
+// into a single signing request; those accounts must be closed with all signers
+// present.
 export function assessBundleability(input: {
   readonly hasSorobanPositions: boolean;
   readonly hasSelectedAllowances: boolean;
   readonly useMediator: boolean;
-  readonly hasClassicPoolShares?: boolean;
+  readonly hasClassicPoolShares: boolean;
+  readonly hasSelectedHeldTokens: boolean;
 }): BundleabilityResult {
   if (input.useMediator) {
     return {
@@ -80,7 +86,14 @@ export function assessBundleability(input: {
         "Revoking token allowances needs a separate transaction per allowance, which can't be part of a single signing request. Revoke them first, or close with all signers present.",
     };
   }
-  if (input.hasClassicPoolShares === true) {
+  if (input.hasSelectedHeldTokens) {
+    return {
+      ok: false,
+      reason:
+        "Moving standalone tokens needs its own transaction per token, which can't be part of a single signing request. Remove them from the close, or close with all signers present.",
+    };
+  }
+  if (input.hasClassicPoolShares) {
     return { ok: false, reason: POOL_SHARE_REASON };
   }
   return { ok: true };
@@ -118,7 +131,7 @@ export function closeThreshold(audit: AccountAudit): number {
 
 // build the single bundled closure transaction for a multisig account. throws if
 // the close doesn't fit in exactly one classic transaction (assessBundleability
-// gates this up front). Deterministic-only: never a market sell that could fail
+// gates this up front). deterministic only: never a market sell that could fail
 // and sink the signed bundle after everyone has already signed.
 export function buildCloseTransaction(params: {
   readonly audit: AccountAudit;
@@ -127,6 +140,9 @@ export function buildCloseTransaction(params: {
   readonly sourceAccount: Horizon.AccountResponse;
   readonly disposal?: CloseDisposal;
   readonly timeoutSeconds?: number;
+  // close time (unix seconds) of the latest ledger; anchors maxTime to the
+  // network clock instead of this device's
+  readonly ledgerCloseTime?: number;
 }): Transaction {
   const { audit, destination, network, sourceAccount, disposal } = params;
 
@@ -140,6 +156,9 @@ export function buildCloseTransaction(params: {
       ? { sendToDestinationAssetKeys: disposal.sendToDestinationAssetKeys }
       : {}),
     ...(disposal?.memo ? { memo: disposal.memo } : {}),
+    ...(disposal?.claimableBalanceIds !== undefined
+      ? { claimableBalanceIds: disposal.claimableBalanceIds }
+      : {}),
   };
 
   const batches = batchClassicDemolition(audit, batchOptions, undefined);
@@ -156,6 +175,14 @@ export function buildCloseTransaction(params: {
     if (withdrawsFirst) {
       throw new Error(`buildCloseTransaction: ${POOL_SHARE_REASON}`);
     }
+    if (first.operations.some((op) => op.kind === "claim_claimable_balance")) {
+      throw new Error(
+        "buildCloseTransaction: a claimable balance in a credit asset has no disposal chosen " +
+          "(send it to the destination or return it to its issuer), so it would have to be " +
+          "claimed in a transaction of its own first. Choose a disposal for it, leave it " +
+          "unclaimed, or close with all signers present.",
+      );
+    }
     const opCount = batches.reduce((n, b) => n + b.operations.length, 0);
     throw new Error(
       `buildCloseTransaction: this close needs ${opCount} operations, more than fit in one ` +
@@ -169,6 +196,7 @@ export function buildCloseTransaction(params: {
     network,
     undefined,
     params.timeoutSeconds ?? SIGNING_WINDOW_SECONDS,
+    params.ledgerCloseTime,
   );
   // classic batches always build a classic Transaction (never a fee-bump)
   return result.transaction as Transaction;
@@ -286,6 +314,9 @@ interface RawOp {
 
 interface InspectContext {
   readonly mergeDestination: string | null;
+  // the account being closed; every step of a close acts on it
+  readonly closing: string;
+  readonly txSource: string;
 }
 
 const UNEXPECTED =
@@ -428,7 +459,20 @@ function describeOffer(op: RawOp): OperationSummary {
   );
 }
 
+// a step that acts on another account (its own source) spends that account's
+// funds or changes its settings, whatever the step itself looks like
 function summarizeOp(op: RawOp, ctx: InspectContext): OperationSummary {
+  const summary = summarizeOpShape(op, ctx);
+  const actsOn = op.source ?? ctx.txSource;
+  if (actsOn === ctx.closing) return summary;
+  return unexpectedOp(
+    summary.type,
+    `${summary.detail ?? ""} This step acts on account ${actsOn}, not the account being closed.`.trim(),
+    summary.destination,
+  );
+}
+
+function summarizeOpShape(op: RawOp, ctx: InspectContext): OperationSummary {
   switch (op.type) {
     case "accountMerge":
       return {
@@ -634,7 +678,11 @@ export function inspectClose(xdrStr: string, passphrase: string): CloseInspectio
   // (op.source ?? tx.source), NOT blindly tx.source. the relay binds the signer
   // set to that account, so /sign must display and audit the same one.
   const closingSource = mergeOp?.source ?? tx.source;
-  const ctx: InspectContext = { mergeDestination: mergeOp?.destination ?? null };
+  const ctx: InspectContext = {
+    mergeDestination: mergeOp?.destination ?? null,
+    closing: closingSource,
+    txSource: tx.source,
+  };
 
   const tb = tx.timeBounds;
   const timeBounds =
