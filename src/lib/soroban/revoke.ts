@@ -14,29 +14,33 @@ import { TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { buildRevoke, type AllowanceRecord } from "@/lib/soroban/allowances";
 import { describeSorobanFailure } from "@/lib/soroban/diagnostics";
+import { assertSorobanFeeWithinCap } from "@/lib/soroban/fee-cap";
 import { assertSafeRevokeInvocation } from "@/lib/soroban/revoke-guard";
 import { getRpc } from "@/lib/soroban/rpc-client";
-import { getHorizon } from "@/lib/stellar/horizon-client";
 import type { Connector } from "@/lib/wallet/connector";
 
 // serialize revokes per source account so the next one only *builds* after the
 // previous one has landed in a ledger. This is the subtle part: submit-only
-// acceptance (PENDING) does NOT advance Horizon's account sequence, only ledger
+// acceptance (PENDING) does NOT advance the account sequence, only ledger
 // inclusion does. So merely chaining the builds — as this used to — is not
 // enough: two rapid per-row revokes for the same source would both build at the
 // same sequence N+1 and the second loses to tx_bad_seq / TRY_AGAIN_LATER. The
 // per-source gate below only opens once the previous revoke is confirmed
-// included, so the next build reads an advanced sequence. RevokeButton's disabled
-// state is per-instance (no cross-row lock), so this shared gate is what keeps
-// rapid clicks across different rows correct. The bulk sweep is already
-// inclusion-serialized by its own loop; the extra confirm here is a fast no-op
-// for it (the tx is already included).
+// included by the soroban rpc, and the next build reads the account from that
+// same rpc, so it sees the advanced sequence (horizon ingests separately and can
+// lag the rpc's SUCCESS). RevokeButton's disabled state is per-instance (no
+// cross-row lock), so this shared gate is what keeps rapid clicks across
+// different rows correct. The bulk sweep is already inclusion-serialized by its
+// own loop; the extra confirm here is a fast no-op for it.
 //
 // value = a promise that resolves when it is safe to build the NEXT revoke for
-// that source. A best-effort confirm opens it even on poll failure, so a tx that
-// never lands can't deadlock the queue forever (worst case the next build waits
-// out the poll window, still safer than a guaranteed sequence collision).
+// that source. A best-effort confirm opens it even on poll failure, and a timer
+// opens it if the confirm never settles, so a tx that never lands can't deadlock
+// the queue (worst case the next build hits tx_bad_seq and the user retries).
 const sourceGate = new Map<string, Promise<void>>();
+
+// longer than a full confirmRevoke poll (60 attempts) on a healthy rpc
+export const REVOKE_GATE_RELEASE_MS = 90_000;
 
 // build, sign and submit a revoke. resolves with the tx hash once the RPC
 // accepts it (PENDING/DUPLICATE). does NOT wait for ledger inclusion before
@@ -67,11 +71,18 @@ export async function submitRevoke(
   await prevGate.catch(() => {});
   try {
     const hash = await submitRevokeImpl(network, connector, record, userAddress);
-    // open the gate for the next build only after inclusion; best-effort so a
-    // stuck confirm still eventually releases the queue
-    void confirmRevoke(network, hash)
-      .catch(() => {})
-      .finally(() => openNext());
+    // open the gate for the next build only after inclusion; best-effort, and
+    // bounded by a timer so a confirm that never settles still releases the queue
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    void Promise.race([
+      confirmRevoke(network, hash).catch(() => {}),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, REVOKE_GATE_RELEASE_MS);
+      }),
+    ]).finally(() => {
+      clearTimeout(timer);
+      openNext();
+    });
     return hash;
   } catch (e) {
     // we never submitted (or it errored before enqueue); don't hold up the queue
@@ -103,8 +114,9 @@ async function submitRevokeImpl(
   const rpc = getRpc(network);
   const { sequence: currentLedger } = await rpc.getLatestLedger();
 
-  const horizon = getHorizon(network);
-  const sourceAccount = await horizon.loadAccount(userAddress);
+  // read the sequence from the rpc that confirmed the previous revoke, not from
+  // horizon, which ingests on its own schedule and can still report the old one
+  const sourceAccount = await rpc.getAccount(userAddress);
 
   const tx: Transaction = await buildRevoke(
     rpc,
@@ -125,6 +137,9 @@ async function submitRevokeImpl(
     from: userAddress,
     spender: record.spender,
   });
+  // the token's own code sized this tx's resources and fee; refuse one that would
+  // charge the user for an oversized write (rent) or an inflated simulation
+  assertSorobanFeeWithinCap(tx, "untrusted-token");
 
   const signed = await connector.signTransaction(tx, network.passphrase);
   const reconstructed = TransactionBuilder.fromXdr(

@@ -3,20 +3,17 @@ import type { NetworkConfig } from "@/lib/config/networks";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import type { Connector } from "@/lib/wallet/connector";
 
-// submitRevoke reaches for getRpc / getHorizon / buildRevoke through
+// submitRevoke reaches for getRpc / buildRevoke through
 // module-level imports and reconstructs the signed tx via
 // TransactionBuilder.fromXdr, so we stub those seams to drive sendTransaction's
 // status and observe the enqueue guard without touching the network.
 
 const sendTransaction = vi.fn();
 const getLatestLedger = vi.fn(async () => ({ sequence: 1000 }));
-const loadAccount = vi.fn(async () => ({}) as never);
+const getAccount = vi.fn(async () => ({}) as never);
 
 vi.mock("@/lib/soroban/rpc-client", () => ({
-  getRpc: () => ({ getLatestLedger, sendTransaction }),
-}));
-vi.mock("@/lib/stellar/horizon-client", () => ({
-  getHorizon: () => ({ loadAccount }),
+  getRpc: () => ({ getLatestLedger, getAccount, sendTransaction }),
 }));
 vi.mock("@/lib/soroban/allowances", () => ({
   buildRevoke: vi.fn(async () => ({}) as never),
@@ -27,6 +24,11 @@ vi.mock("@/lib/soroban/allowances", () => ({
 // serialization tests stay focused on submitRevoke's RPC behavior.
 vi.mock("@/lib/soroban/revoke-guard", () => ({
   assertSafeRevokeInvocation: vi.fn(),
+}));
+// same for the fee cap: it reads a prepared tx's soroban data, covered with a
+// real prepared tx in revoke-flow.test.ts
+vi.mock("@/lib/soroban/fee-cap", () => ({
+  assertSorobanFeeWithinCap: vi.fn(),
 }));
 vi.mock("@stellar/stellar-sdk", () => ({
   TransactionBuilder: { fromXdr: () => ({}) },

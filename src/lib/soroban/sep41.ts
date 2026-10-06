@@ -4,6 +4,7 @@ import {
   Contract,
   TransactionBuilder,
   xdr,
+  type Account,
   type Horizon,
   type rpc,
   type Transaction,
@@ -153,7 +154,7 @@ export async function buildTransfer(
   to: string,
   amount: bigint,
   network: NetworkConfig,
-  sourceAccount: Horizon.AccountResponse,
+  sourceAccount: Horizon.AccountResponse | Account,
 ): Promise<Transaction> {
   return buildInvoke(
     server,
@@ -174,7 +175,7 @@ export async function buildApprove(
   amount: bigint,
   liveUntilLedger: number,
   network: NetworkConfig,
-  sourceAccount: Horizon.AccountResponse,
+  sourceAccount: Horizon.AccountResponse | Account,
 ): Promise<Transaction> {
   return buildInvoke(
     server,
@@ -192,7 +193,7 @@ async function buildInvoke(
   fnName: string,
   args: xdr.ScVal[],
   network: NetworkConfig,
-  sourceAccount: Horizon.AccountResponse,
+  sourceAccount: Horizon.AccountResponse | Account,
 ): Promise<Transaction> {
   const contract = new Contract(contractId);
   const tx = new TransactionBuilder(sourceAccount, {

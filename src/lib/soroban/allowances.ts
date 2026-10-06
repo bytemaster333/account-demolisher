@@ -1,6 +1,13 @@
 // sep-41 allowance enumeration via soroban rpc getEvents
 
-import { Address, rpc, xdr, type Horizon, type Transaction } from "@stellar/stellar-sdk";
+import {
+  Address,
+  rpc,
+  xdr,
+  type Account,
+  type Horizon,
+  type Transaction,
+} from "@stellar/stellar-sdk";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { fromScValAddress, fromScValI128, fromScValSymbol, fromScValU32 } from "./scval";
 import { allowance as readAllowance, buildApprove } from "./sep41";
@@ -325,7 +332,7 @@ export async function buildRevoke(
   spender: string,
   currentLedger: number,
   network: NetworkConfig,
-  sourceAccount: Horizon.AccountResponse,
+  sourceAccount: Horizon.AccountResponse | Account,
 ): Promise<Transaction> {
   return buildApprove(
     server,
