@@ -20,14 +20,18 @@ export interface AquariusConcentratedPool {
   readonly tokens: readonly string[];
 }
 
-export const CONCENTRATED_POOLS_VERIFIED_AT = "2026-10-02";
+export const CONCENTRATED_POOLS_VERIFIED_AT = "2026-10-06";
 export const CONCENTRATED_POOLS_SOURCE =
-  "on-chain AquariusAmmRouter get_pools_for_tokens_range enumeration filtered by contract instance wasm; mainnet set cross-checked against amm-api.aqua.network pool_type=concentrated";
+  "on-chain AquariusAmmRouter get_pools_for_tokens_range enumeration filtered by contract instance wasm; both sets cross-checked against the amm-api pool_type=concentrated listing";
 
-// soroban-liquidity-pool-concentrated-contract; stellar.expert validates mainnet pool
-// CBBMQBNH... against AquaToken/soroban-amm@a22139a1 with this wasm
+// the wasm the pinned pools run (soroban-liquidity-pool-concentrated-contract). the
+// pools are upgradable by aquarius: on 2026-10-02 the mainnet ones ran 12fca5a7...,
+// which stellar.expert validated against AquaToken/soroban-amm@a22139a1; by
+// 2026-10-06 all 37 had moved to the same wasm the testnet pools run, which
+// stellar.expert lists as unverified. tests/integration/aquarius-mainnet-exits
+// fails when the deployed wasm drifts from this value again.
 export const MAINNET_CONCENTRATED_POOL_WASM =
-  "12fca5a7a96577273b6d4184cf9c984036cda0e8f0594747e7b2933dced37ee6";
+  "155a17b9929ffb1f9e84bd6ef5c00a4d613c1ab5f4ad4c502d84515250cc2907";
 export const TESTNET_CONCENTRATED_POOL_WASM =
   "155a17b9929ffb1f9e84bd6ef5c00a4d613c1ab5f4ad4c502d84515250cc2907";
 
