@@ -1,18 +1,18 @@
-// Soroswap Router swap: convert a Soroban token to XLM via a direct
-// swap_exact_tokens_for_tokens invocation against the SoroswapRouter.
+// soroswap router swap: convert a soroban token to XLM with a direct
+// swap_exact_tokens_for_tokens call on the SoroswapRouter.
 //
-// This is the ALLOW-LIST-SAFE, testnet-capable conversion path. The Soroswap
-// Aggregator (multi-protocol) is addressed dynamically by the Soroswap backend
+// this is the allow-list-safe conversion path that also works on testnet. the
+// soroswap aggregator is addressed dynamically by the soroswap backend
 // (SoroswapSDK.getContractAddress) and is not deployed on testnet, so it cannot
-// be a statically-pinned allow-list entry the way this app's security model
-// requires. The Router IS pinned on both the mainnet and testnet allow-lists, so
-// the conversion routes through it (single-protocol Soroswap liquidity).
+// be a pinned allow-list entry the way this app's security model requires. the
+// router is pinned on both networks, so conversions go through it (soroswap
+// liquidity only).
 //
-// Many tokens have no direct XLM pair (on mainnet 40 of the 88 paired tokens
+// many tokens have no direct XLM pair (on mainnet 40 of the 88 paired tokens
 // trade only against something else), so quoteRouteToXLM searches the factory's
 // pair graph for the direct path and every one-hop path through a token paired
 // with both sides, quotes each with router_get_amounts_out, and returns the best.
-// A token with no usable route gets a NoSoroswapRouteError, never a guessed path.
+// a token with no usable route gets a NoSoroswapRouteError, never a guessed path.
 import {
   Asset,
   Contract,
@@ -20,15 +20,17 @@ import {
   nativeToScVal,
   rpc,
   xdr,
-  type Horizon,
   type Transaction,
+  type TransactionSource,
 } from "@stellar/stellar-sdk";
 
+import { isAllowedRootTarget } from "@/lib/config/contracts";
 import {
-  getAllowlistForNetwork,
-  isAllowedRootTarget,
-  type AllowedContract,
-} from "@/lib/config/contracts";
+  getSoroswapRouterId,
+  resolveAssetAddress,
+  validateDeadline,
+  validateIntegerAmount,
+} from "@/lib/adapters/soroswap/router";
 import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
 import type { NetworkConfig } from "@/lib/config/networks";
 import {
@@ -47,6 +49,7 @@ import { loadSoroswapPairs, type SoroswapPairInfo } from "@/lib/adapters/soroswa
 import type { AssetIdentifier } from "@/lib/types/account";
 
 const FIVE_MINUTES_SECONDS = 300;
+const CALLER = "buildSwapToXLM";
 // a path longer than token -> hop -> XLM is not searched
 const MAX_PATH_LENGTH = 3;
 // bound on one-hop candidates quoted per conversion, best-funded first
@@ -69,7 +72,7 @@ export interface SwapToXLMArgs {
 
 export interface SwapToXLMDeps {
   readonly server: rpc.Server;
-  readonly sourceAccount: Horizon.AccountResponse;
+  readonly sourceAccount: TransactionSource;
   readonly assemble?: typeof assembleSubmittable;
 }
 
@@ -86,14 +89,14 @@ export async function buildSwapToXLM(
     );
   }
 
-  validateIntegerAmount("amountIn", args.amountIn);
-  validateIntegerAmount("amountOutMin", args.amountOutMin);
-  validateDeadline(args.deadline);
+  validateIntegerAmount(CALLER, "amountIn", args.amountIn);
+  validateIntegerAmount(CALLER, "amountOutMin", args.amountOutMin);
+  validateDeadline(CALLER, args.deadline);
   if (BigInt(args.amountIn) <= 0n) {
     throw new RangeError(`buildSwapToXLM: amountIn must be > 0; got ${args.amountIn}`);
   }
 
-  const assetInAddress = resolveAssetAddress(args.assetIn, args.network);
+  const assetInAddress = resolveAssetAddress(args.assetIn, args.network, CALLER);
   const xlmAddress = Asset.native().contractId(args.network.passphrase);
   if (assetInAddress === xlmAddress) {
     throw new Error("buildSwapToXLM: assetIn is already XLM; nothing to convert");
@@ -178,7 +181,7 @@ export async function quoteRouteToXLM(
   }
   const read = deps.simulateRead ?? simulateRead;
   const load = deps.loadPairs ?? loadSoroswapPairs;
-  const tokenIn = resolveAssetAddress(args.assetIn, args.network);
+  const tokenIn = resolveAssetAddress(args.assetIn, args.network, CALLER);
   const xlm = Asset.native().contractId(args.network.passphrase);
   if (tokenIn === xlm) throw new Error("quoteRouteToXLM: assetIn is already XLM");
 
@@ -260,32 +263,6 @@ function decodeI128Vec(v: xdr.ScVal): bigint[] {
   return v.vec.map((x) => fromScValI128(x));
 }
 
-// look up the SoroswapRouter contract id from the network's allow-list
-export function getSoroswapRouterId(network: NetworkConfig): string {
-  const entry = getAllowlistForNetwork(network).find(
-    (c: AllowedContract) => c.protocol === "soroswap" && c.name === "SoroswapRouter",
-  );
-  if (!entry) {
-    throw new Error(`SoroswapRouter not found in the ${network.id} allow-list`);
-  }
-  return entry.id;
-}
-
-function resolveAssetAddress(asset: AssetIdentifier, network: NetworkConfig): string {
-  switch (asset.kind) {
-    case "native":
-      return Asset.native().contractId(network.passphrase);
-    case "credit":
-      return new Asset(asset.code, asset.issuer).contractId(network.passphrase);
-    case "liquidity_pool_shares":
-      throw new TypeError(
-        "buildSwapToXLM: liquidity_pool_shares is not a swappable token; remove liquidity first",
-      );
-    case "contract":
-      return asset.contractId;
-  }
-}
-
 function validatePath(path: readonly string[], tokenIn: string, xlm: string): void {
   if (path.length < 2 || path.length > MAX_PATH_LENGTH) {
     throw new RangeError(`buildSwapToXLM: path must have 2 to ${MAX_PATH_LENGTH} tokens`);
@@ -295,22 +272,5 @@ function validatePath(path: readonly string[], tokenIn: string, xlm: string): vo
   }
   if (new Set(path).size !== path.length) {
     throw new RangeError("buildSwapToXLM: path must not repeat a token");
-  }
-}
-
-function validateIntegerAmount(label: string, v: string): void {
-  if (!/^\d+$/.test(v)) {
-    throw new TypeError(
-      `buildSwapToXLM: ${label} must be a non-negative decimal-integer string; got "${v}"`,
-    );
-  }
-}
-
-function validateDeadline(deadline: number): void {
-  if (!Number.isFinite(deadline) || !Number.isInteger(deadline) || deadline <= 0) {
-    throw new RangeError(`buildSwapToXLM: deadline must be a positive integer; got ${deadline}`);
-  }
-  if (deadline > Number.MAX_SAFE_INTEGER) {
-    throw new RangeError(`buildSwapToXLM: deadline exceeds MAX_SAFE_INTEGER; got ${deadline}`);
   }
 }

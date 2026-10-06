@@ -5,7 +5,6 @@ import {
   claim,
   claimConcentratedFees,
   getUserReward,
-  swapChained,
   withdrawConcentratedPosition,
 } from "@/lib/adapters/aquarius/client";
 import {
@@ -29,10 +28,6 @@ import { u128 } from "@/lib/soroban/scval";
 // signed or submitted.
 
 const XLM_USDC_CONCENTRATED = "CBBMQBNHB2FYVZYV7VNHOJHUMTFJLR4PUMRVQYNW6RHIKZO2NQMIBUCV";
-const XLM = "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA";
-const USDC = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
-// the XLM/USDC constant-product pool's index
-const XLM_USDC_CP_INDEX = "9ac7a9cde23ac2ada11105eeaa42e43c2ea8332ca0aa8f41f58d7160274d718e";
 
 async function recentConcentratedHolders(server: rpc.Server): Promise<string[]> {
   const latest = await server.getLatestLedger();
@@ -168,27 +163,6 @@ describe("integration: aquarius exits simulate against mainnet", () => {
         user,
         tokens: position!.tokens,
         poolIndex,
-        sourceAccount: await horizon.loadAccount(user),
-        network: MAINNET,
-      },
-      { server },
-    );
-
-    // a one-hop swap_chained through the XLM/USDC constant-product pool reaches
-    // contract logic with the tuple-encoded chain
-    await swapChained(
-      {
-        user,
-        swapsChain: [
-          {
-            tokens: [XLM, USDC],
-            poolIndex: poolIndexHexToBytes(XLM_USDC_CP_INDEX),
-            tokenOut: USDC,
-          },
-        ],
-        tokenIn: XLM,
-        inAmount: 10_000_000n,
-        outMin: 1n,
         sourceAccount: await horizon.loadAccount(user),
         network: MAINNET,
       },

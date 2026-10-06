@@ -14,7 +14,7 @@ import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import type { Connector } from "@/lib/wallet/connector";
 
 // drives submitRevoke through the real build path: buildRevoke -> buildApprove ->
-// prepareTransaction (the sdk's own assembleTransaction over a simulation
+// assembleSubmittable (the sdk's own assembleTransaction over a simulation
 // response) -> auth guard -> fee cap -> sign -> send. only the network edge (the
 // rpc server's methods) is stood in for.
 
@@ -51,12 +51,12 @@ function approveAuth(): xdr.SorobanAuthorizationEntry {
 const server = {
   getLatestLedger: async () => ({ id: "x", sequence: 5000, protocolVersion: 23 }),
   getAccount,
-  prepareTransaction: async (tx: Transaction) => {
+  simulateTransaction: async (): Promise<rpc.Api.SimulateTransactionSuccessResponse> => {
     const data = new SorobanDataBuilder()
       .setResourceFee(sim.resourceFee)
       .setResources(200_000, 0, sim.writeBytes)
       .build();
-    const simulation: rpc.Api.SimulateTransactionSuccessResponse = {
+    return {
       id: "1",
       latestLedger: 5000,
       events: [],
@@ -65,7 +65,6 @@ const server = {
       transactionData: new SorobanDataBuilder(data),
       result: { auth: [approveAuth()], retval: xdr.ScVal.scvVoid() },
     };
-    return rpc.assembleTransaction(tx, simulation).build();
   },
   sendTransaction,
   pollTransaction,

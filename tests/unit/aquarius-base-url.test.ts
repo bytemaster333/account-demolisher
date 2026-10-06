@@ -6,7 +6,7 @@ import {
   AQUARIUS_API_TESTNET_BASE_URL,
   aquariusApiBaseUrlForNetwork,
 } from "@/lib/adapters/aquarius/pools";
-import { MAINNET, TESTNET, FUTURENET } from "@/lib/config/networks";
+import { MAINNET, TESTNET, type NetworkConfig } from "@/lib/config/networks";
 
 const USER = "GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3";
 
@@ -40,8 +40,10 @@ describe("Aquarius REST base URL is network-correct (regression: testnet must no
   it("maps each network to its own backend", () => {
     expect(aquariusApiBaseUrlForNetwork(TESTNET)).toBe(AQUARIUS_API_TESTNET_BASE_URL);
     expect(aquariusApiBaseUrlForNetwork(MAINNET)).toBe(AQUARIUS_API_MAINNET_BASE_URL);
-    // no aquarius backend on futurenet: refuse instead of querying mainnet's
-    expect(() => aquariusApiBaseUrlForNetwork(FUTURENET)).toThrow(/futurenet/);
+    // a network id outside the supported pair (only reachable by a cast) is
+    // refused instead of querying another network's backend
+    const dropped = { ...TESTNET, id: "futurenet" } as unknown as NetworkConfig;
+    expect(() => aquariusApiBaseUrlForNetwork(dropped)).toThrow(/unsupported .*"futurenet"/);
   });
 
   it("queries the testnet backend when built for testnet with no baseUrl override", async () => {

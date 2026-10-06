@@ -4,11 +4,9 @@ vi.mock("server-only", () => ({}));
 
 const env = vi.fn();
 vi.mock("@/server/server-env", () => ({
-  getServerEnv: () => env(),
-  requireServerEnv: (k: string) => {
-    const v = (env() as Record<string, string | undefined>)[k];
-    if (v === undefined) throw new Error(`Required server environment variable "${k}" is not set.`);
-    return v;
+  getSoroswapConfig: () => {
+    const e = env() as Record<string, string | undefined>;
+    return { apiUrl: e["SOROSWAP_API_URL"], apiKey: e["SOROSWAP_API_KEY"] };
   },
 }));
 
@@ -27,10 +25,20 @@ import {
 
 const ORIGIN = "https://demolisher.example";
 
-function post(body: unknown, origin: string | null = ORIGIN): Request {
+// the app runs behind one reverse proxy (TRUSTED_PROXY_HOPS defaults to 1), which
+// appends the client address to X-Forwarded-For
+function post(
+  body: unknown,
+  origin: string | null = ORIGIN,
+  forwardedFor: string | null = "203.0.113.7",
+): Request {
   return new Request(`${ORIGIN}/api/soroswap`, {
     method: "POST",
-    headers: { "content-type": "application/json", ...(origin !== null ? { origin } : {}) },
+    headers: {
+      "content-type": "application/json",
+      ...(origin !== null ? { origin } : {}),
+      ...(forwardedFor !== null ? { "x-forwarded-for": forwardedFor } : {}),
+    },
     body: JSON.stringify(body),
   });
 }
@@ -74,6 +82,33 @@ describe("soroswap proxy route", () => {
     expect(JSON.stringify(body)).not.toMatch(/MEDIATOR_SECRET/);
     expect(err).toHaveBeenCalled();
     err.mockRestore();
+  });
+
+  it("refuses to call upstream without an api key", async () => {
+    env.mockReturnValue({ SOROSWAP_API_URL: "https://api.soroswap.test" });
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await POST(post(quote));
+    expect(res.status).toBe(500);
+    expect(((await res.json()) as { code: string }).code).toBe("SOROSWAP_NOT_CONFIGURED");
+    expect(upstream).not.toHaveBeenCalled();
+    err.mockRestore();
+  });
+
+  it("answers a deployment error, not an unhandled throw, when the proxy hop is missing", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await POST(post(quote, ORIGIN, null));
+    expect(res.status).toBe(500);
+    expect(((await res.json()) as { code: string }).code).toBe("PROXY_MISCONFIGURED");
+    expect(upstream).not.toHaveBeenCalled();
+    err.mockRestore();
+  });
+
+  it("rate-limits per forwarded client address", async () => {
+    upstream.mockImplementation(async () => new Response("{}", { status: 200 }));
+    for (let i = 0; i < 5; i++) expect((await POST(post(quote))).status).toBe(200);
+    expect((await POST(post(quote))).status).toBe(429);
+    // another client behind the same proxy has its own budget
+    expect((await POST(post(quote, ORIGIN, "198.51.100.4"))).status).toBe(200);
   });
 
   it("no longer relays send or getProtocols", async () => {

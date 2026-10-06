@@ -5,6 +5,8 @@ import { getViolations } from "@/lib/stellar/allowlist";
 import {
   MAINNET_ALLOWLIST,
   TESTNET_ALLOWLIST,
+  getAllowlistForNetwork,
+  isAllowedContract,
   isAllowedRootTarget,
   isKnownContract,
 } from "@/lib/config/contracts";
@@ -55,7 +57,6 @@ describe("allow-list roles: only entry points may be a signed root call", () => 
       "Blend::backstopV2",
       "SoroswapRouter",
       "AquariusAmmRouter",
-      "FxDAO::VaultsContract",
     ]) {
       expect(getViolations(mainnetCall(idOf(name), "submit"), MAINNET), name).toEqual([]);
     }
@@ -64,9 +65,36 @@ describe("allow-list roles: only entry points may be a signed root call", () => 
   it("every protocol keeps at least one entry point on both networks", () => {
     for (const list of [MAINNET_ALLOWLIST, TESTNET_ALLOWLIST]) {
       const protocols = new Set(list.filter((c) => c.role === "entrypoint").map((c) => c.protocol));
-      for (const p of ["blend", "aquarius", "soroswap", "fxdao"])
-        expect(protocols.has(p), p).toBe(true);
+      expect([...protocols].sort()).toEqual(["aquarius", "blend", "soroswap"]);
     }
+  });
+
+  it("lists nothing from fxdao, which shut down on chain", () => {
+    // mainnet vaults CCUN4RXU... now only exports evict and upgrade, with zero
+    // vaults left; the testnet contracts are gone
+    for (const list of [MAINNET_ALLOWLIST, TESTNET_ALLOWLIST]) {
+      // (the blend pool named "FxDAO" is a blend lending pool and stays)
+      expect(list.filter((c) => c.protocol === "fxdao" || c.name.startsWith("FxDAO::"))).toEqual(
+        [],
+      );
+    }
+    expect(
+      isAllowedRootTarget("CCUN4RXU5VNDHSF4S4RKV4ZJYMX2YWKOH6L4AKEKVNVDQ7HY5QIAO4UB", MAINNET),
+    ).toBe(false);
+  });
+
+  it("refuses a network id outside mainnet and testnet instead of answering for it", () => {
+    const dropped = { ...TESTNET, id: "futurenet" } as unknown as typeof TESTNET;
+    const router = idOf("SoroswapRouter");
+    expect(() => getAllowlistForNetwork(dropped)).toThrow(/unsupported .*"futurenet"/);
+    expect(() => isAllowedRootTarget(router, dropped)).toThrow(/unsupported/);
+    expect(() => isKnownContract(router, dropped)).toThrow(/unsupported/);
+  });
+
+  it("isAllowedContract has no implicit network", () => {
+    const router = idOf("SoroswapRouter");
+    expect(isAllowedContract(router, MAINNET)).toBe(true);
+    expect(() => isAllowedContract(router, undefined)).toThrow(/network/);
   });
 
   it("lists every pinned aquarius concentrated pool as an entry point", () => {

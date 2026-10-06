@@ -3,8 +3,8 @@
 import { Resolver } from "node:dns";
 import { Agent, fetch as undiciFetch } from "undici";
 
-import { getServerEnv, requireServerEnv } from "@/server/server-env";
-import { createLimiter, getRemoteIp } from "@/server/rate-limit";
+import { getSoroswapConfig } from "@/server/server-env";
+import { createLimiter, rateLimitByIp } from "@/server/rate-limit";
 import { readJsonCapped, MAX_JSON_BODY_BYTES, BodyTooLargeError } from "@/server/read-body";
 
 export const runtime = "nodejs";
@@ -77,6 +77,10 @@ export const UPSTREAM_MAX_BODY_BYTES = 1_000_000;
 // exceed 2^53; a plain parse would round them before we re-serialize. any integer
 // literal outside the safe range comes back as its exact digit string, whatever
 // field it is in. relies on the reviver's source-text argument (node 21+).
+// no code in the app calls this proxy any more: the testnet demo, its last
+// caller, now swaps through the pinned router. nothing compares a quote with a
+// built transaction either, so this keeps the numbers exact but is not a
+// slippage guard.
 export function parseUpstreamJson(rawText: string): unknown {
   return JSON.parse(rawText, (_key, value: unknown, context?: { source?: string }) => {
     if (
@@ -127,8 +131,9 @@ function sanitizeMessage(message: string, apiKey: string): string {
 }
 
 // allowed ops: anything else returns 400 so this never becomes an open relay.
-// only the testnet demo's quote and build are used; relaying signed transactions
-// (send) or listing protocols would only spend the server's api quota for others
+// quote and build are what the soroswap client exposes; relaying signed
+// transactions (send) or listing protocols would only spend the server's api
+// quota for others
 type Op = "quote" | "build";
 
 const ALLOWED_OPS: ReadonlySet<Op> = new Set<Op>(["quote", "build"]);
@@ -240,14 +245,10 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  const ip = getRemoteIp(request);
-
-  if (!limiter.take(ip)) {
-    return jsonResponse(
-      { ok: false, code: "RATE_LIMITED", reason: "Too many requests; try again shortly." },
-      429,
-    );
-  }
+  // answers 429 over the limit, and 500 when the proxy setup cannot name the
+  // client (an unidentified request must not share one bucket with the rest)
+  const limited = rateLimitByIp(limiter, request);
+  if (limited !== null) return limited;
 
   let parsed: unknown;
   try {
@@ -275,11 +276,15 @@ export async function POST(request: Request): Promise<Response> {
     return jsonResponse({ ok: false, code: "BAD_REQUEST", reason: plan.error }, 400);
   }
 
+  // only the soroswap variables are read, so a bad value elsewhere (a malformed
+  // MEDIATOR_SECRET, say) cannot take this route down with it
   let baseUrl: string;
   let apiKey: string;
   try {
-    baseUrl = getServerEnv().SOROSWAP_API_URL;
-    apiKey = requireServerEnv("SOROSWAP_API_KEY");
+    const config = getSoroswapConfig();
+    if (config.apiKey === undefined) throw new Error("SOROSWAP_API_KEY is not set");
+    baseUrl = config.apiUrl;
+    apiKey = config.apiKey;
   } catch (err) {
     // the detail (which variable failed validation) is for the operator's log,
     // not for whoever sent the request

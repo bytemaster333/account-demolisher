@@ -1,4 +1,6 @@
-// browser-side typed client for the soroswap aggregator
+// browser-side typed client for the soroswap aggregator, through /api/soroswap.
+// no part of the app imports it now that the testnet demo swaps through the
+// pinned router; production conversions never used it.
 import type { BuildQuoteResponse, QuoteResponse, SupportedNetworks } from "@soroswap/sdk";
 
 const DEFAULT_PROXY_URL = "/api/soroswap";
@@ -72,8 +74,8 @@ function jsonSerializeWithBigInt(value: unknown): string {
 // the SDK types amountOut/otherAmountThreshold as `bigint`, but the proxy JSON path never
 // materializes them as such: JSON.parse yields a string or (lossily) a Number. reject any value
 // that isn't a faithful non-negative integer instead of handing a caller rounded or
-// exponential digits. nothing in this app compares the quote against the built transaction:
-// the only caller (the testnet demo) signs build()'s xdr as returned.
+// exponential digits. this is a precision check, not a slippage guard: nothing compares
+// the quote against the built transaction.
 function assertStroopField(v: unknown, field: string): void {
   if (typeof v === "bigint") {
     if (v < 0n)

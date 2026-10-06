@@ -2,71 +2,43 @@
 import {
   Contract,
   TransactionBuilder,
+  nativeToScVal,
   rpc,
   xdr,
-  type Horizon,
   type Transaction,
+  type TransactionSource,
 } from "@stellar/stellar-sdk";
 import { isAllowedRootTarget } from "@/lib/config/contracts";
-import { getSoroswapRouterId } from "@/lib/adapters/soroswap/swap";
+import {
+  getSoroswapRouterId,
+  validateDeadline,
+  validateIntegerAmount,
+} from "@/lib/adapters/soroswap/router";
 import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { address as scvAddress, i128 as scvI128 } from "@/lib/soroban/scval";
 import { assembleSubmittable, SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
-import type { AssetIdentifier } from "@/lib/types/account";
-import { Asset, nativeToScVal } from "@stellar/stellar-sdk";
 
 const FIVE_MINUTES_SECONDS = 300;
+const CALLER = "removeLiquidity";
 
-export interface RemoveLiquidityArgs {
-  readonly tokenA: AssetIdentifier;
-  readonly tokenB: AssetIdentifier;
+// inject point for tests; defaults to the memoized RPC + assembleSubmittable
+export interface RemoveLiquidityDeps {
+  readonly server: rpc.Server;
+  readonly sourceAccount: TransactionSource;
+  readonly assemble?: typeof assembleSubmittable;
+}
+
+// both pair tokens as soroban contract ids, as discovery reads them from the pair
+export interface RemoveLiquidityByContractIdsArgs {
+  readonly tokenAAddress: string;
+  readonly tokenBAddress: string;
   // LP-share balance to burn, in smallest units
   readonly liquidity: string;
   readonly amountAMin: string;
   readonly amountBMin: string;
   readonly userAddress: string;
   // unix seconds. soroswap compares against env.ledger().timestamp()
-  readonly deadline: number;
-  readonly network: NetworkConfig;
-}
-
-// inject point for tests; defaults to the memoized RPC + assembleSubmittable
-export interface RemoveLiquidityDeps {
-  readonly server: rpc.Server;
-  readonly sourceAccount: Horizon.AccountResponse;
-  readonly assemble?: typeof assembleSubmittable;
-}
-
-export async function removeLiquidity(
-  args: RemoveLiquidityArgs,
-  deps: RemoveLiquidityDeps,
-): Promise<Transaction> {
-  const tokenAAddress = resolveAssetAddress(args.tokenA, args.network);
-  const tokenBAddress = resolveAssetAddress(args.tokenB, args.network);
-  return removeLiquidityByContractIds(
-    {
-      tokenAAddress,
-      tokenBAddress,
-      liquidity: args.liquidity,
-      amountAMin: args.amountAMin,
-      amountBMin: args.amountBMin,
-      userAddress: args.userAddress,
-      deadline: args.deadline,
-      network: args.network,
-    },
-    deps,
-  );
-}
-
-// sibling that accepts already-resolved soroban contract IDs for both pair tokens
-export interface RemoveLiquidityByContractIdsArgs {
-  readonly tokenAAddress: string;
-  readonly tokenBAddress: string;
-  readonly liquidity: string;
-  readonly amountAMin: string;
-  readonly amountBMin: string;
-  readonly userAddress: string;
   readonly deadline: number;
   readonly network: NetworkConfig;
 }
@@ -83,17 +55,14 @@ export async function removeLiquidityByContractIds(
     );
   }
 
-  validateIntegerAmount("liquidity", args.liquidity);
-  validateIntegerAmount("amountAMin", args.amountAMin);
-  validateIntegerAmount("amountBMin", args.amountBMin);
-  validateDeadline(args.deadline);
-
-  const tokenAAddress = args.tokenAAddress;
-  const tokenBAddress = args.tokenBAddress;
+  validateIntegerAmount(CALLER, "liquidity", args.liquidity);
+  validateIntegerAmount(CALLER, "amountAMin", args.amountAMin);
+  validateIntegerAmount(CALLER, "amountBMin", args.amountBMin);
+  validateDeadline(CALLER, args.deadline);
 
   const callArgs: xdr.ScVal[] = [
-    scvAddress(tokenAAddress),
-    scvAddress(tokenBAddress),
+    scvAddress(args.tokenAAddress),
+    scvAddress(args.tokenBAddress),
     scvI128(BigInt(args.liquidity)),
     scvI128(BigInt(args.amountAMin)),
     scvI128(BigInt(args.amountBMin)),
@@ -113,44 +82,10 @@ export async function removeLiquidityByContractIds(
   const assemble = deps.assemble ?? assembleSubmittable;
   const prepared = await assemble(deps.server, tx);
   if ("innerTransaction" in prepared) {
-    throw new Error(
-      "removeLiquidity: prepareTransaction returned a FeeBumpTransaction unexpectedly",
-    );
+    throw new Error(`${CALLER}: prepareTransaction returned a FeeBumpTransaction unexpectedly`);
   }
   // parity with the other adapters: verify the assembled tx only invokes
   // allow-listed contracts before it can ever be signed.
   assertTransactionAllowed(prepared, args.network);
   return prepared;
-}
-
-function resolveAssetAddress(asset: AssetIdentifier, network: NetworkConfig): string {
-  switch (asset.kind) {
-    case "native":
-      return Asset.native().contractId(network.passphrase);
-    case "credit":
-      return new Asset(asset.code, asset.issuer).contractId(network.passphrase);
-    case "liquidity_pool_shares":
-      throw new TypeError(
-        "removeLiquidity: liquidity_pool_shares is not a token; pass the two underlying assets",
-      );
-    case "contract":
-      return asset.contractId;
-  }
-}
-
-function validateIntegerAmount(label: string, v: string): void {
-  if (!/^\d+$/.test(v)) {
-    throw new TypeError(
-      `removeLiquidity: ${label} must be a non-negative decimal-integer string; got "${v}"`,
-    );
-  }
-}
-
-function validateDeadline(deadline: number): void {
-  if (!Number.isFinite(deadline) || !Number.isInteger(deadline) || deadline <= 0) {
-    throw new RangeError(`removeLiquidity: deadline must be a positive integer; got ${deadline}`);
-  }
-  if (deadline > Number.MAX_SAFE_INTEGER) {
-    throw new RangeError(`removeLiquidity: deadline exceeds MAX_SAFE_INTEGER; got ${deadline}`);
-  }
 }
