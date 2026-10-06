@@ -88,7 +88,7 @@ describe("mainnet allow-list: completeness and provenance", () => {
       );
       // and must reference an actual upstream (a domain / known protocol origin)
       expect(c.source, `${c.name} source is not an upstream reference`).toMatch(
-        /github\.com|aqua\.network|fxdao\.io|soroswap|stellar\.expert/i,
+        /github\.com|aqua\.network|soroswap|stellar\.expert/i,
       );
       expect(c.verified_at, `${c.name} verified_at not a date`).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     }
