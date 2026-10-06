@@ -53,8 +53,14 @@ export function StandaloneTokensCard({
   const manualErrorId = useId();
 
   const isSelected = (id: string): boolean => selected.some((t) => t.contractId === id);
-  // tokens the user added by contract id (selected but not in the scan results)
-  const manual = selected.filter((t) => !discovered.some((d) => d.contractId === t.contractId));
+  const wasDiscovered = (id: string): boolean => discovered.some((d) => d.contractId === id);
+  // tokens the user added by contract id. kept apart from the selection so that
+  // unticking one leaves its row (and the rebuild button) in place; seeded from
+  // a selection the card is mounted with, so a remount doesn't lose them
+  const [manualAdded, setManualAdded] = useState<readonly HeldToken[]>(() =>
+    selected.filter((t) => !discovered.some((d) => d.contractId === t.contractId)),
+  );
+  const manual = manualAdded.filter((t) => !wasDiscovered(t.contractId));
 
   const toggle = (token: HeldToken, checked: boolean): void => {
     onChange(
@@ -75,7 +81,7 @@ export function StandaloneTokensCard({
       setManualError("Connect a wallet first.");
       return;
     }
-    if (isSelected(id)) {
+    if (wasDiscovered(id) || manual.some((t) => t.contractId === id)) {
       setManualError("That token is already in the list.");
       return;
     }
@@ -86,7 +92,9 @@ export function StandaloneTokensCard({
         setManualError("This account holds no balance of that token.");
         return;
       }
-      onChange([...selected, { contractId: id, balance: bal }]);
+      const token: HeldToken = { contractId: id, balance: bal };
+      setManualAdded((prev) => [...prev, token]);
+      onChange([...selected, token]);
       setManualId("");
     } catch {
       setManualError("Couldn't read a balance from that contract (it may be hostile or broken).");
@@ -194,8 +202,11 @@ export function StandaloneTokensCard({
             label={
               <span style={{ fontSize: 12.5, color: "var(--fg-2)" }}>
                 Convert the selected token{selected.length === 1 ? "" : "s"} to XLM (Soroswap swap)
-                instead of sending {selected.length === 1 ? "it" : "them"} as-is. Best-effort: a
-                token with no Soroswap market is left as-is. Leave off to keep the exact token.
+                instead of sending {selected.length === 1 ? "it" : "them"} as-is. A token that
+                can&apos;t be converted is sent to your destination as-is, and if that transfer
+                fails too, the close stops before the merge. A conversion over the 2% price-impact
+                limit, or one that can&apos;t be priced, waits for your confirmation before anything
+                is signed. Leave off to keep the exact token.
               </span>
             }
           />
