@@ -89,3 +89,56 @@ describe("public env: empty build args fall back to the defaults", () => {
     expect(SITE_URL).toBe("https://close.example.com");
   });
 });
+
+// a set but unusable slippage setting is an operator error. it must fail the
+// config, never quietly turn into the default protection (L-29)
+describe("public env: slippage settings are validated", () => {
+  const KEYS = ["NEXT_PUBLIC_SLIPPAGE_BPS", "NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS"] as const;
+  const orig = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+
+  beforeEach(() => {
+    vi.resetModules();
+    for (const k of KEYS) delete process.env[k];
+  });
+  afterEach(() => {
+    for (const k of KEYS) {
+      if (orig[k] === undefined) delete process.env[k];
+      else process.env[k] = orig[k];
+    }
+  });
+
+  async function load() {
+    const { getPublicEnv } = await import("@/lib/config/env");
+    return () => getPublicEnv();
+  }
+
+  it.each(["1000", "5", "-100", "abc", "1.5", "0x64"])(
+    "rejects NEXT_PUBLIC_SLIPPAGE_BPS=%s",
+    async (v) => {
+      process.env.NEXT_PUBLIC_SLIPPAGE_BPS = v;
+      expect(await load()).toThrow(/NEXT_PUBLIC_SLIPPAGE_BPS must be an integer from 10 to 500/);
+    },
+  );
+
+  it.each(["-1", "abc", "1e6", "10.5"])(
+    "rejects NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS=%s",
+    async (v) => {
+      process.env.NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS = v;
+      expect(await load()).toThrow(/NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS must be a non-negative/);
+    },
+  );
+
+  it("accepts values in range", async () => {
+    process.env.NEXT_PUBLIC_SLIPPAGE_BPS = "250";
+    process.env.NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS = "1000000";
+    expect(await load()).not.toThrow();
+  });
+
+  it("accepts both unset or blank (the defaults apply)", async () => {
+    expect(await load()).not.toThrow();
+    vi.resetModules();
+    process.env.NEXT_PUBLIC_SLIPPAGE_BPS = "";
+    process.env.NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS = " ";
+    expect(await load()).not.toThrow();
+  });
+});

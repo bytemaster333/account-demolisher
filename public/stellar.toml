@@ -31,8 +31,8 @@ ORG_LOGO = "https://demolisher.app/logo.png"
 ORG_DESCRIPTION = """
 Account Demolisher is an open-source (Apache-2.0) Stellar account-closure
 tool. It drains and merges Stellar accounts cleanly across both classic
-Stellar operations and Soroban DeFi protocols (Blend, Aquarius, Soroswap,
-FxDAO). The reference deployment is operated by the Account Demolisher
+Stellar operations and Soroban DeFi protocols (Blend, Aquarius, Soroswap).
+The reference deployment is operated by the Account Demolisher
 project maintainers. Embedders (wallets, exchanges) may self-host with their
 own per-deployment mediator key.
 """

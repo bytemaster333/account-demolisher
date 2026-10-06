@@ -82,11 +82,4 @@ export class MultiSignerConnector implements Connector {
     });
     return { signedXdr: merged, signerPublicKey: this.#accountPublicKey };
   }
-
-  // per-signer Soroban auth-entry signing is out of scope for this helper
-  async signAuthEntry(): Promise<{ signedXdr: string; signerAddress: string }> {
-    throw new Error(
-      "MultiSignerConnector: SEP-43 auth-entry signing is not supported for multisig accounts.",
-    );
-  }
 }

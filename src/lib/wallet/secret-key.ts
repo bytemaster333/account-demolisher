@@ -13,8 +13,8 @@ import { verifySignedEnvelope } from "@/lib/wallet/signed-envelope";
 export class SecretKeyConnector implements Connector {
   public readonly kind: ConnectorKind = "secret";
 
-  // the raw s... seed. we don't cache the derived keypair. it's rebuilt
-  // per sign so the in-memory secret-key bytes live for one method call
+  // the raw s... seed, held for as long as this connector instance lives. the
+  // derived keypair is rebuilt per sign rather than cached next to it
   readonly #seed: string;
   readonly #publicKey: string;
 
@@ -60,24 +60,5 @@ export class SecretKeyConnector implements Connector {
     const keypair = Keypair.fromSecret(this.#seed);
     cloned.sign(keypair);
     return verifySignedEnvelope(tx, cloned.toXdr(), networkPassphrase, keypair.publicKey());
-  }
-
-  // sign a soroban auth-entry preimage xdr (sep-43).
-  //
-  // signing the raw base64 bytes here would produce a plain ed25519 signature,
-  // not a valid network-bound Soroban auth signature: SEP-43 requires signing
-  // the sha-256 hash of an xdr.HashIdPreimageSorobanAuthorization that binds the
-  // network id, nonce, and signature-expiration ledger, none of which the single
-  // authEntryXdr string carries. No production caller reaches this method, so it
-  // refuses rather than sign wrongly.
-  async signAuthEntry(
-    _authEntryXdr: string,
-    _address: string,
-    _networkPassphrase: string,
-  ): Promise<{ signedXdr: string; signerAddress: string }> {
-    throw new Error(
-      "SecretKeyConnector: SEP-43 auth-entry signing is not implemented. " +
-        "Signing raw entry bytes would not produce a valid network-bound Soroban auth signature.",
-    );
   }
 }

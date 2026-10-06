@@ -9,5 +9,10 @@
 # if you put another proxy or a CDN in front of caddy, add it under
 # trusted_proxies and raise TRUSTED_PROXY_HOPS to match.
 {$SITE_ADDRESS::80} {
+	# the largest body an api route accepts is 32 KiB (a multisig plan), so
+	# anything past 64 KB is refused with 413 here instead of reaching node
+	request_body /api/* {
+		max_size 64KB
+	}
 	reverse_proxy app:3000
 }

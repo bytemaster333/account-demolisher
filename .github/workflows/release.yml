@@ -64,11 +64,16 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm format:check
+      # same em dash check as ci.yml, spelled as utf-8 bytes
+      - run: |
+          ! git grep -n $'\xe2\x80\x94' -- src tests public '*.ts' '*.tsx' '*.yml' '*.mjs' '*.mts' '*.sh' Dockerfile Caddyfile .env.example .dockerignore .gitignore
       - run: pnpm test
       # release blocker: no high or critical advisory may ship in the production
       # dependency tree of an attested artifact
       - run: pnpm audit --prod --audit-level high
-      - run: pnpm test:integration
+      # the mainnet timing test is a scheduled check (mainnet-timing.yml), not a
+      # release gate: public mainnet rate limits must not block a release
+      - run: pnpm test:integration --exclude tests/integration/mainnet-discovery-timing.test.ts
 
   e2e:
     runs-on: ubuntu-latest

@@ -3,6 +3,7 @@
 import "@/lib/wallet/buffer-polyfill"; // Ledger needs a browser Buffer global
 import {
   activeAddress,
+  activeModules,
   hardwareWalletPaths,
   Networks as KitNetworks,
   LocalStorageKeys,
@@ -11,6 +12,7 @@ import {
   StellarWalletsKit,
   wcSessionPaths,
   type ModuleInterface,
+  type SwkAppTheme,
 } from "@creit.tech/stellar-wallets-kit";
 import { LedgerModule } from "@creit.tech/stellar-wallets-kit/modules/ledger";
 import { defaultModules } from "@creit.tech/stellar-wallets-kit/modules/utils";
@@ -41,29 +43,61 @@ function toKitNetwork(network: NetworkConfig): KitNetworks {
   }
 }
 
-// dark theme for the kit's wallet-picker modal, matching the app palette (the
-// modal is a shadow-DOM web component, so it can't read our CSS variables and
-// needs concrete color values). Keeps the picker on-brand instead of the kit's
-// stock black/white styling.
-const KIT_THEME = {
-  background: "#141618",
-  "background-secondary": "#1a1d1f",
-  "foreground-strong": "#eef0f2",
-  foreground: "#a4a9b0",
-  "foreground-secondary": "#7e848c",
-  primary: "#46a479",
-  "primary-foreground": "#08140d",
-  transparent: "transparent",
-  lighter: "#212528",
-  light: "#1a1d1f",
-  "light-gray": "#363b40",
-  gray: "#7e848c",
-  danger: "#d9756a",
-  border: "#282b2e",
-  shadow: "rgba(0, 0, 0, 0.5)",
-  "border-radius": "12px",
-  "font-family": "Geist, ui-sans-serif, system-ui, sans-serif",
+// the picker modal is a shadow-DOM web component that can't read our CSS
+// variables, so it gets concrete copies of the globals.css palettes. keep these
+// in step with the dark and light blocks there.
+const KIT_THEMES: Record<"dark" | "light", SwkAppTheme> = {
+  dark: {
+    background: "#141618",
+    "background-secondary": "#1a1d1f",
+    "foreground-strong": "#eef0f2",
+    foreground: "#a4a9b0",
+    "foreground-secondary": "#848a92",
+    primary: "#46a479",
+    "primary-foreground": "#08140d",
+    transparent: "transparent",
+    lighter: "#212528",
+    light: "#1a1d1f",
+    "light-gray": "#363b40",
+    gray: "#848a92",
+    danger: "#d9756a",
+    border: "#282b2e",
+    shadow: "rgba(0, 0, 0, 0.5)",
+    "border-radius": "12px",
+    "font-family": "Geist, ui-sans-serif, system-ui, sans-serif",
+  },
+  light: {
+    background: "#ffffff",
+    "background-secondary": "#f4f6f8",
+    "foreground-strong": "#15171a",
+    foreground: "#4a505a",
+    "foreground-secondary": "#646a71",
+    primary: "#1f7a52",
+    "primary-foreground": "#ffffff",
+    transparent: "transparent",
+    lighter: "#e9edf1",
+    light: "#f4f6f8",
+    "light-gray": "#ccd2d9",
+    gray: "#646a71",
+    danger: "#b34a3f",
+    border: "#e2e6ea",
+    shadow: "rgba(10, 12, 14, 0.08)",
+    "border-radius": "12px",
+    "font-family": "Geist, ui-sans-serif, system-ui, sans-serif",
+  },
 };
+
+// the page's theme as layout.tsx and ThemeProvider set it. anything but "light"
+// renders with the dark palette, so the picker follows the same rule.
+function pageTheme(): "dark" | "light" {
+  return document.documentElement.dataset.theme === "light" ? "light" : "dark";
+}
+
+// called right before the picker opens, so a theme switch since the last
+// opening is picked up
+export function applyKitTheme(): void {
+  StellarWalletsKit.setTheme(KIT_THEMES[pageTheme()]);
+}
 
 function wcTargetChain(network: NetworkConfig): WalletConnectTargetChain {
   return network.passphrase === KitNetworks.PUBLIC
@@ -202,7 +236,7 @@ export function getKit(network: NetworkConfig): KitHandle {
     StellarWalletsKit.init({
       modules: buildModules(),
       network: kitNetwork,
-      theme: KIT_THEME,
+      theme: KIT_THEMES[pageTheme()],
       // label not-installed wallets with an "Install" link instead of hiding
       // them, so the list is predictable
       authModal: { showInstallLabel: true },
@@ -279,13 +313,36 @@ export function snapshotKitSession(): KitSessionSnapshot {
 
 // put the kit back to a snapshot. with no session in the snapshot this is a full
 // disconnect, which also lets the wallet used in between drop its connection.
+// otherwise the wallet used in between is closed first: WalletConnect sessions
+// that were not there before are ended (a co-signer's phone pairing would stay
+// live on the relay), and a different extension or device is disconnected. its
+// teardown can reset the kit's state, so the snapshot is written back after it,
+// and also when it fails, in which case the failure is passed on.
 export async function restoreKitSessionSnapshot(snapshot: KitSessionSnapshot): Promise<void> {
   if (snapshot.activeAddress === undefined || snapshot.selectedModuleId === undefined) {
     await StellarWalletsKit.disconnect();
     return;
   }
-  hardwareWalletPaths.value = snapshot.hardwareWalletPaths;
-  wcSessionPaths.value = snapshot.wcSessionPaths;
-  selectedModuleId.value = snapshot.selectedModuleId;
-  activeAddress.value = snapshot.activeAddress;
+  const between = activeModules.value.find((m) => m.productId === selectedModuleId.value);
+  const keptTopics = new Set(snapshot.wcSessionPaths.map((p) => p.topic));
+  const strayTopics = [
+    ...new Set(wcSessionPaths.value.map((p) => p.topic).filter((t) => !keptTopics.has(t))),
+  ];
+  try {
+    if (wcModule !== null) {
+      for (const topic of strayTopics) await wcModule.closeSession(topic);
+    }
+    if (
+      between !== undefined &&
+      between.productId !== snapshot.selectedModuleId &&
+      between.productId !== WALLET_CONNECT_ID
+    ) {
+      await between.disconnect?.();
+    }
+  } finally {
+    hardwareWalletPaths.value = snapshot.hardwareWalletPaths;
+    wcSessionPaths.value = snapshot.wcSessionPaths;
+    selectedModuleId.value = snapshot.selectedModuleId;
+    activeAddress.value = snapshot.activeAddress;
+  }
 }

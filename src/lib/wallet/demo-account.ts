@@ -137,8 +137,6 @@ export const DEMO_STEPS: readonly DemoStep[] = [
   },
 ];
 
-export type DemoStepStatus = "pending" | "active" | "done" | "failed" | "skipped";
-
 export interface DemoStepResult {
   readonly id: DemoStepId;
   readonly status: "done" | "failed" | "skipped";
@@ -197,8 +195,6 @@ export async function runDemoSetup(opts: RunDemoOptions): Promise<DemoAccountRes
   try {
     const aquaIssuer = Keypair.random();
     const yxlmIssuer = Keypair.random();
-    aquaIssuerKp = aquaIssuer;
-    yxlmIssuerKp = yxlmIssuer;
     const hash = await submitClassic(horizon, network, secret, publicKey, (b) =>
       b
         // 5 XLM each so the issuers have plenty for tx fees when they later mint
@@ -212,6 +208,9 @@ export async function runDemoSetup(opts: RunDemoOptions): Promise<DemoAccountRes
         .addOperation(Operation.changeTrust({ asset: new Asset("AQUA", aquaIssuer.publicKey()) }))
         .addOperation(Operation.changeTrust({ asset: new Asset("YXLM", yxlmIssuer.publicKey()) })),
     );
+    // only issuers that now exist on chain can mint in the credit step
+    aquaIssuerKp = aquaIssuer;
+    yxlmIssuerKp = yxlmIssuer;
     onFinish({ id: "trustlines", status: "done", txHash: hash, detail: "3 trustlines opened" });
   } catch (e) {
     onFinish({ id: "trustlines", status: "failed", error: errorMessage(e) });
@@ -411,7 +410,7 @@ export async function runDemoSetup(opts: RunDemoOptions): Promise<DemoAccountRes
     });
   }
 
-  // step 8: ready
+  // step 13: ready
   onStart("ready");
   const connector = new SecretKeyConnector(secret);
   const explorerUrl = explorerAccountUrl(network, publicKey);
@@ -420,9 +419,25 @@ export async function runDemoSetup(opts: RunDemoOptions): Promise<DemoAccountRes
   return { publicKey, connector, explorerUrl };
 }
 
-async function friendbotFund(friendbotUrl: string, address: string): Promise<void> {
+export const FRIENDBOT_TIMEOUT_MS = 20_000;
+
+export async function friendbotFund(
+  friendbotUrl: string,
+  address: string,
+  timeoutMs: number = FRIENDBOT_TIMEOUT_MS,
+): Promise<void> {
   const url = `${friendbotUrl}?addr=${encodeURIComponent(address)}`;
-  const res = await fetch(url, { method: "GET" });
+  let res: Response;
+  try {
+    // a hung friendbot would otherwise keep the setup spinner going forever
+    res = await fetch(url, { method: "GET", signal: AbortSignal.timeout(timeoutMs) });
+  } catch (e) {
+    const name = (e as { name?: unknown } | null)?.name;
+    if (name === "TimeoutError" || name === "AbortError") {
+      throw new Error(`Friendbot did not respond within ${timeoutMs / 1000} seconds.`);
+    }
+    throw e;
+  }
   if (!res.ok) {
     let detail = "";
     try {
