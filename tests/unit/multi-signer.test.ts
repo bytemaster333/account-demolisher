@@ -80,10 +80,4 @@ describe("MultiSignerConnector", () => {
   it("throws when constructed with no signers", () => {
     expect(() => new MultiSignerConnector(Keypair.random().publicKey(), [])).toThrow();
   });
-
-  it("refuses SEP-43 auth-entry signing (not supported for multisig)", async () => {
-    const account = Keypair.random();
-    const conn = new MultiSignerConnector(account.publicKey(), [member(account, 1)]);
-    await expect(conn.signAuthEntry()).rejects.toThrow(/not supported/);
-  });
 });

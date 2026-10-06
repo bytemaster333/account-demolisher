@@ -102,17 +102,11 @@ describe("SecretKeyConnector signing", () => {
     );
   });
 
-  it("refuses to sign a soroban auth-entry rather than signing raw bytes", async () => {
-    // signing the raw base64 bytes would be a plain ed25519 signature, not a
-    // valid network-bound SEP-43 Soroban auth signature. the connector refuses
-    // instead of producing a silently-wrong signature (a raw signing oracle over
-    // the in-memory seed).
-    const kp = Keypair.random();
-    const connector = new SecretKeyConnector(kp.secret());
-    const preimage = Buffer.from("some-auth-entry-preimage").toString("base64");
-
-    await expect(connector.signAuthEntry(preimage, kp.publicKey(), NET)).rejects.toThrow(
-      /not implemented/,
-    );
+  it("offers no way to sign anything but a whole transaction", () => {
+    // no raw signing oracle over the in-memory seed: auth entries, messages and
+    // bare bytes have no entry point at all
+    const connector = new SecretKeyConnector(Keypair.random().secret());
+    expect("signAuthEntry" in connector).toBe(false);
+    expect("signMessage" in connector).toBe(false);
   });
 });

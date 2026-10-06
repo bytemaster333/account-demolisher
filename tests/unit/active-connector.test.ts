@@ -23,7 +23,6 @@ function fakeConnector(kind: "kit" | "secret"): Connector {
     disconnect: async () => {},
     getPublicKey: async () => "G".padEnd(56, "A"),
     signTransaction: async () => ({ signedXdr: "", signerPublicKey: "" }),
-    signAuthEntry: async () => ({ signedXdr: "", signerAddress: "" }),
   };
 }
 
