@@ -161,7 +161,7 @@ export function evaluateScamHeuristics(
     flags.push({
       id: "unknown_contract",
       severity: "warning",
-      message: `Contract ${contractId} is not on the verified allow-list.`,
+      message: `Contract ${contractId} is not a contract this app recognizes on ${network}.`,
       detail: { contractId },
     });
   }
