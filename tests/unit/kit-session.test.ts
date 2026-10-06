@@ -10,13 +10,20 @@ import { MAINNET, TESTNET } from "@/lib/config/networks";
 const wc = vi.hoisted(() => ({
   constructed: 0,
   address: "",
-  closed: [] as string[],
-  disconnected: 0,
+  // the sign client's open sessions, and every relay disconnect it was asked for
+  sessions: new Set<string>(),
+  disconnects: [] as string[],
+  // a topic whose relay disconnect fails (the relay is unreachable)
+  failTopic: null as string | null,
 }));
 
 vi.mock("@creit.tech/stellar-wallets-kit/modules/wallet-connect", async (importOriginal) => {
   const original =
     await importOriginal<typeof import("@creit.tech/stellar-wallets-kit/modules/wallet-connect")>();
+  // follows wallet-connect.module.js in kit 2.7.0 and the sign client's
+  // disconnect: the topic is validated, the relay publish is awaited, and only
+  // then is the session deleted, so two overlapping disconnects of one topic
+  // both pass validation and the later delete throws
   class CountingWalletConnectModule {
     wcParams: { allowedChains?: string[] };
     constructor(params: { allowedChains?: string[] }) {
@@ -29,16 +36,24 @@ vi.mock("@creit.tech/stellar-wallets-kit/modules/wallet-connect", async (importO
     async getAddress() {
       return { address: wc.address };
     }
-    // like the real module: drop the session's paths, and when none are left
-    // do the kit's full disconnect, which resets the kit's session state
     async closeSession(topic: string) {
-      wc.closed.push(topic);
       const kit = await import("@creit.tech/stellar-wallets-kit");
       kit.wcSessionPaths.value = kit.wcSessionPaths.value.filter((p) => p.topic !== topic);
-      if (kit.wcSessionPaths.value.length === 0) await kit.StellarWalletsKit.disconnect();
+      // the real module calls the kit's internal disconnect() here, unawaited,
+      // and that calls the selected module's disconnect() unawaited too
+      if (kit.wcSessionPaths.value.length === 0) void kit.StellarWalletsKit.disconnect();
+      await this.signClientDisconnect(topic);
+    }
+    async signClientDisconnect(topic: string) {
+      wc.disconnects.push(topic);
+      if (!wc.sessions.has(topic)) throw new Error(`Session or pairing topic not found: ${topic}`);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      if (topic === wc.failTopic) throw new Error("Failed to publish payload, please try again.");
+      if (!wc.sessions.has(topic)) throw new Error(`No matching key. session: ${topic}`);
+      wc.sessions.delete(topic);
     }
     async disconnect() {
-      wc.disconnected++;
+      for (const topic of [...wc.sessions]) await this.closeSession(topic);
     }
   }
   return { ...original, WalletConnectModule: CountingWalletConnectModule };
@@ -84,8 +99,9 @@ async function pageLoad(storage: Record<string, string>) {
   vi.resetModules();
   vi.restoreAllMocks();
   wc.constructed = 0;
-  wc.closed = [];
-  wc.disconnected = 0;
+  wc.sessions.clear();
+  wc.disconnects = [];
+  wc.failTopic = null;
   extensionDisconnects.length = 0;
   window.localStorage.clear();
   for (const [k, v] of Object.entries(storage)) window.localStorage.setItem(k, v);
@@ -160,21 +176,44 @@ describe("session restore and WalletConnect start-up (L-105)", () => {
   });
 });
 
-describe("co-signing does not replace the app's wallet session (L-106)", () => {
-  // what the kit's picker does when the co-signer picks a wallet
-  function pickInModal(moduleId: string, address: string) {
-    kitApi.selectedModuleId.value = moduleId;
-    kitApi.activeAddress.value = address;
-  }
+// what the kit's picker does when the co-signer picks a wallet
+function pickInModal(moduleId: string, address: string) {
+  kitApi.selectedModuleId.value = moduleId;
+  kitApi.activeAddress.value = address;
+}
 
+// what the WalletConnect picker leaves behind: the started module, an open sign
+// client session, and one more session path for the account the phone approved
+async function pickWalletConnect(address: string, topic: string) {
+  const mod = kitApi.activeModules.value.find((m) => m.productId === "wallet_connect")!;
+  wc.address = address;
+  await mod.getAddress();
+  wc.sessions.add(topic);
+  kitApi.wcSessionPaths.value = [...kitApi.wcSessionPaths.value, { publicKey: address, topic }];
+  pickInModal("wallet_connect", address);
+}
+
+// the kit fires its module disconnects without awaiting them, so give anything
+// they started time to finish (or to fail) before looking
+async function settle() {
+  await new Promise((resolve) => setTimeout(resolve, 40));
+}
+
+describe("co-signing does not replace the app's wallet session (L-106)", () => {
   it("puts the initiator's session back after a co-signer signs with another wallet", async () => {
     const { connector } = await pageLoad({ [ADDRESS]: A, [MODULE]: "freighter" });
-    const result = await connector.withScopedKitSession(TESTNET, async () => {
-      pickInModal("xbull", B);
-      expect(window.localStorage.getItem(ADDRESS)).toBe(B);
-      return "signed";
-    });
+    const teardown = vi.fn();
+    const result = await connector.withScopedKitSession(
+      TESTNET,
+      async () => {
+        pickInModal("xbull", B);
+        expect(window.localStorage.getItem(ADDRESS)).toBe(B);
+        return "signed";
+      },
+      teardown,
+    );
     expect(result).toBe("signed");
+    expect(teardown).not.toHaveBeenCalled();
     expect(kitApi.activeAddress.value).toBe(A);
     expect(kitApi.selectedModuleId.value).toBe("freighter");
     expect(window.localStorage.getItem(ADDRESS)).toBe(A);
@@ -183,9 +222,10 @@ describe("co-signing does not replace the app's wallet session (L-106)", () => {
 
   it("leaves no session behind when there was none before", async () => {
     const { connector, kit } = await pageLoad({});
-    await connector.withScopedKitSession(TESTNET, async () => {
-      pickInModal("xbull", B);
-    });
+    const teardown = vi.fn();
+    await connector.withScopedKitSession(TESTNET, async () => pickInModal("xbull", B), teardown);
+    expect(teardown).not.toHaveBeenCalled();
+    expect(extensionDisconnects).toEqual(["xbull"]);
     expect(kitApi.activeAddress.value).toBeUndefined();
     expect(window.localStorage.getItem(ADDRESS)).toBeNull();
     expect(window.localStorage.getItem(MODULE)).toBeNull();
@@ -196,35 +236,26 @@ describe("co-signing does not replace the app's wallet session (L-106)", () => {
   it("restores the session when signing fails and passes the error on", async () => {
     const { connector } = await pageLoad({ [ADDRESS]: A, [MODULE]: "freighter" });
     const boom = new Error("user declined");
+    const teardown = vi.fn();
     await expect(
-      connector.withScopedKitSession(TESTNET, async () => {
-        pickInModal("xbull", B);
-        throw boom;
-      }),
+      connector.withScopedKitSession(
+        TESTNET,
+        async () => {
+          pickInModal("xbull", B);
+          throw boom;
+        },
+        teardown,
+      ),
     ).rejects.toBe(boom);
+    expect(teardown).not.toHaveBeenCalled();
     expect(window.localStorage.getItem(ADDRESS)).toBe(A);
   });
 });
 
 describe("the co-signer's own wallet connection is closed afterwards", () => {
-  function pickInModal(moduleId: string, address: string) {
-    kitApi.selectedModuleId.value = moduleId;
-    kitApi.activeAddress.value = address;
-  }
-
-  // what the WalletConnect picker leaves behind: the started module and one more
-  // session path for the account the phone approved
-  async function pickWalletConnect(address: string, topic: string) {
-    const mod = kitApi.activeModules.value.find((m) => m.productId === "wallet_connect")!;
-    wc.address = address;
-    await mod.getAddress();
-    kitApi.wcSessionPaths.value = [...kitApi.wcSessionPaths.value, { publicKey: address, topic }];
-    pickInModal("wallet_connect", address);
-  }
-
   it("disconnects a different extension the co-signer used, not the app's", async () => {
     const { connector } = await pageLoad({ [ADDRESS]: A, [MODULE]: "freighter" });
-    await connector.withScopedKitSession(TESTNET, async () => pickInModal("xbull", B));
+    await connector.withScopedKitSession(TESTNET, async () => pickInModal("xbull", B), vi.fn());
     expect(extensionDisconnects).toEqual(["xbull"]);
     expect(kitApi.activeAddress.value).toBe(A);
     expect(kitApi.selectedModuleId.value).toBe("freighter");
@@ -232,41 +263,127 @@ describe("the co-signer's own wallet connection is closed afterwards", () => {
 
   it("leaves the app's extension alone when the co-signer used the same one", async () => {
     const { connector } = await pageLoad({ [ADDRESS]: A, [MODULE]: "freighter" });
-    await connector.withScopedKitSession(TESTNET, async () => pickInModal("freighter", B));
+    await connector.withScopedKitSession(TESTNET, async () => pickInModal("freighter", B), vi.fn());
     expect(extensionDisconnects).toEqual([]);
     expect(kitApi.activeAddress.value).toBe(A);
   });
 
-  it("ends a co-signer's WalletConnect pairing and keeps the app's extension session", async () => {
+  it("ends a co-signer's WalletConnect pairing once and keeps the app's extension session", async () => {
     const { connector } = await pageLoad({ [ADDRESS]: A, [MODULE]: "freighter" });
-    await connector.withScopedKitSession(TESTNET, () => pickWalletConnect(B, "topic-cosigner"));
-    expect(wc.closed).toEqual(["topic-cosigner"]);
+    const teardown = vi.fn();
+    await connector.withScopedKitSession(
+      TESTNET,
+      () => pickWalletConnect(B, "topic-cosigner"),
+      teardown,
+    );
+    await settle();
+    expect(wc.disconnects).toEqual(["topic-cosigner"]);
+    expect(wc.sessions.size).toBe(0);
+    expect(teardown).not.toHaveBeenCalled();
+    expect(extensionDisconnects).toEqual([]);
     expect(kitApi.activeAddress.value).toBe(A);
     expect(kitApi.selectedModuleId.value).toBe("freighter");
     expect(window.localStorage.getItem(ADDRESS)).toBe(A);
     expect(kitApi.wcSessionPaths.value).toEqual([]);
   });
 
+  it("ends a co-signer's WalletConnect pairing once when the app had no session", async () => {
+    const { connector } = await pageLoad({});
+    const teardown = vi.fn();
+    await connector.withScopedKitSession(
+      TESTNET,
+      () => pickWalletConnect(B, "topic-cosigner"),
+      teardown,
+    );
+    await settle();
+    expect(wc.disconnects).toEqual(["topic-cosigner"]);
+    expect(wc.sessions.size).toBe(0);
+    expect(teardown).not.toHaveBeenCalled();
+    expect(kitApi.activeAddress.value).toBeUndefined();
+    expect(kitApi.selectedModuleId.value).toBeUndefined();
+    expect(kitApi.wcSessionPaths.value).toEqual([]);
+  });
+
   it("closes only the co-signer's WalletConnect session when the app is on WalletConnect too", async () => {
     const { connector } = await pageLoad({ [ADDRESS]: A, [MODULE]: "wallet_connect" });
     kitApi.wcSessionPaths.value = [{ publicKey: A, topic: "topic-app" }];
-    await connector.withScopedKitSession(TESTNET, () => pickWalletConnect(B, "topic-cosigner"));
-    expect(wc.closed).toEqual(["topic-cosigner"]);
-    expect(wc.disconnected).toBe(0);
+    wc.sessions.add("topic-app");
+    await connector.withScopedKitSession(
+      TESTNET,
+      () => pickWalletConnect(B, "topic-cosigner"),
+      vi.fn(),
+    );
+    await settle();
+    expect(wc.disconnects).toEqual(["topic-cosigner"]);
+    expect([...wc.sessions]).toEqual(["topic-app"]);
     expect(kitApi.activeAddress.value).toBe(A);
     expect(kitApi.selectedModuleId.value).toBe("wallet_connect");
     expect(kitApi.wcSessionPaths.value).toEqual([{ publicKey: A, topic: "topic-app" }]);
   });
+});
 
-  it("still puts the app's session back when closing the co-signer's wallet fails", async () => {
-    const { connector, kit } = await pageLoad({ [ADDRESS]: A, [MODULE]: "freighter" });
-    kit.getKit(TESTNET);
+describe("a failed wallet teardown never costs the signature or its error", () => {
+  async function refusingXbull() {
+    const page = await pageLoad({ [ADDRESS]: A, [MODULE]: "freighter" });
+    page.kit.getKit(TESTNET);
     const xbull = kitApi.activeModules.value.find((m) => m.productId === "xbull")!;
     const refused = new Error("extension refused to disconnect");
     vi.spyOn(xbull, "disconnect").mockRejectedValue(refused);
+    return { ...page, refused };
+  }
+
+  it("returns the signature and reports the teardown failure separately", async () => {
+    const { connector, refused } = await refusingXbull();
+    const teardown = vi.fn();
+    const result = await connector.withScopedKitSession(
+      TESTNET,
+      async () => {
+        pickInModal("xbull", B);
+        return "signed";
+      },
+      teardown,
+    );
+    expect(result).toBe("signed");
+    expect(teardown).toHaveBeenCalledExactlyOnceWith(refused);
+    expect(kitApi.activeAddress.value).toBe(A);
+    expect(kitApi.selectedModuleId.value).toBe("freighter");
+  });
+
+  it("passes the signing error on, not the teardown failure", async () => {
+    const { connector, refused } = await refusingXbull();
+    const declined = new Error("user declined");
+    const teardown = vi.fn();
     await expect(
-      connector.withScopedKitSession(TESTNET, async () => pickInModal("xbull", B)),
-    ).rejects.toBe(refused);
+      connector.withScopedKitSession(
+        TESTNET,
+        async () => {
+          pickInModal("xbull", B);
+          throw declined;
+        },
+        teardown,
+      ),
+    ).rejects.toBe(declined);
+    expect(teardown).toHaveBeenCalledExactlyOnceWith(refused);
+    expect(kitApi.activeAddress.value).toBe(A);
+  });
+
+  it("reports a WalletConnect relay failure and still restores the app's session", async () => {
+    const { connector } = await pageLoad({ [ADDRESS]: A, [MODULE]: "freighter" });
+    wc.failTopic = "topic-cosigner";
+    const teardown = vi.fn();
+    const result = await connector.withScopedKitSession(
+      TESTNET,
+      async () => {
+        await pickWalletConnect(B, "topic-cosigner");
+        return "signed";
+      },
+      teardown,
+    );
+    await settle();
+    expect(result).toBe("signed");
+    expect(teardown).toHaveBeenCalledOnce();
+    expect(String(teardown.mock.calls[0]![0])).toContain("Failed to publish payload");
+    expect(wc.disconnects).toEqual(["topic-cosigner"]);
     expect(kitApi.activeAddress.value).toBe(A);
     expect(kitApi.selectedModuleId.value).toBe("freighter");
   });
