@@ -17,7 +17,7 @@ export interface TypedConfirmationProps {
   readonly explorerUrl?: string;
   // the reviewed memo, shown under the destination so a mistyped one is still
   // visible at this last gate. null shows "No memo"; leave it out to show nothing.
-  readonly memo?: ClassicMemo | null;
+  readonly memo?: ClassicMemo | null | undefined;
   // an exchange close: the mediator puts the memo on its forward to the exchange
   readonly memoViaMediator?: boolean;
   // delay before confirm enables. defaults to 4000ms

@@ -931,7 +931,7 @@ function FooterLink({
     );
   }
   return (
-    <Link href={href} onClick={onClick} style={style}>
+    <Link href={href} {...(onClick ? { onClick } : {})} style={style}>
       {children}
     </Link>
   );
