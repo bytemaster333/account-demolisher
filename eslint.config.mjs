@@ -15,6 +15,9 @@ const config = [
       "test-results/**",
       "design/**",
       "docs/**",
+      // local agent worktrees and internal notes, both gitignored
+      ".claude/**",
+      "resources/**",
       // standalone Node QA seeders (testnet), not part of the app build
       "scripts/**",
       "next-env.d.ts",
