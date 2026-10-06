@@ -70,6 +70,12 @@ export function isFailoverError(err: unknown): boolean {
   );
 }
 
+// true for the rpc's "request exceeded processing limit threshold" answer: the
+// request was too expensive for this host, so a narrower request may still pass
+export function isProcessingLimitError(err: unknown): boolean {
+  return (err as { code?: unknown } | null | undefined)?.code === JSONRPC_PROCESSING_LIMIT;
+}
+
 function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   const m = (err as { message?: unknown } | null | undefined)?.message;

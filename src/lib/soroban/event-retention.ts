@@ -3,6 +3,11 @@
 // "ledger range: N - M" error; these let a scanner re-clamp startLedger to the
 // reported floor (plus a margin) and retry, instead of aborting the whole scan.
 
+// stellar-rpc's stock history-retention-window (about 7 days at 5s a ledger). every
+// event scan looks back this far at most; the reported oldest ledger can cut it
+// shorter on a host that retains less.
+export const EVENT_RETENTION_WINDOW_LEDGERS = 120_960;
+
 // margin above the reported floor: the floor advances ~1 ledger / 5s, so a ledger
 // closing between the error and the retry would otherwise drop us back below it.
 export const RETENTION_RETRY_MARGIN_LEDGERS = 60;

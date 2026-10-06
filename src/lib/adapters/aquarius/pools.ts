@@ -14,6 +14,7 @@ import {
 } from "@/lib/soroban/scval";
 import { simulateRead } from "@/lib/soroban/simulate";
 import {
+  EVENT_RETENTION_WINDOW_LEDGERS,
   MAX_RETENTION_RETRIES,
   RETENTION_RETRY_MARGIN_LEDGERS,
   parseRetentionFloor,
@@ -389,12 +390,12 @@ function assertUserPoolsApiResponse(parsed: unknown, url: string): AquariusUserP
 export interface AquariusEventScanPoolProviderOptions {
   readonly server: rpc.Server;
   readonly network: NetworkConfig;
-  // soroban RPC retains ~7 days of events by default. defaults to 120_960 ledgers (~7 days at 5s)
+  // defaults to the rpc's stock retention window (EVENT_RETENTION_WINDOW_LEDGERS)
   readonly lookbackLedgers?: number;
   readonly maxPages?: number;
 }
 
-const DEFAULT_EVENT_LOOKBACK_LEDGERS = 120_960;
+const DEFAULT_EVENT_LOOKBACK_LEDGERS = EVENT_RETENTION_WINDOW_LEDGERS;
 const EVENT_PAGE_LIMIT = 10_000;
 const DEFAULT_EVENT_MAX_PAGES = 100;
 
