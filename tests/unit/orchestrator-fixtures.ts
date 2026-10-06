@@ -9,6 +9,7 @@ import {
   nativeToScVal,
   NotFoundError,
   Operation,
+  SorobanDataBuilder,
   TransactionBuilder,
   xdr,
   type Transaction,
@@ -18,7 +19,8 @@ import { vi } from "vitest";
 import { getAllowlistForNetwork } from "@/lib/config/contracts";
 import { MAINNET } from "@/lib/config/networks";
 import type { Connector } from "@/lib/wallet/connector";
-import type { AccountAudit } from "@/lib/types/account";
+import type { AccountAuditResult } from "@/lib/stellar/account-audit";
+import { SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
 import type { HorizonLike } from "@/lib/orchestrator/executor";
 
 export const NETWORK = MAINNET;
@@ -47,7 +49,21 @@ export function allowlisted(protocol: string, name: string): string {
   return entry.id;
 }
 
-export function makeAudit(over: Partial<AccountAudit> = {}): AccountAudit {
+// the ledger the audit was read against; the merge checks read it
+export const AUDIT_LEDGER = { sequence: 1000, closedAt: 1_900_000_000 };
+
+// horizon's latest-ledger record as the executor reads it: the base reserve for
+// the fee cap, and the sequence and close time the merge is timed by
+export function ledgerRecord(over: Record<string, unknown> = {}) {
+  return {
+    base_reserve_in_stroops: 5_000_000,
+    sequence: AUDIT_LEDGER.sequence,
+    closed_at: new Date(AUDIT_LEDGER.closedAt * 1000).toISOString(),
+    ...over,
+  };
+}
+
+export function makeAudit(over: Partial<AccountAuditResult> = {}): AccountAuditResult {
   return {
     accountId: USER,
     sequence: "100",
@@ -75,6 +91,7 @@ export function makeAudit(over: Partial<AccountAudit> = {}): AccountAudit {
     sponsorship: { numSponsoring: 0, numSponsored: 0, coverable: 0 },
     requiresMultisig: false,
     mergeability: { mergeable: true },
+    ledger: AUDIT_LEDGER,
     ...over,
   };
 }
@@ -123,9 +140,6 @@ export function signingConnector(): SigningConnector {
     connect: async () => ({ publicKey: USER }),
     disconnect: async () => {},
     getPublicKey: async () => USER,
-    signAuthEntry: async () => {
-      throw new Error("not used");
-    },
   } as unknown as SigningConnector;
 }
 
@@ -165,9 +179,17 @@ export function sourceAuth(root: xdr.SorobanAuthorizedInvocation): xdr.SorobanAu
   });
 }
 
-// a contract call from the user's account at the account's next sequence, with
-// the given auth tree and fee. the account object's sequence is bumped, exactly
-// as a real builder does.
+// what a prepared transaction declares besides its fee
+export interface DeclaredResources {
+  readonly writeBytes?: number;
+  readonly readWriteEntries?: number;
+}
+
+// a prepared contract call from the user's account at the account's next
+// sequence, with the given auth tree. `fee` is the total the signature
+// authorizes: the inclusion bid plus the resource fee, as assembleTransaction
+// sets it. the account object's sequence is bumped, exactly as a real builder
+// does.
 export function invokeTx(
   account: Account,
   contract: string,
@@ -175,9 +197,27 @@ export function invokeTx(
   args: xdr.ScVal[],
   auth: xdr.SorobanAuthorizationEntry[],
   fee = "150000",
+  resources: DeclaredResources = {},
 ): Transaction {
-  return new TransactionBuilder(account, { fee, networkPassphrase: PASS })
+  const resourceFee = BigInt(fee) - BigInt(SOROBAN_INCLUSION_FEE);
+  if (resourceFee <= 0n) throw new Error(`invokeTx: fee ${fee} leaves no resource fee`);
+  const readWrite = Array.from({ length: resources.readWriteEntries ?? 1 }, (_, i) =>
+    xdr.LedgerKey.contractData(
+      new xdr.LedgerKeyContractData({
+        contract: Address.fromString(contract).toScAddress(),
+        key: nativeToScVal(i, { type: "u32" }),
+        durability: xdr.ContractDataDurability.persistent,
+      }),
+    ),
+  );
+  const data = new SorobanDataBuilder()
+    .setResourceFee(resourceFee)
+    .setResources(1_000_000, 1_000, resources.writeBytes ?? 200)
+    .setReadWrite(readWrite)
+    .build();
+  return new TransactionBuilder(account, { fee: SOROBAN_INCLUSION_FEE, networkPassphrase: PASS })
     .addOperation(Operation.invokeContractFunction({ contract, function: fn, args, auth }))
+    .setSorobanData(data)
     .setTimeout(300)
     .build();
 }

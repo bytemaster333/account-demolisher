@@ -12,7 +12,6 @@ import {
   type Transaction,
 } from "@stellar/stellar-sdk";
 
-import { FXDAO_MAINNET_CONTRACTS } from "@/lib/adapters/fxdao/contracts";
 import { MAINNET } from "@/lib/config/networks";
 import { assertDefiAuthTree, soroswapPairFor } from "@/lib/soroban/defi-auth-guard";
 import type { PlanNode } from "@/lib/plan/tree";
@@ -498,42 +497,6 @@ describe("assertDefiAuthTree refuses smuggled authorizations", () => {
     expect(() => assertDefiAuthTree(repayNode, tx, ctx(blendUser))).toThrow(/arg 2 is 2000000/);
   });
 
-  it("checks fxdao pay_debt targets the pinned vaults and burns only a pinned stablecoin", () => {
-    const vaults = FXDAO_MAINNET_CONTRACTS.find((c) => c.kind === "vaults")!.id;
-    const usdx = FXDAO_MAINNET_CONTRACTS.find((c) => c.name === "USDx (SAC)")!.id;
-    const other = Address.contract(new Uint8Array(32).fill(4)).toString();
-    const vaultKey = xdr.ScVal.scvMap([
-      new xdr.ScMapEntry({ key: nativeToScVal("account", { type: "symbol" }), val: addr(user) }),
-      new xdr.ScMapEntry({
-        key: nativeToScVal("denomination", { type: "symbol" }),
-        val: nativeToScVal("USD", { type: "symbol" }),
-      }),
-      new xdr.ScMapEntry({
-        key: nativeToScVal("index", { type: "symbol" }),
-        val: nativeToScVal(5n, { type: "u128" }),
-      }),
-    ]);
-    const none = xdr.ScVal.scvVec([nativeToScVal("None", { type: "symbol" })]);
-    const args = [none, vaultKey, none, nativeToScVal(700n, { type: "u128" })];
-    const fxNode = node({
-      id: "fx",
-      kind: "PayFxDAODebt",
-      metadata: { kind: "PayFxDAODebt", vaultDenomination: "USD", debt: 700n, collateral: 9n },
-    });
-    const build = (burnContract: string, root = vaults) =>
-      buildTx(user, root, "pay_debt", args, [
-        entry(inv(root, "pay_debt", args, [inv(burnContract, "burn", [addr(user), i128(700n)])])),
-      ]);
-    expect(() => assertDefiAuthTree(fxNode, build(usdx), ctx(user))).not.toThrow();
-    expect(() => assertDefiAuthTree(fxNode, build(XLM_SAC), ctx(user))).toThrow(/would burn XLM/);
-    expect(() => assertDefiAuthTree(fxNode, build(other), ctx(user))).toThrow(
-      /not one of fxdao's pinned stablecoins/,
-    );
-    expect(() => assertDefiAuthTree(fxNode, build(usdx, other), ctx(user))).toThrow(
-      /not the fxdao vaults contract/,
-    );
-  });
-
   it("fails closed on a transaction it cannot read as one contract call", () => {
     const tx = new TransactionBuilder(new Account(user, "1"), {
       fee: "100",
@@ -561,6 +524,371 @@ describe("assertDefiAuthTree refuses smuggled authorizations", () => {
     const unknown = node({ id: "n", kind: "SomeNewExit", metadata: { kind: "SomeNewExit" } });
     expect(() => assertDefiAuthTree(unknown, recordedTx("swap"), ctx(user))).toThrow(
       /has no expected authorization tree/,
+    );
+  });
+});
+
+// recorded on mainnet 2026-10-06 by read-only simulation through the app's own
+// builders (buildBackstopQueueTx, buildBackstopWithdrawTx): the backstop asks the
+// user to authorize the root call only
+const BACKSTOP_V1 = "CAO3AGAMZVRMHITL36EJ2VZQWKYRPWMQAPDQD5YEOF3GIF7T44U4JAL3";
+const BACKSTOP_V2 = "CAQQR5SWBXKIGZKPBZDH3KM5GQ5GUTPKB7JAFCINLZBC5WXPJKRG3IM7";
+const BACKSTOP_RECORDED = {
+  queueV2: {
+    source: "GD4OIBG6QDXOKEVA7E6FWAMXIMIUES7FTKD5TLVBFQXSEAVLCHXT453F",
+    contract: BACKSTOP_V2,
+    fn: "queue_withdrawal",
+    pool: "CAJJZSGMMM3PD7N33TAPHGBUGTB43OC73HVIK2L2G6BNGGGYOSSYBXBD",
+    amount: 979525783549951n,
+    args: [
+      "AAAAEgAAAAAAAAAA+OQE3oDu5RKg+TxbAZdDEUJL5ZqH2a6hLC8iAqsR7z4=",
+      "AAAAEgAAAAESnMjMYzbx/bvcwPOYNDTDzbhf2eqFaXo3gtMY2HSlgA==",
+      "AAAACgAAAAAAAAAAAAN6355gd/8=",
+    ],
+    auth: "AAAAAAAAAAAAAAABIQj2Vg3Ug2VPDkZ9qZ00OmpN6g/SAokNXkIu2u9Kom0AAAAQcXVldWVfd2l0aGRyYXdhbAAAAAMAAAASAAAAAAAAAAD45ATegO7lEqD5PFsBl0MRQkvlmofZrqEsLyICqxHvPgAAABIAAAABEpzIzGM28f273MDzmDQ0w824X9nqhWl6N4LTGNh0pYAAAAAKAAAAAAAAAAAAA3rfnmB3/wAAAAA=",
+  },
+  withdrawV1: {
+    source: "GD4OIBG6QDXOKEVA7E6FWAMXIMIUES7FTKD5TLVBFQXSEAVLCHXT453F",
+    contract: BACKSTOP_V1,
+    fn: "withdraw",
+    pool: "CAQF5KNOFIGRI24NQRRGUPD46Q45MGMXZMRTQFXS25Y4NZVNPT34GM6S",
+    amount: 682579921n,
+    args: [
+      "AAAAEgAAAAAAAAAA+OQE3oDu5RKg+TxbAZdDEUJL5ZqH2a6hLC8iAqsR7z4=",
+      "AAAAEgAAAAEgXqmuKg0Ua42EYmo8fPQ51hmXyyM4FvLXccbmrXz3ww==",
+      "AAAACgAAAAAAAAAAAAAAACivV9E=",
+    ],
+    auth: "AAAAAAAAAAAAAAABHbAYDM1iw6Jr34idVzCysRfZkAPHAfcEcXZkF/PnKcQAAAAId2l0aGRyYXcAAAADAAAAEgAAAAAAAAAA+OQE3oDu5RKg+TxbAZdDEUJL5ZqH2a6hLC8iAqsR7z4AAAASAAAAASBeqa4qDRRrjYRiajx89DnWGZfLIzgW8tdxxuatfPfDAAAACgAAAAAAAAAAAAAAACivV9EAAAAA",
+  },
+  withdrawV2: {
+    source: "GC5SD2MCVCWPB4AF26ZJIR367XOIVV3JIMY2EZPHKEJGEUEX5XSMXWZA",
+    contract: BACKSTOP_V2,
+    fn: "withdraw",
+    pool: "CAJJZSGMMM3PD7N33TAPHGBUGTB43OC73HVIK2L2G6BNGGGYOSSYBXBD",
+    amount: 184262341n,
+    args: [
+      "AAAAEgAAAAAAAAAAuyHpgqis8PAF17KUR3793IrXaUMxomXnURJiUJft5Ms=",
+      "AAAAEgAAAAESnMjMYzbx/bvcwPOYNDTDzbhf2eqFaXo3gtMY2HSlgA==",
+      "AAAACgAAAAAAAAAAAAAAAAr7nsU=",
+    ],
+    auth: "AAAAAAAAAAAAAAABIQj2Vg3Ug2VPDkZ9qZ00OmpN6g/SAokNXkIu2u9Kom0AAAAId2l0aGRyYXcAAAADAAAAEgAAAAAAAAAAuyHpgqis8PAF17KUR3793IrXaUMxomXnURJiUJft5MsAAAASAAAAARKcyMxjNvH9u9zA85g0NMPNuF/Z6oVpejeC0xjYdKWAAAAACgAAAAAAAAAAAAAAAAr7nsUAAAAA",
+  },
+} as const;
+
+function backstopTx(
+  rec: (typeof BACKSTOP_RECORDED)[keyof typeof BACKSTOP_RECORDED],
+  root = rec.contract,
+): Transaction {
+  return buildTx(
+    rec.source,
+    root,
+    rec.fn,
+    rec.args.map((a) => xdr.ScVal.fromXdr(a, "base64")),
+    [xdr.SorobanAuthorizationEntry.fromXdr(rec.auth, "base64")],
+  );
+}
+
+describe("blend backstop steps", () => {
+  const q = BACKSTOP_RECORDED.queueV2;
+  const queueNode = (over: object = {}) =>
+    node({
+      id: "queue",
+      kind: "BackstopQueue",
+      metadata: { kind: "BackstopQueue", poolId: q.pool, shares: q.amount, ...over },
+    });
+  const withdrawNode = (rec: { pool: string; amount: bigint }, over: object = {}) =>
+    node({
+      id: "bw",
+      kind: "BackstopWithdraw",
+      metadata: { kind: "BackstopWithdraw", poolId: rec.pool, amount: rec.amount, ...over },
+    });
+
+  it("accepts the recorded queue_withdrawal", () => {
+    expect(() => assertDefiAuthTree(queueNode(), backstopTx(q), ctx(q.source))).not.toThrow();
+  });
+
+  it("refuses a queue_withdrawal sent to a contract that is not a pinned backstop", () => {
+    const tx = buildTx(
+      q.source,
+      EVIL,
+      q.fn,
+      q.args.map((a) => xdr.ScVal.fromXdr(a, "base64")),
+      [
+        entry(
+          inv(
+            EVIL,
+            q.fn,
+            q.args.map((a) => xdr.ScVal.fromXdr(a, "base64")),
+          ),
+        ),
+      ],
+    );
+    expect(() => assertDefiAuthTree(queueNode(), tx, ctx(q.source))).toThrow(
+      /not a pinned Blend backstop/,
+    );
+  });
+
+  it("refuses a queue_withdrawal on the other backstop when the plan names the pool's own", () => {
+    expect(() =>
+      assertDefiAuthTree(queueNode({ backstopId: BACKSTOP_V1 }), backstopTx(q), ctx(q.source)),
+    ).toThrow(/not the pool's/);
+  });
+
+  it("refuses a queue_withdrawal of a different share amount", () => {
+    expect(() =>
+      assertDefiAuthTree(queueNode({ shares: 1n }), backstopTx(q), ctx(q.source)),
+    ).toThrow(/queue_withdrawal amount is/);
+  });
+
+  it("refuses a queue_withdrawal whose authorization nests a drain", () => {
+    const args = q.args.map((a) => xdr.ScVal.fromXdr(a, "base64"));
+    const tx = buildTx(q.source, q.contract, q.fn, args, [
+      entry(
+        inv(q.contract, q.fn, args, [
+          inv(XLM_SAC, "transfer", [addr(q.source), addr(ATTACKER), i128(1n)]),
+        ]),
+      ),
+    ]);
+    expect(() => assertDefiAuthTree(queueNode(), tx, ctx(q.source))).toThrow(
+      /authorizes 1 nested call\(s\), expected 0/,
+    );
+  });
+
+  it("accepts the recorded withdraw on both backstop versions", () => {
+    for (const rec of [BACKSTOP_RECORDED.withdrawV1, BACKSTOP_RECORDED.withdrawV2]) {
+      expect(() =>
+        assertDefiAuthTree(withdrawNode(rec), backstopTx(rec), ctx(rec.source)),
+      ).not.toThrow();
+    }
+  });
+
+  it("refuses a withdraw of another amount or with no amount in the plan", () => {
+    const rec = BACKSTOP_RECORDED.withdrawV2;
+    expect(() =>
+      assertDefiAuthTree(withdrawNode(rec, { amount: 5n }), backstopTx(rec), ctx(rec.source)),
+    ).toThrow(/withdraw amount is 184262341/);
+    expect(() =>
+      assertDefiAuthTree(
+        withdrawNode(rec, { amount: undefined }),
+        backstopTx(rec),
+        ctx(rec.source),
+      ),
+    ).toThrow(/names no pool or amount/);
+  });
+
+  describe("emissions claim", () => {
+    const user = BACKSTOP_RECORDED.withdrawV2.source;
+    const pool = BACKSTOP_RECORDED.withdrawV2.pool;
+    const claimNode = node({
+      id: "bc",
+      kind: "ClaimBackstopEmissions",
+      metadata: { kind: "ClaimBackstopEmissions", poolId: pool },
+    });
+    const claimTx = (
+      backstop: string,
+      third: xdr.ScVal,
+      subs: xdr.SorobanAuthorizedInvocation[] = [],
+    ) => {
+      const args = [addr(user), xdr.ScVal.scvVec([addr(pool)]), third];
+      return buildTx(user, backstop, "claim", args, [entry(inv(backstop, "claim", args, subs))]);
+    };
+
+    it("accepts a v2 claim with an lp floor and a v1 claim paid to the user", () => {
+      expect(() =>
+        assertDefiAuthTree(claimNode, claimTx(BACKSTOP_V2, i128(1_000n)), ctx(user)),
+      ).not.toThrow();
+      expect(() =>
+        assertDefiAuthTree(claimNode, claimTx(BACKSTOP_V1, addr(user)), ctx(user)),
+      ).not.toThrow();
+    });
+
+    it("refuses a v2 claim without a floor and a v1 claim paid to someone else", () => {
+      expect(() =>
+        assertDefiAuthTree(claimNode, claimTx(BACKSTOP_V2, i128(0n)), ctx(user)),
+      ).toThrow(/no lp floor/);
+      expect(() =>
+        assertDefiAuthTree(claimNode, claimTx(BACKSTOP_V1, addr(ATTACKER)), ctx(user)),
+      ).toThrow(/pays out to/);
+    });
+
+    it("refuses a claim whose authorization nests a drain", () => {
+      const drain = inv(XLM_SAC, "transfer", [addr(user), addr(ATTACKER), i128(1n)]);
+      expect(() =>
+        assertDefiAuthTree(claimNode, claimTx(BACKSTOP_V2, i128(1_000n), [drain]), ctx(user)),
+      ).toThrow(/expected 0/);
+    });
+  });
+});
+
+describe("blend pool emissions claim", () => {
+  const user = RECORDED.blendRepay.source;
+  const claimNode = node({
+    id: "ce",
+    kind: "ClaimBlendEmissions",
+    metadata: { kind: "ClaimBlendEmissions", poolId: BLEND_POOL, reserveTokenIds: [3] },
+  });
+  const claimTx = (to: string, subs: xdr.SorobanAuthorizedInvocation[] = []) => {
+    const args = [addr(user), xdr.ScVal.scvVec([nativeToScVal(3, { type: "u32" })]), addr(to)];
+    return buildTx(user, BLEND_POOL, "claim", args, [entry(inv(BLEND_POOL, "claim", args, subs))]);
+  };
+
+  it("accepts claim(user, ids, user) with nothing nested", () => {
+    expect(() => assertDefiAuthTree(claimNode, claimTx(user), ctx(user))).not.toThrow();
+  });
+
+  it("refuses a claim paid elsewhere or carrying a nested call", () => {
+    expect(() => assertDefiAuthTree(claimNode, claimTx(ATTACKER), ctx(user))).toThrow(
+      /not from and paid to the user/,
+    );
+    const drain = inv(XLM_SAC, "transfer", [addr(user), addr(ATTACKER), i128(1n)]);
+    expect(() => assertDefiAuthTree(claimNode, claimTx(user, [drain]), ctx(user))).toThrow(
+      /expected 0/,
+    );
+  });
+});
+
+describe("the BLND trustline step", () => {
+  const user = RECORDED.blendRepay.source;
+  // mainnet BLND, as pinned in blend/constants
+  const BLND = new Asset("BLND", "GDJEHTBE6ZHUXSWFI642DCGLUOECLHPF3KSXHPXTSTJ7E3JF6MQ5EZYY");
+  const trustNode = node({
+    id: "blnd",
+    kind: "AddBlndTrustline",
+    metadata: { kind: "AddBlndTrustline" },
+  });
+  const trustTx = (ops: xdr.Operation[]) => {
+    const b = new TransactionBuilder(new Account(user, "100"), {
+      fee: "100",
+      networkPassphrase: Networks.PUBLIC,
+    });
+    for (const op of ops) b.addOperation(op);
+    return b.setTimeout(300).build();
+  };
+
+  it("accepts exactly one change_trust for BLND", () => {
+    expect(() =>
+      assertDefiAuthTree(trustNode, trustTx([Operation.changeTrust({ asset: BLND })]), ctx(user)),
+    ).not.toThrow();
+  });
+
+  it("refuses another asset, a removal, or an extra operation", () => {
+    const fake = new Asset("BLND", Keypair.random().publicKey());
+    expect(() =>
+      assertDefiAuthTree(trustNode, trustTx([Operation.changeTrust({ asset: fake })]), ctx(user)),
+    ).toThrow(/not BLND/);
+    expect(() =>
+      assertDefiAuthTree(
+        trustNode,
+        trustTx([Operation.changeTrust({ asset: BLND, limit: "0" })]),
+        ctx(user),
+      ),
+    ).toThrow(/limit is zero/);
+    expect(() =>
+      assertDefiAuthTree(
+        trustNode,
+        trustTx([
+          Operation.changeTrust({ asset: BLND }),
+          Operation.payment({ destination: ATTACKER, asset: Asset.native(), amount: "1" }),
+        ]),
+        ctx(user),
+      ),
+    ).toThrow(/expected 1 operation, got 2/);
+  });
+});
+
+// recorded on mainnet 2026-10-07 by read-only simulation through the app's own
+// builders (withdrawConcentratedPosition, claimConcentratedFees) for a real
+// holder of a tick range: the pool asks the user to authorize the root call only
+const CONCENTRATED = {
+  source: "GC6K27OC6OAA6XWVE3GGMJ2US5MOVMYZT5OJ326KOWKH4ZVMHXT6A7X4",
+  pool: "CBBMQBNHB2FYVZYV7VNHOJHUMTFJLR4PUMRVQYNW6RHIKZO2NQMIBUCV",
+  withdraw: {
+    args: [
+      "AAAAEgAAAAAAAAAAvK19wvOAD17VJsxmJ1SXWOqzGZ9cnevKdZR+Zqw95+A=",
+      "AAAABP//wvw=",
+      "AAAABP//xGQ=",
+      "AAAACQAAAAAAAAAAAAAG1IryeBU=",
+      "AAAAEAAAAAEAAAACAAAACQAAAAAAAAAAAAAAAAAAAAAAAAAJAAAAAAAAAAAAAAAAAAAAAA==",
+    ],
+    auth: "AAAAAAAAAAAAAAABQsgFpw6LiucV/Vp3JPRkypXHj6MjWGG29E6FZdpsGIAAAAARd2l0aGRyYXdfcG9zaXRpb24AAAAAAAAFAAAAEgAAAAAAAAAAvK19wvOAD17VJsxmJ1SXWOqzGZ9cnevKdZR+Zqw95+AAAAAE///C/AAAAAT//8RkAAAACQAAAAAAAAAAAAAG1IryeBUAAAAQAAAAAQAAAAIAAAAJAAAAAAAAAAAAAAAAAAAAAAAAAAkAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+  },
+  fees: {
+    args: ["AAAAEgAAAAAAAAAAvK19wvOAD17VJsxmJ1SXWOqzGZ9cnevKdZR+Zqw95+A="],
+    auth: "AAAAAAAAAAAAAAABQsgFpw6LiucV/Vp3JPRkypXHj6MjWGG29E6FZdpsGIAAAAAXY2xhaW1fYWxsX3Bvc2l0aW9uX2ZlZXMAAAAAAQAAABIAAAAAAAAAALytfcLzgA9e1SbMZidUl1jqsxmfXJ3rynWUfmasPefgAAAAAA==",
+  },
+} as const;
+
+describe("aquarius concentrated pools", () => {
+  const user = CONCENTRATED.source;
+  const pool = CONCENTRATED.pool;
+  const withdrawNode = (over: object = {}) =>
+    node({
+      id: "cw",
+      kind: "WithdrawAquariusConcentrated",
+      metadata: {
+        kind: "WithdrawAquariusConcentrated",
+        poolAddress: pool,
+        tickLower: -15620,
+        tickUpper: -15260,
+        liquidity: 7_509_933_979_669n,
+        ...over,
+      },
+    });
+  const feesNode = (poolAddress: string = pool) =>
+    node({
+      id: "cf",
+      kind: "ClaimAquariusConcentratedFees",
+      metadata: { kind: "ClaimAquariusConcentratedFees", poolAddress },
+    });
+  const recorded = (
+    which: "withdraw" | "fees",
+    subs: xdr.SorobanAuthorizedInvocation[] = [],
+    root: string = pool,
+  ) => {
+    const fixture = CONCENTRATED[which];
+    const fn = which === "withdraw" ? "withdraw_position" : "claim_all_position_fees";
+    const args = fixture.args.map((a) => xdr.ScVal.fromXdr(a, "base64"));
+    const auth =
+      subs.length === 0 && root === pool
+        ? xdr.SorobanAuthorizationEntry.fromXdr(fixture.auth, "base64")
+        : entry(inv(root, fn, args, subs));
+    return buildTx(user, root, fn, args, [auth]);
+  };
+
+  it("accepts the recorded withdraw_position and claim_all_position_fees", () => {
+    expect(() => assertDefiAuthTree(withdrawNode(), recorded("withdraw"), ctx(user))).not.toThrow();
+    expect(() => assertDefiAuthTree(feesNode(), recorded("fees"), ctx(user))).not.toThrow();
+  });
+
+  it("refuses a different range or liquidity than the plan holds", () => {
+    expect(() =>
+      assertDefiAuthTree(withdrawNode({ tickLower: -15000 }), recorded("withdraw"), ctx(user)),
+    ).toThrow(/names range -15620..-15260/);
+    expect(() =>
+      assertDefiAuthTree(withdrawNode({ liquidity: 1n }), recorded("withdraw"), ctx(user)),
+    ).toThrow(/liquidity is 7509933979669/);
+  });
+
+  it("refuses a call to a pool that is not the planned, pinned one", () => {
+    expect(() =>
+      assertDefiAuthTree(withdrawNode(), recorded("withdraw", [], EVIL), ctx(user)),
+    ).toThrow(/not the pool/);
+    expect(() =>
+      assertDefiAuthTree(
+        withdrawNode({ poolAddress: EVIL }),
+        recorded("withdraw", [], EVIL),
+        ctx(user),
+      ),
+    ).toThrow(/not a pinned Aquarius concentrated pool/);
+  });
+
+  it("refuses either call when it nests a drain", () => {
+    const drain = inv(XLM_SAC, "transfer", [addr(user), addr(ATTACKER), i128(1n)]);
+    expect(() =>
+      assertDefiAuthTree(withdrawNode(), recorded("withdraw", [drain]), ctx(user)),
+    ).toThrow(/expected 0/);
+    expect(() => assertDefiAuthTree(feesNode(), recorded("fees", [drain]), ctx(user))).toThrow(
+      /expected 0/,
     );
   });
 });

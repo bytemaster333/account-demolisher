@@ -1,10 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Account, Asset, nativeToScVal, xdr, type Transaction } from "@stellar/stellar-sdk";
+import {
+  Account,
+  Asset,
+  nativeToScVal,
+  Operation,
+  TransactionBuilder,
+  xdr,
+  type Transaction,
+} from "@stellar/stellar-sdk";
 
 import { AccountNotFoundError } from "@/lib/stellar/account-audit";
 import type { PlanNode, PlanTree } from "@/lib/plan/tree";
 import { soroswapPairFor } from "@/lib/soroban/defi-auth-guard";
+import { PriceImpactRefusedError } from "@/lib/plan/hydration";
 import type { PathResultRef } from "@/lib/types/plan";
+import { EMPTY_POSITIONS } from "@/lib/adapters/positions/interface";
 
 import {
   ATTACKER,
@@ -20,6 +30,7 @@ import {
   horizonError,
   i128,
   inv,
+  ledgerRecord,
   invokeTx,
   makeAudit,
   signingConnector,
@@ -202,7 +213,7 @@ describe("FinalClassicTx prep reads ride out horizon blips", () => {
 });
 
 describe("FinalClassicTx soroban re-probe", () => {
-  const empty = { blend: [], backstop: [], aquarius: [], soroswap: [], fxdao: [], errors: [] };
+  const empty = EMPTY_POSITIONS;
 
   it("blocks the merge while a position is still open", async () => {
     const d = deps({
@@ -257,6 +268,42 @@ describe("FinalClassicTx fee bid and in-call rebuilds", () => {
     expect(d.connector.signed[0]!.fee).toBe("6970");
   });
 
+  it("bids what most transactions paid while ledgers are not full", async () => {
+    // testnet on 2026-10-07: 12% of capacity used, while soroban resource fees
+    // pushed the p90 of fee_charged to 484829 stroops per operation
+    const table = accounts();
+    const d = deps(
+      {
+        horizon: fakeHorizon(table, {
+          feeStats: vi.fn(async () => ({
+            ledger_capacity_usage: "0.12",
+            fee_charged: { mode: "100", p90: "484829" },
+          })) as never,
+        }),
+      },
+      table,
+    );
+    await run(tree(finalNode()), d);
+    expect(d.connector.signed[0]!.fee).toBe("100");
+  });
+
+  it("bids the p90 once ledgers are at least half full", async () => {
+    const table = accounts();
+    const d = deps(
+      {
+        horizon: fakeHorizon(table, {
+          feeStats: vi.fn(async () => ({
+            ledger_capacity_usage: "0.53",
+            fee_charged: { mode: "100", p90: "17380" },
+          })) as never,
+        }),
+      },
+      table,
+    );
+    await run(tree(finalNode()), d);
+    expect(d.connector.signed[0]!.fee).toBe("17380");
+  });
+
   it("caps the bid at what the account can spend above its reserves", async () => {
     const table = accounts();
     // 1.0000500 XLM with a 0.5 XLM base reserve and no subentries: 500 stroops
@@ -276,7 +323,7 @@ describe("FinalClassicTx fee bid and in-call rebuilds", () => {
     const ledgers = () => ({
       order: () => ({
         limit: () => ({
-          call: async () => ({ records: [{ base_reserve_in_stroops: 5_000_000 }] }),
+          call: async () => ({ records: [ledgerRecord()] }),
         }),
       }),
     });
@@ -331,7 +378,7 @@ describe("FinalClassicTx fee bid and in-call rebuilds", () => {
     const ledgers = () => ({
       order: () => ({
         limit: () => ({
-          call: async () => ({ records: [{ base_reserve_in_stroops: 5_000_000 }] }),
+          call: async () => ({ records: [ledgerRecord()] }),
         }),
       }),
     });
@@ -407,8 +454,22 @@ describe("conversions that share a market", () => {
     sellingLiabilities: "0",
     limit: "1000",
   };
+  // a full-size quote and the 1/1000 reference slice at the same rate
   const path = (out: string): Map<string, PathResultRef> =>
-    new Map([[`USDC:${USDC_ISSUER}`, { destinationAmount: out, path: [], sourceAmount: "500" }]]);
+    new Map([
+      [
+        `USDC:${USDC_ISSUER}`,
+        {
+          destinationAmount: out,
+          path: [],
+          sourceAmount: "500",
+          reference: {
+            sourceAmount: "0.5000000",
+            destinationAmount: (Number(out) / 1000).toFixed(7),
+          },
+        },
+      ],
+    ]);
   const priceMiss = () =>
     new SubmitRejectedError(
       { transaction: "tx_failed", operations: ["op_success", "op_under_dest_min"] },
@@ -616,21 +677,56 @@ describe("MediatorForward", () => {
     return tree(final, forward);
   }
 
-  it("confirms with the forward hash and carries the memo", async () => {
-    submitMediatorForward.mockResolvedValue({ ok: true, txHash: "FWD" });
+  it("confirms with the forward's hash and ledger, carries the memo and names the closed account", async () => {
+    submitMediatorForward.mockResolvedValue({
+      ok: true,
+      txHash: "FWD",
+      ledger: 4321,
+      alreadyDelivered: false,
+      flowToken: "TOKEN",
+    });
     const table = accounts();
     table.set(ATTACKER, { seq: 1n, balances: [] });
     const t = forwardTree("confirmed");
     await run(t, deps({}, table));
-    expect(t.allNodes.get("mediator-forward")!.executed).toEqual({ txHash: "FWD", ledger: 0 });
+    expect(t.allNodes.get("mediator-forward")!.executed).toEqual({ txHash: "FWD", ledger: 4321 });
     expect(submitMediatorForward.mock.calls[0]![0]).toMatchObject({
       destination: DEST,
       memo: { type: "id", value: "12345" },
+      closedAccount: USER,
     });
   });
 
+  it("keeps the token the forward renewed, so a retry forwards under it", async () => {
+    submitMediatorForward.mockResolvedValue({
+      ok: false,
+      error: "horizon 503",
+      flowToken: "RENEWED",
+    });
+    const table = accounts();
+    table.set(ATTACKER, { seq: 1n, balances: [] });
+    const t = forwardTree("confirmed");
+    const persist = vi.fn();
+    const d = deps(
+      {
+        mediatorFlow: { mint: vi.fn(), persist, previous: () => null, forwarded: vi.fn() },
+      },
+      table,
+    );
+    await expect(run(t, d)).rejects.toMatchObject({ kind: "forward_pending" });
+    const forward = t.allNodes.get("mediator-forward")!;
+    expect((forward.metadata as { flowToken: string }).flowToken).toBe("RENEWED");
+    expect(persist).toHaveBeenCalledWith(
+      expect.objectContaining({ mediatorPublicKey: ATTACKER, flowToken: "RENEWED" }),
+    );
+  });
+
   it("fails as forward_pending (never a phantom success) when the forward fails", async () => {
-    submitMediatorForward.mockResolvedValue({ ok: false, error: "no native balance" });
+    submitMediatorForward.mockResolvedValue({
+      ok: false,
+      error: "no native balance",
+      flowToken: "TOKEN",
+    });
     const table = accounts();
     table.set(ATTACKER, { seq: 1n, balances: [] });
     const t = forwardTree("confirmed");
@@ -651,7 +747,7 @@ describe("MediatorForward", () => {
 
   it("finds a forward that landed with its reply lost instead of failing on the missing mediator", async () => {
     const t = forwardTree("confirmed");
-    const findForward = vi.fn(async () => "LANDED");
+    const findForward = vi.fn(async () => ({ txHash: "LANDED", ledger: 77 }));
     const d = deps({
       mediatorFlow: {
         mint: vi.fn(),
@@ -663,7 +759,8 @@ describe("MediatorForward", () => {
     });
     await run(t, d);
     expect(submitMediatorForward).not.toHaveBeenCalled();
-    expect(t.allNodes.get("mediator-forward")!.executed).toEqual({ txHash: "LANDED", ledger: 0 });
+    expect(t.allNodes.get("mediator-forward")!.executed).toEqual({ txHash: "LANDED", ledger: 77 });
+    expect(findForward).toHaveBeenCalledWith(ATTACKER, DEST);
   });
 });
 
@@ -729,7 +826,7 @@ describe("best-effort held-token drain", () => {
     const t = drainTree();
     await run(t, d);
     expect(t.allNodes.get("drain")!.status).toBe("skipped");
-    expect(t.allNodes.get("drain")!.error).toMatch(/above the 2000000 stroop limit/);
+    expect(t.allNodes.get("drain")!.error).toMatch(/over the 0\.2 XLM cap/);
     expect(d.submitSoroban).not.toHaveBeenCalled();
   });
 });
@@ -1202,7 +1299,7 @@ describe("the allowance revoke has a fee ceiling too", () => {
     const t = tree(revoke, finalNode(["revoke"]));
     await run(t, d, notes);
     expect(revoke.status).toBe("skipped");
-    expect(revoke.error).toMatch(/above the 2000000 stroop limit/);
+    expect(revoke.error).toMatch(/over the 0\.2 XLM cap/);
     expect(d.submitSoroban).not.toHaveBeenCalled();
     // only the merge was signed
     expect(d.connector.signed).toHaveLength(1);
@@ -1230,3 +1327,365 @@ function xdrMap(entries: [string, xdr.ScVal][]) {
 function xdrVec(items: xdr.ScVal[]) {
   return xdr.ScVal.scvVec(items);
 }
+
+// a horizon that also serves its latest ledger, as production's does: the merge
+// is timed by it and its claims judged against it
+function clockedDeps(
+  over: Partial<ExecutorDeps> = {},
+  table = accounts(),
+  closedAt = 1_900_000_000,
+) {
+  const ledgers = () => ({
+    order: () => ({
+      limit: () => ({
+        call: async () => ({
+          records: [ledgerRecord({ closed_at: new Date(closedAt * 1000).toISOString() })],
+        }),
+      }),
+    }),
+  });
+  return deps({ horizon: fakeHorizon(table, { ledgers: ledgers as never }), ...over }, table);
+}
+
+describe("the merge guard checks what this close really does", () => {
+  it("refuses a self-sponsored claimable balance the batch leaves behind (IS_SPONSOR)", async () => {
+    // the stored audit counted it as released, but it is not claimable for the
+    // whole signing window, so the batch does not claim it
+    const closedAt = 1_900_000_000;
+    auditAccount.mockResolvedValue(
+      makeAudit({
+        sponsorship: { numSponsoring: 1, numSponsored: 0, coverable: 1 },
+        claimableBalances: [
+          {
+            id: "00000000aa",
+            asset: { kind: "native" },
+            amount: "1.0000000",
+            sponsor: USER,
+            claimants: [USER],
+            predicate: [
+              { destination: USER, predicate: { abs_before_epoch: String(closedAt + 60) } },
+            ],
+            claimableNow: true,
+          },
+        ],
+      }),
+    );
+    const d = clockedDeps({}, accounts(), closedAt);
+    await expect(run(tree(finalNode()), d)).rejects.toThrow(/account_merge blocked: IS_SPONSOR/);
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
+  });
+
+  it("refuses a balance frozen by its issuer (FROZEN_TRUSTLINE), even with consent to return it", async () => {
+    auditAccount.mockResolvedValue(
+      makeAudit({
+        subentryCount: 1,
+        balances: [
+          ...makeAudit().balances,
+          {
+            asset: { kind: "credit", code: "USDC", issuer: USDC_ISSUER },
+            amount: "5.0000000",
+            buyingLiabilities: "0",
+            sellingLiabilities: "0",
+            limit: "1000",
+            isAuthorized: false,
+          },
+        ],
+      }),
+    );
+    const d = deps();
+    const t = tree(finalNode([], { returnToIssuerAssetKeys: [`USDC:${USDC_ISSUER}`] }));
+    await expect(run(t, d)).rejects.toThrow(/FROZEN_TRUSTLINE/);
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
+  });
+
+  it("refuses an account whose sequence was bumped past what the network merges (SEQNUM_TOO_FAR)", async () => {
+    // the audit ledger is 1000, so core refuses a merge at a sequence of 1001 << 32
+    auditAccount.mockResolvedValue(makeAudit({ sequence: ((1001n << 32n) - 1n).toString() }));
+    const d = deps();
+    await expect(run(tree(finalNode()), d)).rejects.toThrow(/SEQNUM_TOO_FAR/);
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
+  });
+});
+
+describe("the merge is timed by the network's clock", () => {
+  it("anchors the batch's time bounds to the latest ledger, read right before building", async () => {
+    const closedAt = 1_900_000_000;
+    const d = clockedDeps({}, accounts(), closedAt);
+    await run(tree(finalNode()), d);
+    expect(d.connector.signed[0]!.timeBounds?.maxTime).toBe(String(closedAt + 300));
+  });
+
+  it("leaves out a claim that would expire inside the signing window", async () => {
+    const closedAt = 1_900_000_000;
+    auditAccount.mockResolvedValue(
+      makeAudit({
+        claimableBalances: [
+          {
+            id: "00000000bb",
+            asset: { kind: "native" },
+            amount: "1.0000000",
+            sponsor: ATTACKER,
+            claimants: [USER],
+            predicate: [
+              { destination: USER, predicate: { abs_before_epoch: String(closedAt + 60) } },
+            ],
+            claimableNow: true,
+          },
+        ],
+      }),
+    );
+    const d = clockedDeps({}, accounts(), closedAt);
+    await run(tree(finalNode()), d);
+    const ops = d.connector.signed[0]!.operations.map((o) => o.type);
+    expect(ops).not.toContain("claimClaimableBalance");
+    expect(ops).toContain("accountMerge");
+  });
+});
+
+describe("a conversion the user did not agree to is never signed", () => {
+  const usdc = {
+    asset: { kind: "credit" as const, code: "USDC", issuer: USDC_ISSUER },
+    amount: "500.0000000",
+    buyingLiabilities: "0",
+    sellingLiabilities: "0",
+    limit: "1000",
+  };
+  const key = `USDC:${USDC_ISSUER}`;
+  const quote = (full: string, ref: string): Map<string, PathResultRef> =>
+    new Map([
+      [
+        key,
+        {
+          destinationAmount: full,
+          path: [],
+          sourceAmount: "500",
+          reference: { sourceAmount: "0.5000000", destinationAmount: ref },
+        },
+      ],
+    ]);
+
+  beforeEach(() => {
+    auditAccount.mockResolvedValue(
+      makeAudit({ balances: [...makeAudit().balances, usdc], subentryCount: 1 }),
+    );
+  });
+
+  it("stops before signing when the market fell below the reviewed price", async () => {
+    resolveCreditPaths.mockResolvedValue(quote("1500.0000000", "1.5000000"));
+    const d = deps();
+    const t = tree(
+      finalNode([], {
+        reviewedReferenceQuotes: {
+          [key]: { sourceAmount: "0.5000000", destinationAmount: "2.0000000" },
+        },
+      }),
+    );
+    await expect(run(t, d)).rejects.toMatchObject({ kind: "conversion_refused" });
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
+  });
+
+  it("sells at an over-cap price only once the user accepted it", async () => {
+    // the full balance gets 1000 where the reference slice says 2000: 50% impact
+    resolveCreditPaths.mockResolvedValue(quote("1000.0000000", "2.0000000"));
+    const refused = deps();
+    await expect(run(tree(finalNode()), refused)).rejects.toMatchObject({
+      kind: "conversion_refused",
+    });
+    expect(refused.connector.signTransaction).not.toHaveBeenCalled();
+
+    const accepted = deps();
+    const t = tree(finalNode([], { acceptedPriceImpactAssetKeys: [key] }));
+    await run(t, accepted);
+    expect(t.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
+    expect(accepted.connector.signed[0]!.operations.map((o) => o.type)).toContain(
+      "pathPaymentStrictSend",
+    );
+  });
+
+  it("does not send a held token as-is when its swap was refused for its price", async () => {
+    const convert = {
+      id: "convert",
+      kind: "ConvertSorobanToXLM",
+      dependencies: [],
+      description: "convert",
+      status: "simulated",
+      metadata: {
+        kind: "ConvertSorobanToXLM",
+        asset: { kind: "contract", contractId: HOSTILE_TOKEN },
+        amount: 500n,
+      },
+    } as PlanNode;
+    const d = deps({
+      rebuildSorobanNode: async () => {
+        throw new PriceImpactRefusedError("selling the whole balance has a 9.00% price impact");
+      },
+    });
+    const t = tree(convert, finalNode(["convert"]));
+    await expect(run(t, d)).rejects.toMatchObject({ kind: "conversion_refused" });
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
+    expect(convert.status).toBe("failed");
+  });
+});
+
+describe("tokens the defi exits paid out are not merged away", () => {
+  function exitedTree() {
+    const lp = {
+      id: "lp",
+      kind: "WithdrawSoroswapLp",
+      dependencies: [],
+      description: "lp",
+      status: "confirmed",
+      executed: { txHash: "LP", ledger: 1 },
+      metadata: {
+        kind: "WithdrawSoroswapLp",
+        tokenA: HOSTILE_TOKEN,
+        tokenB: Asset.native().contractId(NETWORK.passphrase),
+        shareBalance: 10n,
+      },
+    } as PlanNode;
+    return tree(lp, finalNode(["lp"]));
+  }
+
+  it("refuses the merge while a paid-out token is still on the account", async () => {
+    const read = vi.fn<(id: string, holder: string) => Promise<bigint>>(async () => 5n);
+    const d = deps({ readTokenBalance: read });
+    await expect(run(exitedTree(), d)).rejects.toThrow(/paid out by your DeFi exits/);
+    // the native SAC is the account's own XLM, not a token to sweep
+    expect(read.mock.calls.map((c) => c[0])).toEqual([HOSTILE_TOKEN]);
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
+  });
+
+  it("merges once the paid-out token is gone", async () => {
+    const t = exitedTree();
+    await run(t, deps({ readTokenBalance: async () => 0n }));
+    expect(t.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
+  });
+
+  it("refuses when it has no way to read the paid-out token", async () => {
+    const d = deps();
+    await expect(run(exitedTree(), d)).rejects.toThrow(/can't read the tokens/);
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
+  });
+});
+
+describe("soroban fees are capped per kind of step before signing", () => {
+  const pool = allowlisted("blend", "BlendPool::");
+  function withdraw(fee: string) {
+    const node = {
+      id: "withdraw",
+      kind: "WithdrawBlend",
+      dependencies: [],
+      description: "withdraw",
+      status: "simulated",
+      metadata: { kind: "WithdrawBlend", poolId: pool, asset: USDC_SAC, bucket: "supply" },
+    } as PlanNode;
+    const rebuild = async (n: PlanNode) => {
+      const args = [
+        addr(USER),
+        addr(USER),
+        addr(USER),
+        addrMap({ address: USDC_SAC, amount: 5n, request_type: 1 }),
+      ];
+      (n.metadata as { transaction?: Transaction }).transaction = invokeTx(
+        new Account(USER, "1"),
+        pool,
+        "submit",
+        args,
+        [sourceAuth(inv(pool, "submit", args))],
+        fee,
+      );
+    };
+    return { node, rebuild };
+  }
+
+  it("refuses a defi exit whose resource fee is over the exit cap, and stops the close", async () => {
+    const { node, rebuild } = withdraw("90000000");
+    const d = deps({ rebuildSorobanNode: rebuild });
+    await expect(run(tree(node, finalNode(["withdraw"])), d)).rejects.toMatchObject({
+      kind: "unsafe",
+    });
+    expect(node.status).toBe("failed");
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
+  });
+
+  it("tells the user the fee each signature authorizes before the wallet asks", async () => {
+    const { node, rebuild } = withdraw("350000");
+    const onSigning = vi.fn();
+    const d = deps({ rebuildSorobanNode: rebuild, onSigning });
+    await run(tree(node), d);
+    expect(onSigning).toHaveBeenCalledWith(node, 350_000n);
+  });
+
+  it("bounds the writes a soroswap lp exit may declare, since its pair can hold any token", async () => {
+    const router = allowlisted("soroswap", "SoroswapRouter");
+    const xlmSac = Asset.native().contractId(NETWORK.passphrase);
+    const pair = soroswapPairFor(NETWORK, USDC_SAC, xlmSac);
+    const lp = {
+      id: "lp",
+      kind: "WithdrawSoroswapLp",
+      dependencies: [],
+      description: "lp",
+      status: "simulated",
+      metadata: { kind: "WithdrawSoroswapLp", tokenA: USDC_SAC, tokenB: xlmSac, shareBalance: 10n },
+    } as PlanNode;
+    const d = deps({
+      rebuildSorobanNode: async (n) => {
+        const args = [
+          addr(USDC_SAC),
+          addr(xlmSac),
+          i128(10n),
+          i128(0n),
+          i128(0n),
+          addr(USER),
+          nativeToScVal(1_791_000_000n, { type: "u64" }),
+        ];
+        (n.metadata as { transaction?: Transaction }).transaction = invokeTx(
+          new Account(USER, "1"),
+          router,
+          "remove_liquidity",
+          args,
+          [
+            sourceAuth(
+              inv(router, "remove_liquidity", args, [
+                inv(pair, "transfer", [addr(USER), addr(pair), i128(10n)]),
+              ]),
+            ),
+          ],
+          "400000",
+          { writeBytes: 64_000 },
+        );
+      },
+    });
+    await expect(run(tree(lp, finalNode(["lp"])), d)).rejects.toMatchObject({ kind: "unsafe" });
+    expect(lp.error).toMatch(/write 64000 bytes/);
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
+  });
+});
+
+describe("the BLND trustline step", () => {
+  it("signs and submits exactly the change_trust", async () => {
+    const blnd = new Asset("BLND", "GDJEHTBE6ZHUXSWFI642DCGLUOECLHPF3KSXHPXTSTJ7E3JF6MQ5EZYY");
+    const node = {
+      id: "blnd",
+      kind: "AddBlndTrustline",
+      dependencies: [],
+      description: "open BLND trustline",
+      status: "simulated",
+      metadata: { kind: "AddBlndTrustline" },
+    } as unknown as PlanNode;
+    const d = deps({
+      rebuildSorobanNode: async (n) => {
+        (n.metadata as { transaction?: Transaction }).transaction = new TransactionBuilder(
+          new Account(USER, "1"),
+          { fee: "100000", networkPassphrase: NETWORK.passphrase },
+        )
+          .addOperation(Operation.changeTrust({ asset: blnd }))
+          .setTimeout(300)
+          .build();
+      },
+    });
+    await run(tree(node), d);
+    expect(node.status).toBe("confirmed");
+    expect(d.connector.signed[0]!.operations[0]!.type).toBe("changeTrust");
+  });
+});

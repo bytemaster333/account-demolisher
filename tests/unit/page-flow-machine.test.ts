@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { createActor, fromPromise, waitFor } from "xstate";
+import { Account, Keypair, Operation, TransactionBuilder } from "@stellar/stellar-sdk";
 
 import {
   pageFlowMachine,
@@ -18,6 +19,9 @@ import type { AccountAudit } from "@/lib/types/account";
 import type { DemolishResult } from "@/lib/types/plan";
 import type { Connector } from "@/lib/wallet/connector";
 import { EMPTY_POSITIONS } from "@/lib/adapters/positions/interface";
+import { txHashHex } from "@/lib/orchestrator/submit";
+
+import { DEST, NETWORK, USER, USER_KP } from "./orchestrator-fixtures";
 
 // the machine's transitions and guards with stand-in actors. the stand-ins keep
 // the real actors' contract: execute resolves with { result, tree, failureKind,
@@ -36,6 +40,8 @@ const fakeInput = {
 } as unknown as PageFlowInput;
 
 const fakeAudit = { accountId: "GTEST" } as unknown as AccountAudit;
+// the run the page shows, which CONFIRM and SUBMIT_BUNDLE must name
+const EXPECTED = { publicKey: "GTEST", networkId: "testnet" };
 
 function node(id: string, kind: string, over: Partial<PlanNode> = {}): PlanNode {
   return {
@@ -61,7 +67,7 @@ const emptyTree = (): PlanTree => ({ allNodes: new Map(), rootNodes: [] });
 interface ExecuteCall {
   readonly tree: PlanTree;
   readonly connector: Connector;
-  readonly signedBundleXdr?: string;
+  readonly bundle?: { readonly signedXdr: string };
   readonly interrupt: AbortSignal;
 }
 
@@ -78,6 +84,8 @@ function failedOutput(tree: PlanTree, errors: string[], failureKind?: FailureKin
 function machineWith(opts: {
   tree?: () => PlanTree;
   discover?: () => Promise<unknown>;
+  preview?: Record<string, unknown>;
+  input?: PageFlowInput;
   execute: (input: ExecuteCall) => Promise<unknown>;
 }) {
   const execute = vi.fn(opts.execute);
@@ -101,12 +109,13 @@ function machineWith(opts: {
         tree: (opts.tree ?? emptyTree)(),
         unroutableCredits: [],
         heldTokenWarnings: [],
+        ...opts.preview,
       })) as never,
       execute: fromPromise(({ input }) => execute(input as ExecuteCall)) as never,
     },
   });
   const actor = createActor(machine).start();
-  actor.send({ type: "START", input: fakeInput });
+  actor.send({ type: "START", input: opts.input ?? fakeInput });
   return { actor, execute, discover };
 }
 
@@ -193,7 +202,7 @@ describe("the CONFIRM gate", () => {
   it("refuses a CONFIRM whose typed value does not match the destination's last 4", async () => {
     const { actor } = machineWith({ execute: hang });
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
-    actor.send({ type: "CONFIRM", typed: "WRONG" });
+    actor.send({ type: "CONFIRM", typed: "WRONG", expected: EXPECTED });
     expect(actor.getSnapshot().matches("awaiting_confirmation")).toBe(true);
     actor.stop();
   });
@@ -201,7 +210,7 @@ describe("the CONFIRM gate", () => {
   it("executes on a CONFIRM whose typed value matches the destination's last 4", async () => {
     const { actor, execute } = machineWith({ execute: hang });
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
-    actor.send({ type: "CONFIRM", typed: "DEST" });
+    actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
     expect(actor.getSnapshot().matches("executing")).toBe(true);
     expect(execute.mock.calls[0]![0].connector).toBe(connector);
     actor.stop();
@@ -219,7 +228,7 @@ describe("the CONFIRM gate", () => {
       });
       await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
       expect(previewBlockers(actor.getSnapshot().context.tree)).toHaveLength(1);
-      actor.send({ type: "CONFIRM", typed: "DEST" });
+      actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
       expect(actor.getSnapshot().matches("awaiting_confirmation")).toBe(true);
       expect(execute).not.toHaveBeenCalled();
       actor.stop();
@@ -236,7 +245,7 @@ describe("the CONFIRM gate", () => {
       execute: hang,
     });
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
-    actor.send({ type: "CONFIRM", typed: "DEST" });
+    actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
     expect(actor.getSnapshot().matches("executing")).toBe(true);
     // the executor gets it back as pending, so it runs again
     expect(actor.getSnapshot().context.tree!.allNodes.get("drain")!.status).toBe("pending");
@@ -266,51 +275,255 @@ describe("an unfinished defi discovery blocks the close before anything is signe
     expect(confirmBlockers(actor.getSnapshot().context)).toEqual([
       expect.stringMatching(/couldn't finish checking for DeFi positions/),
     ]);
-    actor.send({ type: "CONFIRM", typed: "DEST" });
-    actor.send({ type: "SUBMIT_BUNDLE", signedXdr: "AAAA", typed: "DEST" });
+    actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
     expect(actor.getSnapshot().matches("awaiting_confirmation")).toBe(true);
     expect(execute).not.toHaveBeenCalled();
     actor.stop();
   });
 });
 
-describe("the multisig bundle has the same typed-destination gate", () => {
-  it("refuses a SUBMIT_BUNDLE without the typed last 4 of the destination", async () => {
-    const { actor, execute } = machineWith({ execute: hang });
-    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
-    actor.send({ type: "SUBMIT_BUNDLE", signedXdr: "AAAA" });
-    actor.send({ type: "SUBMIT_BUNDLE", signedXdr: "AAAA", typed: "NOPE" });
+describe("the multisig bundle is bound to the reviewed close", () => {
+  const bundleInput = {
+    publicKey: USER,
+    network: NETWORK,
+    connector,
+    destination: DEST,
+    useMediator: false,
+  } as unknown as PageFlowInput;
+  const expected = { publicKey: USER, networkId: NETWORK.id };
+  const snapshot = {
+    signers: [{ key: USER, weight: 1 }],
+    thresholds: { low: 0, med: 0, high: 0 },
+  };
+  const OTHER = Keypair.fromRawEd25519Seed(new Uint8Array(32).fill(21)).publicKey();
+
+  function bundle(over: { destination?: string; opSource?: string } = {}) {
+    const tx = new TransactionBuilder(new Account(USER, "100"), {
+      fee: "100",
+      networkPassphrase: NETWORK.passphrase,
+      timebounds: { minTime: 0, maxTime: 1_900_000_000 },
+    })
+      .addOperation(
+        Operation.manageData({
+          name: "x",
+          value: "y",
+          ...(over.opSource ? { source: over.opSource } : {}),
+        }),
+      )
+      .addOperation(Operation.accountMerge({ destination: over.destination ?? DEST }))
+      .build();
+    tx.sign(USER_KP);
+    return { signedXdr: tx.toEnvelope().toXdr("base64"), planId: txHashHex(tx) };
+  }
+  const submit = (b: { signedXdr: string; planId: string }, over: Record<string, unknown> = {}) =>
+    ({
+      type: "SUBMIT_BUNDLE",
+      ...b,
+      typed: DEST.slice(-4),
+      expected,
+      snapshot,
+      ...over,
+    }) as const;
+
+  async function awaiting(execute: (input: ExecuteCall) => Promise<unknown> = hang) {
+    const m = machineWith({ input: bundleInput, execute });
+    await waitFor(m.actor, (s) => s.matches("awaiting_confirmation"));
+    return m;
+  }
+
+  it("submits the bundle and its signer snapshot once everything matches", async () => {
+    const { actor, execute } = await awaiting();
+    const b = bundle();
+    actor.send(submit(b));
+    expect(actor.getSnapshot().matches("executing")).toBe(true);
+    expect(execute.mock.calls[0]![0].bundle).toEqual({ signedXdr: b.signedXdr, snapshot });
+    actor.stop();
+  });
+
+  it("refuses without the typed last 4 of the destination, or for another run", async () => {
+    const { actor, execute } = await awaiting();
+    actor.send(submit(bundle(), { typed: "NOPE" }));
+    actor.send(submit(bundle(), { expected: { publicKey: OTHER, networkId: NETWORK.id } }));
+    actor.send(submit(bundle(), { expected: { publicKey: USER, networkId: "testnet" } }));
     expect(actor.getSnapshot().matches("awaiting_confirmation")).toBe(true);
     expect(execute).not.toHaveBeenCalled();
     actor.stop();
   });
 
-  it("submits the bundle once the typed value matches", async () => {
-    const { actor, execute } = machineWith({ execute: hang });
-    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
-    actor.send({ type: "SUBMIT_BUNDLE", signedXdr: "AAAA", typed: "DEST" });
-    expect(actor.getSnapshot().matches("executing")).toBe(true);
-    expect(execute.mock.calls[0]![0].signedBundleXdr).toBe("AAAA");
+  it("refuses a bundle that is not the request the link names", async () => {
+    const { actor, execute } = await awaiting();
+    actor.send(submit({ ...bundle(), planId: "0".repeat(64) }));
+    actor.send(submit({ signedXdr: "AAAA", planId: "0".repeat(64) }));
+    expect(actor.getSnapshot().matches("awaiting_confirmation")).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    actor.stop();
+  });
+
+  it("refuses a bundle that merges elsewhere or acts on another account", async () => {
+    const { actor, execute } = await awaiting();
+    actor.send(submit(bundle({ destination: OTHER })));
+    actor.send(submit(bundle({ opSource: OTHER })));
+    expect(actor.getSnapshot().matches("awaiting_confirmation")).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
     actor.stop();
   });
 
   it("drops a stale bundle: RETRY after a bundle_stale failure rebuilds instead of resubmitting", async () => {
-    const { actor, execute } = machineWith({
-      execute: async (input) =>
-        failedOutput(
-          input.tree,
-          ['submitClassic rejected: {"transaction":"tx_too_late"}'],
-          "bundle_stale",
-        ),
-    });
-    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
-    actor.send({ type: "SUBMIT_BUNDLE", signedXdr: "AAAA", typed: "DEST" });
+    const { actor, execute } = await awaiting(async (input) =>
+      failedOutput(
+        input.tree,
+        ['submitClassic rejected: {"transaction":"tx_too_late"}'],
+        "bundle_stale",
+      ),
+    );
+    actor.send(submit(bundle()));
     await waitFor(actor, (s) => s.matches("failed"));
     actor.send({ type: "RETRY", connector });
     const snap = actor.getSnapshot();
     expect(snap.matches("discovering")).toBe(true);
-    expect(snap.context.signedBundleXdr).toBeNull();
+    expect(snap.context.signedBundle).toBeNull();
     expect(execute).toHaveBeenCalledTimes(1);
+    actor.stop();
+  });
+
+  it("refuses the bundle while discovery could not read a protocol", async () => {
+    const { actor, execute } = machineWith({
+      input: bundleInput,
+      discover: async () => ({
+        audit: fakeAudit,
+        positions: { ...EMPTY_POSITIONS, errors: [{ protocol: "blend", message: "429" }] },
+        allowances: [],
+        heldTokens: [],
+        unreadableHeldTokens: [],
+        heldTokenScanFailed: false,
+        discoveryWarnings: [],
+        discoveryDiagnostics: [],
+      }),
+      execute: hang,
+    });
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    actor.send(submit(bundle()));
+    expect(actor.getSnapshot().matches("awaiting_confirmation")).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    actor.stop();
+  });
+});
+
+describe("CONFIRM names the run it confirms", () => {
+  it("refuses a CONFIRM for another account or network", async () => {
+    const { actor, execute } = machineWith({ execute: hang });
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    actor.send({ type: "CONFIRM", typed: "DEST", expected: { ...EXPECTED, publicKey: "GOTHER" } });
+    actor.send({ type: "CONFIRM", typed: "DEST", expected: { ...EXPECTED, networkId: "mainnet" } });
+    expect(actor.getSnapshot().matches("awaiting_confirmation")).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    actor.stop();
+  });
+
+  it("can be cancelled while discovery or the preview is still running", async () => {
+    for (const stage of ["discovering", "previewing"] as const) {
+      const machine = pageFlowMachine.provide({
+        actors: {
+          discover: fromPromise(
+            stage === "discovering"
+              ? hang
+              : async () => ({
+                  audit: fakeAudit,
+                  positions: EMPTY_POSITIONS,
+                  allowances: [],
+                  heldTokens: [],
+                  unreadableHeldTokens: [],
+                  heldTokenScanFailed: false,
+                  discoveryWarnings: [],
+                  discoveryDiagnostics: [],
+                }),
+          ) as never,
+          preview: fromPromise(hang) as never,
+        },
+      });
+      const actor = createActor(machine).start();
+      actor.send({ type: "START", input: fakeInput });
+      await waitFor(actor, (s) => s.matches(stage));
+      actor.send({ type: "CANCEL" });
+      expect(actor.getSnapshot().matches("cancelled")).toBe(true);
+      expect(actor.getSnapshot().context.connector).toBeNull();
+      actor.stop();
+    }
+  });
+});
+
+describe("what the preview found blocks the close until it is resolved", () => {
+  it("refuses CONFIRM while a balance can't be disposed of as planned", async () => {
+    const { actor, execute } = machineWith({
+      execute: hang,
+      preview: {
+        unroutableCredits: [
+          {
+            key: "JUNK:GISSUER",
+            code: "JUNK",
+            issuer: "GISSUER",
+            amount: "5.0000000",
+            reason: "no_path",
+          },
+        ],
+      },
+    });
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    expect(confirmBlockers(actor.getSnapshot().context)).toEqual([
+      expect.stringMatching(/5\.0000000 JUNK can't be disposed of as planned \(no market path/),
+    ]);
+    actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
+    expect(execute).not.toHaveBeenCalled();
+    actor.stop();
+  });
+
+  it("refuses CONFIRM on a mergeability or funding blocker, a refused conversion or an unacknowledged forfeit", async () => {
+    for (const preview of [
+      { reviewBlockers: ["Frozen by the issuer: 5 USDC"] },
+      {
+        refusedConversions: [
+          { key: "contract:CTOKEN", contractId: "CTOKEN", reason: "9.00% price impact" },
+        ],
+      },
+      { emissionForfeits: [{ poolId: "CPOOL", accruedEmissions: 18_611_659n, reason: "trapped" }] },
+    ]) {
+      const { actor, execute } = machineWith({ execute: hang, preview });
+      await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+      expect(confirmBlockers(actor.getSnapshot().context)).toHaveLength(1);
+      actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
+      expect(execute).not.toHaveBeenCalled();
+      actor.stop();
+    }
+  });
+
+  it("names the BLND an unacknowledged forfeit would leave behind, once", async () => {
+    const claim = node("claim", "ClaimBackstopEmissions", {
+      status: "failed",
+      error: "UnreachableCodeReached",
+      metadata: { kind: "ClaimBackstopEmissions", poolId: "CPOOL" },
+    } as unknown as Partial<PlanNode>);
+    const { actor } = machineWith({
+      execute: hang,
+      tree: () => treeOf(claim),
+      preview: {
+        emissionForfeits: [{ poolId: "CPOOL", accruedEmissions: 18_611_659n, reason: "trapped" }],
+      },
+    });
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    const blockers = confirmBlockers(actor.getSnapshot().context);
+    expect(blockers).toEqual([expect.stringMatching(/leave 1\.8611659 BLND unclaimed/)]);
+    actor.stop();
+  });
+
+  it("folds the review notes into the warnings the page shows", async () => {
+    const { actor } = machineWith({
+      execute: hang,
+      preview: { reviewNotes: ["The close first opens a BLND trustline"] },
+    });
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    expect(actor.getSnapshot().context.discoveryWarnings).toContain(
+      "The close first opens a BLND trustline",
+    );
     actor.stop();
   });
 });
@@ -328,7 +541,7 @@ describe("RETRY", () => {
       },
     });
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
-    actor.send({ type: "CONFIRM", typed: "DEST" });
+    actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
     await waitFor(actor, (s) => s.matches("failed"));
     const failed = actor.getSnapshot().context;
     expect(failed.failureKind).toBe("network");
@@ -377,7 +590,7 @@ describe("RETRY", () => {
       },
     });
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
-    actor.send({ type: "CONFIRM", typed: "DEST" });
+    actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
     await waitFor(actor, (s) => s.matches("failed"));
     actor.send({ type: "RETRY", connector });
     expect(seen[1]).toEqual({
@@ -396,7 +609,7 @@ describe("RETRY", () => {
       execute: async (input) => failedOutput(input.tree, ["Bad Gateway (502)"], "network"),
     });
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
-    actor.send({ type: "CONFIRM", typed: "DEST" });
+    actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
     await waitFor(actor, (s) => s.matches("failed"));
     actor.send({ type: "RETRY" });
     expect(actor.getSnapshot().matches("discovering")).toBe(true);
@@ -412,7 +625,7 @@ describe("RETRY", () => {
         failedOutput(input.tree, ["account_merge blocked: 1 Soroban DeFi position(s) still open"]),
     });
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
-    actor.send({ type: "CONFIRM", typed: "DEST" });
+    actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
     await waitFor(actor, (s) => s.matches("failed"));
     expect(actor.getSnapshot().context.failureKind).toBe("position_open");
     actor.send({ type: "RETRY", connector });
@@ -443,14 +656,14 @@ describe("RETRY", () => {
         failedOutput(input.tree, ["account_merge blocked: account is auth immutable"]),
     });
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
-    actor.send({ type: "CONFIRM", typed: "DEST" });
+    actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
     await waitFor(actor, (s) => s.matches("failed"));
     actor.send({ type: "RETRY", connector });
     await waitFor(actor, (s) => s.matches("failed"));
     const snap = actor.getSnapshot();
     expect(snap.context.failureKind).toBe("network");
     expect(snap.context.tree).toBeNull();
-    expect(snap.context.signedBundleXdr).toBeNull();
+    expect(snap.context.signedBundle).toBeNull();
     actor.send({ type: "RETRY", connector });
     expect(actor.getSnapshot().matches("discovering")).toBe(true);
     expect(execute).toHaveBeenCalledTimes(1);
@@ -466,7 +679,7 @@ describe("RETRY", () => {
       },
     });
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
-    actor.send({ type: "CONFIRM", typed: "DEST" });
+    actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
     await waitFor(actor, (s) => s.matches("failed"));
     const snap = actor.getSnapshot().context;
     expect(snap.error).toBe("executing: missing tree from preview");
@@ -491,7 +704,7 @@ describe("a running close can be stopped", () => {
       },
     });
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
-    actor.send({ type: "CONFIRM", typed: "DEST" });
+    actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
     expect(signal?.aborted).toBe(false);
     actor.send({ type: "CANCEL" });
     expect(signal?.aborted).toBe(true);
@@ -529,7 +742,7 @@ describe("a running close can be stopped", () => {
     const actor = createActor(machine).start();
     actor.send({ type: "START", input: fakeInput });
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
-    actor.send({ type: "CONFIRM", typed: "DEST" });
+    actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
     actor.stop();
     expect(signal?.aborted).toBe(true);
   });
@@ -610,7 +823,7 @@ describe("failure taxonomy", () => {
       },
     });
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
-    actor.send({ type: "CONFIRM", typed: "DEST" });
+    actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
     await waitFor(actor, (s) => s.matches("failed"));
     actor.send({ type: "RETRY", connector });
     await waitFor(actor, (s) => s.matches("failed") && calls === 2);

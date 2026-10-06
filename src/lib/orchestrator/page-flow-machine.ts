@@ -1,66 +1,42 @@
-// xstate machine driving /demolish
+// xstate machine driving /demolish. the actors live in ./actors, the notes the
+// user sees before confirming in ./warnings.
 
-import { assign, fromPromise, setup } from "xstate";
-import { TransactionBuilder } from "@stellar/stellar-sdk";
+import { assign, setup } from "xstate";
+import { TransactionBuilder, type Operation } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
-import { generatePlan } from "@/lib/plan/generator";
-import { simulateNode, SimulationFailedError } from "@/lib/plan/simulator";
-import { isSorobanNode, topologicalOrder, type PlanNode, type PlanTree } from "@/lib/plan/tree";
-import {
-  batchClassicDemolition,
-  unroutableCredits,
-  type UnroutableCredit,
-} from "@/lib/plan/classic-batcher";
-import { hydratePlanTransactions, rebuildSorobanNodeTransaction } from "@/lib/plan/hydration";
-import { startMediatorFlow } from "@/lib/mediator/client";
-import { FINAL_CLASSIC_TX_NODE_ID, MEDIATOR_FORWARD_NODE_ID } from "@/lib/mediator/refresh";
-import {
-  clearPendingForward,
-  loadPendingForward,
-  savePendingForward,
-} from "@/lib/mediator/pending-flow";
-import {
-  executePlanTreeOnChain,
-  type ConfirmationReceipt,
-  type LandedMerge,
-  type MediatorFlowControl,
-  type TxLookup,
-} from "@/lib/orchestrator/executor";
-import {
-  classifyFailure,
-  CloseFailure,
-  isRetryableFailure,
-  SubmitRejectedError,
-  type FailureKind,
-} from "@/lib/orchestrator/failures";
-import { landedPhasesOf, type PhaseReceipt } from "@/lib/orchestrator/journal";
+import type { PlanTree } from "@/lib/plan/tree";
+import type { UnroutableCredit } from "@/lib/plan/classic-batcher";
+import type { SignerSnapshot } from "@/lib/multisig/bundle-freshness";
+import { classifyFailure, isRetryableFailure, type FailureKind } from "@/lib/orchestrator/failures";
+import type { PhaseReceipt } from "@/lib/orchestrator/journal";
 import { prepareTreeForExecution, previewBlockers } from "@/lib/orchestrator/retry";
-import { residueLineProblem, type DestinationLine } from "@/lib/orchestrator/residue";
+import { txHashHex } from "@/lib/orchestrator/submit";
+import { discoveryWarningFor } from "@/lib/orchestrator/warnings";
+import { discoverActor, type DiscoverInput } from "@/lib/orchestrator/actors/discover";
 import {
-  createClassicSubmitter,
-  createSorobanSubmitter,
-  isNotFoundError,
-  txHashHex,
-  txMaxTime,
-} from "@/lib/orchestrator/submit";
-import { auditAccount } from "@/lib/stellar/account-audit";
-import { resolveCreditPaths } from "@/lib/stellar/path-finder";
-import { getHorizon } from "@/lib/stellar/horizon-client";
-import { getRpc } from "@/lib/soroban/rpc-client";
+  previewActor,
+  type EmissionForfeit,
+  type PreviewInput,
+  type RefusedConversion,
+} from "@/lib/orchestrator/actors/preview";
+import { executeActor, type ExecuteInput } from "@/lib/orchestrator/actors/execute";
 import type { AccountAudit } from "@/lib/types/account";
 import type { ClassicMemo, DemolishProgressEvent, DemolishResult } from "@/lib/types/plan";
 import { EMPTY_POSITIONS, type ProtocolPositions } from "@/lib/adapters/positions/interface";
-import { DirectContractProvider } from "@/lib/adapters/positions/direct";
-import { blendRepayShortfallWarnings } from "@/lib/adapters/blend/repay-check";
-import { manualCloseRequiredNotice } from "@/lib/safety/manual-close";
-import { enumerateAllowances, type AllowanceRecord } from "@/lib/soroban/allowances";
-import { discoverHeldTokens, type HeldToken } from "@/lib/soroban/held-tokens";
+import type { AllowanceRecord } from "@/lib/soroban/allowances";
+import type { HeldToken } from "@/lib/soroban/held-tokens";
 import type { Connector } from "@/lib/wallet/connector";
 
 export { classifyFailure, isRetryableFailure, type FailureKind };
 export { previewBlockers, type PreviewBlocker } from "@/lib/orchestrator/retry";
+export { discoveryWarningFor, heldTokenDispositionWarnings } from "@/lib/orchestrator/warnings";
+export {
+  fetchDestinationUsableKeys,
+  type EmissionForfeit,
+  type RefusedConversion,
+} from "@/lib/orchestrator/actors/preview";
 
 export interface PageFlowInput {
   readonly publicKey: string;
@@ -69,16 +45,25 @@ export interface PageFlowInput {
   readonly destination: string;
   readonly useMediator: boolean;
   readonly memo?: ClassicMemo;
-  readonly userFallbackAddress?: string;
+  // the reviewed claimable-balance ids; [] claims none. left undefined, every
+  // balance the close can collect is claimed.
   readonly selectedClaimableBalanceIds?: readonly string[];
   readonly returnToIssuerAssetKeys?: readonly string[];
   readonly sendToDestinationAssetKeys?: readonly string[];
+  // pathKey()s the user agreed to sell although the conversion is over the
+  // price-impact cap or could not be priced: "CODE:ISSUER" for a credit balance,
+  // "contract:C..." for a held token
+  readonly acceptedPriceImpactAssetKeys?: readonly string[];
+  // pools whose accrued backstop emissions the user agreed to leave unclaimed
+  // because the claim can't run (see ctx.emissionForfeits)
+  readonly forfeitBackstopEmissionPoolIds?: readonly string[];
   // standalone SEP-41 tokens the user opted in to sweep to the destination
   // (discovered tokens they ticked, plus any they added manually); none by default.
   readonly selectedHeldTokens?: readonly HeldToken[];
   // when true, opted-in held tokens are converted to XLM through the soroswap
   // router rather than transferred as-is. a token that can't be converted is
-  // sent as-is instead.
+  // sent as-is instead, unless it was refused for its price, which the user
+  // decides.
   readonly convertHeldTokensToXLM?: boolean;
   readonly positions?: ProtocolPositions;
   readonly allowances?: readonly AllowanceRecord[];
@@ -96,6 +81,12 @@ export type PageFlowRunInput = Omit<PageFlowInput, "connector"> & {
   readonly signerKind: Connector["kind"];
 };
 type StoredInput = PageFlowRunInput;
+
+// a collected multisig close and the signer set the relay checked it against
+export interface SignedBundle {
+  readonly signedXdr: string;
+  readonly snapshot: SignerSnapshot;
+}
 
 export interface PageFlowContext {
   readonly input: StoredInput | null;
@@ -117,6 +108,13 @@ export interface PageFlowContext {
   // technical detail behind the discovery warnings, for a collapsed section
   readonly discoveryDiagnostics: readonly string[];
   readonly unroutableCredits: readonly UnroutableCredit[];
+  // what the preview found that keeps the close from starting (mergeability,
+  // the BLND trustline, the exchange-forward funding), in words for the user
+  readonly reviewBlockers: readonly string[];
+  // held-token conversions refused for their price; each needs the user's choice
+  readonly refusedConversions: readonly RefusedConversion[];
+  // backstop emissions claims that can't run; each needs a forfeit acknowledgement
+  readonly emissionForfeits: readonly EmissionForfeit[];
   readonly tree: PlanTree | null;
   readonly progress: readonly DemolishProgressEvent[];
   readonly result: DemolishResult | null;
@@ -124,7 +122,7 @@ export interface PageFlowContext {
   // typed classification of `error`, driving recovery. null without a failure.
   readonly failureKind: FailureKind | null;
   // set when a multisig close's collected bundle is submitted (SUBMIT_BUNDLE)
-  readonly signedBundleXdr: string | null;
+  readonly signedBundle: SignedBundle | null;
   // best-effort steps that did not do what the plan asked
   readonly executionNotes: readonly string[];
   // classic phases that landed, including those of a close that did not finish
@@ -133,842 +131,36 @@ export interface PageFlowContext {
   readonly executionAbort: AbortController | null;
 }
 
+// the account and network the page showed when the user acted; an event for a
+// different run than the one the machine holds is refused
+export interface ExpectedRun {
+  readonly publicKey: string;
+  readonly networkId: string;
+}
+
 export type PageFlowEvent =
   | { type: "START"; input: PageFlowInput }
   // typed = the last-4 characters of the reviewed destination the user re-typed;
   // the machine guard re-checks it so a bare/forged CONFIRM can't execute
-  | { type: "CONFIRM"; typed: string }
-  // the multisig bundle path has the same typed-destination gate as CONFIRM
-  | { type: "SUBMIT_BUNDLE"; signedXdr: string; typed?: string }
+  | { type: "CONFIRM"; typed: string; expected: ExpectedRun }
+  // the multisig bundle path has the same gates as CONFIRM, and the bundle must
+  // be the request the link names (planId is its hash) and close this account
+  // into the reviewed destination
+  | {
+      type: "SUBMIT_BUNDLE";
+      signedXdr: string;
+      planId: string;
+      typed: string;
+      expected: ExpectedRun;
+      // the signer set the relay checked the signatures against (RelayPlan)
+      snapshot: SignerSnapshot;
+    }
   | { type: "CANCEL" }
   // the wallet currently connected; without one a retry can only rediscover
   | { type: "RETRY"; connector?: Connector | null }
   | { type: "RESET" }
   | { type: "_PROGRESS"; event: DemolishProgressEvent }
   | { type: "_NODE_TICK" };
-
-interface DiscoverInput {
-  readonly publicKey: string;
-  readonly network: NetworkConfig;
-  readonly positions?: ProtocolPositions;
-  readonly allowances?: readonly AllowanceRecord[];
-}
-
-interface DiscoverOutput {
-  readonly audit: AccountAudit;
-  readonly positions: ProtocolPositions;
-  readonly allowances: readonly AllowanceRecord[];
-  readonly heldTokens: readonly HeldToken[];
-  readonly unreadableHeldTokens: readonly string[];
-  readonly heldTokenScanFailed: boolean;
-  // non-fatal discovery failures (allowance scan / position probe) surfaced so
-  // the UI can warn that the plan may be incomplete instead of hiding them.
-  readonly discoveryWarnings: readonly string[];
-  readonly discoveryDiagnostics: readonly string[];
-}
-
-interface PreviewInput {
-  readonly audit: AccountAudit;
-  readonly positions: ProtocolPositions;
-  readonly allowances: readonly AllowanceRecord[];
-  // only the tokens the user opted in to drain (default none)
-  readonly selectedHeldTokens: readonly HeldToken[];
-  readonly convertHeldTokensToXLM?: boolean;
-  readonly network: NetworkConfig;
-  readonly destination: string;
-  readonly useMediator: boolean;
-  readonly memo?: ClassicMemo;
-  readonly userFallbackAddress?: string;
-  readonly selectedClaimableBalanceIds?: readonly string[];
-  readonly returnToIssuerAssetKeys?: readonly string[];
-  readonly sendToDestinationAssetKeys?: readonly string[];
-  readonly deterministicDisposal?: boolean;
-}
-
-interface PreviewOutput {
-  readonly tree: PlanTree;
-  // positive credit balances with no XLM path and no return-to-issuer consent;
-  // while any exist the account can't fully merge (surfaced in the UI).
-  readonly unroutableCredits: readonly UnroutableCredit[];
-  // held-token disposition notes that depend on the destination kind (e.g. a CEX
-  // close can't receive raw SEP-41 tokens); merged into the discovery warnings.
-  readonly heldTokenWarnings: readonly string[];
-}
-
-interface ExecuteInput {
-  readonly publicKey: string;
-  readonly network: NetworkConfig;
-  readonly connector: Connector;
-  // tree from the preview pass; execute runs against this so the ui shows
-  // the same steps the user reviewed
-  readonly tree: PlanTree;
-  // present for a multisig close: the fully-signed bundled transaction to submit
-  // as-is, instead of re-building/signing the tree node by node.
-  readonly signedBundleXdr?: string;
-  // aborted by CANCEL; combined with the actor's own stop signal
-  readonly interrupt: AbortSignal;
-  readonly onProgress: (event: DemolishProgressEvent) => void;
-  // fires after every node.status mutation so the page re-renders the steps
-  readonly onNodeTick: () => void;
-}
-
-interface ExecuteOutput {
-  readonly result: DemolishResult;
-  readonly tree: PlanTree;
-  readonly failureKind?: FailureKind;
-  readonly notes: readonly string[];
-  readonly landedPhases: readonly PhaseReceipt[];
-}
-
-// per-discovery-step ceiling so a hanging rpc can't pin the ui on a spinner
-const DISCOVERY_TIMEOUT_MS = 30_000;
-// matches the rpc's typical event-retention window (about 7 days)
-const ALLOWANCE_SCAN_WINDOW_LEDGERS = 120_960;
-const SIMULATE_ATTEMPTS = 3;
-
-function withTimeout<T>(label: string, p: Promise<T>, ms: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-  });
-  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
-}
-
-// protocol key for a discovery that did not finish at all
-const ALL_PROTOCOLS = "all";
-
-// user-facing copy for a discovery error. a warning an adapter wrote for the user
-// (a stranding, backstop or manual-close notice) is shown verbatim; a technical
-// load failure gets a generic frame.
-export function discoveryWarningFor(e: {
-  readonly protocol: string;
-  readonly message: string;
-}): string {
-  if (e.protocol === ALL_PROTOCOLS) {
-    return "We couldn't finish checking for DeFi positions, so anything you have in apps like Blend, Aquarius, Soroswap or FxDAO might be missing from this plan. If you've used those, check them before closing.";
-  }
-  const actionable =
-    /backstop|stranded|will be stranded|withdraw it|manual close|close it manually|before closing/i.test(
-      e.message,
-    );
-  return actionable
-    ? e.message
-    : `We couldn't check your ${e.protocol} positions. If you've used ${e.protocol}, review it before closing.`;
-}
-
-// held-token notes shown before the user confirms, so a token that can't be
-// swept is never a silent skip:
-//   a CEX/mediator close can't forward raw tokens, so the selection is not swept;
-//   a drain or conversion that failed in preview is tried again at execute, and
-//   these notes say what happens if it fails again.
-export function heldTokenDispositionWarnings(
-  tree: PlanTree,
-  opts: { readonly useMediator: boolean; readonly selectedCount: number },
-): string[] {
-  const out: string[] = [];
-  if (opts.useMediator && opts.selectedCount > 0) {
-    const n = opts.selectedCount;
-    out.push(
-      `The ${n} standalone token${n === 1 ? "" : "s"} you selected can't be forwarded to an ` +
-        `exchange, so ${n === 1 ? "it won't" : "they won't"} be swept. Move ${
-          n === 1 ? "it" : "them"
-        } to a personal wallet before closing, or ${n === 1 ? "it" : "they"} will be left behind.`,
-    );
-  }
-  for (const node of tree.allNodes.values()) {
-    if (node.kind !== "TransferAsIs" && node.kind !== "ConvertSorobanToXLM") continue;
-    if (node.status !== "failed" && node.status !== "skipped") continue;
-    const asset = node.metadata.asset;
-    const label =
-      asset.kind === "contract"
-        ? `${asset.contractId.slice(0, 4)}…${asset.contractId.slice(-4)}`
-        : "a standalone token";
-    const reason = node.error ?? "the simulation failed";
-    if (node.kind === "TransferAsIs") {
-      out.push(
-        `We couldn't prepare the transfer of token ${label} (${reason}). The close tries it ` +
-          "again; if it still fails, the token stays on the closed account. Remove it from the " +
-          "sweep, or move it out of the account yourself first.",
-      );
-    } else {
-      out.push(
-        `We couldn't prepare the conversion of token ${label} to XLM (${reason}). The close tries ` +
-          "again and, if it still can't convert it, sends the token to your destination as-is. If " +
-          "that fails too, the close stops before the merge.",
-      );
-    }
-  }
-  return out;
-}
-
-const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({ input }) => {
-  const discoveryWarnings: string[] = [];
-  const discoveryDiagnostics: string[] = [];
-
-  // the audit is required, so a timeout rejects the actor (machine -> failed with
-  // a real error) instead of hanging the UI. it runs alongside the best-effort
-  // scans below and is awaited on its own so its failure still rejects.
-  const auditPromise = withTimeout(
-    "auditAccount",
-    auditAccount(input.publicKey, input.network),
-    DISCOVERY_TIMEOUT_MS,
-  );
-
-  // allowances, defi positions and held tokens are independent scans run
-  // concurrently; each turns its own failure into a warning
-
-  // allowances: best-effort sep-41 enumeration, timeout-bounded because
-  // rpc.getEvents pagination can stall on a flaky endpoint
-  const allowancesPromise: Promise<{
-    allowances: readonly AllowanceRecord[];
-    warning?: string;
-    detail?: string;
-  }> =
-    input.allowances && input.allowances.length > 0
-      ? Promise.resolve({ allowances: input.allowances })
-      : (async () => {
-          try {
-            const rpc = getRpc(input.network);
-            const latest = await withTimeout(
-              "getLatestLedger",
-              rpc.getLatestLedger(),
-              DISCOVERY_TIMEOUT_MS,
-            );
-            const allowances = await withTimeout(
-              "enumerateAllowances",
-              enumerateAllowances(
-                rpc,
-                input.publicKey,
-                latest.sequence,
-                ALLOWANCE_SCAN_WINDOW_LEDGERS,
-              ),
-              DISCOVERY_TIMEOUT_MS,
-            );
-            return { allowances };
-          } catch (e) {
-            return {
-              allowances: [] as readonly AllowanceRecord[],
-              warning:
-                "We couldn't finish checking this account's token spending permissions, so any active ones might not show up in this plan. You can review them separately on the Allowances page before closing.",
-              detail: `allowance scan: ${errorMessage(e)}`,
-            };
-          }
-        })();
-
-  // defi positions: direct-contract probing across blend/aquarius/soroswap/fxdao.
-  // a timeout keeps no partial result, so it is recorded as an unfinished
-  // discovery in positions.errors, which the merge guard also refuses on
-  const positionsPromise: Promise<{ positions: ProtocolPositions; detail?: string }> =
-    input.positions && input.positions !== EMPTY_POSITIONS
-      ? Promise.resolve({ positions: input.positions })
-      : (async () => {
-          try {
-            const provider = new DirectContractProvider();
-            const positions = await withTimeout(
-              "getPositions",
-              provider.getPositions(input.publicKey, input.network),
-              DISCOVERY_TIMEOUT_MS,
-            );
-            return { positions };
-          } catch (e) {
-            return {
-              positions: {
-                ...EMPTY_POSITIONS,
-                errors: [{ protocol: ALL_PROTOCOLS, message: errorMessage(e) }],
-              },
-              detail: `position discovery: ${errorMessage(e)}`,
-            };
-          }
-        })();
-
-  // standalone SEP-41 tokens held directly. no native "list my tokens" exists,
-  // so this event-scans transfers crediting the account and probes balance().
-  // the rpc's ~7-day retention means older receipts are missed, so a miss is a
-  // soft warning, never treated as exhaustive.
-  const heldPromise: Promise<{
-    held: readonly HeldToken[];
-    unreadable: readonly string[];
-    failed: boolean;
-    warning?: string;
-    detail?: string;
-  }> = (async () => {
-    try {
-      const rpc = getRpc(input.network);
-      const latest = await withTimeout(
-        "getLatestLedger",
-        rpc.getLatestLedger(),
-        DISCOVERY_TIMEOUT_MS,
-      );
-      const scan = await withTimeout(
-        "discoverHeldTokens",
-        discoverHeldTokens(rpc, input.publicKey, latest.sequence, input.network),
-        DISCOVERY_TIMEOUT_MS,
-      );
-      return { held: scan.held, unreadable: scan.unreadable, failed: false };
-    } catch (e) {
-      // an optional, opt-in scan with a manual-add fallback: a blip must not read
-      // like imminent fund loss
-      return {
-        held: [] as readonly HeldToken[],
-        unreadable: [] as readonly string[],
-        failed: true,
-        warning:
-          "We couldn't finish the optional scan for standalone (custom SEP-41) tokens. This doesn't affect any balance you can already see. If you know you hold a custom token, you can add it by its contract address to include it in the close.",
-        detail: `held-token scan: ${errorMessage(e)}`,
-      };
-    }
-  })();
-
-  const audit = await auditPromise;
-  const [allowanceResult, positionResult, heldResult] = await Promise.all([
-    allowancesPromise,
-    positionsPromise,
-    heldPromise,
-  ]);
-  const positions = positionResult.positions;
-
-  // warnings in a stable order (scan warnings, per-protocol errors, blend repay
-  // shortfall) so copy doesn't reshuffle between runs
-  if (allowanceResult.warning) discoveryWarnings.push(allowanceResult.warning);
-  if (heldResult.warning) discoveryWarnings.push(heldResult.warning);
-  for (const r of [allowanceResult, positionResult, heldResult]) {
-    if (r.detail) discoveryDiagnostics.push(r.detail);
-  }
-  for (const e of positions.errors) {
-    discoveryWarnings.push(discoveryWarningFor(e));
-    if (e.protocol !== ALL_PROTOCOLS) discoveryDiagnostics.push(`${e.protocol}: ${e.message}`);
-  }
-
-  // blend repay needs the borrowed token on hand (no auto-swap); a shortfall
-  // would stop the close mid-way, so say it now
-  discoveryWarnings.push(...blendRepayShortfallWarnings(audit, positions.blend, input.network));
-
-  // held tokens from unrecognized contracts are the visible trace of a position
-  // in an unsupported app we can't unwind; ask the user to close those first
-  const manualClose = manualCloseRequiredNotice({
-    heldTokenCount: heldResult.held.length,
-    unreadableTokenCount: heldResult.unreadable.length,
-  });
-  if (manualClose) discoveryWarnings.push(manualClose);
-
-  return {
-    audit,
-    positions,
-    allowances: allowanceResult.allowances,
-    heldTokens: heldResult.held,
-    unreadableHeldTokens: heldResult.unreadable,
-    heldTokenScanFailed: heldResult.failed,
-    discoveryWarnings,
-    discoveryDiagnostics,
-  };
-});
-
-// the residue asset keys the destination can actually receive in the amount the
-// account holds: a line that exists, is authorized and has room. a missing
-// destination account can hold nothing.
-export async function fetchDestinationUsableKeys(
-  destination: string,
-  network: NetworkConfig,
-  residues: readonly { readonly key: string; readonly amount: string }[],
-): Promise<ReadonlySet<string>> {
-  let lines: readonly DestinationLine[];
-  try {
-    const account = await getHorizon(network).loadAccount(destination);
-    lines = account.balances as readonly DestinationLine[];
-  } catch (err) {
-    if (isNotFoundError(err)) return new Set();
-    throw err;
-  }
-  const usable = new Set<string>();
-  for (const r of residues) {
-    if (residueLineProblem(destination, lines, r.key, r.amount) === null) usable.add(r.key);
-  }
-  return usable;
-}
-
-async function simulateWithRetry(
-  node: PlanNode,
-  deps: Parameters<typeof simulateNode>[1],
-): ReturnType<typeof simulateNode> {
-  let lastErr: unknown;
-  for (let i = 0; i < SIMULATE_ATTEMPTS; i++) {
-    try {
-      return await simulateNode(node, deps);
-    } catch (err) {
-      // a simulation that ran and failed is an answer; anything else is a
-      // transport problem worth another try
-      if (err instanceof SimulationFailedError) throw err;
-      if (err instanceof Error && err.message.includes("has no built transaction")) throw err;
-      lastErr = err;
-      if (i < SIMULATE_ATTEMPTS - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** i));
-      }
-    }
-  }
-  throw lastErr;
-}
-
-const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) => {
-  // resolve real XLM-conversion paths so credit balances convert via path
-  // payment; anything without a path (and without disposal consent) is reported
-  // as un-routable rather than silently paid away. in deterministic mode
-  // (multisig signing request) path resolution is skipped, so every non-XLM
-  // balance must go to its issuer or the destination: no market sell that could
-  // fail and sink the one transaction everyone signs.
-  const paths: Awaited<ReturnType<typeof resolveCreditPaths>> = input.deterministicDisposal
-    ? new Map()
-    : await resolveCreditPaths(input.audit, input.network);
-  const unroutableBase = unroutableCredits(
-    input.audit,
-    paths,
-    input.returnToIssuerAssetKeys,
-    input.sendToDestinationAssetKeys,
-  );
-  // offer "send to destination" only where the destination can really take the
-  // whole residue
-  const usableKeys =
-    unroutableBase.length > 0
-      ? await fetchDestinationUsableKeys(
-          input.destination,
-          input.network,
-          unroutableBase.map((c) => ({ key: c.key, amount: c.amount })),
-        )
-      : new Set<string>();
-  const unroutable = unroutableBase.map((c) => ({
-    ...c,
-    destinationTrusts: usableKeys.has(c.key),
-  }));
-
-  // a CEX destination routes through a per-flow mediator account. a flow is
-  // minted here only so the preview can build and check the real merge batch;
-  // the executor mints the flow that is actually funded right before funding it.
-  let mediator: { readonly flowToken: string; readonly mediatorPublicKey: string } | null = null;
-  if (input.useMediator) {
-    const flow = await startMediatorFlow(input.destination);
-    if (!flow.ok) {
-      throw new Error(`Could not start the exchange-forward flow (${flow.code}): ${flow.reason}`);
-    }
-    mediator = { flowToken: flow.flowToken, mediatorPublicKey: flow.mediatorPublicKey };
-  }
-
-  // build the real batches so FinalClassicTx carries the real op count
-  const batches = batchClassicDemolition(
-    input.audit,
-    {
-      destination: input.destination,
-      useMediator: input.useMediator,
-      ...(mediator ? { mediatorPublicKey: mediator.mediatorPublicKey } : {}),
-      ...(input.selectedClaimableBalanceIds
-        ? { claimableBalanceIds: input.selectedClaimableBalanceIds }
-        : {}),
-      ...(input.returnToIssuerAssetKeys
-        ? { returnToIssuerAssetKeys: input.returnToIssuerAssetKeys }
-        : {}),
-      ...(input.sendToDestinationAssetKeys
-        ? { sendToDestinationAssetKeys: input.sendToDestinationAssetKeys }
-        : {}),
-      ...(input.userFallbackAddress ? { userFallbackAddress: input.userFallbackAddress } : {}),
-      ...(input.memo ? { memo: input.memo } : {}),
-    },
-    paths,
-  );
-
-  // demolition revokes every active allowance the user owns. The account is
-  // being closed, there's no "keep this defi protocol" outcome
-  const selectedAllowances = input.allowances.map((a) => `${a.contractId}|${a.spender}`);
-
-  const tree = generatePlan(input.audit, input.positions, input.allowances, input.destination, {
-    useMediator: input.useMediator,
-    selectedAllowances,
-    paths,
-    // sweep only the tokens the user opted in to; the generator ignores them for
-    // a mediator close (an exchange can't receive a raw token)
-    ...(input.selectedHeldTokens.length > 0 ? { heldTokens: input.selectedHeldTokens } : {}),
-    ...(input.convertHeldTokensToXLM ? { convertHeldTokensToXLM: true } : {}),
-    ...(mediator
-      ? { mediatorPublicKey: mediator.mediatorPublicKey, flowToken: mediator.flowToken }
-      : {}),
-    ...(input.memo ? { memo: input.memo } : {}),
-    ...(input.userFallbackAddress ? { userFallbackAddress: input.userFallbackAddress } : {}),
-    ...(input.selectedClaimableBalanceIds
-      ? { selectedClaimableBalanceIds: input.selectedClaimableBalanceIds }
-      : {}),
-    ...(input.returnToIssuerAssetKeys
-      ? { returnToIssuerAssetKeys: input.returnToIssuerAssetKeys }
-      : {}),
-    ...(input.sendToDestinationAssetKeys
-      ? { sendToDestinationAssetKeys: input.sendToDestinationAssetKeys }
-      : {}),
-  });
-
-  // splice batches onto FinalClassicTx; metadata is readonly at the type
-  // level but documented as a hydration point
-  for (const node of tree.allNodes.values()) {
-    if (node.kind === "FinalClassicTx") {
-      const md = node.metadata as { batches: readonly (typeof batches)[number][] };
-      md.batches = batches;
-    }
-  }
-
-  const rpcServer = getRpc(input.network);
-  const horizon = getHorizon(input.network);
-
-  // hydrate soroban nodes so the simulator has a built transaction to inspect.
-  // a per-node failure marks that node failed with its real reason; a failure of
-  // the whole pass (the ledger read, a bad dependency) fails the preview.
-  const previewLedger = await rpcServer.getLatestLedger();
-  await hydratePlanTransactions(tree, input.audit.accountId, {
-    rpc: rpcServer,
-    horizon,
-    network: input.network,
-    currentLedger: previewLedger.sequence,
-    fetchSourceAccount: (pk) => horizon.loadAccount(pk),
-  });
-
-  for (const node of topologicalOrder(tree)) {
-    // keep a hydration failure and its reason as they are
-    if (node.status === "failed") continue;
-    try {
-      const outcome = await simulateWithRetry(node, {
-        server: rpcServer,
-        network: input.network,
-        userPublicKey: input.audit.accountId,
-        fetchSourceAccount: async (pk) => horizon.loadAccount(pk),
-      });
-      node.simulated = outcome;
-      node.status = "simulated";
-    } catch (err) {
-      node.status = "failed";
-      if (err instanceof SimulationFailedError) {
-        node.error = err.upstreamError;
-      } else if (isSorobanNode(node) && errorMessage(err).includes("has no built transaction")) {
-        node.error = `Could not build the ${node.kind} transaction (RPC error or archived contract state).`;
-      } else {
-        node.error = errorMessage(err);
-      }
-    }
-  }
-
-  const heldTokenWarnings = heldTokenDispositionWarnings(tree, {
-    useMediator: input.useMediator,
-    selectedCount: input.selectedHeldTokens.length,
-  });
-
-  return { tree, unroutableCredits: unroutable, heldTokenWarnings };
-});
-
-// mediator flow wiring for the executor: mint through the sign route, record the
-// flow in the pending-forward store before the funding batch is signed, and clear
-// that record only for the flow whose forward landed
-function mediatorFlowControl(
-  input: ExecuteInput,
-  horizon: ReturnType<typeof getHorizon>,
-): MediatorFlowControl {
-  return {
-    async mint(destination) {
-      // this build's mint endpoint takes only the destination; the memo rides on
-      // the forward
-      const flow = await startMediatorFlow(destination);
-      if (!flow.ok) {
-        const kind: FailureKind =
-          flow.code === "NETWORK_ERROR" || flow.code === "RATE_LIMITED" ? "network" : "unknown";
-        throw new CloseFailure(
-          kind,
-          `Could not start the exchange-forward flow (${flow.code}): ${flow.reason}`,
-        );
-      }
-      return { mediatorPublicKey: flow.mediatorPublicKey, flowToken: flow.flowToken };
-    },
-    persist(flow) {
-      savePendingForward({
-        publicKey: input.publicKey,
-        mediatorPublicKey: flow.mediatorPublicKey,
-        flowToken: flow.flowToken,
-        ultimateDestination: flow.ultimateDestination,
-        ...(flow.memo ? { memo: flow.memo } : {}),
-        networkId: input.network.id,
-        // the issue time, so a later run can tell how long the token has left
-        savedAt: flow.issuedAt,
-      });
-    },
-    previous() {
-      const p = loadPendingForward(input.publicKey);
-      if (p === null || p.networkId !== input.network.id) return null;
-      return {
-        mediatorPublicKey: p.mediatorPublicKey,
-        flowToken: p.flowToken,
-        ultimateDestination: p.ultimateDestination,
-        ...(p.memo ? { memo: p.memo } : {}),
-        issuedAt: p.savedAt,
-      };
-    },
-    forwarded(mediatorPublicKey) {
-      if (loadPendingForward(input.publicKey)?.mediatorPublicKey === mediatorPublicKey) {
-        clearPendingForward();
-      }
-    },
-    async findForward(mediatorPublicKey) {
-      const page = await horizon
-        .transactions()
-        .forAccount(mediatorPublicKey)
-        .order("desc")
-        .limit(10)
-        .call();
-      const forward = page.records.find(
-        (r) => r.successful && r.source_account === mediatorPublicKey,
-      );
-      return forward?.hash ?? null;
-    },
-  };
-}
-
-// the merge that deleted the account, read from its operation history (horizon
-// keeps it after the account is gone)
-async function findLandedMerge(
-  horizon: ReturnType<typeof getHorizon>,
-  publicKey: string,
-): Promise<LandedMerge | null> {
-  const page = await horizon.operations().forAccount(publicKey).order("desc").limit(20).call();
-  const merge = page.records.find(
-    (r) =>
-      String(r.type) === "account_merge" &&
-      r.transaction_successful &&
-      r.source_account === publicKey,
-  );
-  if (merge === undefined || !("into" in merge) || typeof merge.into !== "string") return null;
-  const tx = await horizon.transactions().transaction(merge.transaction_hash).call();
-  return { txHash: merge.transaction_hash, ledger: tx.ledger_attr, into: merge.into };
-}
-
-async function lookupHorizonTransaction(
-  horizon: ReturnType<typeof getHorizon>,
-  hash: string,
-  maxTime: number | null,
-): Promise<TxLookup> {
-  try {
-    const record = await horizon.transactions().transaction(hash).call();
-    return record.successful
-      ? { status: "success", ledger: record.ledger_attr }
-      : { status: "failed" };
-  } catch (err) {
-    if (!isNotFoundError(err)) throw err;
-  }
-  if (maxTime === null) return { status: "pending" };
-  const page = await horizon.ledgers().order("desc").limit(1).call();
-  const closed = page.records[0]?.closed_at;
-  const closedAt = typeof closed === "string" ? Math.floor(Date.parse(closed) / 1000) : null;
-  return closedAt !== null && closedAt > maxTime ? { status: "expired" } : { status: "pending" };
-}
-
-async function lookupRpcTransaction(
-  rpc: ReturnType<typeof getRpc>,
-  hash: string,
-  maxTime: number | null,
-): Promise<TxLookup> {
-  const res = await rpc.getTransaction(hash);
-  if (res.status === "SUCCESS") return { status: "success", ledger: res.ledger };
-  if (res.status === "FAILED") return { status: "failed" };
-  const closedAt = Number(res.latestLedgerCloseTime);
-  if (maxTime !== null && Number.isFinite(closedAt) && closedAt > maxTime) {
-    return { status: "expired" };
-  }
-  return { status: "pending" };
-}
-
-// aborts when either source aborts (AbortSignal.any is missing from older
-// safari releases)
-function eitherSignal(a: AbortSignal, b: AbortSignal): AbortSignal {
-  if (a.aborted) return a;
-  if (b.aborted) return b;
-  const both = new AbortController();
-  const abort = () => both.abort();
-  a.addEventListener("abort", abort, { once: true });
-  b.addEventListener("abort", abort, { once: true });
-  return both.signal;
-}
-
-// steps a signed multisig bundle can't contain: any soroban node or the forward
-function bundleStray(tree: PlanTree): PlanNode | undefined {
-  return [...tree.allNodes.values()].find(
-    (n) => n.kind !== "FinalClassicTx" && (isSorobanNode(n) || n.kind === "MediatorForward"),
-  );
-}
-
-const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ input, signal }) => {
-  const rpc = getRpc(input.network);
-  const horizon = getHorizon(input.network);
-  const tree = input.tree;
-  const stop = eitherSignal(signal, input.interrupt);
-  const submitClassic = createClassicSubmitter(horizon, input.network.passphrase);
-  const finalNode = tree.allNodes.get(FINAL_CLASSIC_TX_NODE_ID);
-  const landed = (): readonly PhaseReceipt[] => (finalNode ? landedPhasesOf(finalNode) : []);
-
-  if (input.signedBundleXdr) {
-    return submitBundle(input, input.signedBundleXdr, submitClassic, horizon);
-  }
-
-  const notes: string[] = [];
-  input.onProgress({ kind: "submitting", message: "Executing demolition plan…" });
-  try {
-    await executePlanTreeOnChain(
-      {
-        publicKey: input.publicKey,
-        tree,
-        onNodeUpdate: () => input.onNodeTick(),
-        onNote: (text) => notes.push(text),
-      },
-      {
-        network: input.network,
-        connector: input.connector,
-        horizon,
-        submitClassic,
-        submitSoroban: createSorobanSubmitter(rpc, input.network.passphrase),
-        // rebuild each soroban node from fresh state right before signing
-        rebuildSorobanNode: async (node, pk) => {
-          const fresh = await rpc.getLatestLedger();
-          await rebuildSorobanNodeTransaction(node, pk, {
-            rpc,
-            horizon,
-            network: input.network,
-            currentLedger: fresh.sequence,
-            fetchSourceAccount: (p) => horizon.loadAccount(p),
-          });
-        },
-        // re-run soroban discovery at merge time and refuse if any position remains
-        reprobeSorobanPositions: (pk, net) => new DirectContractProvider().getPositions(pk, net),
-        lookupClassicTransaction: (hash, maxTime) =>
-          lookupHorizonTransaction(horizon, hash, maxTime),
-        lookupSorobanTransaction: (hash, maxTime) => lookupRpcTransaction(rpc, hash, maxTime),
-        mediatorFlow: mediatorFlowControl(input, horizon),
-        findAccountMerge: (pk) => findLandedMerge(horizon, pk),
-        signal: stop,
-      },
-    );
-  } catch (err) {
-    const message = errorMessage(err);
-    input.onProgress({ kind: "blocked", message });
-    return {
-      result: { ok: false, errors: [message] },
-      tree,
-      failureKind: classifyFailure(err),
-      notes,
-      landedPhases: landed(),
-    };
-  }
-
-  const mergedTxHash = finalNode?.executed?.txHash;
-  // the merge did not land: a dependency was not done when the merge's turn came
-  if (finalNode !== undefined && finalNode.status !== "confirmed") {
-    const reason =
-      finalNode.error ??
-      "the account merge did not run because a step it depends on did not complete.";
-    input.onProgress({ kind: "blocked", message: `Merge did not complete: ${reason}` });
-    return {
-      result: { ok: false, errors: [reason] },
-      tree,
-      failureKind: "unknown",
-      notes,
-      landedPhases: landed(),
-    };
-  }
-  // an exchange close is done only once the forward out of the mediator landed;
-  // until then the balance sits in the mediator and success would be false
-  const forwardNode = tree.allNodes.get(MEDIATOR_FORWARD_NODE_ID);
-  const forwardTxHash = forwardNode?.executed?.txHash;
-  if (forwardNode !== undefined && (forwardNode.status !== "confirmed" || !forwardTxHash)) {
-    const reason =
-      "Your account was merged into the temporary exchange-forward account, but the forward to " +
-      `the exchange has not landed${forwardNode.error ? `: ${forwardNode.error}` : "."} Retry resumes it.`;
-    input.onProgress({ kind: "blocked", message: reason });
-    return {
-      result: { ok: false, errors: [reason], ...(mergedTxHash ? { mergedTxHash } : {}) },
-      tree,
-      failureKind: "forward_pending",
-      notes,
-      landedPhases: landed(),
-    };
-  }
-
-  input.onProgress({
-    kind: "complete",
-    message: "Demolition complete.",
-    ...(mergedTxHash ? { txHash: mergedTxHash } : {}),
-  });
-  return {
-    result: {
-      ok: true,
-      errors: [],
-      ...(mergedTxHash ? { mergedTxHash } : {}),
-      ...(forwardTxHash ? { forwardTxHash } : {}),
-    },
-    tree,
-    notes,
-    landedPhases: landed(),
-  };
-});
-
-// a multisig close arrives as one transaction signed to threshold in the
-// signatures step. it is submitted as-is (rebuilding would void the signatures)
-// and only the merge step is marked with its receipt.
-async function submitBundle(
-  input: ExecuteInput,
-  signedBundleXdr: string,
-  submitClassic: (xdr: string) => Promise<ConfirmationReceipt>,
-  horizon: ReturnType<typeof getHorizon>,
-): Promise<ExecuteOutput> {
-  const tree = input.tree;
-  const fail = (message: string, failureKind: FailureKind): ExecuteOutput => {
-    input.onProgress({ kind: "blocked", message });
-    return {
-      result: { ok: false, errors: [message] },
-      tree,
-      failureKind,
-      notes: [],
-      landedPhases: [],
-    };
-  };
-  input.onProgress({ kind: "submitting", message: "Submitting the signed close…" });
-
-  // the bundle carries only classic operations; a plan with any soroban step or
-  // the forward was not what everyone signed, whatever that step's status
-  const stray = bundleStray(tree);
-  if (stray) {
-    return fail(
-      `Refusing to submit: the plan contains a '${stray.kind}' step, which can't be part of a single signed transaction. Close this account with all signers present instead.`,
-      "not_mergeable",
-    );
-  }
-  const finalNode = tree.allNodes.get(FINAL_CLASSIC_TX_NODE_ID);
-  if (finalNode === undefined) {
-    return fail("Refusing to submit: the plan has no merge step.", "not_mergeable");
-  }
-
-  let receipt: ConfirmationReceipt;
-  try {
-    // an earlier submission of this bundle may have landed with its reply lost
-    const signed = TransactionBuilder.fromXdr(signedBundleXdr, input.network.passphrase);
-    const earlier = await lookupHorizonTransaction(horizon, txHashHex(signed), txMaxTime(signed));
-    receipt =
-      earlier.status === "success"
-        ? { txHash: txHashHex(signed), ledger: earlier.ledger }
-        : await submitClassic(signedBundleXdr);
-  } catch (err) {
-    // a refused bundle (stale sequence, expired timebounds, bad auth, a failed
-    // operation) will be refused again: the signatures must be collected anew
-    const kind = err instanceof SubmitRejectedError ? "bundle_stale" : classifyFailure(err);
-    return fail(errorMessage(err), kind);
-  }
-  finalNode.status = "confirmed";
-  finalNode.executed = receipt;
-  input.onNodeTick();
-  input.onProgress({ kind: "complete", message: "Demolition complete.", txHash: receipt.txHash });
-  return {
-    result: { ok: true, errors: [], mergedTxHash: receipt.txHash },
-    tree,
-    notes: [],
-    landedPhases: [receipt],
-  };
-}
 
 const initialContext: PageFlowContext = {
   input: null,
@@ -982,12 +174,15 @@ const initialContext: PageFlowContext = {
   discoveryWarnings: [],
   discoveryDiagnostics: [],
   unroutableCredits: [],
+  reviewBlockers: [],
+  refusedConversions: [],
+  emissionForfeits: [],
   tree: null,
   progress: [],
   result: null,
   error: null,
   failureKind: null,
-  signedBundleXdr: null,
+  signedBundle: null,
   executionNotes: [],
   landedPhases: [],
   executionAbort: null,
@@ -999,16 +194,73 @@ function storeInput(input: PageFlowInput): StoredInput {
 }
 
 // everything that must be resolved before the close may start, in words for the
-// user: a required step that failed preview, and any defi protocol discovery
-// could not read. the merge guard refuses an unreadable protocol at merge time,
-// so confirming anyway would only unwind the other positions first.
+// user: a required step that failed preview, a balance the plan can't dispose
+// of, a conversion refused for its price, an emissions claim the user has not
+// agreed to forfeit, what the preview's own checks found, and any defi protocol
+// discovery could not read. confirming anyway would run the steps before the
+// merge and then stop at it.
 export function confirmBlockers(
-  context: Pick<PageFlowContext, "tree" | "positions">,
+  context: Pick<
+    PageFlowContext,
+    | "tree"
+    | "positions"
+    | "unroutableCredits"
+    | "reviewBlockers"
+    | "refusedConversions"
+    | "emissionForfeits"
+  >,
 ): readonly string[] {
+  const forfeitPools = new Set(context.emissionForfeits.map((f) => f.poolId));
   return [
-    ...previewBlockers(context.tree).map((b) => `${b.description}: ${b.error}`),
+    ...previewBlockers(context.tree)
+      // a claim the user can forfeit is listed once, with its own wording below
+      .filter((b) => !isForfeitable(context.tree, b.nodeId, forfeitPools))
+      .map((b) => `${b.description}: ${b.error}`),
+    ...context.unroutableCredits.map(
+      (c) => `${c.amount} ${c.code} can't be disposed of as planned (${creditReason(c)}).`,
+    ),
+    ...context.refusedConversions.map(
+      (r) =>
+        `Converting token ${r.contractId} was refused for its price (${r.reason}). Accept the price, send it as-is, or leave it out.`,
+    ),
+    ...context.emissionForfeits.map(
+      (f) =>
+        `The backstop emissions claim for pool ${f.poolId} can't run (${f.reason}). Confirm that you leave ${
+          f.accruedEmissions === null ? "the accrued" : formatBlnd(f.accruedEmissions)
+        } BLND unclaimed to continue.`,
+    ),
+    ...context.reviewBlockers,
     ...context.positions.errors.map((e) => discoveryWarningFor(e)),
   ];
+}
+
+function isForfeitable(tree: PlanTree | null, nodeId: string, pools: ReadonlySet<string>): boolean {
+  const node = tree?.allNodes.get(nodeId);
+  const poolId = (node?.metadata as { readonly poolId?: unknown } | undefined)?.poolId;
+  return (
+    (node?.kind as string | undefined) === "ClaimBackstopEmissions" &&
+    typeof poolId === "string" &&
+    pools.has(poolId)
+  );
+}
+
+function creditReason(c: UnroutableCredit): string {
+  switch (c.reason) {
+    case "no_path":
+      return "no market path to XLM; return it to its issuer or send it to your destination";
+    case "unpriced":
+      return "its price can't be checked against a reference quote; accept the price to sell it";
+    case "price_impact":
+      return `selling it all would move the price by ${((c.priceImpactBps ?? 0) / 100).toFixed(2)}%; accept that price to sell it`;
+    case "requote_worse":
+      return "the market price fell below the one you reviewed";
+  }
+}
+
+function formatBlnd(stroops: bigint): string {
+  const frac = (stroops % 10_000_000n).toString().padStart(7, "0").replace(/0+$/, "");
+  const whole = (stroops / 10_000_000n).toString();
+  return frac.length > 0 ? `${whole}.${frac}` : whole;
 }
 
 function typedMatches(context: PageFlowContext, typed: string | undefined): boolean {
@@ -1021,11 +273,47 @@ function typedMatches(context: PageFlowContext, typed: string | undefined): bool
   );
 }
 
+function sameRun(context: PageFlowContext, expected: ExpectedRun | undefined): boolean {
+  return (
+    expected !== undefined &&
+    context.input !== null &&
+    expected.publicKey === context.input.publicKey &&
+    expected.networkId === context.input.network.id
+  );
+}
+
+// the collected bundle is the request the link names and does what was reviewed:
+// it closes this account into the reviewed destination, and every operation in
+// it acts on this account
+export function bundleMatchesReview(
+  signedXdr: string,
+  planId: string,
+  run: { readonly publicKey: string; readonly destination: string; readonly passphrase: string },
+): boolean {
+  let tx;
+  try {
+    tx = TransactionBuilder.fromXdr(signedXdr, run.passphrase);
+  } catch {
+    return false;
+  }
+  if ("innerTransaction" in tx) return false;
+  if (txHashHex(tx) !== planId) return false;
+  const sourceOf = (op: Operation) => (op as { readonly source?: string }).source ?? tx.source;
+  if (!tx.operations.every((op) => sourceOf(op) === run.publicKey)) return false;
+  const merge = tx.operations.find((op) => op.type === "accountMerge") as
+    Operation.AccountMerge | undefined;
+  return merge !== undefined && merge.destination === run.destination;
+}
+
 // what a failed discovery or preview leaves: nothing from an earlier plan may be
 // executed by a later RETRY
 const clearedPlan = {
   tree: null,
-  signedBundleXdr: null,
+  signedBundle: null,
+  unroutableCredits: [],
+  reviewBlockers: [],
+  refusedConversions: [],
+  emissionForfeits: [],
   progress: [],
   result: null,
   executionNotes: [],
@@ -1044,23 +332,32 @@ export const pageFlowMachine = setup({
   },
   guards: {
     // the irreversible execute transition refuses unless the event carries the
-    // last 4 characters of the reviewed destination, a wallet is connected, and
-    // nothing in confirmBlockers is open. a CONFIRM dispatched outside the
-    // confirmation UI can't trigger the merge.
+    // last 4 characters of the reviewed destination and names the run on screen,
+    // a wallet is connected, and nothing in confirmBlockers is open. a CONFIRM
+    // dispatched outside the confirmation UI can't trigger the merge.
     confirmMatchesDestination: ({ context, event }) => {
       if (event.type !== "CONFIRM") return false;
       return (
         typedMatches(context, event.typed) &&
+        sameRun(context, event.expected) &&
         context.connector !== null &&
         confirmBlockers(context).length === 0
       );
     },
     bundleConfirmed: ({ context, event }) => {
       if (event.type !== "SUBMIT_BUNDLE") return false;
+      const i = context.input;
       return (
+        i !== null &&
         typedMatches(context, event.typed) &&
+        sameRun(context, event.expected) &&
         context.connector !== null &&
-        confirmBlockers(context).length === 0
+        confirmBlockers(context).length === 0 &&
+        bundleMatchesReview(event.signedXdr, event.planId, {
+          publicKey: i.publicKey,
+          destination: i.destination,
+          passphrase: i.network.passphrase,
+        })
       );
     },
     canResume: ({ context, event }) => {
@@ -1088,7 +385,6 @@ export const pageFlowMachine = setup({
             audit: null,
             discoveryWarnings: [],
             discoveryDiagnostics: [],
-            unroutableCredits: [],
             error: null,
             failureKind: null,
             ...clearedPlan,
@@ -1158,8 +454,8 @@ export const pageFlowMachine = setup({
             destination: i.destination,
             useMediator: i.useMediator,
             ...(i.memo ? { memo: i.memo } : {}),
-            ...(i.userFallbackAddress ? { userFallbackAddress: i.userFallbackAddress } : {}),
-            ...(i.selectedClaimableBalanceIds
+            // [] is a real choice (claim none), so only undefined is left out
+            ...(i.selectedClaimableBalanceIds !== undefined
               ? { selectedClaimableBalanceIds: i.selectedClaimableBalanceIds }
               : {}),
             ...(i.returnToIssuerAssetKeys
@@ -1167,6 +463,12 @@ export const pageFlowMachine = setup({
               : {}),
             ...(i.sendToDestinationAssetKeys
               ? { sendToDestinationAssetKeys: i.sendToDestinationAssetKeys }
+              : {}),
+            ...(i.acceptedPriceImpactAssetKeys
+              ? { acceptedPriceImpactAssetKeys: i.acceptedPriceImpactAssetKeys }
+              : {}),
+            ...(i.forfeitBackstopEmissionPoolIds
+              ? { forfeitBackstopEmissionPoolIds: i.forfeitBackstopEmissionPoolIds }
               : {}),
             ...(i.deterministicDisposal ? { deterministicDisposal: true } : {}),
           };
@@ -1176,11 +478,17 @@ export const pageFlowMachine = setup({
           actions: assign({
             tree: ({ event }) => event.output.tree,
             unroutableCredits: ({ event }) => event.output.unroutableCredits,
+            // optional in the output: a preview that found none leaves them out
+            reviewBlockers: ({ event }) => event.output.reviewBlockers ?? [],
+            refusedConversions: ({ event }) => event.output.refusedConversions ?? [],
+            emissionForfeits: ({ event }) => event.output.emissionForfeits ?? [],
             // held-token disposition depends on the destination kind, decided at
-            // preview; fold those notes into the discovery warnings the UI shows.
+            // preview; fold those notes and the review notes into the warnings
+            // the UI shows.
             discoveryWarnings: ({ context, event }) => [
               ...context.discoveryWarnings,
-              ...(event.output.heldTokenWarnings ?? []),
+              ...event.output.heldTokenWarnings,
+              ...(event.output.reviewNotes ?? []),
             ],
           }),
         },
@@ -1207,18 +515,19 @@ export const pageFlowMachine = setup({
             audit: null,
             discoveryWarnings: [],
             discoveryDiagnostics: [],
-            unroutableCredits: [],
             error: null,
             failureKind: null,
             ...clearedPlan,
           }),
         },
         CONFIRM: { target: "executing", guard: "confirmMatchesDestination" },
-        // a multisig close: submit the collected, fully-signed bundle as-is
+        // a multisig close: submit the collected, fully-signed bundle
         SUBMIT_BUNDLE: {
           target: "executing",
           guard: "bundleConfirmed",
-          actions: assign({ signedBundleXdr: ({ event }) => event.signedXdr }),
+          actions: assign({
+            signedBundle: ({ event }) => ({ signedXdr: event.signedXdr, snapshot: event.snapshot }),
+          }),
         },
         CANCEL: { target: "cancelled", actions: assign({ connector: null }) },
       },
@@ -1247,7 +556,7 @@ export const pageFlowMachine = setup({
             connector: context.connector,
             tree: context.tree,
             interrupt: context.executionAbort.signal,
-            ...(context.signedBundleXdr ? { signedBundleXdr: context.signedBundleXdr } : {}),
+            ...(context.signedBundle ? { bundle: context.signedBundle } : {}),
             onProgress: (event: DemolishProgressEvent) => {
               self.send({ type: "_PROGRESS", event });
             },
@@ -1327,7 +636,8 @@ export const pageFlowMachine = setup({
         // a retryable failure re-executes the same tree with the wallet that is
         // connected now: landed steps are skipped, everything else re-runs. any
         // other failure, or a retry without a wallet, rebuilds the plan from fresh
-        // discovery and drops the old tree so it can't be executed later.
+        // discovery and drops the old tree, its error and a collected bundle so
+        // none of it can be executed or shown later.
         RETRY: [
           {
             target: "executing",

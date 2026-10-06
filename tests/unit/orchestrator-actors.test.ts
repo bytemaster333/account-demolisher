@@ -4,6 +4,7 @@ import { createActor, fromPromise, waitFor } from "xstate";
 import {
   Account,
   BadResponseError,
+  Keypair,
   NotFoundError,
   Operation,
   TransactionBuilder,
@@ -18,6 +19,7 @@ import { EMPTY_POSITIONS } from "@/lib/adapters/positions/interface";
 
 import {
   DEST,
+  ATTACKER,
   EXCHANGE,
   HOSTILE_TOKEN,
   MEDIATOR_A,
@@ -25,7 +27,9 @@ import {
   NETWORK,
   PASS,
   USDC_ISSUER,
+  USDC_SAC,
   USER,
+  USER_KP,
   allowlisted,
   makeAudit,
   signingConnector,
@@ -44,7 +48,8 @@ const auditAccount = vi.fn();
 const startMediatorFlow = vi.fn();
 const submitMediatorForward = vi.fn();
 const getPositions = vi.fn();
-const enumerateAllowances = vi.fn();
+const scanAllowances = vi.fn();
+const confirmAllowancesOnChain = vi.fn();
 const discoverHeldTokens = vi.fn();
 
 vi.mock("@/lib/stellar/horizon-client", () => ({ getHorizon: () => net.horizon }));
@@ -73,7 +78,11 @@ vi.mock("@/lib/soroban/allowances", async () => {
   const actual = await vi.importActual<typeof import("@/lib/soroban/allowances")>(
     "@/lib/soroban/allowances",
   );
-  return { ...actual, enumerateAllowances: (...a: unknown[]) => enumerateAllowances(...a) };
+  return {
+    ...actual,
+    scanAllowances: (...a: unknown[]) => scanAllowances(...a),
+    confirmAllowancesOnChain: (...a: unknown[]) => confirmAllowancesOnChain(...a),
+  };
 });
 vi.mock("@/lib/soroban/held-tokens", async () => {
   const actual = await vi.importActual<typeof import("@/lib/soroban/held-tokens")>(
@@ -87,7 +96,11 @@ import {
   pageFlowMachine,
   type PageFlowInput,
 } from "@/lib/orchestrator/page-flow-machine";
-import { loadPendingForward } from "@/lib/mediator/pending-flow";
+import { latestPendingForward, savePendingForward } from "@/lib/mediator/pending-flow";
+import { simulatePreviewTree } from "@/lib/orchestrator/actors/preview";
+
+const RUN = { publicKey: USER, networkId: NETWORK.id };
+const recordFor = () => latestPendingForward(USER, NETWORK.id);
 
 // a horizon whose account table follows the batches that land. `replyTimeout`
 // lands the transaction but answers the submit with a 504 and then stays down
@@ -106,10 +119,24 @@ function horizonDouble() {
     landed,
     submitted,
     state,
+    signers: [{ type: "ed25519_public_key", key: USER, weight: 1 }] as {
+      type: string;
+      key: string;
+      weight: number;
+    }[],
     loadAccount: vi.fn(async (id: string) => {
       const seq = accounts.get(id);
       if (seq === undefined) throw notFound();
-      return Object.assign(new Account(id, seq.toString()), { balances: [] as unknown[] });
+      return Object.assign(new Account(id, seq.toString()), {
+        account_id: id,
+        balances: [] as unknown[],
+        signers: id === USER ? self.signers : [{ type: "ed25519_public_key", key: id, weight: 1 }],
+        thresholds: { low_threshold: 0, med_threshold: 0, high_threshold: 0 },
+        data_attr: {},
+      });
+    }),
+    offers: () => ({
+      forAccount: () => ({ limit: () => ({ call: async () => ({ records: [] }) }) }),
     }),
     submitTransaction: vi.fn(async (tx: Transaction) => {
       submitted.push(tx);
@@ -160,6 +187,7 @@ function horizonDouble() {
               records: [
                 {
                   base_reserve_in_stroops: 5_000_000,
+                  sequence: state.ledger,
                   closed_at: new Date(Date.now()).toISOString(),
                 },
               ],
@@ -279,10 +307,14 @@ beforeEach(() => {
     ok: true,
     mediatorPublicKey: MEDIATOR_B,
     flowToken: "TOKEN-1",
+    expiresAt: Date.now() + 15 * 60_000,
   });
   getPositions.mockResolvedValue(EMPTY_POSITIONS);
-  enumerateAllowances.mockResolvedValue([]);
-  discoverHeldTokens.mockResolvedValue({ held: [], unreadable: [] });
+  scanAllowances.mockResolvedValue({ records: [], incomplete: null });
+  confirmAllowancesOnChain.mockImplementation(async (_s, _o, records: unknown[]) =>
+    records.map((r) => ({ ...(r as object), onChainAmount: 5n })),
+  );
+  discoverHeldTokens.mockResolvedValue({ held: [], unreadable: [], incomplete: null });
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -290,10 +322,14 @@ afterEach(() => {
 
 describe("an exchange close is not complete until the forward lands", () => {
   it("fails as forward_pending, keeps the recovery record, and RETRY re-runs only the forward", async () => {
-    submitMediatorForward.mockResolvedValueOnce({ ok: false, error: "HTTP 503 from horizon" });
+    submitMediatorForward.mockResolvedValueOnce({
+      ok: false,
+      error: "HTTP 503 from horizon",
+      flowToken: "TOKEN-1",
+    });
     const actor = withPlan(mediatorPlan);
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
-    actor.send({ type: "CONFIRM", typed: EXCHANGE.slice(-4) });
+    actor.send({ type: "CONFIRM", typed: EXCHANGE.slice(-4), expected: RUN });
     await settle(actor, "failed");
 
     const failed = actor.getSnapshot().context;
@@ -301,12 +337,18 @@ describe("an exchange close is not complete until the forward lands", () => {
     expect(failed.result?.ok).toBe(false);
     expect(progressKinds(actor)).not.toContain("complete");
     expect(net.horizon.accounts.has(USER)).toBe(false);
-    expect(loadPendingForward(USER)).toMatchObject({
+    expect(recordFor()).toMatchObject({
       mediatorPublicKey: MEDIATOR_B,
       flowToken: "TOKEN-1",
     });
 
-    submitMediatorForward.mockResolvedValueOnce({ ok: true, txHash: "FWD" });
+    submitMediatorForward.mockResolvedValueOnce({
+      ok: true,
+      txHash: "FWD",
+      ledger: 60,
+      alreadyDelivered: false,
+      flowToken: "TOKEN-1",
+    });
     actor.send({ type: "RETRY", connector: signingConnector() });
     await settle(actor, "succeeded");
     expect(submitMediatorForward).toHaveBeenCalledTimes(2);
@@ -318,15 +360,19 @@ describe("an exchange close is not complete until the forward lands", () => {
     expect(net.horizon.submitted).toHaveLength(1);
     expect(startMediatorFlow).toHaveBeenCalledTimes(1);
     expect(actor.getSnapshot().context.result).toMatchObject({ ok: true, forwardTxHash: "FWD" });
-    expect(loadPendingForward(USER)).toBeNull();
+    expect(recordFor()).toBeNull();
     actor.stop();
   });
 
   it("stays failed while the forward keeps failing", async () => {
-    submitMediatorForward.mockResolvedValue({ ok: false, error: "HTTP 503 from horizon" });
+    submitMediatorForward.mockResolvedValue({
+      ok: false,
+      error: "HTTP 503 from horizon",
+      flowToken: "TOKEN-1",
+    });
     const actor = withPlan(mediatorPlan);
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
-    actor.send({ type: "CONFIRM", typed: EXCHANGE.slice(-4) });
+    actor.send({ type: "CONFIRM", typed: EXCHANGE.slice(-4), expected: RUN });
     await settle(actor, "failed");
     actor.send({ type: "RETRY", connector: signingConnector() });
     await settle(actor, "failed");
@@ -339,13 +385,19 @@ describe("an exchange close is not complete until the forward lands", () => {
 describe("a merge whose reply was lost is never re-minted around", () => {
   it("keeps the first flow and its record, confirms the merge from the chain on RETRY, then forwards", async () => {
     net.horizon.state.replyTimeout = true;
-    submitMediatorForward.mockResolvedValue({ ok: true, txHash: "FWD" });
+    submitMediatorForward.mockResolvedValue({
+      ok: true,
+      txHash: "FWD",
+      ledger: 60,
+      alreadyDelivered: false,
+      flowToken: "TOKEN-1",
+    });
     const actor = withPlan(mediatorPlan);
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
-    actor.send({ type: "CONFIRM", typed: EXCHANGE.slice(-4) });
+    actor.send({ type: "CONFIRM", typed: EXCHANGE.slice(-4), expected: RUN });
     await settle(actor, "failed");
     expect(actor.getSnapshot().context.failureKind).toBe("ambiguous");
-    expect(loadPendingForward(USER)).toMatchObject({ mediatorPublicKey: MEDIATOR_B });
+    expect(recordFor()).toMatchObject({ mediatorPublicKey: MEDIATOR_B });
 
     // horizon is back and shows the merge landed
     net.horizon.state.down = false;
@@ -365,16 +417,34 @@ describe("a merge whose reply was lost is never re-minted around", () => {
 });
 
 describe("the bundle path submits only what everyone signed", () => {
-  function bundleXdr(maxTime = Math.floor(Date.now() / 1000) + 3600): string {
+  const snapshot = {
+    signers: [{ key: USER, weight: 1 }],
+    thresholds: { low: 0, med: 0, high: 0 },
+  };
+  function signedBundle(opts: { maxTime?: number; signers?: Keypair[]; fee?: string } = {}): {
+    signedXdr: string;
+    planId: string;
+  } {
     const tx = new TransactionBuilder(new Account(USER, "100"), {
-      fee: "100",
+      fee: opts.fee ?? "100",
       networkPassphrase: PASS,
-      timebounds: { minTime: 0, maxTime },
+      timebounds: { minTime: 0, maxTime: opts.maxTime ?? Math.floor(Date.now() / 1000) + 3600 },
     })
       .addOperation(Operation.accountMerge({ destination: DEST }))
       .build();
-    return tx.toEnvelope().toXdr("base64");
+    for (const kp of opts.signers ?? [USER_KP]) tx.sign(kp);
+    return {
+      signedXdr: tx.toEnvelope().toXdr("base64"),
+      planId: Buffer.from(tx.hash()).toString("hex"),
+    };
   }
+  const submitBundle = (b = signedBundle()) => ({
+    type: "SUBMIT_BUNDLE" as const,
+    ...b,
+    typed: DEST.slice(-4),
+    expected: RUN,
+    snapshot,
+  });
   function plan(extra: PlanNode[] = []): PlanTree {
     return tree(...extra, {
       id: "final-classic-tx",
@@ -404,7 +474,7 @@ describe("the bundle path submits only what everyone signed", () => {
       } as PlanNode;
       const actor = withPlan(() => plan([held]), input({ destination: DEST, useMediator: false }));
       await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
-      actor.send({ type: "SUBMIT_BUNDLE", signedXdr: bundleXdr(), typed: DEST.slice(-4) });
+      actor.send(submitBundle());
       await settle(actor, "failed");
       expect(actor.getSnapshot().context.error).toMatch(/TransferAsIs/);
       expect(net.horizon.submitTransaction).not.toHaveBeenCalled();
@@ -416,7 +486,7 @@ describe("the bundle path submits only what everyone signed", () => {
   it("stamps only the merge step with the bundle's receipt", async () => {
     const actor = withPlan(() => plan(), input({ destination: DEST, useMediator: false }));
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
-    actor.send({ type: "SUBMIT_BUNDLE", signedXdr: bundleXdr(), typed: DEST.slice(-4) });
+    actor.send(submitBundle());
     await settle(actor, "succeeded");
     const final = actor.getSnapshot().context.tree!.allNodes.get("final-classic-tx")!;
     expect(final.status).toBe("confirmed");
@@ -436,12 +506,12 @@ describe("the bundle path submits only what everyone signed", () => {
     );
     const actor = withPlan(() => plan(), input({ destination: DEST, useMediator: false }));
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
-    actor.send({ type: "SUBMIT_BUNDLE", signedXdr: bundleXdr(), typed: DEST.slice(-4) });
+    actor.send(submitBundle());
     await settle(actor, "failed");
     expect(actor.getSnapshot().context.failureKind).toBe("bundle_stale");
     actor.send({ type: "RETRY", connector: signingConnector() });
     expect(actor.getSnapshot().matches("discovering")).toBe(true);
-    expect(actor.getSnapshot().context.signedBundleXdr).toBeNull();
+    expect(actor.getSnapshot().context.signedBundle).toBeNull();
     expect(net.horizon.submitTransaction).toHaveBeenCalledTimes(1);
     actor.stop();
   });
@@ -471,12 +541,22 @@ describe("the real preview surfaces what it could not build", () => {
 
   it("keeps a step's real hydration error and failed status", async () => {
     const spender = allowlisted("soroswap", "SoroswapRouter");
-    enumerateAllowances.mockResolvedValue([
-      { contractId: HOSTILE_TOKEN, spender, amount: 5n, expirationLedger: 5000 },
-    ]);
+    scanAllowances.mockResolvedValue({
+      records: [
+        {
+          contractId: HOSTILE_TOKEN,
+          spender,
+          amount: 5n,
+          live_until_ledger: 5000,
+          lastSeenLedger: 900,
+          expired: false,
+        },
+      ],
+      incomplete: null,
+    });
     net.rpc = {
       getLatestLedger: vi.fn(async () => ({ sequence: 1000 })),
-      prepareTransaction: vi.fn(async () => {
+      simulateTransaction: vi.fn(async () => {
         throw new Error("contract code entry is archived");
       }),
     };
@@ -495,7 +575,7 @@ describe("discovery keeps its detail and never reads a timeout as an empty accou
   it("records an unfinished position scan as an error with its detail, without console noise", async () => {
     const warn = vi.spyOn(console, "warn");
     getPositions.mockImplementation(() => new Promise(() => {}));
-    enumerateAllowances.mockRejectedValue({ code: -32001, message: "processing limit" });
+    scanAllowances.mockRejectedValue({ code: -32001, message: "processing limit" });
     const actor = createActor(
       pageFlowMachine.provide({
         actors: {
@@ -546,7 +626,7 @@ describe("a running close stops when the page goes away", () => {
       input({ destination: DEST, useMediator: false, connector }),
     );
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
-    actor.send({ type: "CONFIRM", typed: DEST.slice(-4) });
+    actor.send({ type: "CONFIRM", typed: DEST.slice(-4), expected: RUN });
     await vi.advanceTimersByTimeAsync(10);
     actor.stop();
     release();
@@ -570,19 +650,21 @@ describe("send-to-destination is offered only where the payment can land", () =>
   });
 
   it("needs an authorized line with room for the whole residue", async () => {
-    net.horizon.loadAccount.mockImplementationOnce(async (id: string) =>
-      Object.assign(new Account(id, "1"), {
-        balances: [
-          line("USDC", {}),
-          line("EURC", { is_authorized: false }),
-          line("GBPC", { limit: "10.0000000", balance: "9.5000000" }),
-          line("JPYC", {
-            limit: "10.0000000",
-            balance: "8.0000000",
-            buying_liabilities: "1.5000000",
-          }),
-        ],
-      }),
+    // only the destination's balance lines matter here
+    net.horizon.loadAccount.mockImplementationOnce(
+      async (id: string) =>
+        Object.assign(new Account(id, "1"), {
+          balances: [
+            line("USDC", {}),
+            line("EURC", { is_authorized: false }),
+            line("GBPC", { limit: "10.0000000", balance: "9.5000000" }),
+            line("JPYC", {
+              limit: "10.0000000",
+              balance: "8.0000000",
+              buying_liabilities: "1.5000000",
+            }),
+          ],
+        }) as never,
     );
     const usable = await fetchDestinationUsableKeys(DEST, NETWORK, [
       { key: `USDC:${issuer}`, amount: "5.0000000" },
@@ -599,5 +681,415 @@ describe("send-to-destination is offered only where the payment can land", () =>
       { key: `USDC:${issuer}`, amount: "1.0000000" },
     ]);
     expect(usable.size).toBe(0);
+  });
+});
+
+describe("a signed bundle is checked against the account as it is now", () => {
+  const OTHER_KP = Keypair.fromRawEd25519Seed(new Uint8Array(32).fill(31));
+  const snapshot = {
+    signers: [{ key: USER, weight: 1 }],
+    thresholds: { low: 0, med: 0, high: 0 },
+  };
+  function signedBundle(signers: Keypair[] = [USER_KP], fee = "100") {
+    const tx = new TransactionBuilder(new Account(USER, "100"), {
+      fee,
+      networkPassphrase: PASS,
+      timebounds: { minTime: 0, maxTime: Math.floor(Date.now() / 1000) + 3600 },
+    })
+      .addOperation(Operation.accountMerge({ destination: DEST }))
+      .build();
+    for (const kp of signers) tx.sign(kp);
+    return {
+      signedXdr: tx.toEnvelope().toXdr("base64"),
+      planId: Buffer.from(tx.hash()).toString("hex"),
+    };
+  }
+  const event = (b = signedBundle(), snap = snapshot) => ({
+    type: "SUBMIT_BUNDLE" as const,
+    ...b,
+    typed: DEST.slice(-4),
+    expected: RUN,
+    snapshot: snap,
+  });
+  const mergeOnly = () =>
+    tree({
+      id: "final-classic-tx",
+      kind: "FinalClassicTx",
+      dependencies: [],
+      description: "close account",
+      status: "simulated",
+      metadata: { kind: "FinalClassicTx", batches: [], destination: DEST, useMediator: false },
+    } as PlanNode);
+  const direct = () => input({ destination: DEST, useMediator: false });
+
+  it("refuses to submit while a defi position is open", async () => {
+    getPositions.mockResolvedValue({
+      ...EMPTY_POSITIONS,
+      backstop: [{ poolId: "CPOOL", shares: 5n, queuedForWithdrawal: 0n }],
+    });
+    const actor = withPlan(mergeOnly, direct());
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    actor.send(event());
+    await settle(actor, "failed");
+    expect(actor.getSnapshot().context.error).toMatch(
+      /DeFi positions the signed close does not unwind/,
+    );
+    expect(net.horizon.submitTransaction).not.toHaveBeenCalled();
+    actor.stop();
+  });
+
+  it("refuses a bundle the account moved past, naming why, instead of submitting it", async () => {
+    // another transaction from the account landed since the request was built
+    net.horizon.accounts.set(USER, 105n);
+    const actor = withPlan(mergeOnly, direct());
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    actor.send(event());
+    await settle(actor, "failed");
+    const ctx = actor.getSnapshot().context;
+    expect(ctx.failureKind).toBe("bundle_stale");
+    expect(ctx.error).toMatch(/sequence number moved/);
+    expect(net.horizon.submitTransaction).not.toHaveBeenCalled();
+    actor.stop();
+  });
+
+  it("submits only the signatures the account's current signers need", async () => {
+    // a signer was removed after it signed: its signature would fail the
+    // transaction as tx_bad_auth_extra
+    const actor = withPlan(mergeOnly, direct());
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    actor.send(event(signedBundle([OTHER_KP, USER_KP])));
+    await settle(actor, "succeeded");
+    const sent = net.horizon.submitted[0]!;
+    expect(sent.signatures).toHaveLength(1);
+    expect(USER_KP.verify(sent.hash(), sent.signatures[0]!.signature.toBytes())).toBe(true);
+    actor.stop();
+  });
+
+  it("refuses when the collected signatures no longer meet the account's threshold", async () => {
+    net.horizon.signers.push({ type: "ed25519_public_key", key: OTHER_KP.publicKey(), weight: 1 });
+    const twoOfTwo = {
+      signers: [
+        { key: USER, weight: 1 },
+        { key: OTHER_KP.publicKey(), weight: 1 },
+      ],
+      thresholds: { low: 0, med: 0, high: 0 },
+    };
+    const realLoad = net.horizon.loadAccount.getMockImplementation()!;
+    net.horizon.loadAccount.mockImplementation(async (id: string) => {
+      const acct = await realLoad(id);
+      return id === USER
+        ? Object.assign(acct, {
+            thresholds: { low_threshold: 2, med_threshold: 2, high_threshold: 2 },
+          })
+        : acct;
+    });
+    const actor = withPlan(mergeOnly, direct());
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    actor.send(
+      event(signedBundle([USER_KP]), { ...twoOfTwo, thresholds: { low: 2, med: 2, high: 2 } }),
+    );
+    await settle(actor, "failed");
+    expect(actor.getSnapshot().context.error).toMatch(/Not enough signatures/);
+    expect(net.horizon.submitTransaction).not.toHaveBeenCalled();
+    actor.stop();
+  });
+
+  it("offers a fee bump from the connected wallet when the network asks a higher fee", async () => {
+    const realSubmit = net.horizon.submitTransaction.getMockImplementation()!;
+    net.horizon.submitTransaction.mockImplementationOnce(async () => {
+      throw new TransactionFailedError("failed", {
+        status: 400,
+        statusText: "Bad Request",
+        data: { extras: { result_codes: { transaction: "tx_insufficient_fee" } } },
+      });
+    });
+    net.horizon.submitTransaction.mockImplementation(async (tx: Transaction) =>
+      realSubmit(
+        "innerTransaction" in tx
+          ? (tx as unknown as { innerTransaction: Transaction }).innerTransaction
+          : tx,
+      ),
+    );
+    const connector = signingConnector();
+    const actor = withPlan(mergeOnly, direct());
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    // the run's wallet is the one that pays the bump
+    actor.send({ type: "CANCEL" });
+    actor.stop();
+    const again = withPlan(mergeOnly, input({ destination: DEST, useMediator: false, connector }));
+    await waitFor(again, (s) => s.matches("awaiting_confirmation"));
+    again.send(event());
+    await settle(again, "succeeded");
+    expect(connector.signTransaction).toHaveBeenCalledTimes(1);
+    const bump = connector.signTransaction.mock.calls[0]![0] as unknown as { feeSource: string };
+    expect(bump.feeSource).toBe(USER);
+    again.stop();
+  });
+});
+
+describe("the exchange-forward flow is bound to its terms and its own record", () => {
+  it("mints with the network and the deposit memo, in preview and at execute", async () => {
+    submitMediatorForward.mockResolvedValue({
+      ok: true,
+      txHash: "FWD",
+      ledger: 60,
+      alreadyDelivered: false,
+      flowToken: "TOKEN-1",
+    });
+    const memo = { type: "id" as const, value: "4242" };
+    const plan = () => {
+      const t = mediatorPlan();
+      (t.allNodes.get("mediator-forward")!.metadata as { memo?: unknown }).memo = memo;
+      return t;
+    };
+    const actor = withPlan(plan, input({ memo }));
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    actor.send({ type: "CONFIRM", typed: EXCHANGE.slice(-4), expected: RUN });
+    await settle(actor, "succeeded");
+    expect(startMediatorFlow).toHaveBeenCalledWith(EXCHANGE, { network: NETWORK.id, memo });
+    actor.stop();
+  });
+
+  it("refuses to start an exchange close it can't record for recovery, before signing", async () => {
+    const setItem = vi.spyOn(window.localStorage, "setItem").mockImplementation(() => {
+      throw new DOMException("quota exceeded", "QuotaExceededError");
+    });
+    const connector = signingConnector();
+    const actor = withPlan(mediatorPlan, input({ connector }));
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    actor.send({ type: "CONFIRM", typed: EXCHANGE.slice(-4), expected: RUN });
+    await settle(actor, "failed");
+    expect(actor.getSnapshot().context.error).toMatch(/recovery record/);
+    expect(connector.signTransaction).not.toHaveBeenCalled();
+    setItem.mockRestore();
+    actor.stop();
+  });
+
+  it("removes only its own recovery record once its forward landed", async () => {
+    // a record another close left for a different temporary account
+    savePendingForward({
+      publicKey: USER,
+      mediatorPublicKey: MEDIATOR_A,
+      flowToken: "OTHER",
+      ultimateDestination: EXCHANGE,
+      networkId: NETWORK.id,
+      savedAt: Date.now() - 60_000,
+    });
+    submitMediatorForward.mockResolvedValue({
+      ok: true,
+      txHash: "FWD",
+      ledger: 60,
+      alreadyDelivered: false,
+      flowToken: "TOKEN-1",
+    });
+    const actor = withPlan(mediatorPlan);
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    actor.send({ type: "CONFIRM", typed: EXCHANGE.slice(-4), expected: RUN });
+    await settle(actor, "succeeded");
+    expect(recordFor()).toMatchObject({ mediatorPublicKey: MEDIATOR_A, flowToken: "OTHER" });
+    actor.stop();
+  });
+});
+
+describe("one close per account runs in a tab", () => {
+  it("refuses a second execute for the same account while the first is still running", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    auditAccount.mockImplementation(async () => {
+      await gate;
+      return makeAudit();
+    });
+    const plan = () =>
+      tree({
+        id: "final-classic-tx",
+        kind: "FinalClassicTx",
+        dependencies: [],
+        description: "close account",
+        status: "simulated",
+        metadata: { kind: "FinalClassicTx", batches: [], destination: DEST, useMediator: false },
+      } as PlanNode);
+    const first = withPlan(plan, input({ destination: DEST, useMediator: false }));
+    const second = withPlan(plan, input({ destination: DEST, useMediator: false }));
+    await waitFor(first, (s) => s.matches("awaiting_confirmation"));
+    await waitFor(second, (s) => s.matches("awaiting_confirmation"));
+    first.send({ type: "CONFIRM", typed: DEST.slice(-4), expected: RUN });
+    await vi.advanceTimersByTimeAsync(10);
+    second.send({ type: "CONFIRM", typed: DEST.slice(-4), expected: RUN });
+    await settle(second, "failed");
+    expect(second.getSnapshot().context.failureKind).toBe("close_running");
+    release();
+    await settle(first, "succeeded");
+    expect(net.horizon.submitted).toHaveLength(1);
+    first.stop();
+    second.stop();
+  });
+});
+
+describe("discovery reports partial scans and drops spent allowances", () => {
+  function discoverOnly() {
+    const actor = createActor(
+      pageFlowMachine.provide({
+        actors: { preview: fromPromise(() => new Promise(() => {})) as never },
+      }),
+    ).start();
+    actor.send({ type: "START", input: input({ destination: DEST, useMediator: false }) });
+    return actor;
+  }
+  const incomplete = {
+    reason: "budget" as const,
+    coveredFromLedger: 900,
+    rangeStartLedger: 1,
+    lastLedger: 1000,
+    detail: "ran out of time after 20000ms",
+  };
+
+  it("keeps what a partial held-token scan found and says how much it covered", async () => {
+    discoverHeldTokens.mockResolvedValue({
+      held: [{ contractId: HOSTILE_TOKEN, balance: 5n }],
+      unreadable: [],
+      incomplete,
+    });
+    const actor = discoverOnly();
+    await settle(actor, "previewing");
+    const ctx = actor.getSnapshot().context;
+    expect(ctx.heldTokens).toHaveLength(1);
+    expect(ctx.discoveryWarnings.join(" ")).toMatch(
+      /standalone \(custom SEP-41\) tokens checked only/,
+    );
+    expect(ctx.discoveryDiagnostics).toContain("held-token scan: ran out of time after 20000ms");
+    actor.stop();
+  });
+
+  it("keeps what a partial allowance scan found and says so", async () => {
+    const spender = allowlisted("soroswap", "SoroswapRouter");
+    scanAllowances.mockResolvedValue({
+      records: [
+        {
+          contractId: HOSTILE_TOKEN,
+          spender,
+          amount: 5n,
+          live_until_ledger: 5000,
+          lastSeenLedger: 950,
+          expired: false,
+        },
+      ],
+      incomplete,
+    });
+    const actor = discoverOnly();
+    await settle(actor, "previewing");
+    const ctx = actor.getSnapshot().context;
+    expect(ctx.allowances).toHaveLength(1);
+    expect(ctx.discoveryWarnings.join(" ")).toMatch(/token spending permissions checked only/);
+    actor.stop();
+  });
+
+  it("leaves out an allowance that reads zero on chain, so no revoke is signed for it", async () => {
+    const spender = allowlisted("soroswap", "SoroswapRouter");
+    const record = (contractId: string) => ({
+      contractId,
+      spender,
+      amount: 5n,
+      live_until_ledger: 5000,
+      lastSeenLedger: 950,
+      expired: false,
+    });
+    scanAllowances.mockResolvedValue({
+      records: [record(HOSTILE_TOKEN), record(USDC_SAC)],
+      incomplete: null,
+    });
+    confirmAllowancesOnChain.mockImplementation(async (_s, _o, records: { contractId: string }[]) =>
+      records.map((r) => ({ ...r, onChainAmount: r.contractId === HOSTILE_TOKEN ? 0n : 5n })),
+    );
+    const actor = discoverOnly();
+    await settle(actor, "previewing");
+    expect(actor.getSnapshot().context.allowances.map((a) => a.contractId)).toEqual([USDC_SAC]);
+    actor.stop();
+  });
+});
+
+describe("the real preview checks the merge before anything is signed", () => {
+  function realActors(i: PageFlowInput) {
+    const actor = createActor(pageFlowMachine).start();
+    actor.send({ type: "START", input: i });
+    return actor;
+  }
+  const frozen = {
+    asset: { kind: "credit" as const, code: "USDC", issuer: USDC_ISSUER },
+    amount: "5.0000000",
+    buyingLiabilities: "0",
+    sellingLiabilities: "0",
+    limit: "1000",
+    isAuthorized: false,
+  };
+
+  it("offers no option for a frozen balance and blocks the close with the issuer's freeze", async () => {
+    auditAccount.mockImplementation(async () =>
+      makeAudit({ subentryCount: 1, balances: [...makeAudit().balances, frozen] }),
+    );
+    const actor = realActors(input({ destination: DEST, useMediator: false }));
+    await settle(actor, "awaiting_confirmation");
+    const ctx = actor.getSnapshot().context;
+    expect(ctx.unroutableCredits).toEqual([]);
+    expect(ctx.reviewBlockers.join(" ")).toMatch(/Frozen by the issuer/);
+    actor.send({ type: "CONFIRM", typed: DEST.slice(-4), expected: RUN });
+    expect(actor.getSnapshot().matches("awaiting_confirmation")).toBe(true);
+    actor.stop();
+  });
+
+  it("never offers send-to-destination on an exchange close, and reads no destination line", async () => {
+    auditAccount.mockImplementation(async () =>
+      makeAudit({
+        subentryCount: 1,
+        balances: [...makeAudit().balances, { ...frozen, isAuthorized: true }],
+      }),
+    );
+    const actor = realActors(input());
+    await settle(actor, "awaiting_confirmation");
+    const credit = actor.getSnapshot().context.unroutableCredits[0];
+    expect(credit).toMatchObject({ code: "USDC", destinationTrusts: false });
+    expect(net.horizon.loadAccount).not.toHaveBeenCalledWith(EXCHANGE);
+    actor.stop();
+  });
+});
+
+describe("the preview leaves a step built after earlier ones pending", () => {
+  it("does not fail or skip a deferred step, and keeps a real hydration error on a failed one", async () => {
+    const deferred = {
+      id: "withdraw",
+      kind: "WithdrawBlend",
+      dependencies: ["claim"],
+      description: "withdraw collateral",
+      status: "pending",
+      deferred: { after: ["claim"], reason: "health factor below 1 until the claim lands" },
+      metadata: {
+        kind: "WithdrawBlend",
+        poolId: allowlisted("blend", "BlendPool::"),
+        asset: USDC_SAC,
+        bucket: "collateral",
+      },
+    } as PlanNode;
+    const unbuilt = {
+      id: "claim",
+      kind: "ClaimBlendEmissions",
+      dependencies: [],
+      description: "claim emissions",
+      status: "pending",
+      metadata: { kind: "ClaimBlendEmissions", poolId: ATTACKER, reserveTokenIds: [1] },
+    } as unknown as PlanNode;
+    const t = tree(unbuilt, deferred);
+    await simulatePreviewTree(t, new Map([["claim", "pool is not on the allow-list"]]), {
+      server: net.rpc as never,
+      network: NETWORK,
+      userPublicKey: USER,
+      fetchSourceAccount: async () => {
+        throw new Error("not used");
+      },
+    });
+    expect(deferred.status).toBe("pending");
+    expect(deferred.error).toBeUndefined();
+    expect(unbuilt.status).toBe("failed");
+    expect(unbuilt.error).toBe("pool is not on the allow-list");
   });
 });

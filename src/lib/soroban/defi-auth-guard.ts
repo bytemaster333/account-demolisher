@@ -18,12 +18,22 @@
 //   blend pool submit (repay)              -> asset.transfer(user, pool, amount)
 //   blend pool submit (withdraw), claim    -> nothing nested
 //   blend backstop queue_withdrawal        -> nothing nested
-//   fxdao pay_debt                         -> stablecoin.burn(user, amount)
+//   blend backstop withdraw                -> nothing nested
+//   blend backstop claim                   -> nothing nested
+//   aquarius concentrated withdraw_position, claim_all_position_fees
+//                                          -> nothing nested
 //
 // recorded on mainnet (2026-10): swap, remove_liquidity, aquarius withdraw and
-// claim, blend repay, withdraw and claim. read from source: backstop
-// queue_withdrawal (blend-contracts-v2 backstop/src/contract.rs) and fxdao
-// pay_debt (FxDAO-SC contracts/vaults/src/contract.rs, utils/payments.rs).
+// claim (full-range and concentrated pools), concentrated withdraw_position and
+// claim_all_position_fees, blend repay, withdraw and claim, backstop
+// queue_withdrawal (v2) and withdraw (v1 and v2). the backstop claim traps inside the comet pool on
+// mainnet today, so its tree is read from source instead: claim calls
+// from.require_auth() and then authorizes the blnd approve and the comet
+// deposit as the backstop itself (blend-contracts-v2 backstop/src/contract.rs,
+// emissions/claim.rs).
+//
+// the BLND trustline a pool emissions claim needs is a classic change_trust and
+// is held to exactly that one operation.
 //
 // anything else (a second auth entry, address credentials, an extra or deeper
 // node, different args) is refused, and so is anything we fail to parse.
@@ -39,7 +49,8 @@ import {
   type Transaction,
 } from "@stellar/stellar-sdk";
 
-import { FXDAO_MAINNET_CONTRACTS, FXDAO_TESTNET_CONTRACTS } from "@/lib/adapters/fxdao/contracts";
+import { findConcentratedPool } from "@/lib/adapters/aquarius/concentrated-pools";
+import { blendBackstopsForNetwork, blndTokenForNetwork } from "@/lib/adapters/blend/constants";
 import { getAllowlistForNetwork } from "@/lib/config/contracts";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
@@ -65,7 +76,7 @@ export interface DefiAuthContext {
 }
 
 // one expected nested call. contract is either pinned or checked by a predicate
-// when the protocol picks it on chain (an aquarius pool, an fxdao stablecoin).
+// when the protocol picks it on chain (an aquarius pool).
 interface ExpectedCall {
   readonly contract: string | ((id: string) => string | null);
   readonly fn: string;
@@ -77,7 +88,8 @@ interface ExpectedCall {
 // make, authorized by exactly the tree that call needs
 export function assertDefiAuthTree(node: PlanNode, tx: Transaction, ctx: DefiAuthContext): void {
   try {
-    check(node, tx, ctx);
+    if ((node.kind as string) === BLND_TRUSTLINE_KIND) checkBlndTrustline(node.kind, tx, ctx);
+    else check(node, tx, ctx);
   } catch (err) {
     if (err instanceof UnsafeDefiAuthError) throw err;
     // fail closed: a tree we cannot read is never signed
@@ -90,6 +102,33 @@ export function assertDefiAuthTree(node: PlanNode, tx: Transaction, ctx: DefiAut
 
 function refuse(kind: string, reason: string): never {
   throw new UnsafeDefiAuthError(kind, reason);
+}
+
+// the step that opens the BLND trustline before a pool emissions claim
+const BLND_TRUSTLINE_KIND = "AddBlndTrustline";
+
+function checkBlndTrustline(kind: string, tx: Transaction, ctx: DefiAuthContext): void {
+  const fail = (reason: string): never => refuse(kind, reason);
+  if (tx.source !== ctx.user) fail(`transaction source is ${tx.source}, expected ${ctx.user}`);
+  if (tx.operations.length !== 1) fail(`expected 1 operation, got ${tx.operations.length}`);
+  const op = tx.operations[0]!;
+  if (op.type !== "changeTrust") fail(`operation is ${op.type}`);
+  const change = op as Operation.ChangeTrust;
+  if (change.source !== undefined && change.source !== ctx.user) {
+    fail(`operation source is ${change.source}`);
+  }
+  const blnd = blndTokenForNetwork(ctx.network);
+  const line = change.line;
+  if (
+    !(line instanceof Asset) ||
+    line.isNative() ||
+    line.getCode() !== blnd.code ||
+    line.getIssuer() !== blnd.issuer
+  ) {
+    fail(`the trustline is not BLND:${blnd.issuer}`);
+  }
+  // a zero limit would remove the line instead of adding it
+  if (change.limit === "0.0000000") fail("the trustline limit is zero");
 }
 
 function check(node: PlanNode, tx: Transaction, ctx: DefiAuthContext): void {
@@ -212,6 +251,80 @@ function expectedFor(
   const { user, network } = ctx;
   const nativeSac = Asset.native().contractId(network.passphrase);
   const a = root.args;
+  // backstop steps added to the plan alongside the queue. their metadata is read
+  // and checked here field by field, so a step without it is refused.
+  switch (node.kind as string) {
+    case "ClaimBackstopEmissions": {
+      const md = node.metadata as unknown as { readonly poolId?: unknown };
+      if (typeof md.poolId !== "string") return "the step names no pool";
+      const backstop = pinnedBackstop(root, network, md);
+      if (typeof backstop === "string") return backstop;
+      if (root.fn !== "claim") return `calls ${root.fn}`;
+      if (a.length !== 3 || a[0] !== user) return "claim is not from the user";
+      if (!sameList(a[1], [md.poolId])) return "claim names other pools";
+      if (backstop.version === "V1") {
+        // v1: claim(from, pool_addresses, to)
+        if (a[2] !== user) return `claim pays out to ${String(a[2])}`;
+      } else if (typeof a[2] !== "bigint" || a[2] <= 0n) {
+        // v2: claim(from, pool_addresses, min_lp_tokens_out)
+        return `claim has no lp floor (${show(a[2])})`;
+      }
+      return [];
+    }
+    case "BackstopWithdraw": {
+      const md = node.metadata as unknown as {
+        readonly poolId?: unknown;
+        readonly amount?: unknown;
+      };
+      if (typeof md.poolId !== "string" || typeof md.amount !== "bigint") {
+        return "the step names no pool or amount";
+      }
+      const backstop = pinnedBackstop(root, network, md);
+      if (typeof backstop === "string") return backstop;
+      if (root.fn !== "withdraw") return `calls ${root.fn}`;
+      if (a.length !== 3 || a[0] !== user) return "withdraw is not from the user";
+      if (a[1] !== md.poolId) return `withdraw names pool ${String(a[1])}`;
+      if (a[2] !== md.amount) return `withdraw amount is ${show(a[2])}`;
+      return [];
+    }
+    // aquarius concentrated pools are called directly, never through the router
+    case "WithdrawAquariusConcentrated": {
+      const md = node.metadata as unknown as {
+        readonly poolAddress?: unknown;
+        readonly tickLower?: unknown;
+        readonly tickUpper?: unknown;
+        readonly liquidity?: unknown;
+      };
+      const pool = pinnedConcentratedPool(root, network, md.poolAddress);
+      if (typeof pool === "string") return pool;
+      if (root.fn !== "withdraw_position") return `calls ${root.fn}`;
+      // withdraw_position(owner, tick_lower, tick_upper, amount, min_amounts)
+      if (a.length !== 5 || a[0] !== user) return "withdraw_position is not for the user";
+      if (a[1] !== md.tickLower || a[2] !== md.tickUpper) {
+        return `withdraw_position names range ${String(a[1])}..${String(a[2])}`;
+      }
+      if (typeof md.liquidity !== "bigint" || a[3] !== md.liquidity) {
+        return `withdraw_position liquidity is ${show(a[3])}`;
+      }
+      const mins = a[4];
+      if (
+        !Array.isArray(mins) ||
+        mins.length !== pool.tokens.length ||
+        !mins.every((m) => typeof m === "bigint")
+      ) {
+        return "withdraw_position minimums do not match the pool's tokens";
+      }
+      return [];
+    }
+    case "ClaimAquariusConcentratedFees": {
+      const md = node.metadata as unknown as { readonly poolAddress?: unknown };
+      const pool = pinnedConcentratedPool(root, network, md.poolAddress);
+      if (typeof pool === "string") return pool;
+      if (root.fn !== "claim_all_position_fees") return `calls ${root.fn}`;
+      if (a.length !== 1 || a[0] !== user) return "claim_all_position_fees is not for the user";
+      return [];
+    }
+  }
   switch (node.kind) {
     case "ConvertSorobanToXLM": {
       const notRouter = pinnedRoot(root, network, "soroswap", "SoroswapRouter");
@@ -366,41 +479,13 @@ function expectedFor(
       return [];
     }
     case "BackstopQueue": {
+      const backstop = pinnedBackstop(root, network, node.metadata);
+      if (typeof backstop === "string") return backstop;
       if (root.fn !== "queue_withdrawal") return `calls ${root.fn}`;
       if (a.length !== 3 || a[0] !== user) return "queue_withdrawal is not from the user";
       if (a[1] !== node.metadata.poolId) return `queue_withdrawal names pool ${String(a[1])}`;
       if (a[2] !== node.metadata.shares) return `queue_withdrawal amount is ${String(a[2])}`;
       return [];
-    }
-    case "PayFxDAODebt": {
-      const registry = fxdaoRegistry(network);
-      const vaults = registry.find((c) => c.kind === "vaults")?.id;
-      if (vaults === undefined) return `fxdao has no vaults contract pinned for ${network.id}`;
-      if (root.contract !== vaults)
-        return `targets ${root.contract}, not the fxdao vaults contract`;
-      if (root.fn !== "pay_debt") return `calls ${root.fn}`;
-      if (a.length !== 4) return `pay_debt has ${a.length} args`;
-      const key = a[1] as { account?: unknown; denomination?: unknown };
-      if (key?.account !== user) return `pay_debt is for vault owner ${String(key?.account)}`;
-      if (key.denomination !== node.metadata.vaultDenomination) {
-        return `pay_debt names denomination ${String(key.denomination)}`;
-      }
-      if (a[3] !== node.metadata.debt) return `pay_debt amount is ${String(a[3])}`;
-      return [
-        {
-          // the vault burns the denomination's stablecoin, one of fxdao's pinned
-          // synthetic SACs
-          contract: (id) =>
-            id === nativeSac
-              ? "pay_debt would burn XLM"
-              : registry.some((c) => c.kind === "synthetic_sac" && c.id === id)
-                ? null
-                : `stablecoin ${id} is not one of fxdao's pinned stablecoins`,
-          fn: "burn",
-          args: exactArgs([user, node.metadata.debt]),
-          children: [],
-        },
-      ];
     }
     case "TransferAsIs":
     case "RevokeAllowance":
@@ -432,6 +517,36 @@ function pinnedRoot(
   return root.contract === entry.id ? null : `targets ${root.contract}, not the ${name}`;
 }
 
+// a backstop call must go to one of the network's pinned blend backstops, and
+// to the one the plan names when it names one
+function pinnedBackstop(
+  root: RootCall,
+  network: NetworkConfig,
+  metadata: unknown,
+): ReturnType<typeof blendBackstopsForNetwork>[number] | string {
+  const named = (metadata as { readonly backstopId?: unknown }).backstopId;
+  const backstop = blendBackstopsForNetwork(network).find((b) => b.id === root.contract);
+  if (backstop === undefined) return `targets ${root.contract}, not a pinned Blend backstop`;
+  if (named !== undefined && named !== root.contract) {
+    return `targets backstop ${root.contract}, not the pool's ${String(named)}`;
+  }
+  return backstop;
+}
+
+// the call must go to the pool the step names, and that pool must be one of the
+// network's pinned concentrated pools
+function pinnedConcentratedPool(
+  root: RootCall,
+  network: NetworkConfig,
+  named: unknown,
+): NonNullable<ReturnType<typeof findConcentratedPool>> | string {
+  if (typeof named !== "string") return "the step names no pool";
+  if (root.contract !== named) return `targets ${root.contract}, not the pool ${named}`;
+  const pool = findConcentratedPool(root.contract, network);
+  if (pool === undefined) return `${root.contract} is not a pinned Aquarius concentrated pool`;
+  return pool;
+}
+
 // an aquarius pool or share token is picked by the router on chain, so it is
 // checked by shape; a wrong address only fails the call, it can't move funds
 function poolShaped(nativeSac: string, router: string) {
@@ -441,12 +556,6 @@ function poolShaped(nativeSac: string, router: string) {
       if (id === nativeSac || id === router) return `${label} ${id} is not a pool`;
       return null;
     };
-}
-
-function fxdaoRegistry(network: NetworkConfig) {
-  if (network.id === "mainnet") return FXDAO_MAINNET_CONTRACTS;
-  if (network.id === "testnet") return FXDAO_TESTNET_CONTRACTS;
-  return [];
 }
 
 function exactArgs(want: readonly unknown[]) {

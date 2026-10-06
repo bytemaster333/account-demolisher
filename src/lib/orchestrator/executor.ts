@@ -1,7 +1,13 @@
 // walks a hydrated plan tree in topological order and signs and submits each
 // node. used by the page-flow machine's execute actor.
 
-import { BASE_FEE, NotFoundError, type Horizon, type Transaction } from "@stellar/stellar-sdk";
+import {
+  Asset,
+  BASE_FEE,
+  NotFoundError,
+  type Horizon,
+  type Transaction,
+} from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
@@ -9,20 +15,35 @@ import type { Connector } from "@/lib/wallet/connector";
 import {
   auditAccount,
   AccountNotFoundError,
-  computeMergeability,
+  assessMergeability,
+  type AccountAuditResult,
 } from "@/lib/stellar/account-audit";
 import { AllowlistViolation, assertTransactionAllowed } from "@/lib/stellar/allowlist";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
-import { batchClassicDemolition, unroutableCredits } from "@/lib/plan/classic-batcher";
+import { filterClaimableNow } from "@/lib/stellar/claimable-balances";
+import { DEFAULT_TX_VALIDITY_SECONDS, type LedgerClock } from "@/lib/stellar/ledger-clock";
+import {
+  batchClassicDemolition,
+  mediatorFundingCheck,
+  planClaimableBalances,
+  unroutableCredits,
+  type UnroutableCredit,
+} from "@/lib/plan/classic-batcher";
 import { resolveCreditPaths } from "@/lib/stellar/path-finder";
 import { submitMediatorForward } from "@/lib/mediator/forward";
+import { encodeMemoCommitment, forwardMemoToSdk } from "@/lib/mediator/forward-terms";
 import { applyRefreshedMediatorFlow, MEDIATOR_FORWARD_NODE_ID } from "@/lib/mediator/refresh";
-import { resolveContractIdForAsset } from "@/lib/plan/hydration";
+import { PriceImpactRefusedError, resolveContractIdForAsset } from "@/lib/plan/hydration";
 import { assertSafeTransferInvocation, UnsafeTransferError } from "@/lib/soroban/transfer-guard";
 import { assertSafeRevokeInvocation, UnsafeRevokeError } from "@/lib/soroban/revoke-guard";
 import { assertDefiAuthTree, UnsafeDefiAuthError } from "@/lib/soroban/defi-auth-guard";
 import {
-  isSorobanNode,
+  assertSorobanFeeWithinCap,
+  SorobanFeeCapError,
+  type SorobanFeeClass,
+} from "@/lib/soroban/fee-cap";
+import {
+  planExitPayoutTokens,
   topologicalOrder,
   type ConvertSorobanToXLMNode,
   type FinalClassicTxNode,
@@ -31,9 +52,9 @@ import {
   type PlanTree,
   type TransferAsIsNode,
 } from "@/lib/plan/tree";
-import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
+import { openPositionCount, type ProtocolPositions } from "@/lib/adapters/positions/interface";
 import type { AccountAudit } from "@/lib/types/account";
-import { pathKey, type ClassicBatch, type PathResultRef } from "@/lib/types/plan";
+import { pathKey, type ClassicBatch, type ClassicMemo, type PathResultRef } from "@/lib/types/plan";
 import { AmbiguousSubmitError, CloseFailure, rejectionCodes } from "@/lib/orchestrator/failures";
 import { journalFor, type NodeJournal } from "@/lib/orchestrator/journal";
 import { residueLineProblem, toStroops, type DestinationLine } from "@/lib/orchestrator/residue";
@@ -69,7 +90,7 @@ export interface PersistedFlow {
   readonly mediatorPublicKey: string;
   readonly flowToken: string;
   readonly ultimateDestination: string;
-  readonly memo?: { readonly type: "text" | "id" | "hash" | "return"; readonly value: string };
+  readonly memo?: ClassicMemo;
   // local clock reading taken before the request that issued flowToken. the
   // server's ttl runs from a moment after it, so issuedAt + ttl never
   // overstates how long the token lives, whatever the clock skew.
@@ -93,8 +114,9 @@ export interface MediatorFlowControl {
   forwarded(mediatorPublicKey: string): void;
   // a fresh token for the same flow, when the deployment offers it
   reissue?(flowToken: string): Promise<{ flowToken: string }>;
-  // the hash of the forward that emptied this mediator, if one landed
-  findForward?(mediatorPublicKey: string): Promise<string | null>;
+  // the forward that emptied this mediator into destination, if one landed. it
+  // throws when the mediator was emptied anywhere else.
+  findForward?(mediatorPublicKey: string, destination: string): Promise<ConfirmationReceipt | null>;
 }
 
 export interface ExecutorDeps {
@@ -120,6 +142,13 @@ export interface ExecutorDeps {
   // the account_merge that deleted this account, if one landed. a merge whose
   // reply was lost then finishes the close instead of reading as "account gone".
   readonly findAccountMerge?: (publicKey: string) => Promise<LandedMerge | null>;
+  // the SEP-41 balance of a token held by the account. the merge guard reads
+  // the tokens the plan's defi exits pay out, so exit proceeds that are not a
+  // classic balance are never merged away. required when the plan has such exits.
+  readonly readTokenBalance?: (contractId: string, holder: string) => Promise<bigint>;
+  // called right before a soroban step is signed, with the fee the signature
+  // authorizes, so the user sees it while the wallet asks
+  readonly onSigning?: (node: PlanNode, totalFeeStroops: bigint) => void;
   // aborting stops the close at the next step boundary, never mid-submit
   readonly signal?: AbortSignal;
   readonly now?: () => number;
@@ -130,26 +159,18 @@ export interface ExecutionOutput {
   readonly tree: PlanTree;
 }
 
-// reads a node's pre-built transaction; undefined for classic-only kinds
-export function pickTransaction(node: PlanNode) {
-  switch (node.kind) {
-    case "RevokeAllowance":
-    case "RepayBlend":
-    case "PayFxDAODebt":
-    case "WithdrawBlend":
-    case "WithdrawAquarius":
-    case "WithdrawSoroswapLp":
-    case "ClaimBlendEmissions":
-    case "ClaimAquariusRewards":
-    case "ConvertSorobanToXLM":
-    case "TransferAsIs":
-    case "BackstopQueue":
-      return node.metadata.transaction;
-    case "FinalClassicTx":
-    case "MediatorForward":
-      return undefined;
-  }
+// reads a node's pre-built transaction; undefined for the merge and the forward,
+// which are built at their turn. every other kind carries the transaction its
+// hydration attached in metadata.transaction.
+export function pickTransaction(node: PlanNode): Transaction | undefined {
+  if (node.kind === "FinalClassicTx" || node.kind === "MediatorForward") return undefined;
+  return (node.metadata as { readonly transaction?: Transaction }).transaction;
 }
+
+// the classic change_trust that opens the BLND line ahead of a pool emissions
+// claim. it is signed and submitted like a soroban step and held to exactly one
+// change_trust by the defi auth guard.
+const BLND_TRUSTLINE_KIND = "AddBlndTrustline";
 
 // steps whose failure leaves something behind by design instead of stopping the
 // close (a token the user asked to sweep, an allowance revoke). a skipped one
@@ -161,6 +182,9 @@ export const BEST_EFFORT_KINDS: ReadonlySet<PlanNode["kind"]> = new Set([
 ]);
 
 export const DEPENDENCY_SKIP_PREFIX = "Skipped: dependency";
+// a step the user agreed at review to leave out (a backstop emissions claim
+// that can't run); its dependents run without it
+export const FORFEIT_PREFIX = "Forfeited:";
 
 // rides out horizon blips (5xx, 429, no response) on the idempotent reads that
 // prepare a classic phase. a 404 or another 4xx is a real answer and is
@@ -195,7 +219,7 @@ function isNotFound(err: unknown): boolean {
 const DEFAULT_FEE_BASE = Number.parseInt(BASE_FEE, 10); // 100 stroops/op network minimum
 // per-op ceiling for surge bidding (0.1 XLM/op); the spendable-balance cap and
 // the u32 total-fee guard in buildClassicTransaction bound it further
-const MAX_PER_OP_FEE = 1_000_000;
+export const MAX_PER_OP_FEE = 1_000_000;
 const MAX_MERGE_ATTEMPTS = 3;
 // one batch per phase, re-audited in between, so a close needs
 // ceil(totalOps / MAX_OPS_PER_TX) + 1 phases. the ~1000 subentry ceiling keeps
@@ -203,12 +227,22 @@ const MAX_MERGE_ATTEMPTS = 3;
 const MAX_CLOSE_PHASES = 30;
 const MAX_SOROBAN_ATTEMPTS = 3;
 
-// fee ceiling for the guarded token transfer and allowance revoke. measured on
-// mainnet 2026-10-02: a SAC transfer simulates at 24,201 stroops of resources, a
-// custom-token transfer that creates a balance entry at 352,944, an approve(0)
-// at 24,145, plus the 100,000 inclusion fee. 0.2 XLM leaves room for a costlier
-// honest token and stops a hostile one from burning the user's XLM on resources.
-const BEST_EFFORT_FEE_CEILING_STROOPS = 2_000_000n;
+// what a soroban step may cost before it is signed (soroban/fee-cap.ts has the
+// measurements). a step that runs a token nobody vetted gets a class that also
+// bounds the writes it declares: the airdrop-reachable transfer and revoke, the
+// held-token swap, and a soroswap lp exit, whose pair can hold any token.
+function feeClassOf(node: PlanNode): SorobanFeeClass {
+  switch (node.kind) {
+    case "RevokeAllowance":
+    case "TransferAsIs":
+      return "untrusted-token";
+    case "ConvertSorobanToXLM":
+    case "WithdrawSoroswapLp":
+      return "untrusted-convert";
+    default:
+      return "defi-exit";
+  }
+}
 
 // the exchange-forward token must outlive the merge (a classic tx valid for 300s
 // from build) plus the forward that follows it (up to about 3 minutes with its
@@ -294,19 +328,30 @@ function sorobanRecoverableKind(err: unknown): "resequence" | "footprint" | "ref
 // starting per-op bid from what recent ledgers actually charged (horizon's
 // fee_charged is per operation). max_fee is what others offered, which sits at
 // the cap on mainnet and would price ordinary accounts out of their own close.
-// a failed or malformed fee_stats read starts at the network minimum; the fee
-// retry escalates from there.
-async function surgeFeeBase(horizon: HorizonLike): Promise<number> {
+// soroban resource fees are counted in fee_charged too, so its p90 can sit far
+// above any classic surge while ledgers are mostly empty; below half capacity
+// there is no surge to outbid and the most common charge is the bid, as the
+// mediator forward does. a failed or malformed fee_stats read starts at the
+// network minimum; the fee retry escalates from there.
+const SURGE_CAPACITY_USAGE = 0.5;
+
+export async function surgeFeeBase(horizon: HorizonLike): Promise<number> {
   if (typeof horizon.feeStats !== "function") return DEFAULT_FEE_BASE;
-  let p90: number;
+  let bid: number;
   try {
     const stats = await horizon.feeStats();
-    p90 = Number.parseInt(stats.fee_charged?.p90 ?? "", 10);
+    const usage = Number.parseFloat(stats.ledger_capacity_usage ?? "");
+    // an unreadable usage keeps the higher p90 bid
+    const pick =
+      Number.isFinite(usage) && usage < SURGE_CAPACITY_USAGE
+        ? stats.fee_charged?.mode
+        : stats.fee_charged?.p90;
+    bid = Number.parseInt(pick ?? "", 10);
   } catch {
     return DEFAULT_FEE_BASE;
   }
-  if (!Number.isFinite(p90) || p90 <= 0) return DEFAULT_FEE_BASE;
-  return Math.min(Math.max(DEFAULT_FEE_BASE, p90), MAX_PER_OP_FEE);
+  if (!Number.isFinite(bid) || bid <= 0) return DEFAULT_FEE_BASE;
+  return Math.min(Math.max(DEFAULT_FEE_BASE, bid), MAX_PER_OP_FEE);
 }
 
 async function readBaseReserve(horizon: HorizonLike): Promise<bigint | null> {
@@ -506,7 +551,6 @@ export async function executePlanTreeOnChain(
                 from: run.publicKey,
                 spender: md.spender,
               }),
-            feeCeiling: BEST_EFFORT_FEE_CEILING_STROOPS,
           });
           confirm(node, receipt, run);
         } catch (err) {
@@ -528,11 +572,11 @@ export async function executePlanTreeOnChain(
         continue;
       }
       default: {
-        if (!isSorobanNode(node)) {
-          throw new Error(`executing: node "${node.id}" (${node.kind}) is not a Soroban node`);
-        }
-        // a required defi exit: allow-listed contract and exactly the auth tree
-        // its protocol call needs. a failure stops the close before the merge.
+        // a required defi exit (or the BLND trustline ahead of a claim): an
+        // allow-listed contract and exactly the auth tree its call needs. a kind
+        // the auth guard has no expected tree for is refused, so a step added to
+        // the plan without one is never signed. a failure stops the close before
+        // the merge.
         let receipt: ConfirmationReceipt;
         try {
           receipt = await signAndSubmitSorobanNode(node, run, { allowlist: true });
@@ -554,7 +598,9 @@ function dependencySatisfied(node: PlanNode, dep: PlanNode | undefined): boolean
   if (dep === undefined) return false;
   if (dep.status === "confirmed") return true;
   if (node.kind === "MediatorForward") return false;
-  return dep.status === "skipped" && BEST_EFFORT_KINDS.has(dep.kind) && !isDependencySkip(dep);
+  if (dep.status !== "skipped") return false;
+  if (dep.error?.startsWith(FORFEIT_PREFIX) === true) return true;
+  return BEST_EFFORT_KINDS.has(dep.kind) && !isDependencySkip(dep);
 }
 
 function isDependencySkip(node: PlanNode): boolean {
@@ -576,7 +622,6 @@ async function runBestEffortTransfer(node: TransferAsIsNode, run: Run): Promise<
     const receipt = await signAndSubmitSorobanNode(node, run, {
       allowlist: false,
       guard: transferGuard(node, run),
-      feeCeiling: BEST_EFFORT_FEE_CEILING_STROOPS,
     });
     confirm(node, receipt, run);
   } catch (err) {
@@ -620,6 +665,16 @@ async function runConvert(node: ConvertSorobanToXLMNode, run: Run): Promise<void
     convertError = err;
   }
   const label = tokenLabel(node.metadata.asset);
+  // a price the user did not agree to is a question for them, not a reason to
+  // send the token somewhere else on their behalf
+  if (convertError instanceof PriceImpactRefusedError) {
+    node.status = "failed";
+    node.error =
+      `The conversion of token ${label} to XLM was refused before signing: ${convertError.message}. ` +
+      "Rebuild the plan to accept the new price, send the token as-is, or leave it out.";
+    run.notify(node);
+    throw new CloseFailure("conversion_refused", node.error, { cause: convertError });
+  }
   const final = [...run.tree.allNodes.values()].find(
     (n): n is FinalClassicTxNode => n.kind === "FinalClassicTx",
   );
@@ -644,7 +699,6 @@ async function runConvert(node: ConvertSorobanToXLMNode, run: Run): Promise<void
       const receipt = await signAndSubmitSorobanNode(transfer, run, {
         allowlist: false,
         guard: transferGuard(transfer, run),
-        feeCeiling: BEST_EFFORT_FEE_CEILING_STROOPS,
       });
       confirm(node, receipt, run);
       run.note(
@@ -701,7 +755,6 @@ async function signAndSubmitSorobanNode(
   opts: {
     readonly allowlist: boolean;
     readonly guard?: (tx: Transaction) => void;
-    readonly feeCeiling?: bigint;
   },
 ): Promise<ConfirmationReceipt> {
   const { deps } = run;
@@ -724,24 +777,21 @@ async function signAndSubmitSorobanNode(
     }
     // the checks run before signing and are not retried: an unsafe tree does not
     // become safe on a rebuild
+    let totalFee: bigint;
     try {
       opts.guard?.(tx);
       if (opts.allowlist) {
         assertTransactionAllowed(tx, deps.network);
         assertDefiAuthTree(node, tx, { user: run.publicKey, network: deps.network });
       }
-      if (opts.feeCeiling !== undefined && BigInt(tx.fee) > opts.feeCeiling) {
-        throw new Error(
-          `its fee is ${tx.fee} stroops, above the ${opts.feeCeiling.toString()} stroop limit for this step`,
-        );
-      }
+      totalFee = stepFee(node, tx);
     } catch (err) {
       const unsafe =
         err instanceof UnsafeDefiAuthError ||
         err instanceof UnsafeTransferError ||
         err instanceof UnsafeRevokeError ||
         err instanceof AllowlistViolation ||
-        (err instanceof Error && err.message.startsWith("its fee is"));
+        err instanceof SorobanFeeCapError;
       if (!unsafe) throw err;
       throw new CloseFailure(
         "unsafe",
@@ -751,6 +801,8 @@ async function signAndSubmitSorobanNode(
         },
       );
     }
+    throwIfInterrupted(deps.signal);
+    deps.onSigning?.(node, totalFee);
     const signed = await signWith(deps, tx, `"${node.description}"`);
     node.status = "signed";
     run.notify(node);
@@ -768,6 +820,25 @@ async function signAndSubmitSorobanNode(
     }
   }
   throw lastErr;
+}
+
+// the fee the step's signature authorizes, refused (SorobanFeeCapError) when it
+// is above what its class of step legitimately costs. the classic trustline step
+// carries no soroban resources; one change_trust may bid at most the classic
+// per-op ceiling.
+function stepFee(node: PlanNode, tx: Transaction): bigint {
+  if ((node.kind as string) === BLND_TRUSTLINE_KIND) {
+    const fee = BigInt(tx.fee);
+    if (fee > BigInt(MAX_PER_OP_FEE)) {
+      throw new SorobanFeeCapError(
+        "defi-exit",
+        { totalFee: fee, inclusionFee: fee, resourceFee: 0n, writeBytes: 0, readWriteEntries: 0 },
+        `a one-operation trustline bid over ${MAX_PER_OP_FEE} stroops`,
+      );
+    }
+    return fee;
+  }
+  return assertSorobanFeeWithinCap(tx, feeClassOf(node)).totalFee;
 }
 
 // resolves a submission left with an unknown outcome. returns its receipt when it
@@ -874,6 +945,16 @@ function mediatorSession(run: Run) {
               "different destination.",
           );
         }
+        // the flow token binds the deposit memo, so a forward under the old token
+        // can only carry the old memo; never adopt it for a different one
+        if (!sameMemo(prev.memo, forward.metadata.memo)) {
+          throw new CloseFailure(
+            "not_mergeable",
+            `An earlier exchange close left funds in temporary account ${short(prev.mediatorPublicKey)} ` +
+              "with a different deposit memo. Resume that forward from the pending-forward notice " +
+              "first; it delivers with the memo it was started with.",
+          );
+        }
         applyRefreshedMediatorFlow(run.tree, prev);
         issued.flowIssuedAt = prev.issuedAt;
         funded = true;
@@ -920,6 +1001,10 @@ function mediatorSession(run: Run) {
   };
 }
 
+function sameMemo(a: ClassicMemo | undefined, b: ClassicMemo | undefined): boolean {
+  return encodeMemoCommitment(forwardMemoToSdk(a)) === encodeMemoCommitment(forwardMemoToSdk(b));
+}
+
 function fundsMediator(batch: ClassicBatch): boolean {
   return batch.operations.some((op) => op.kind === "create_account_mediator");
 }
@@ -952,7 +1037,7 @@ async function runFinalClassic(node: FinalClassicTxNode, run: Run): Promise<Conf
   ): Promise<ConfirmationReceipt> => {
     for (let phase = 0; phase < MAX_CLOSE_PHASES; phase++) {
       throwIfInterrupted(deps.signal);
-      let freshAudit: AccountAudit;
+      let freshAudit: AccountAuditResult;
       try {
         freshAudit = await withHorizonRetry(() => auditAccount(publicKey, deps.network));
       } catch (err) {
@@ -961,32 +1046,20 @@ async function runFinalClassic(node: FinalClassicTxNode, run: Run): Promise<Conf
       }
       const freshPaths = await withHorizonRetry(() => resolveCreditPaths(freshAudit, deps.network));
 
-      // execute-time re-check: preview passed, but the world may have moved
-      const merge = computeMergeability(freshAudit.flags, freshAudit.sponsorship);
-      if (!merge.mergeable) {
-        throw new Error(
-          `account_merge blocked: ${merge.reason}${merge.detail ? `: ${merge.detail}` : ""}`,
-        );
-      }
-
       // the classic audit can't see soroban positions; rediscover them and
       // refuse while any is open or unreadable
       if (deps.reprobeSorobanPositions) {
         const remaining = await deps.reprobeSorobanPositions(publicKey, deps.network);
-        const open =
-          remaining.blend.length +
-          remaining.backstop.length +
-          remaining.aquarius.length +
-          remaining.soroswap.length +
-          remaining.fxdao.length;
+        const open = openPositionCount(remaining);
         if (open > 0) {
           // a queued backstop deposit still blocks: the account must survive the
           // queue to receive the withdrawal
           throw new Error(
             `account_merge blocked: ${open} Soroban DeFi position(s) still open ` +
               `(blend=${remaining.blend.length}, backstop=${remaining.backstop.length}, ` +
-              `aquarius=${remaining.aquarius.length}, soroswap=${remaining.soroswap.length}, ` +
-              `fxdao=${remaining.fxdao.length}). Close them before merging, or the funds ` +
+              `aquarius=${remaining.aquarius.length}, ` +
+              `aquarius concentrated=${remaining.aquariusConcentrated.length}, ` +
+              `soroswap=${remaining.soroswap.length}). Close them before merging, or the funds ` +
               `will be stranded on the deleted account.`,
           );
         }
@@ -1003,64 +1076,117 @@ async function runFinalClassic(node: FinalClassicTxNode, run: Run): Promise<Conf
         }
       }
 
+      const md = node.metadata;
       const stuck = unroutableCredits(
         freshAudit,
         freshPaths,
-        node.metadata.returnToIssuerAssetKeys,
-        node.metadata.sendToDestinationAssetKeys,
+        md.returnToIssuerAssetKeys,
+        md.sendToDestinationAssetKeys,
+        {
+          ...(md.claimableBalanceIds !== undefined
+            ? { claimableBalanceIds: md.claimableBalanceIds }
+            : {}),
+          ...(md.acceptedPriceImpactAssetKeys
+            ? { acceptedPriceImpactAssetKeys: md.acceptedPriceImpactAssetKeys }
+            : {}),
+          ...(md.reviewedReferenceQuotes
+            ? { reviewedReferenceQuotes: md.reviewedReferenceQuotes }
+            : {}),
+        },
       );
-      if (stuck.length > 0) {
-        throw new Error(
-          `account_merge blocked: ${stuck.length} credit balance(s) have no XLM path and no ` +
-            `return-to-issuer consent (${stuck.map((c) => c.code).join(", ")})`,
-        );
-      }
+      if (stuck.length > 0) throw creditsBlocked(stuck);
       await assertResidueDeliverable(freshAudit, freshPaths, node, deps.horizon);
+
+      // the network clock this batch's time bounds and claims are judged by, read
+      // after the slow path and position reads above. a claim that would not stay
+      // claimable for the whole signing window is left out of the batch.
+      const clock = await readLedgerClock(deps.horizon);
+      const auditNow = clock === null ? freshAudit : withClaimWindow(freshAudit, publicKey, clock);
 
       const mediatorFunded = mediator ? await mediator.probe() : false;
       const rebatch = () => {
         const mediatorPublicKey = mediator?.mediatorPublicKey();
         return batchClassicDemolition(
-          freshAudit,
+          auditNow,
           {
-            destination: node.metadata.destination,
-            useMediator: node.metadata.useMediator,
+            destination: md.destination,
+            useMediator: md.useMediator,
             ...(mediatorFunded ? { mediatorAlreadyFunded: true } : {}),
-            ...(node.metadata.claimableBalanceIds
-              ? { claimableBalanceIds: node.metadata.claimableBalanceIds }
+            ...(md.claimableBalanceIds !== undefined
+              ? { claimableBalanceIds: md.claimableBalanceIds }
               : {}),
-            ...(node.metadata.returnToIssuerAssetKeys
-              ? { returnToIssuerAssetKeys: node.metadata.returnToIssuerAssetKeys }
+            ...(md.returnToIssuerAssetKeys
+              ? { returnToIssuerAssetKeys: md.returnToIssuerAssetKeys }
               : {}),
-            ...(node.metadata.sendToDestinationAssetKeys
-              ? { sendToDestinationAssetKeys: node.metadata.sendToDestinationAssetKeys }
+            ...(md.sendToDestinationAssetKeys
+              ? { sendToDestinationAssetKeys: md.sendToDestinationAssetKeys }
               : {}),
-            ...(node.metadata.userFallbackAddress
-              ? { userFallbackAddress: node.metadata.userFallbackAddress }
+            ...(md.acceptedPriceImpactAssetKeys
+              ? { acceptedPriceImpactAssetKeys: md.acceptedPriceImpactAssetKeys }
+              : {}),
+            ...(md.reviewedReferenceQuotes
+              ? { reviewedReferenceQuotes: md.reviewedReferenceQuotes }
               : {}),
             ...(mediatorPublicKey ? { mediatorPublicKey } : {}),
             // the batcher puts the deposit memo only on a direct final merge; a
             // mediator close carries it on the forward instead
-            ...(node.metadata.memo ? { memo: node.metadata.memo } : {}),
+            ...(md.memo ? { memo: md.memo } : {}),
           },
           freshPaths,
         );
       };
       let freshBatches = rebatch();
+      if (freshBatches.length === 0) {
+        throw new Error(`executing: node "${node.id}" produced no fresh batches`);
+      }
+      const isFinal = freshBatches.length === 1;
+
+      // execute-time re-check against what this close really claims and how many
+      // transactions it still sources before the merge: preview passed, but the
+      // world may have moved. these run before a flow is minted, so a close that
+      // can't merge leaves no recovery record behind.
+      const merge = assessMergeability(auditNow, {
+        ledger: clock ?? freshAudit.ledger,
+        claimedBalanceIds: planClaimableBalances(auditNow, md.claimableBalanceIds).claimed.map(
+          (c) => c.id,
+        ),
+        transactionsBeforeMerge: freshBatches.length,
+      });
+      if (!merge.mergeable) {
+        throw new CloseFailure(
+          "not_mergeable",
+          `account_merge blocked: ${merge.reason}: ${merge.detail}`,
+        );
+      }
+
+      // the funding op fails op_underfunded when the account can't spare the
+      // mediator's starting balance; refuse before signing instead
+      if (fundsMediator(freshBatches[0]!)) {
+        const funding = mediatorFundingCheck(auditNow, [freshBatches[0]!], feeBase);
+        if (funding !== null && !funding.sufficient) {
+          throw new CloseFailure(
+            "not_mergeable",
+            "account_merge blocked: not enough XLM to fund the exchange forward. The temporary " +
+              `account needs ${formatXlm(funding.requiredStroops)} XLM and this account can spare ` +
+              `about ${formatXlm(funding.availableStroops < 0n ? 0n : funding.availableStroops)} XLM ` +
+              "at that point. Add XLM and retry.",
+          );
+        }
+      }
+
+      // tokens the defi exits paid out that are not classic balances are swept
+      // before the merge; one still held here would be deleted with the account
+      if (isFinal) await assertExitPayoutsSwept(run, auditNow);
+
       if (
         mediator !== null &&
         !mediatorFunded &&
-        freshBatches[0] !== undefined &&
-        fundsMediator(freshBatches[0]) &&
+        fundsMediator(freshBatches[0]!) &&
         (await mediator.prepareFunding())
       ) {
         freshBatches = rebatch();
       }
-      if (freshBatches.length === 0) {
-        throw new Error(`executing: node "${node.id}" produced no fresh batches`);
-      }
       const batch = freshBatches[0]!;
-      const isFinal = freshBatches.length === 1;
 
       // conversions in one batch are quoted one by one against the same book; if
       // they share a market, the later ones miss their floor. a rebuild that
@@ -1085,7 +1211,14 @@ async function runFinalClassic(node: FinalClassicTxNode, run: Run): Promise<Conf
         throw err;
       }
       const fee = capFeeToBalance(feeBase, batch.operations.length, freshAudit, baseReserve);
-      const built = buildClassicTransaction(batch, sourceAccount, deps.network, fee).transaction;
+      const built = buildClassicTransaction(
+        batch,
+        sourceAccount,
+        deps.network,
+        fee,
+        DEFAULT_TX_VALIDITY_SECONDS,
+        clock === null ? undefined : clock.closedAt,
+      ).transaction;
       if ("innerTransaction" in built) {
         throw new Error("buildClassicTransaction returned a fee-bump transaction unexpectedly");
       }
@@ -1190,6 +1323,112 @@ function quoteSignature(
   return parts.length === 0 ? null : parts.sort().join("|");
 }
 
+// the latest closed ledger from the executor's horizon, or null when it serves
+// no ledgers (test doubles). production passes a Horizon.Server, so the clock is
+// always read there.
+async function readLedgerClock(horizon: HorizonLike): Promise<LedgerClock | null> {
+  const ledgers = horizon.ledgers;
+  if (typeof ledgers !== "function") return null;
+  const page = await withHorizonRetry(() => ledgers.call(horizon).order("desc").limit(1).call());
+  const record = page.records[0];
+  const ms = Date.parse(String(record?.closed_at));
+  const sequence = record?.sequence;
+  if (record === undefined || !Number.isFinite(ms) || !Number.isSafeInteger(sequence)) {
+    throw new Error("Horizon's latest ledger is unreadable, so the merge can't be timed safely");
+  }
+  return { sequence: sequence as number, closedAt: Math.floor(ms / 1000) };
+}
+
+// the audit with every claimable balance that would not stay claimable for the
+// whole signing window marked not claimable, so the batch leaves it out
+function withClaimWindow(
+  audit: AccountAuditResult,
+  publicKey: string,
+  clock: LedgerClock,
+): AccountAuditResult {
+  const open = new Set(
+    filterClaimableNow(
+      audit.claimableBalances,
+      publicKey,
+      new Date(clock.closedAt * 1000),
+      DEFAULT_TX_VALIDITY_SECONDS,
+    ).map((cb) => cb.id),
+  );
+  return {
+    ...audit,
+    claimableBalances: audit.claimableBalances.map((cb) =>
+      open.has(cb.id) ? cb : { ...cb, claimableNow: false },
+    ),
+  };
+}
+
+// a conversion the batcher refuses at execute time: the market moved past what
+// the user reviewed, or over the price-impact cap. the close stops before
+// signing and the rebuilt plan asks per token.
+function creditsBlocked(stuck: readonly UnroutableCredit[]): CloseFailure {
+  const reasons = stuck.map((c) => `${c.code}: ${blockReason(c)}`).join("; ");
+  const priced = stuck.some((c) => c.reason !== "no_path");
+  return new CloseFailure(
+    priced ? "conversion_refused" : "not_mergeable",
+    `account_merge blocked: ${stuck.length} credit balance(s) can't be disposed of as reviewed ` +
+      `(${reasons}). Nothing was signed. Rebuild the plan to choose for each one: sell at the ` +
+      "new price, send it to your destination as-is, or return it to its issuer.",
+  );
+}
+
+function blockReason(c: UnroutableCredit): string {
+  switch (c.reason) {
+    case "no_path":
+      return "no market path to XLM";
+    case "unpriced":
+      return "the price could not be checked against a reference quote";
+    case "price_impact":
+      return `selling it all would move the price by ${((c.priceImpactBps ?? 0) / 100).toFixed(2)}%`;
+    case "requote_worse":
+      return "the market price fell below the one you reviewed";
+  }
+}
+
+async function assertExitPayoutsSwept(run: Run, audit: AccountAudit): Promise<void> {
+  const passphrase = run.deps.network.passphrase;
+  const classic = new Set([Asset.native().contractId(passphrase)]);
+  for (const b of audit.balances) {
+    if (b.asset.kind === "credit") {
+      classic.add(new Asset(b.asset.code, b.asset.issuer).contractId(passphrase));
+    }
+  }
+  const tokens = planExitPayoutTokens(run.tree).filter((id) => !classic.has(id));
+  if (tokens.length === 0) return;
+  const read = run.deps.readTokenBalance;
+  if (read === undefined) {
+    throw new CloseFailure(
+      "not_mergeable",
+      "account_merge blocked: this close can't read the tokens its DeFi exits paid out, so it " +
+        "can't confirm none is left on the account.",
+    );
+  }
+  for (const id of tokens) {
+    let held: bigint;
+    try {
+      held = await read(id, run.publicKey);
+    } catch (err) {
+      throw new CloseFailure(
+        "network",
+        `account_merge blocked: could not read the balance of token ${short(id)} paid out by ` +
+          `your DeFi exits (${errorMessage(err)}). Retry once the network is responsive.`,
+        { cause: err },
+      );
+    }
+    if (held > 0n) {
+      throw new CloseFailure(
+        "not_mergeable",
+        `account_merge blocked: token ${short(id)} paid out by your DeFi exits is still on the ` +
+          "account. Merging now would delete it with the account.",
+      );
+    }
+  }
+}
+
 // a residue the user chose to send to the destination must still be receivable
 // there: the line can be removed, deauthorized or filled after the preview
 async function assertResidueDeliverable(
@@ -1236,8 +1475,10 @@ async function runForward(node: MediatorForwardNode, run: Run): Promise<void> {
   // after the merge into it landed means a forward already ran (its reply may
   // have been lost); find it instead of failing on a missing account
   if (!(await accountExists(deps.horizon, md.mediatorPublicKey))) {
-    const hash = control?.findForward ? await control.findForward(md.mediatorPublicKey) : null;
-    if (hash === null) {
+    const delivered = control?.findForward
+      ? await control.findForward(md.mediatorPublicKey, md.ultimateDestination)
+      : null;
+    if (delivered === null) {
       node.status = "failed";
       node.error =
         `The temporary account ${short(md.mediatorPublicKey)} no longer exists and no forward ` +
@@ -1245,7 +1486,7 @@ async function runForward(node: MediatorForwardNode, run: Run): Promise<void> {
       run.notify(node);
       throw new CloseFailure("unknown", node.error);
     }
-    confirm(node, { txHash: hash, ledger: 0 }, run);
+    confirm(node, delivered, run);
     control?.forwarded(md.mediatorPublicKey);
     return;
   }
@@ -1277,14 +1518,35 @@ async function runForward(node: MediatorForwardNode, run: Run): Promise<void> {
 
   node.status = "signed";
   run.notify(node);
+  // before any renewal the forward may make, so a renewed token's age is never
+  // understated
+  const startedAt = now();
   const result = await submitMediatorForward({
     mediatorPublicKey: md.mediatorPublicKey,
     flowToken: node.metadata.flowToken,
     destination: md.ultimateDestination,
     network: deps.network,
+    // only a merge from this account counts as the one the forward waits for
+    closedAccount: run.publicKey,
     // the full memo reaches the exchange on this hop
     ...(md.memo ? { memo: md.memo } : {}),
   });
+  if (result.flowToken !== md.flowToken) {
+    // the forward renewed an expired token; keep the new one for a retry
+    applyRefreshedMediatorFlow(run.tree, {
+      mediatorPublicKey: md.mediatorPublicKey,
+      flowToken: result.flowToken,
+    });
+    if (!result.ok) {
+      control?.persist({
+        mediatorPublicKey: md.mediatorPublicKey,
+        flowToken: result.flowToken,
+        ultimateDestination: md.ultimateDestination,
+        ...(md.memo ? { memo: md.memo } : {}),
+        issuedAt: startedAt,
+      });
+    }
+  }
   if (!result.ok) {
     node.status = "failed";
     node.error = result.error;
@@ -1296,6 +1558,6 @@ async function runForward(node: MediatorForwardNode, run: Run): Promise<void> {
         `${result.error}. Retry resumes the forward.`,
     );
   }
-  confirm(node, { txHash: result.txHash, ledger: 0 }, run);
+  confirm(node, { txHash: result.txHash, ledger: result.ledger }, run);
   control?.forwarded(md.mediatorPublicKey);
 }

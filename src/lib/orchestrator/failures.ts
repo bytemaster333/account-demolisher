@@ -2,6 +2,8 @@
 // re-executes the same tree (confirmed steps are skipped, failed ones re-run),
 // any other kind rebuilds the plan from fresh discovery.
 
+import { NetworkError, NotFoundError } from "@stellar/stellar-sdk";
+
 import { errorMessage } from "@/lib/errors";
 
 export type FailureKind =
@@ -31,6 +33,12 @@ export type FailureKind =
   | "bundle_stale"
   // the exchange-forward authorization ran too low to sign the merge safely
   | "mediator_expired"
+  // a conversion the user reviewed would now sell at a worse price, or over the
+  // price-impact cap; the plan is rebuilt so they can decide per token
+  | "conversion_refused"
+  // another run of the close for this account is still going in this tab; a
+  // retry after it ends re-runs only what did not land
+  | "close_running"
   | "unknown";
 
 export class CloseFailure extends Error {
@@ -104,7 +112,20 @@ export function classifyFailure(err: unknown): FailureKind {
   if (err instanceof CloseFailure) return err.kind;
   const codes = rejectionCodes(err);
   if (codes) return kindFromCodes(codes);
+  if (isTransientHorizonError(err)) return "network";
   return classifyMessage(errorMessage(err));
+}
+
+// the sdk rejects a failed horizon read with NetworkError, whose message is only
+// the status text ("Too Many Requests", or "" over http/2). the status sits on
+// the response: horizon's problem json carries it, and a submit error wraps the
+// http response itself. a rate limit, a 5xx, or an error page with no readable
+// status (a proxy answering for horizon) is transient.
+function isTransientHorizonError(err: unknown): boolean {
+  if (!(err instanceof NetworkError) || err instanceof NotFoundError) return false;
+  const status = (err.response as { status?: unknown } | undefined)?.status;
+  if (typeof status !== "number") return true;
+  return status === 429 || status >= 500;
 }
 
 function kindFromCodes(codes: ResultCodes): FailureKind {
@@ -174,6 +195,7 @@ export function isRetryableFailure(kind: FailureKind): boolean {
     case "ambiguous":
     case "forward_pending":
     case "interrupted":
+    case "close_running":
       return true;
     case "not_mergeable":
     case "position_open":
@@ -181,6 +203,7 @@ export function isRetryableFailure(kind: FailureKind): boolean {
     case "unsafe":
     case "bundle_stale":
     case "mediator_expired":
+    case "conversion_refused":
     // an unclassified fault says nothing about the tree, so rebuild it
     case "unknown":
       return false;
