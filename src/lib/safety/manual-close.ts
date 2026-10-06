@@ -13,9 +13,8 @@
 
 export const SUPPORTED_DEFI_PROTOCOLS = ["Blend", "Aquarius", "Soroswap"] as const;
 
-// Returns a "manual close required" notice when the account holds standalone
-// tokens (readable or unreadable) that could be positions in an unsupported
-// protocol, or null when there are none.
+// a "manual close required" notice when the account holds tokens (readable or
+// not) that could be positions in an unsupported protocol, else null
 export function manualCloseRequiredNotice(counts: {
   readonly heldTokenCount: number;
   readonly unreadableTokenCount: number;

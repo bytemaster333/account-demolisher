@@ -66,14 +66,13 @@ function collectOperations(tx: Transaction | FeeBumpTransaction): readonly Opera
   return (tx as Transaction).operations;
 }
 
-// Walk an invokeHostFunction op's Soroban authorization entries and flag any that
-// AUTHORIZE contract creation or wasm upload anywhere in their invocation tree. A
-// legitimate DeFi auth tree only authorizes contract-function calls (the protocol
-// entry point plus token transfers); an entry authorizing create/upload is a
-// smuggled privilege the op-level check alone would miss. Sub-invocations to
-// non-allow-listed token contracts are intentionally NOT flagged here (they are a
-// normal part of a swap/withdraw and hard-gating them would break real closes; the
-// broader per-contract auth-scope walk is left for the external audit).
+// flags a soroban authorization entry that authorizes contract creation or wasm
+// upload anywhere in its invocation tree. a legitimate defi auth tree only
+// authorizes contract calls (the entry point plus token transfers), so such an
+// entry is a smuggled privilege the op-level check would miss. sub-invocations of
+// tokens that are not allow-listed are not flagged here: they are a normal part
+// of a swap or withdraw, and the per-node auth-tree validator
+// (src/lib/soroban/defi-auth-guard.ts) checks each node kind's calls.
 function inspectAuthEntries(ihf: Operation.InvokeHostFunction): AllowlistViolationDetail | null {
   const auth = ihf.auth;
   if (!auth || auth.length === 0) return null;
