@@ -1,14 +1,23 @@
 import { describe, it, expect, vi } from "vitest";
 import {
+  Asset,
   Horizon,
   Keypair,
   SorobanDataBuilder,
   StrKey,
   nativeToScVal,
   rpc as StellarRpc,
+  type Transaction,
 } from "@stellar/stellar-sdk";
 
-import { hydratePlanTransactions, rebuildSorobanNodeTransaction } from "@/lib/plan/hydration";
+import { BlndTrustlineMissingError } from "@/lib/adapters/blend/exit";
+import { spendableFromAccount } from "@/lib/adapters/blend/spendable";
+import { NoSoroswapRouteError } from "@/lib/adapters/soroswap/swap";
+import {
+  hydratePlanTransactions,
+  PriceImpactRefusedError,
+  rebuildSorobanNodeTransaction,
+} from "@/lib/plan/hydration";
 import type { HydrationAdapterOverrides, HydrationDeps } from "@/lib/plan/hydration";
 import { buildPlanTree } from "@/lib/plan/tree";
 import type { PlanNode } from "@/lib/plan/tree";
@@ -211,16 +220,31 @@ const HELD_TOKEN = StrKey.encodeContract(new Uint8Array(32).fill(3));
 
 // a router stand-in: each probe "tx" carries its amountIn, and simulating it
 // answers [amountIn, rate(amountIn)] the way swap_exact_tokens_for_tokens does
+const XLM_SAC = Asset.native().contractId(NETWORK.passphrase);
+
 function swapMarket(rate: (amountIn: bigint) => bigint): {
   rpc: HydrationDeps["rpc"];
   buildSwapToXLM: NonNullable<HydrationAdapterOverrides["buildSwapToXLM"]>;
-  calls: { amountIn: string; amountOutMin: string }[];
+  quoteRouteToXLM: NonNullable<HydrationAdapterOverrides["quoteRouteToXLM"]>;
+  calls: { amountIn: string; amountOutMin: string; path?: readonly string[] | undefined }[];
 } {
-  const calls: { amountIn: string; amountOutMin: string }[] = [];
-  const buildSwapToXLM = vi.fn(async (args: { amountIn: string; amountOutMin: string }) => {
-    calls.push({ amountIn: args.amountIn, amountOutMin: args.amountOutMin });
-    return { amountIn: BigInt(args.amountIn) };
-  }) as unknown as NonNullable<HydrationAdapterOverrides["buildSwapToXLM"]>;
+  const calls: { amountIn: string; amountOutMin: string; path?: readonly string[] | undefined }[] =
+    [];
+  const buildSwapToXLM = vi.fn(
+    async (args: {
+      amountIn: string;
+      amountOutMin: string;
+      path?: readonly string[] | undefined;
+    }) => {
+      calls.push({ amountIn: args.amountIn, amountOutMin: args.amountOutMin, path: args.path });
+      return { amountIn: BigInt(args.amountIn) };
+    },
+  ) as unknown as NonNullable<HydrationAdapterOverrides["buildSwapToXLM"]>;
+  // the direct pair is the route
+  const quoteRouteToXLM = vi.fn(async () => ({
+    path: [HELD_TOKEN, XLM_SAC],
+    amounts: [],
+  })) as unknown as NonNullable<HydrationAdapterOverrides["quoteRouteToXLM"]>;
   const rpc = {
     simulateTransaction: vi.fn(async (tx: { amountIn: bigint }) => ({
       latestLedger: 1,
@@ -229,7 +253,7 @@ function swapMarket(rate: (amountIn: bigint) => bigint): {
       result: { retval: scvVec([scvI128(tx.amountIn), scvI128(rate(tx.amountIn))]), auth: [] },
     })),
   } as unknown as HydrationDeps["rpc"];
-  return { rpc, buildSwapToXLM, calls };
+  return { rpc, buildSwapToXLM, quoteRouteToXLM, calls };
 }
 
 function convertNode(over: { priceImpactAccepted?: boolean; deps?: string[] } = {}): PlanNode {
@@ -255,6 +279,7 @@ describe("hydratePlanTransactions, ConvertSorobanToXLM (Soroswap-router swap) fl
       rpc: market.rpc,
       adapters: {
         buildSwapToXLM: market.buildSwapToXLM,
+        quoteRouteToXLM: market.quoteRouteToXLM,
         readTokenBalance: async () => 1_000_000n,
       },
     });
@@ -277,6 +302,7 @@ describe("hydratePlanTransactions, ConvertSorobanToXLM (Soroswap-router swap) fl
       rpc: market.rpc,
       adapters: {
         buildSwapToXLM: market.buildSwapToXLM,
+        quoteRouteToXLM: market.quoteRouteToXLM,
         readTokenBalance: async () => 1_000_000n,
       },
     });
@@ -301,6 +327,7 @@ describe("hydratePlanTransactions, ConvertSorobanToXLM price-impact cap", () => 
       rpc: market.rpc,
       adapters: {
         buildSwapToXLM: market.buildSwapToXLM,
+        quoteRouteToXLM: market.quoteRouteToXLM,
         readTokenBalance: async () => 1_000_000n,
       },
     });
@@ -320,6 +347,7 @@ describe("hydratePlanTransactions, ConvertSorobanToXLM price-impact cap", () => 
       rpc: market.rpc,
       adapters: {
         buildSwapToXLM: market.buildSwapToXLM,
+        quoteRouteToXLM: market.quoteRouteToXLM,
         readTokenBalance: async () => 1_000_000n,
       },
     });
@@ -341,6 +369,7 @@ describe("hydratePlanTransactions, ConvertSorobanToXLM price-impact cap", () => 
       rpc: market.rpc,
       adapters: {
         buildSwapToXLM: market.buildSwapToXLM,
+        quoteRouteToXLM: market.quoteRouteToXLM,
         readTokenBalance: async () => 1_000_000n,
       },
     });
@@ -373,6 +402,7 @@ describe("hydratePlanTransactions, ConvertSorobanToXLM price-impact cap", () => 
       rpc: market.rpc,
       adapters: {
         buildSwapToXLM: market.buildSwapToXLM,
+        quoteRouteToXLM: market.quoteRouteToXLM,
         readTokenBalance: async () => 1_000_000n,
       },
     });
@@ -609,8 +639,15 @@ describe("hydration, two-pass builds sign at on-chain sequence + 1", () => {
       network: TESTNET,
       currentLedger: 100,
       fetchSourceAccount: async () => accountAt(ONCHAIN_SEQ),
-      // the held-token swap reads the live balance first; answer it directly
-      adapters: { readTokenBalance: async () => 1_000_000n },
+      // the held-token swap reads the live balance and searches a route first;
+      // answer both directly
+      adapters: {
+        readTokenBalance: async () => 1_000_000n,
+        quoteRouteToXLM: async () => ({
+          path: [tokenA, Asset.native().contractId(TESTNET.passphrase)],
+          amounts: [],
+        }),
+      },
     };
   }
 
@@ -636,4 +673,496 @@ describe("hydration, two-pass builds sign at on-chain sequence + 1", () => {
       expect(signedSequence(node)).toBe((ONCHAIN_SEQ + 1n).toString());
     });
   }
+});
+
+// the blend builders read the source account's balances, subentries and
+// sponsorship counts; each build must get the whole record at the loaded sequence
+describe("hydration, every build gets a full copy of the account record", () => {
+  const XLM = Asset.native().contractId(NETWORK.passphrase);
+
+  function fundedAccount(seq: bigint): Horizon.AccountResponse {
+    return new Horizon.AccountResponse({
+      id: USER,
+      paging_token: USER,
+      account_id: USER,
+      sequence: seq.toString(),
+      subentry_count: 2,
+      last_modified_ledger: 1,
+      last_modified_time: "2026-01-01T00:00:00Z",
+      thresholds: { low_threshold: 0, med_threshold: 0, high_threshold: 0 },
+      flags: {
+        auth_required: false,
+        auth_revocable: false,
+        auth_immutable: false,
+        auth_clawback_enabled: false,
+      },
+      balances: [
+        {
+          asset_type: "native",
+          balance: "100.0000000",
+          buying_liabilities: "0.0000000",
+          selling_liabilities: "1.0000000",
+        },
+      ],
+      signers: [{ key: USER, weight: 1, type: "ed25519_public_key" }],
+      data_attr: {},
+      num_sponsoring: 0,
+      num_sponsored: 0,
+    } as never);
+  }
+
+  it("lets a repay size itself from the account's spendable XLM and records the amount", async () => {
+    const seen: { spendable: bigint | null; sequence: string }[] = [];
+    const buildExitSequence = vi.fn(
+      async (_net: unknown, _pos: unknown, _user: unknown, account: Horizon.AccountResponse) => {
+        // the real helper the repay builder runs on the account it is handed
+        const line = spendableFromAccount(account, XLM, NETWORK);
+        seen.push({ spendable: line?.spendable ?? null, sequence: account.sequenceNumber() });
+        return [{ kind: "repay", asset: XLM, amount: 42n, transaction: { fake: "tx" } }];
+      },
+    ) as unknown as NonNullable<HydrationAdapterOverrides["buildExitSequence"]>;
+    const node: PlanNode = {
+      id: "repay",
+      kind: "RepayBlend",
+      dependencies: [],
+      description: "repay",
+      status: "pending",
+      metadata: { kind: "RepayBlend", poolId: "CPOOL", asset: XLM, amount: 10n },
+    };
+    const deps = baseDeps({
+      fetchSourceAccount: vi.fn(async () => fundedAccount(500n)),
+      adapters: { buildExitSequence },
+    });
+
+    const { failures } = await hydratePlanTransactions(buildPlanTree([node]), USER, deps);
+
+    expect(failures).toEqual([]);
+    // 100 XLM - 1 XLM selling liabilities - (2 + 2 subentries) x 0.5 XLM
+    expect(seen).toEqual([{ spendable: 970_000_000n, sequence: "500" }]);
+    expect((node.metadata as { amount: bigint }).amount).toBe(42n);
+  });
+});
+
+describe("hydration, Blend backstop steps take their amounts from the built transaction", () => {
+  const backstopNode = (kind: "BackstopQueue" | "BackstopWithdraw"): PlanNode =>
+    kind === "BackstopQueue"
+      ? {
+          id: "queue",
+          kind,
+          dependencies: [],
+          description: "queue",
+          status: "pending",
+          metadata: { kind, poolId: "CPOOL", shares: 10n, queueEndsAt: new Date(0) },
+        }
+      : {
+          id: "withdraw",
+          kind,
+          dependencies: [],
+          description: "withdraw",
+          status: "pending",
+          metadata: { kind, poolId: "CPOOL", amount: 10n, lpToken: "CCOMET" },
+        };
+
+  it("records the shares and unlock date the queue transaction carries", async () => {
+    const ends = new Date(1_800_000_000_000);
+    const buildExitSequence = vi.fn(async () => [
+      {
+        kind: "backstop_queue_withdrawal",
+        shares: 15n,
+        queueEndsAt: ends,
+        transaction: { fake: "tx" },
+        manualReturnRequired: true,
+      },
+    ]) as unknown as NonNullable<HydrationAdapterOverrides["buildExitSequence"]>;
+    const node = backstopNode("BackstopQueue");
+    await rebuildSorobanNodeTransaction(node, USER, baseDeps({ adapters: { buildExitSequence } }));
+    expect(node.metadata).toMatchObject({ shares: 15n, queueEndsAt: ends });
+  });
+
+  it("withdraws the unlocked queue and records the amount read on chain", async () => {
+    const buildExitSequence = vi.fn(async () => [
+      { kind: "backstop_withdraw", amount: 12n, transaction: { fake: "tx" } },
+    ]) as unknown as NonNullable<HydrationAdapterOverrides["buildExitSequence"]>;
+    const node = backstopNode("BackstopWithdraw");
+    await rebuildSorobanNodeTransaction(node, USER, baseDeps({ adapters: { buildExitSequence } }));
+    expect(buildExitSequence).toHaveBeenCalledWith(
+      NETWORK,
+      expect.objectContaining({ poolId: "CPOOL" }),
+      USER,
+      expect.anything(),
+      expect.objectContaining({ backstopWithdrawAmount: 10n }),
+    );
+    expect((node.metadata as { amount: bigint }).amount).toBe(12n);
+  });
+
+  it("fails a backstop emissions claim that can't run, with the accrued BLND, never deferring", async () => {
+    const buildExitSequence = vi.fn(async () => {
+      throw new Error(
+        "could not simulate the Blend backstop claim: HostError: Error(WasmVm, InvalidAction)",
+      );
+    }) as unknown as NonNullable<HydrationAdapterOverrides["buildExitSequence"]>;
+    const claim: PlanNode = {
+      id: "claim",
+      kind: "ClaimBackstopEmissions",
+      dependencies: ["before"],
+      description: "claim",
+      status: "pending",
+      metadata: { kind: "ClaimBackstopEmissions", poolId: "CPOOL", accruedEmissions: 7n },
+    };
+    const before: PlanNode = {
+      id: "before",
+      kind: "BackstopWithdraw",
+      dependencies: [],
+      description: "already built",
+      status: "pending",
+      metadata: {
+        kind: "BackstopWithdraw",
+        poolId: "CPOOL",
+        amount: 1n,
+        lpToken: "CCOMET",
+        transaction: { fake: "tx" } as never,
+      },
+    };
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([before, claim]),
+      USER,
+      baseDeps({ adapters: { buildExitSequence } }),
+    );
+    expect(failures).toEqual([expect.objectContaining({ nodeId: "claim", deferred: false })]);
+    expect(claim.status).toBe("failed");
+    expect(claim.error).toMatch(/InvalidAction/);
+    expect(claim.error).toMatch(/forfeited/);
+  });
+});
+
+describe("hydration, the BLND trustline and the emissions claim behind it", () => {
+  const BLND_TESTNET_ISSUER = "GATALTGTWIOT6BUDBCZM3Q4OQ4BO2COLOAZ7IYSKPLC2PMSOPPGF5V56";
+
+  it("builds the change_trust at the on-chain sequence + 1", async () => {
+    const node: PlanNode = {
+      id: "blnd-trustline",
+      kind: "AddBlndTrustline",
+      dependencies: [],
+      description: "trust BLND",
+      status: "pending",
+      metadata: { kind: "AddBlndTrustline", code: "BLND", issuer: BLND_TESTNET_ISSUER },
+    };
+    const deps = baseDeps({
+      network: TESTNET,
+      fetchSourceAccount: vi.fn(async () => accountAt(700n)),
+    });
+    const { failures } = await hydratePlanTransactions(buildPlanTree([node]), USER, deps);
+    expect(failures).toEqual([]);
+    const tx = (node.metadata as { transaction?: Transaction }).transaction!;
+    expect(tx.sequence).toBe("701");
+    expect(tx.operations.map((o) => o.type)).toEqual(["changeTrust"]);
+  });
+
+  it("keeps the claim pending until the trustline lands", async () => {
+    const buildExitSequence = vi.fn(async () => {
+      throw new BlndTrustlineMissingError("CPOOL", "missing", `BLND:${BLND_TESTNET_ISSUER}`);
+    }) as unknown as NonNullable<HydrationAdapterOverrides["buildExitSequence"]>;
+    const line: PlanNode = {
+      id: "blnd-trustline",
+      kind: "AddBlndTrustline",
+      dependencies: [],
+      description: "trust BLND",
+      status: "pending",
+      metadata: {
+        kind: "AddBlndTrustline",
+        code: "BLND",
+        issuer: BLND_TESTNET_ISSUER,
+        transaction: { fake: "tx" } as never,
+      },
+    };
+    const claim: PlanNode = {
+      id: "claim",
+      kind: "ClaimBlendEmissions",
+      dependencies: ["blnd-trustline"],
+      description: "claim",
+      status: "pending",
+      metadata: { kind: "ClaimBlendEmissions", poolId: "CPOOL", reserveTokenIds: [1] },
+    };
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([line, claim]),
+      USER,
+      baseDeps({ network: TESTNET, adapters: { buildExitSequence } }),
+    );
+    expect(failures).toEqual([
+      {
+        nodeId: "claim",
+        reason: "ClaimBlendEmissions: built after the BLND trustline is added",
+        deferred: true,
+      },
+    ]);
+    expect(claim.status).toBe("pending");
+  });
+});
+
+describe("hydration, Aquarius concentrated exits", () => {
+  const POOL = StrKey.encodeContract(new Uint8Array(32).fill(5));
+
+  it("withdraws a range with a slippage floor under the pool's own estimate", async () => {
+    const calls: { minAmounts: readonly bigint[]; liquidity: bigint }[] = [];
+    const withdrawConcentratedPosition = vi.fn(
+      async (args: { minAmounts: readonly bigint[]; liquidity: bigint }) => {
+        calls.push({ minAmounts: args.minAmounts, liquidity: args.liquidity });
+        return { fake: "tx" };
+      },
+    ) as unknown as NonNullable<HydrationAdapterOverrides["withdrawConcentratedPosition"]>;
+    const estimateConcentratedWithdraw = vi.fn(async () => [1_000_000n, 2_000_000n]);
+    const node: PlanNode = {
+      id: "range",
+      kind: "WithdrawAquariusConcentrated",
+      dependencies: [],
+      description: "range",
+      status: "pending",
+      metadata: {
+        kind: "WithdrawAquariusConcentrated",
+        poolAddress: POOL,
+        tokens: ["CA", "CB"],
+        tickLower: -10,
+        tickUpper: 10,
+        liquidity: 99n,
+      },
+    };
+    const deps = baseDeps({
+      adapters: { withdrawConcentratedPosition, estimateConcentratedWithdraw },
+    });
+    const { failures } = await hydratePlanTransactions(buildPlanTree([node]), USER, deps);
+    expect(failures).toEqual([]);
+    expect(estimateConcentratedWithdraw).toHaveBeenCalledWith(deps.rpc, NETWORK, {
+      poolAddress: POOL,
+      user: USER,
+      tickLower: -10,
+      tickUpper: 10,
+      liquidity: 99n,
+    });
+    expect(calls).toEqual([
+      {
+        liquidity: 99n,
+        minAmounts: [
+          BigInt(applySlippageMin("1000000", DEFAULT_SLIPPAGE_BPS)),
+          BigInt(applySlippageMin("2000000", DEFAULT_SLIPPAGE_BPS)),
+        ],
+      },
+    ]);
+  });
+
+  it("collects the swap fees on the pool", async () => {
+    const claimConcentratedFees = vi.fn(async () => ({ fake: "tx" })) as unknown as NonNullable<
+      HydrationAdapterOverrides["claimConcentratedFees"]
+    >;
+    const node: PlanNode = {
+      id: "fees",
+      kind: "ClaimAquariusConcentratedFees",
+      dependencies: [],
+      description: "fees",
+      status: "pending",
+      metadata: { kind: "ClaimAquariusConcentratedFees", poolAddress: POOL, tokens: ["CA", "CB"] },
+    };
+    await hydratePlanTransactions(
+      buildPlanTree([node]),
+      USER,
+      baseDeps({ adapters: { claimConcentratedFees } }),
+    );
+    expect(claimConcentratedFees).toHaveBeenCalledWith(
+      expect.objectContaining({ user: USER, poolAddress: POOL, network: NETWORK }),
+      expect.anything(),
+    );
+    expect((node.metadata as { transaction?: unknown }).transaction).toEqual({ fake: "tx" });
+  });
+});
+
+// H-27: many tokens trade to XLM only through another token
+describe("hydration, ConvertSorobanToXLM swaps along the route it finds", () => {
+  const HOP = StrKey.encodeContract(new Uint8Array(32).fill(8));
+
+  it("quotes and signs along a one-hop path and reads the XLM out from its end", async () => {
+    const calls: { amountOutMin: string; path?: readonly string[] | undefined }[] = [];
+    const buildSwapToXLM = vi.fn(
+      async (args: {
+        amountIn: string;
+        amountOutMin: string;
+        path?: readonly string[] | undefined;
+      }) => {
+        calls.push({ amountOutMin: args.amountOutMin, path: args.path });
+        return { amountIn: BigInt(args.amountIn) };
+      },
+    ) as unknown as NonNullable<HydrationAdapterOverrides["buildSwapToXLM"]>;
+    const rpc = {
+      simulateTransaction: vi.fn(async (tx: { amountIn: bigint }) => ({
+        latestLedger: 1,
+        minResourceFee: "100",
+        transactionData: {},
+        result: {
+          retval: scvVec([
+            scvI128(tx.amountIn),
+            scvI128(tx.amountIn * 2n),
+            scvI128(tx.amountIn * 4n),
+          ]),
+          auth: [],
+        },
+      })),
+    } as unknown as HydrationDeps["rpc"];
+    const path = [HELD_TOKEN, HOP, XLM_SAC];
+    const node = convertNode();
+    const deps = baseDeps({
+      rpc,
+      adapters: {
+        buildSwapToXLM,
+        quoteRouteToXLM: async () => ({ path, amounts: [] }),
+        readTokenBalance: async () => 1_000_000n,
+      },
+    });
+
+    const { failures } = await hydratePlanTransactions(buildPlanTree([node]), USER, deps);
+
+    expect(failures).toEqual([]);
+    expect(calls.map((c) => c.path)).toEqual([path, path, path]);
+    expect(calls[2]!.amountOutMin).toBe(applySlippageMin("4000000", DEFAULT_SLIPPAGE_BPS));
+    expect((node.metadata as { quote?: { path: readonly string[] } }).quote?.path).toEqual(path);
+  });
+
+  it("fails a token with no route instead of deferring it, so the user picks what to do", async () => {
+    const node = convertNode({ deps: ["exit"] });
+    const exit: PlanNode = {
+      id: "exit",
+      kind: "TransferAsIs",
+      dependencies: [],
+      description: "already built",
+      status: "pending",
+      metadata: {
+        kind: "TransferAsIs",
+        asset: { kind: "contract", contractId: HELD_TOKEN },
+        amount: 1n,
+        destination: USER,
+        transaction: { fake: "tx" } as never,
+      },
+    };
+    const deps = baseDeps({
+      adapters: {
+        quoteRouteToXLM: async () => {
+          throw new NoSoroswapRouteError(HELD_TOKEN, []);
+        },
+        readTokenBalance: async () => 1_000_000n,
+      },
+    });
+    const { failures } = await hydratePlanTransactions(buildPlanTree([exit, node]), USER, deps);
+    expect(failures).toEqual([expect.objectContaining({ nodeId: "cv1", deferred: false })]);
+    expect(node.error).toMatch(/No Soroswap route/);
+  });
+});
+
+// M-19: a confirmation covers the price the review showed, not any later price
+describe("hydration, a conversion is bound to the quote the user reviewed", () => {
+  const thinPool = (x: bigint): bigint => (x * 1_000_000n) / (1_000_000n + x);
+
+  it("refuses an accepted swap whose rate fell past the tolerance between review and execute", async () => {
+    const node = convertNode({ priceImpactAccepted: true });
+    const review = swapMarket(thinPool);
+    await hydratePlanTransactions(
+      buildPlanTree([node]),
+      USER,
+      baseDeps({
+        rpc: review.rpc,
+        adapters: {
+          buildSwapToXLM: review.buildSwapToXLM,
+          quoteRouteToXLM: review.quoteRouteToXLM,
+          readTokenBalance: async () => 1_000_000n,
+        },
+      }),
+    );
+    const md = node.metadata as { reviewedQuote?: { expectedOut: bigint } };
+    expect(md.reviewedQuote?.expectedOut).toBe(500_000n);
+
+    // the pool was drained further: the same balance now returns a tenth
+    const later = swapMarket((x) => thinPool(x) / 10n);
+    const rebuild = rebuildSorobanNodeTransaction(
+      node,
+      USER,
+      baseDeps({
+        rpc: later.rpc,
+        adapters: {
+          buildSwapToXLM: later.buildSwapToXLM,
+          quoteRouteToXLM: later.quoteRouteToXLM,
+          readTokenBalance: async () => 1_000_000n,
+        },
+      }),
+    );
+    await expect(rebuild).rejects.toBeInstanceOf(PriceImpactRefusedError);
+    await expect(rebuild).rejects.toMatchObject({ reason: "requote_worse", expectedOut: 50_000n });
+    expect(later.calls.every((c) => c.amountOutMin === "0")).toBe(true);
+  });
+
+  it("rebuilds within the tolerance of the reviewed quote", async () => {
+    const node = convertNode({ priceImpactAccepted: true });
+    const market = swapMarket(thinPool);
+    const deps = baseDeps({
+      rpc: market.rpc,
+      adapters: {
+        buildSwapToXLM: market.buildSwapToXLM,
+        quoteRouteToXLM: market.quoteRouteToXLM,
+        readTokenBalance: async () => 1_000_000n,
+      },
+    });
+    await hydratePlanTransactions(buildPlanTree([node]), USER, deps);
+    await rebuildSorobanNodeTransaction(node, USER, deps);
+    expect((node.metadata as { transaction?: unknown }).transaction).toBeDefined();
+  });
+
+  it("holds an execute-time build with no reviewed quote to the cap again", async () => {
+    const node = convertNode({ priceImpactAccepted: true });
+    const market = swapMarket(thinPool);
+    const rebuild = rebuildSorobanNodeTransaction(
+      node,
+      USER,
+      baseDeps({
+        rpc: market.rpc,
+        adapters: {
+          buildSwapToXLM: market.buildSwapToXLM,
+          quoteRouteToXLM: market.quoteRouteToXLM,
+          readTokenBalance: async () => 1_000_000n,
+        },
+      }),
+    );
+    await expect(rebuild).rejects.toMatchObject({ reason: "price_impact", priceImpactBps: 4995 });
+  });
+});
+
+describe("hydration, an unauthorized BLND trustline", () => {
+  it("fails the emissions claim instead of waiting on steps that can't fix it", async () => {
+    const buildExitSequence = vi.fn(async () => {
+      throw new BlndTrustlineMissingError("CPOOL", "unauthorized", "BLND:GISSUER");
+    }) as unknown as NonNullable<HydrationAdapterOverrides["buildExitSequence"]>;
+    const withdraw: PlanNode = {
+      id: "withdraw",
+      kind: "WithdrawBlend",
+      dependencies: [],
+      description: "already built",
+      status: "pending",
+      metadata: {
+        kind: "WithdrawBlend",
+        poolId: "CPOOL",
+        asset: "CASSET",
+        bucket: "supply",
+        transaction: { fake: "tx" } as never,
+      },
+    };
+    const claim: PlanNode = {
+      id: "claim",
+      kind: "ClaimBlendEmissions",
+      dependencies: ["withdraw"],
+      description: "claim",
+      status: "pending",
+      metadata: { kind: "ClaimBlendEmissions", poolId: "CPOOL", reserveTokenIds: [1] },
+    };
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([withdraw, claim]),
+      USER,
+      baseDeps({ adapters: { buildExitSequence } }),
+    );
+    expect(failures).toEqual([expect.objectContaining({ nodeId: "claim", deferred: false })]);
+    expect(claim.status).toBe("failed");
+  });
 });

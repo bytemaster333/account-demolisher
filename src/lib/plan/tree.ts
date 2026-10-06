@@ -34,16 +34,21 @@ export type PlanNodeStatus =
 
 export type PlanNodeKind =
   | "RevokeAllowance"
+  | "ClassicUnwind"
   | "RepayBlend"
-  | "PayFxDAODebt"
   | "WithdrawBlend"
   | "WithdrawAquarius"
+  | "WithdrawAquariusConcentrated"
   | "WithdrawSoroswapLp"
+  | "AddBlndTrustline"
   | "ClaimBlendEmissions"
   | "ClaimAquariusRewards"
+  | "ClaimAquariusConcentratedFees"
   | "ConvertSorobanToXLM"
   | "TransferAsIs"
+  | "ClaimBackstopEmissions"
   | "BackstopQueue"
+  | "BackstopWithdraw"
   | "FinalClassicTx"
   | "MediatorForward";
 
@@ -70,21 +75,26 @@ export interface RevokeAllowanceMetadata {
   readonly transaction?: Transaction;
 }
 
+// a classic phase ahead of the repays: cancels the offers that sell a repay
+// asset and withdraws the classic pool shares that hold one, so the asset is
+// spendable when the repay pulls it. rebuilt from a fresh audit at execute time
+// with planClassicUnwind(audit, repayAssets, passphrase).
+export interface ClassicUnwindMetadata {
+  readonly kind: "ClassicUnwind";
+  readonly batches: readonly ClassicBatch[];
+  readonly offerIds: readonly string[];
+  readonly poolIds: readonly string[];
+  // SAC contract ids of the assets the plan repays
+  readonly repayAssets: readonly string[];
+}
+
 export interface RepayBlendMetadata {
   readonly kind: "RepayBlend";
   readonly poolId: string;
   readonly asset: string;
+  // the debt seen at discovery; every build replaces it with the amount the
+  // built transaction repays, which the auth-tree guard checks against
   readonly amount: bigint;
-  readonly transaction?: Transaction;
-}
-
-export interface PayFxDAODebtMetadata {
-  readonly kind: "PayFxDAODebt";
-  readonly vaultDenomination: string;
-  readonly debt: bigint;
-  // the vault's collateral, needed to reconstruct the on-chain vault_key.index
-  // (index = 1e9 * collateral / debt) that pay_debt's validator checks against
-  readonly collateral: bigint;
   readonly transaction?: Transaction;
 }
 
@@ -105,11 +115,34 @@ export interface WithdrawAquariusMetadata {
   readonly transaction?: Transaction;
 }
 
+// one tick range of an aquarius concentrated position, withdrawn with
+// withdraw_position on the pinned pool itself
+export interface WithdrawAquariusConcentratedMetadata {
+  readonly kind: "WithdrawAquariusConcentrated";
+  readonly poolAddress: string;
+  // the pool's tokens, in its own order (payouts swept or guarded at the merge)
+  readonly tokens: readonly string[];
+  readonly tickLower: number;
+  readonly tickUpper: number;
+  readonly liquidity: bigint;
+  readonly transaction?: Transaction;
+}
+
 export interface WithdrawSoroswapLpMetadata {
   readonly kind: "WithdrawSoroswapLp";
   readonly tokenA: string;
   readonly tokenB: string;
   readonly shareBalance: bigint;
+  readonly transaction?: Transaction;
+}
+
+// change_trust BLND, so the pool emissions claims can pay BLND to the account.
+// a classic transaction built and submitted like the soroban steps; the final
+// batch converts or removes the line again.
+export interface AddBlndTrustlineMetadata {
+  readonly kind: "AddBlndTrustline";
+  readonly code: "BLND";
+  readonly issuer: string;
   readonly transaction?: Transaction;
 }
 
@@ -125,7 +158,25 @@ export interface ClaimAquariusRewardsMetadata {
   readonly poolIndex: string;
   // pool_index is only unique within a token set, so the pool is (tokens, index)
   readonly tokens: readonly string[];
+  // set for a concentrated pool, whose rewards are claimed before its ranges
+  readonly poolAddress?: string;
   readonly transaction?: Transaction;
+}
+
+export interface ClaimAquariusConcentratedFeesMetadata {
+  readonly kind: "ClaimAquariusConcentratedFees";
+  readonly poolAddress: string;
+  readonly tokens: readonly string[];
+  readonly transaction?: Transaction;
+}
+
+// a swap quote: amountIn along path (token first, XLM last) for expectedOut
+export interface SwapQuote {
+  readonly amountIn: bigint;
+  readonly expectedOut: bigint;
+  readonly minOut: bigint;
+  readonly priceImpactBps: number | null;
+  readonly path: readonly string[];
 }
 
 export interface ConvertSorobanToXLMMetadata {
@@ -135,14 +186,14 @@ export interface ConvertSorobanToXLMMetadata {
   // credited by earlier exits are swapped too.
   readonly amount: bigint;
   // the user confirmed selling although the swap is over the price-impact cap or
-  // could not be priced against a reference trade
+  // could not be priced against a reference trade. it only holds for the quote
+  // the review showed (reviewedQuote); a rebuild with none falls back to the cap.
   readonly priceImpactAccepted?: boolean;
-  // what the built swap expects, the floor it signs, and the measured impact
-  readonly quote?: {
-    readonly expectedOut: bigint;
-    readonly minOut: bigint;
-    readonly priceImpactBps: number | null;
-  };
+  // the latest built swap: what it expects, the floor it signs, the impact
+  readonly quote?: SwapQuote;
+  // the first quote a build produced, the one the review shows. a later rebuild
+  // whose rate is worse by more than the slippage tolerance is refused.
+  readonly reviewedQuote?: SwapQuote;
   readonly transaction?: Transaction;
 }
 
@@ -155,11 +206,34 @@ export interface TransferAsIsMetadata {
   readonly transaction?: Transaction;
 }
 
+// claim the accrued backstop BLND ahead of the queue. the backstop deposits it
+// into the BLND-USDC comet and credits new shares, which the queue then picks up.
+export interface ClaimBackstopEmissionsMetadata {
+  readonly kind: "ClaimBackstopEmissions";
+  readonly poolId: string;
+  // BLND (7 decimals) accrued at discovery, shown when the claim can't run
+  readonly accruedEmissions: bigint;
+  readonly transaction?: Transaction;
+}
+
 export interface BackstopQueueMetadata {
   readonly kind: "BackstopQueue";
   readonly poolId: string;
+  // shares seen at discovery; every build replaces them with the shares the
+  // built transaction queues
   readonly shares: bigint;
   readonly queueEndsAt: Date;
+  readonly transaction?: Transaction;
+}
+
+export interface BackstopWithdrawMetadata {
+  readonly kind: "BackstopWithdraw";
+  readonly poolId: string;
+  // unlocked queued shares; every build replaces it with the amount the built
+  // transaction withdraws, read on chain
+  readonly amount: bigint;
+  // the BLND-USDC comet LP token the withdraw pays out
+  readonly lpToken: string;
   readonly transaction?: Transaction;
 }
 
@@ -178,20 +252,25 @@ export interface FinalClassicTxMetadata {
   // reference quotes shown at review, per pathKey; a re-quote far below them is
   // refused rather than signed
   readonly reviewedReferenceQuotes?: Readonly<Record<string, ReferenceQuote>>;
-  readonly userFallbackAddress?: string;
+  // full-size quotes shown at review, per pathKey; held to the same bound
+  readonly reviewedConversionQuotes?: Readonly<Record<string, ReferenceQuote>>;
   readonly mediatorPublicKey?: string;
   // deposit memo for a DIRECT (non-mediator) merge to a memo-required destination.
   // MUST be re-applied during execute-time re-batching or the signed merge drops
   // it; the batcher only attaches it to a non-mediator final batch (a mediator
   // close carries its memo on the forward hop instead).
   readonly memo?: ClassicMemo;
+  // whether the reviewed batches carry the on-chain close marker. without it the
+  // close still merges but is not counted by close verification.
+  readonly closeMarker?: boolean;
 }
 
 export interface MediatorForwardMetadata {
   readonly kind: "MediatorForward";
   readonly mediatorPublicKey: string;
-  // one-time token authorizing the sign route to co-sign the forward out of
-  // this flow's ephemeral mediator account
+  // flow token bound to the destination, network and memo. it authorizes the
+  // sign route to co-sign the forward out of this flow's ephemeral mediator,
+  // stays usable until it expires and is renewed through /api/mediator/reissue
   readonly flowToken: string;
   readonly ultimateDestination: string;
   // the user's CEX deposit memo (full type + value). This forward is the ONLY
@@ -204,13 +283,13 @@ export interface RevokeAllowanceNode extends PlanNodeBase {
   readonly kind: "RevokeAllowance";
   readonly metadata: RevokeAllowanceMetadata;
 }
+export interface ClassicUnwindNode extends PlanNodeBase {
+  readonly kind: "ClassicUnwind";
+  readonly metadata: ClassicUnwindMetadata;
+}
 export interface RepayBlendNode extends PlanNodeBase {
   readonly kind: "RepayBlend";
   readonly metadata: RepayBlendMetadata;
-}
-export interface PayFxDAODebtNode extends PlanNodeBase {
-  readonly kind: "PayFxDAODebt";
-  readonly metadata: PayFxDAODebtMetadata;
 }
 export interface WithdrawBlendNode extends PlanNodeBase {
   readonly kind: "WithdrawBlend";
@@ -220,9 +299,17 @@ export interface WithdrawAquariusNode extends PlanNodeBase {
   readonly kind: "WithdrawAquarius";
   readonly metadata: WithdrawAquariusMetadata;
 }
+export interface WithdrawAquariusConcentratedNode extends PlanNodeBase {
+  readonly kind: "WithdrawAquariusConcentrated";
+  readonly metadata: WithdrawAquariusConcentratedMetadata;
+}
 export interface WithdrawSoroswapLpNode extends PlanNodeBase {
   readonly kind: "WithdrawSoroswapLp";
   readonly metadata: WithdrawSoroswapLpMetadata;
+}
+export interface AddBlndTrustlineNode extends PlanNodeBase {
+  readonly kind: "AddBlndTrustline";
+  readonly metadata: AddBlndTrustlineMetadata;
 }
 export interface ClaimBlendEmissionsNode extends PlanNodeBase {
   readonly kind: "ClaimBlendEmissions";
@@ -232,6 +319,10 @@ export interface ClaimAquariusRewardsNode extends PlanNodeBase {
   readonly kind: "ClaimAquariusRewards";
   readonly metadata: ClaimAquariusRewardsMetadata;
 }
+export interface ClaimAquariusConcentratedFeesNode extends PlanNodeBase {
+  readonly kind: "ClaimAquariusConcentratedFees";
+  readonly metadata: ClaimAquariusConcentratedFeesMetadata;
+}
 export interface ConvertSorobanToXLMNode extends PlanNodeBase {
   readonly kind: "ConvertSorobanToXLM";
   readonly metadata: ConvertSorobanToXLMMetadata;
@@ -240,9 +331,17 @@ export interface TransferAsIsNode extends PlanNodeBase {
   readonly kind: "TransferAsIs";
   readonly metadata: TransferAsIsMetadata;
 }
+export interface ClaimBackstopEmissionsNode extends PlanNodeBase {
+  readonly kind: "ClaimBackstopEmissions";
+  readonly metadata: ClaimBackstopEmissionsMetadata;
+}
 export interface BackstopQueueNode extends PlanNodeBase {
   readonly kind: "BackstopQueue";
   readonly metadata: BackstopQueueMetadata;
+}
+export interface BackstopWithdrawNode extends PlanNodeBase {
+  readonly kind: "BackstopWithdraw";
+  readonly metadata: BackstopWithdrawMetadata;
 }
 export interface FinalClassicTxNode extends PlanNodeBase {
   readonly kind: "FinalClassicTx";
@@ -255,27 +354,54 @@ export interface MediatorForwardNode extends PlanNodeBase {
 
 export type PlanNode =
   | RevokeAllowanceNode
+  | ClassicUnwindNode
   | RepayBlendNode
-  | PayFxDAODebtNode
   | WithdrawBlendNode
   | WithdrawAquariusNode
+  | WithdrawAquariusConcentratedNode
   | WithdrawSoroswapLpNode
+  | AddBlndTrustlineNode
   | ClaimBlendEmissionsNode
   | ClaimAquariusRewardsNode
+  | ClaimAquariusConcentratedFeesNode
   | ConvertSorobanToXLMNode
   | TransferAsIsNode
+  | ClaimBackstopEmissionsNode
   | BackstopQueueNode
+  | BackstopWithdrawNode
   | FinalClassicTxNode
   | MediatorForwardNode;
+
+// a plan that can't merge yet: a backstop deposit stays locked after it runs,
+// so it queues and unwinds now and the close is finished in a later run
+export interface PreparePlan {
+  // latest moment a withdrawal this plan queues (or one already queued) unlocks
+  readonly unlocksAt: Date;
+  readonly reason: string;
+}
+
+// backstop emissions the plan leaves unclaimed, after the user acknowledged it
+export interface ForfeitedBackstopEmissions {
+  readonly poolId: string;
+  readonly accruedEmissions: bigint;
+}
 
 // rootNodes have zero in-edges; allNodes is the flat id -> node index
 export interface PlanTree {
   readonly rootNodes: readonly PlanNode[];
   readonly allNodes: ReadonlyMap<string, PlanNode>;
+  // set when the plan has no merge: see PreparePlan
+  readonly prepareOnly?: PreparePlan;
+  readonly forfeitedBackstopEmissions?: readonly ForfeitedBackstopEmissions[];
+}
+
+export interface PlanTreeExtras {
+  readonly prepareOnly?: PreparePlan;
+  readonly forfeitedBackstopEmissions?: readonly ForfeitedBackstopEmissions[];
 }
 
 // throws on duplicate ids, missing deps, or cycles
-export function buildPlanTree(nodes: readonly PlanNode[]): PlanTree {
+export function buildPlanTree(nodes: readonly PlanNode[], extras: PlanTreeExtras = {}): PlanTree {
   const allNodes = new Map<string, PlanNode>();
   for (const node of nodes) {
     if (allNodes.has(node.id)) {
@@ -291,9 +417,21 @@ export function buildPlanTree(nodes: readonly PlanNode[]): PlanTree {
     }
   }
   assertAcyclic(nodes, allNodes);
+  const hasMerge = nodes.some((n) => n.kind === "FinalClassicTx");
+  if (extras.prepareOnly !== undefined && hasMerge) {
+    throw new Error("buildPlanTree: a prepare-only plan must not carry the final merge");
+  }
 
   const rootNodes = nodes.filter((n) => n.dependencies.length === 0);
-  return { rootNodes, allNodes };
+  return {
+    rootNodes,
+    allNodes,
+    ...(extras.prepareOnly !== undefined ? { prepareOnly: extras.prepareOnly } : {}),
+    ...(extras.forfeitedBackstopEmissions !== undefined &&
+    extras.forfeitedBackstopEmissions.length > 0
+      ? { forfeitedBackstopEmissions: extras.forfeitedBackstopEmissions }
+      : {}),
+  };
 }
 
 // iterative DFS that throws on the first cycle with the offending path
@@ -395,6 +533,8 @@ export function planExitPayoutTokens(tree: PlanTree): readonly string[] {
   for (const node of tree.allNodes.values()) {
     switch (node.kind) {
       case "WithdrawAquarius":
+      case "WithdrawAquariusConcentrated":
+      case "ClaimAquariusConcentratedFees":
         for (const token of node.metadata.tokens) out.add(token);
         break;
       case "WithdrawSoroswapLp":
@@ -404,6 +544,9 @@ export function planExitPayoutTokens(tree: PlanTree): readonly string[] {
       case "WithdrawBlend":
         out.add(node.metadata.asset);
         break;
+      case "BackstopWithdraw":
+        out.add(node.metadata.lpToken);
+        break;
       default:
         break;
     }
@@ -411,23 +554,45 @@ export function planExitPayoutTokens(tree: PlanTree): readonly string[] {
   return [...out];
 }
 
-// true for soroban-touching kinds; routes simulation in simulator.ts
+// true for the kinds that carry their own prebuilt transaction, signed and
+// submitted one by one and rebuilt from fresh state before signing: every
+// soroban call, plus the BLND change_trust that has to land before the claims.
+// false for the classic batches the executor builds itself (ClassicUnwind,
+// FinalClassicTx) and the mediator forward.
 export function isSorobanNode(node: PlanNode): boolean {
   switch (node.kind) {
     case "RevokeAllowance":
     case "RepayBlend":
-    case "PayFxDAODebt":
     case "WithdrawBlend":
     case "WithdrawAquarius":
+    case "WithdrawAquariusConcentrated":
     case "WithdrawSoroswapLp":
+    case "AddBlndTrustline":
     case "ClaimBlendEmissions":
     case "ClaimAquariusRewards":
+    case "ClaimAquariusConcentratedFees":
     case "ConvertSorobanToXLM":
+    case "ClaimBackstopEmissions":
     case "BackstopQueue":
+    case "BackstopWithdraw":
     case "TransferAsIs":
       return true;
+    case "ClassicUnwind":
     case "FinalClassicTx":
     case "MediatorForward":
       return false;
+  }
+}
+
+// the node's prebuilt transaction, undefined until hydration attaches one and
+// for the classic batches and the forward
+export function nodeTransaction(node: PlanNode): Transaction | undefined {
+  switch (node.kind) {
+    case "ClassicUnwind":
+    case "FinalClassicTx":
+    case "MediatorForward":
+      return undefined;
+    default:
+      return node.metadata.transaction;
   }
 }

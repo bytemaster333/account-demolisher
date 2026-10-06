@@ -1,6 +1,13 @@
 // classic demolition batcher: pure function from AccountAudit to ClassicBatch[]
 
-import type { AccountAudit, AssetIdentifier, ClaimableBalanceEntry } from "@/lib/types/account";
+import { Asset } from "@stellar/stellar-sdk";
+
+import type {
+  AccountAudit,
+  AssetIdentifier,
+  AuditBalance,
+  ClaimableBalanceEntry,
+} from "@/lib/types/account";
 import {
   type BatchOptions,
   type BatchedOperation,
@@ -11,15 +18,25 @@ import {
 } from "@/lib/types/plan";
 import { applySlippageMin, resolveConfiguredSlippageBps } from "@/lib/safety/slippage";
 import { MAX_PRICE_IMPACT_BPS, priceImpactBps } from "@/lib/plan/price-impact";
+import { isFrozenBalance } from "@/lib/stellar/account-audit";
+import { decimalToStroops as toStroops, stroopsToDecimal } from "@/lib/stellar/amount";
 
 export const MAX_OPS_PER_TX = 100;
 
 // xlm seeded into the ephemeral mediator: base reserve + fee buffer
 const MEDIATOR_FUNDING_XLM = "2";
 const MEDIATOR_FUNDING_STROOPS = 20_000_000n;
+// the network base reserve (0.5 XLM on mainnet and testnet)
+const BASE_RESERVE_STROOPS = 5_000_000n;
 // a bare account's own minimum balance (2 base reserves of 0.5 XLM), which stays
 // locked until the merge itself
-const BARE_ACCOUNT_RESERVE_STROOPS = 10_000_000n;
+const BARE_ACCOUNT_RESERVE_STROOPS = 2n * BASE_RESERVE_STROOPS;
+// the highest per-op fee the executor bids for a classic batch (its
+// MAX_PER_OP_FEE). reserve checks assume it when the caller gives no bid, so
+// they err towards leaving the optional op out, never towards a failed batch.
+export const CLASSIC_FEE_CEILING_PER_OP = 1_000_000;
+// the largest trustline limit stellar allows (int64 max in stroops)
+const MAX_TRUSTLINE_LIMIT_STROOPS = 9_223_372_036_854_775_807n;
 
 export function batchClassicDemolition(
   audit: AccountAudit,
@@ -45,7 +62,18 @@ export function batchClassicDemolition(
       "batchClassicDemolition: merge destination must differ from the account being closed (self-merge is invalid)",
     );
   }
+  // a frozen balance can't be paid, path-paid or returned, and its trustline
+  // can't be removed, so any batch built around it reverts after the DeFi exits
+  // have already run
+  const frozen = audit.balances.find(isFrozenBalance);
+  if (frozen !== undefined && frozen.asset.kind === "credit") {
+    throw new Error(
+      `batchClassicDemolition: frozen trustline ${frozen.asset.code}:${frozen.asset.issuer} ` +
+        `holds a balance; the close is blocked (FROZEN_TRUSTLINE)`,
+    );
+  }
 
+  const feePerOp = BigInt(options.feePerOpStroops ?? CLASSIC_FEE_CEILING_PER_OP);
   const policy = disposalPolicy(options, paths);
   const decide = memoizedDecision(policy);
   // the memo travels on the final batch only, so on a direct memo close every
@@ -59,58 +87,52 @@ export function batchClassicDemolition(
     const reserveA = pool.reserves[0];
     const reserveB = pool.reserves[1];
     if (!reserveA || !reserveB) continue;
-    // reserves are the whole pool's; the floor applies to this holder's share
-    const proportionalMin = proportionalWithdrawMin(pool.shareBalance, pool.totalShares);
-    poolWithdraws.push({
-      kind: "liquidity_pool_withdraw",
-      summary: `Withdraw pool shares from ${pool.poolId.slice(0, 8)}...`,
-      metadata: {
-        liquidityPoolId: pool.poolId,
-        amount: pool.shareBalance,
-        minAmountA: proportionalMin(reserveA.amount),
-        minAmountB: proportionalMin(reserveB.amount),
-        reserveA,
-        reserveB,
-      },
-    });
+    poolWithdraws.push(poolWithdrawOp(pool));
   }
 
   // 2. cancel open offers
-  const offerCancels: BatchedOperation[] = audit.offers.map((offer) => ({
-    kind: "manage_sell_offer_cancel",
-    summary: `Cancel offer ${offer.id}`,
-    metadata: {
-      offerId: offer.id,
-      selling: offer.selling,
-      buying: offer.buying,
-      priceN: offer.priceR.n,
-      priceD: offer.priceR.d,
-    },
-  }));
+  const offerCancels: BatchedOperation[] = audit.offers.map(offerCancelOp);
 
   // 3. claim claimable balances. A credit claim whose asset is then sold on the
   // market goes in an earlier phase: the conversion and the trustline removal are
   // sized from this audit, so they must be rebuilt after the claim has landed.
   // Claims of assets with an explicit disposal are sized exactly here and stay
-  // in the same transaction as that disposal.
-  const claimPlan = planClaimableBalances(audit, options.claimableBalanceIds);
+  // in the same transaction as that disposal. A claim into a trustline the close
+  // opens always goes first: this audit has no balance line to dispose of yet.
+  const claimPlan = planClaimableBalances(audit, options.claimableBalanceIds, {
+    feePerOpStroops: Number(feePerOp),
+  });
+  const changeByKey = new Map(claimPlan.trustlineChanges.map((c) => [pathKey(c.asset), c]));
   const isolatedClaims: BatchedOperation[] = [];
   const sameTxClaims: BatchedOperation[] = [];
   const claimedInTx = new Map<string, bigint>();
   const claimsInEarlierPhase = new Set<string>();
   for (const cb of claimPlan.claimed) {
     const op = claimOp(cb);
-    if (cb.asset.kind !== "credit") {
+    if (cb.asset.kind !== "credit" || cb.asset.issuer === audit.accountId) {
+      // native, or the account's own asset: an issuer holds no balance of it
       sameTxClaims.push(op);
       continue;
     }
     const key = pathKey(cb.asset);
+    const change = changeByKey.get(key);
+    const target = (ops: BatchedOperation[]): void => {
+      if (change !== undefined) {
+        changeByKey.delete(key);
+        ops.push(trustlineChangeOp(change.asset, change.change));
+      }
+      ops.push(op);
+    };
     const disposal = decide(key);
-    if (disposal.kind === "send_to_destination" || disposal.kind === "return_to_issuer") {
-      sameTxClaims.push(op);
+    if (
+      change?.change !== "add" &&
+      !claimsInEarlierPhase.has(key) &&
+      (disposal.kind === "send_to_destination" || disposal.kind === "return_to_issuer")
+    ) {
+      target(sameTxClaims);
       claimedInTx.set(key, (claimedInTx.get(key) ?? 0n) + toStroops(cb.amount));
     } else {
-      isolatedClaims.push(op);
+      target(isolatedClaims);
       claimsInEarlierPhase.add(key);
     }
   }
@@ -228,13 +250,13 @@ export function batchClassicDemolition(
   // the sponsorship automatically, dropping num_sponsoring so the merge passes.
   // Foreign sponsorships (entries this account sponsors for OTHERS) can't be
   // enumerated from this account's Horizon record and are blocked upstream in
-  // computeMergeability rather than papered over with a wrong revoke op.
+  // assessMergeability rather than papered over with a wrong revoke op.
 
   // 8. the merge group, which always lands whole in the final batch: a threshold
   // reset or signer removal that landed a batch earlier than the merge could
   // leave the remaining batch unsignable. The reset goes first, one setOptions per
-  // signer after it, and the mediator is funded right before the merge, once every
-  // reserve the close frees has been released.
+  // signer after it, then the close marker, and the mediator is funded right
+  // before the merge, once every reserve the close frees has been released.
   const mergeGroup: BatchedOperation[] = [...tailPayments, ...tailRemovals];
   if (mustResetThresholds(audit)) {
     mergeGroup.push({
@@ -261,17 +283,21 @@ export function batchClassicDemolition(
     : options.destination;
   // skipped once a prior phase already funded the mediator: re-creating an
   // existing account reverts with op_already_exists
-  if (options.useMediator && options.mediatorPublicKey && !options.mediatorAlreadyFunded) {
-    mergeGroup.push({
-      kind: "create_account_mediator",
-      summary: `Fund mediator ${options.mediatorPublicKey.slice(0, 6)}... with ${MEDIATOR_FUNDING_XLM} XLM`,
-      metadata: {
-        destination: options.mediatorPublicKey,
-        startingBalance: MEDIATOR_FUNDING_XLM,
-      },
-    });
-  }
-  mergeGroup.push({
+  const fundMediator =
+    options.useMediator &&
+    options.mediatorPublicKey !== undefined &&
+    !options.mediatorAlreadyFunded;
+  const mediatorOp: BatchedOperation | null = fundMediator
+    ? {
+        kind: "create_account_mediator",
+        summary: `Fund mediator ${(options.mediatorPublicKey as string).slice(0, 6)}... with ${MEDIATOR_FUNDING_XLM} XLM`,
+        metadata: {
+          destination: options.mediatorPublicKey,
+          startingBalance: MEDIATOR_FUNDING_XLM,
+        },
+      }
+    : null;
+  const mergeOp: BatchedOperation = {
     kind: "account_merge",
     summary: options.useMediator
       ? `Merge account into mediator ${mergeDestination.slice(0, 6)}...`
@@ -280,9 +306,8 @@ export function batchClassicDemolition(
       destination: mergeDestination,
       ultimateDestination: options.destination,
       viaMediator: options.useMediator,
-      userFallbackAddress: options.userFallbackAddress,
     },
-  });
+  };
 
   // SEC-13 two-phase close: a liquidity_pool_withdraw or a credit claim credits
   // balances this audit never saw, so converting/removing those trustlines or
@@ -297,12 +322,41 @@ export function batchClassicDemolition(
     ...removals,
     ...dataDeletes,
   ];
+
+  // the marker sets a data entry and deletes it again, so for one op it needs a
+  // base reserve free on top of the bare account's minimum. it comes before the
+  // mediator funding, which then sees the same balance it would without it. when
+  // the account can't spare it the close goes ahead unmarked and is not counted.
+  const withoutMarker = [...leading, ...body, ...mergeGroup, ...(mediatorOp ? [mediatorOp] : [])];
+  if (markerFits(audit, [...withoutMarker, mergeOp], feePerOp)) {
+    mergeGroup.push(closeMarkerOp("set"), closeMarkerOp("delete"));
+  }
+  if (mediatorOp) mergeGroup.push(mediatorOp);
+  mergeGroup.push(mergeOp);
   return [...packLeading(leading, options), ...packFinal(body, mergeGroup, options)];
+}
+
+// whether the batches carry the close marker. a close without it still merges,
+// but close verification will not count it, which the review should say.
+export function closeMarkerPlanned(batches: readonly ClassicBatch[]): boolean {
+  return batches.some((b) => b.operations.some((o) => o.kind === "close_marker"));
 }
 
 // what a claimable balance can't be collected for
 export type ClaimableBalanceBlock =
-  "not_claimable_yet" | "no_trustline" | "not_authorized" | "line_full";
+  | "not_claimable_yet"
+  | "no_trustline"
+  | "not_authorized"
+  | "line_full"
+  // the trustline it needs costs a base reserve the account can't spare
+  | "reserve";
+
+export interface TrustlineChange {
+  readonly asset: Extract<AssetIdentifier, { kind: "credit" }>;
+  // add: open a trustline the account doesn't have. raise: lift a full one to
+  // the maximum limit. both happen right before the first claim of the asset
+  readonly change: "add" | "raise";
+}
 
 export interface ClaimPlan {
   // balances this close claims, in audit order
@@ -312,24 +366,47 @@ export interface ClaimPlan {
     readonly balance: ClaimableBalanceEntry;
     readonly reason: ClaimableBalanceBlock;
   }[];
+  // trustlines opened or raised so the claimed balances can land
+  readonly trustlineChanges: readonly TrustlineChange[];
+}
+
+export interface ClaimPlanOptions {
+  // per-op bid for the ops the claims add; defaults to the executor's ceiling
+  readonly feePerOpStroops?: number;
 }
 
 // which claimable balances the close claims. A credit claim needs an authorized
 // trustline with room for the amount, or it fails the whole transaction with
-// op_no_trust / op_not_authorized / op_line_full, so those are left behind
-// rather than emitted.
+// op_no_trust / op_not_authorized / op_line_full. A missing trustline is opened
+// first when the issuer doesn't require authorization and the account can fund
+// its reserve; a full one is raised to the maximum limit. The account's own
+// asset needs no trustline at all (and change_trust on it is op_malformed).
 export function planClaimableBalances(
   audit: AccountAudit,
   claimableBalanceIds: readonly string[] | undefined,
+  options: ClaimPlanOptions = {},
 ): ClaimPlan {
   const selected = claimableBalanceIds === undefined ? null : new Set(claimableBalanceIds);
-  const headroom = new Map<string, bigint>();
+  const feePerOp = BigInt(options.feePerOpStroops ?? CLASSIC_FEE_CEILING_PER_OP);
+  const lines = new Map<string, AuditBalance>();
   for (const b of audit.balances) {
-    if (b.asset.kind !== "credit" || b.limit === undefined) continue;
-    headroom.set(pathKey(b.asset), toStroops(b.limit) - toStroops(b.amount));
+    if (b.asset.kind === "credit") lines.set(pathKey(b.asset), b);
   }
+  // room left on each trustline; undefined when the audit carries no limit
+  const room = new Map<string, bigint>();
+  for (const [key, b] of lines) {
+    if (b.limit !== undefined) room.set(key, toStroops(b.limit) - toStroops(b.amount));
+  }
+  // XLM free for new trustline reserves: the balance above the account's
+  // current minimum and selling liabilities, less the fee of the ops that run
+  // with the claims in the leading phase
+  const leadingOps =
+    audit.poolShares.filter((p) => hasPositive(p.shareBalance)).length + audit.offers.length;
+  let spendable = spendableNative(audit) - feePerOp * BigInt(leadingOps);
+
   const claimed: ClaimableBalanceEntry[] = [];
   const leftBehind: { balance: ClaimableBalanceEntry; reason: ClaimableBalanceBlock }[] = [];
+  const changes = new Map<string, TrustlineChange>();
   for (const cb of audit.claimableBalances) {
     const selfSponsored = cb.sponsor === audit.accountId;
     if (!selfSponsored && selected !== null && !selected.has(cb.id)) continue;
@@ -338,33 +415,110 @@ export function planClaimableBalances(
       leftBehind.push({ balance: cb, reason: "not_claimable_yet" });
       continue;
     }
-    if (cb.asset.kind === "credit") {
-      const key = pathKey(cb.asset);
-      const asset = cb.asset;
-      const line = audit.balances.find(
-        (b) => b.asset.kind === "credit" && pathKey(b.asset) === pathKey(asset),
-      );
-      if (line === undefined) {
+    if (cb.asset.kind !== "credit" || cb.asset.issuer === audit.accountId) {
+      claimed.push(cb);
+      spendable -= feePerOp;
+      continue;
+    }
+    const asset = cb.asset;
+    const key = pathKey(asset);
+    const amount = toStroops(cb.amount);
+    const line = lines.get(key);
+    if (line === undefined) {
+      if (cb.issuerAuthRequired !== false) {
         leftBehind.push({ balance: cb, reason: "no_trustline" });
         continue;
       }
-      if (line.isAuthorized === false) {
-        leftBehind.push({ balance: cb, reason: "not_authorized" });
-        continue;
-      }
-      const room = headroom.get(key);
-      if (room !== undefined) {
-        const amount = toStroops(cb.amount);
-        if (amount > room) {
-          leftBehind.push({ balance: cb, reason: "line_full" });
+      if (!changes.has(key)) {
+        // the new line's reserve, and the fee of its change_trust and this claim
+        const cost = BASE_RESERVE_STROOPS + 2n * feePerOp;
+        if (spendable < cost) {
+          leftBehind.push({ balance: cb, reason: "reserve" });
           continue;
         }
-        headroom.set(key, room - amount);
+        spendable -= BASE_RESERVE_STROOPS + feePerOp;
+        changes.set(key, { asset, change: "add" });
+        room.set(key, MAX_TRUSTLINE_LIMIT_STROOPS);
       }
+    } else if (line.isAuthorized === false) {
+      leftBehind.push({ balance: cb, reason: "not_authorized" });
+      continue;
+    }
+    const left = room.get(key);
+    if (left !== undefined && amount > left) {
+      // a full line is raised to the maximum limit once; past that it stays full
+      const raised =
+        MAX_TRUSTLINE_LIMIT_STROOPS - (line ? toStroops(line.limit ?? "0") - left : 0n);
+      if (changes.has(key) || line === undefined || amount > raised) {
+        leftBehind.push({ balance: cb, reason: "line_full" });
+        continue;
+      }
+      spendable -= feePerOp;
+      changes.set(key, { asset, change: "raise" });
+      room.set(key, raised - amount);
+    } else if (left !== undefined) {
+      room.set(key, left - amount);
     }
     claimed.push(cb);
+    spendable -= feePerOp;
   }
-  return { claimed, leftBehind };
+  return { claimed, leftBehind, trustlineChanges: [...changes.values()] };
+}
+
+// native the account can spend right now: its balance less the minimum balance
+// (2 + subentries + sponsoring - sponsored base reserves) and selling liabilities
+function spendableNative(audit: AccountAudit): bigint {
+  const native = audit.balances.find((b) => b.asset.kind === "native");
+  if (native === undefined) return 0n;
+  const units =
+    2n +
+    BigInt(audit.subentryCount) +
+    BigInt(audit.sponsorship.numSponsoring) -
+    BigInt(audit.sponsorship.numSponsored);
+  return (
+    toStroops(native.amount) - units * BASE_RESERVE_STROOPS - toStroops(native.sellingLiabilities)
+  );
+}
+
+// whether the account still has a base reserve free when the marker is set,
+// right before the merge. by then every subentry the close removes is gone, so
+// the bare account's own minimum is what stays locked; inflows count only at
+// their guaranteed floors, and every op's fee is taken off at the bid.
+function markerFits(
+  audit: AccountAudit,
+  opsWithoutMarker: readonly BatchedOperation[],
+  feePerOp: bigint,
+): boolean {
+  const native = audit.balances.find((b) => b.asset.kind === "native");
+  if (native === undefined) return false;
+  // the mediator funding runs after the marker, so only its fee counts here
+  const available =
+    toStroops(native.amount) +
+    guaranteedNativeInflow(opsWithoutMarker) -
+    toStroops(native.sellingLiabilities) -
+    BARE_ACCOUNT_RESERVE_STROOPS -
+    feePerOp * BigInt(opsWithoutMarker.length + 2);
+  return available >= BASE_RESERVE_STROOPS;
+}
+
+// XLM the ops pay into the account at their floors: native claims, path payment
+// minimums and the native side of LP withdraw minimums
+function guaranteedNativeInflow(ops: readonly BatchedOperation[]): bigint {
+  let inflow = 0n;
+  for (const op of ops) {
+    const md = op.metadata as Record<string, unknown>;
+    if (op.kind === "claim_claimable_balance" && isNative(md["asset"])) {
+      inflow += toStroops(String(md["amount"]));
+    } else if (op.kind === "path_payment_strict_send" && isNative(md["destAsset"])) {
+      inflow += toStroops(String(md["destMin"]));
+    } else if (op.kind === "liquidity_pool_withdraw") {
+      const reserveA = md["reserveA"] as { readonly asset: unknown } | undefined;
+      const reserveB = md["reserveB"] as { readonly asset: unknown } | undefined;
+      if (isNative(reserveA?.asset)) inflow += toStroops(String(md["minAmountA"]));
+      if (isNative(reserveB?.asset)) inflow += toStroops(String(md["minAmountB"]));
+    }
+  }
+  return inflow;
 }
 
 // why a credit balance can't be converted on the market as planned
@@ -386,6 +540,7 @@ interface DisposalPolicy {
   readonly sendToDestination: ReadonlySet<string>;
   readonly acceptedPriceImpact: ReadonlySet<string>;
   readonly reviewedReferences: Readonly<Record<string, ReferenceQuote>> | undefined;
+  readonly reviewedConversions: Readonly<Record<string, ReferenceQuote>> | undefined;
   readonly slippageBps: number;
 }
 
@@ -396,6 +551,7 @@ function disposalPolicy(
     | "sendToDestinationAssetKeys"
     | "acceptedPriceImpactAssetKeys"
     | "reviewedReferenceQuotes"
+    | "reviewedConversionQuotes"
   >,
   paths: ReadonlyMap<string, PathResultRef> | undefined,
 ): DisposalPolicy {
@@ -405,6 +561,7 @@ function disposalPolicy(
     sendToDestination: new Set(options.sendToDestinationAssetKeys ?? []),
     acceptedPriceImpact: new Set(options.acceptedPriceImpactAssetKeys ?? []),
     reviewedReferences: options.reviewedReferenceQuotes,
+    reviewedConversions: options.reviewedConversionQuotes,
     slippageBps: resolveConfiguredSlippageBps(),
   };
 }
@@ -434,12 +591,18 @@ function decideCreditDisposal(key: string, policy: DisposalPolicy): CreditDispos
   if (impact !== null && impact > MAX_PRICE_IMPACT_BPS && !accepted) {
     return { kind: "blocked", reason: "price_impact", priceImpactBps: impact };
   }
-  const reviewed = policy.reviewedReferences?.[key];
+  // a confirmation covers the price the user saw, so both the reference and the
+  // full-size quote are held to what was reviewed
+  const reviewedReference = policy.reviewedReferences?.[key];
   if (
-    reviewed !== undefined &&
+    reviewedReference !== undefined &&
     path.reference !== undefined &&
-    referenceRateDropped(reviewed, path.reference, policy.slippageBps)
+    rateDropped(reviewedReference, path.reference, policy.slippageBps)
   ) {
+    return { kind: "blocked", reason: "requote_worse" };
+  }
+  const reviewedFull = policy.reviewedConversions?.[key];
+  if (reviewedFull !== undefined && rateDropped(reviewedFull, path, policy.slippageBps)) {
     return { kind: "blocked", reason: "requote_worse" };
   }
   return { kind: "convert", path };
@@ -456,9 +619,9 @@ export function conversionPriceImpactBps(path: PathResultRef): number | null {
   );
 }
 
-// true when the fresh reference rate is below the reviewed one by more than the
-// slippage tolerance: the market moved against the user since they reviewed it
-function referenceRateDropped(
+// true when the fresh rate is below the reviewed one by more than the slippage
+// tolerance: the market moved against the user since they reviewed it
+function rateDropped(
   reviewed: ReferenceQuote,
   fresh: ReferenceQuote,
   toleranceBps: number,
@@ -480,6 +643,64 @@ function claimOp(cb: ClaimableBalanceEntry): BatchedOperation {
       balanceId: cb.id,
       asset: cb.asset,
       amount: cb.amount,
+    },
+  };
+}
+
+function trustlineChangeOp(
+  asset: Extract<AssetIdentifier, { kind: "credit" }>,
+  change: TrustlineChange["change"],
+): BatchedOperation {
+  return {
+    kind: "change_trust_add",
+    summary:
+      change === "add"
+        ? `Add trustline ${asset.code} to collect a claimable balance`
+        : `Raise the ${asset.code} trustline limit to collect a claimable balance`,
+    metadata: { asset },
+  };
+}
+
+function closeMarkerOp(action: "set" | "delete"): BatchedOperation {
+  return {
+    kind: "close_marker",
+    summary:
+      action === "set"
+        ? "Mark this transaction as an Account Demolisher close"
+        : "Remove the close marker",
+    metadata: { action },
+  };
+}
+
+function poolWithdrawOp(pool: AccountAudit["poolShares"][number]): BatchedOperation {
+  const reserveA = pool.reserves[0]!;
+  const reserveB = pool.reserves[1]!;
+  // reserves are the whole pool's; the floor applies to this holder's share
+  const proportionalMin = proportionalWithdrawMin(pool.shareBalance, pool.totalShares);
+  return {
+    kind: "liquidity_pool_withdraw",
+    summary: `Withdraw pool shares from ${pool.poolId.slice(0, 8)}...`,
+    metadata: {
+      liquidityPoolId: pool.poolId,
+      amount: pool.shareBalance,
+      minAmountA: proportionalMin(reserveA.amount),
+      minAmountB: proportionalMin(reserveB.amount),
+      reserveA,
+      reserveB,
+    },
+  };
+}
+
+function offerCancelOp(offer: AccountAudit["offers"][number]): BatchedOperation {
+  return {
+    kind: "manage_sell_offer_cancel",
+    summary: `Cancel offer ${offer.id}`,
+    metadata: {
+      offerId: offer.id,
+      selling: offer.selling,
+      buying: offer.buying,
+      priceN: offer.priceR.n,
+      priceD: offer.priceR.d,
     },
   };
 }
@@ -580,19 +801,7 @@ export function mediatorFundingCheck(
   if (!ops.some((o) => o.kind === "create_account_mediator")) return null;
   const native = audit.balances.find((b) => b.asset.kind === "native");
   let available = native ? toStroops(native.amount) : 0n;
-  for (const op of ops) {
-    const md = op.metadata as Record<string, unknown>;
-    if (op.kind === "claim_claimable_balance" && isNative(md["asset"])) {
-      available += toStroops(String(md["amount"]));
-    } else if (op.kind === "path_payment_strict_send" && isNative(md["destAsset"])) {
-      available += toStroops(String(md["destMin"]));
-    } else if (op.kind === "liquidity_pool_withdraw") {
-      const reserveA = md["reserveA"] as { readonly asset: unknown } | undefined;
-      const reserveB = md["reserveB"] as { readonly asset: unknown } | undefined;
-      if (isNative(reserveA?.asset)) available += toStroops(String(md["minAmountA"]));
-      if (isNative(reserveB?.asset)) available += toStroops(String(md["minAmountB"]));
-    }
-  }
+  available += guaranteedNativeInflow(ops);
   available -= BigInt(feePerOpStroops) * BigInt(ops.length);
   available -= BARE_ACCOUNT_RESERVE_STROOPS;
   available -= spentBeforeStroops;
@@ -651,30 +860,6 @@ export function proportionalWithdrawMin(
   };
 }
 
-// horizon decimal amounts carry at most 7 places; anything else is malformed and
-// throws rather than being truncated or read as zero
-const DECIMAL_AMOUNT = /^(-?)(\d+)(?:\.(\d{1,7}))?$/;
-
-function toStroops(s: string): bigint {
-  const m = DECIMAL_AMOUNT.exec(s);
-  if (m === null) {
-    throw new Error(`classic-batcher: malformed amount "${s}"`);
-  }
-  const [, sign = "", intPart = "0", fracPart = ""] = m;
-  const result = BigInt(intPart) * 10_000_000n + BigInt(fracPart.padEnd(7, "0"));
-  return sign === "-" ? -result : result;
-}
-
-function stroopsToDecimal(stroops: bigint): string {
-  const negative = stroops < 0n;
-  const abs = negative ? -stroops : stroops;
-  const intPart = abs / 10_000_000n;
-  const fracPart = abs % 10_000_000n;
-  const frac = fracPart.toString().padStart(7, "0");
-  const result = `${intPart.toString()}.${frac}`;
-  return negative ? `-${result}` : result;
-}
-
 export interface UnroutableCredit {
   readonly key: string;
   readonly code: string;
@@ -693,12 +878,15 @@ export interface CreditPolicyOptions {
   readonly claimableBalanceIds?: readonly string[];
   readonly acceptedPriceImpactAssetKeys?: readonly string[];
   readonly reviewedReferenceQuotes?: Readonly<Record<string, ReferenceQuote>>;
+  readonly reviewedConversionQuotes?: Readonly<Record<string, ReferenceQuote>>;
+  readonly feePerOpStroops?: number;
 }
 
-// credit balances (including what the close claims into them) that the batcher
-// will neither convert nor dispose of as the user chose. While any of these
-// exist the account cannot fully merge, since their trustlines can't be removed
-// with a live balance. Uses the same decision as batchClassicDemolition.
+// credit balances (including what the close claims into them, and assets it
+// collects into a trustline it opens) that the batcher will neither convert nor
+// dispose of as the user chose. While any of these exist the account cannot
+// fully merge, since their trustlines can't be removed with a live balance. Uses
+// the same decision as batchClassicDemolition.
 export function unroutableCredits(
   audit: AccountAudit,
   paths: ReadonlyMap<string, PathResultRef> | undefined,
@@ -717,32 +905,82 @@ export function unroutableCredits(
         ...(extra.reviewedReferenceQuotes
           ? { reviewedReferenceQuotes: extra.reviewedReferenceQuotes }
           : {}),
+        ...(extra.reviewedConversionQuotes
+          ? { reviewedConversionQuotes: extra.reviewedConversionQuotes }
+          : {}),
       },
       paths,
     ),
   );
-  const inflow = new Map<string, bigint>();
-  for (const cb of planClaimableBalances(audit, extra.claimableBalanceIds).claimed) {
-    if (cb.asset.kind !== "credit") continue;
-    const key = pathKey(cb.asset);
-    inflow.set(key, (inflow.get(key) ?? 0n) + toStroops(cb.amount));
-  }
-  const out: UnroutableCredit[] = [];
+  const held = new Map<string, { asset: { code: string; issuer: string }; amount: bigint }>();
   for (const b of audit.balances) {
     if (b.asset.kind !== "credit") continue;
-    const key = pathKey(b.asset);
-    const held = toStroops(b.amount) + (inflow.get(key) ?? 0n);
-    if (held <= 0n) continue;
+    held.set(pathKey(b.asset), { asset: b.asset, amount: toStroops(b.amount) });
+  }
+  const claims = planClaimableBalances(audit, extra.claimableBalanceIds, {
+    ...(extra.feePerOpStroops !== undefined ? { feePerOpStroops: extra.feePerOpStroops } : {}),
+  }).claimed;
+  for (const cb of claims) {
+    // the account's own asset is not held once claimed
+    if (cb.asset.kind !== "credit" || cb.asset.issuer === audit.accountId) continue;
+    const key = pathKey(cb.asset);
+    const entry = held.get(key) ?? { asset: cb.asset, amount: 0n };
+    held.set(key, { asset: entry.asset, amount: entry.amount + toStroops(cb.amount) });
+  }
+  const out: UnroutableCredit[] = [];
+  for (const [key, { asset, amount }] of held) {
+    if (amount <= 0n) continue;
     const disposal = decide(key);
     if (disposal.kind !== "blocked") continue;
     out.push({
       key,
-      code: b.asset.code,
-      issuer: b.asset.issuer,
-      amount: stroopsToDecimal(held),
+      code: asset.code,
+      issuer: asset.issuer,
+      amount: stroopsToDecimal(amount),
       reason: disposal.reason,
       ...(disposal.priceImpactBps !== undefined ? { priceImpactBps: disposal.priceImpactBps } : {}),
     });
   }
   return out;
+}
+
+export interface ClassicUnwindPlan {
+  readonly batches: readonly ClassicBatch[];
+  readonly offerIds: readonly string[];
+  readonly poolIds: readonly string[];
+}
+
+// the classic phase that frees repay assets before the repays: cancel every
+// offer that sells one (its selling liabilities lock the balance a SAC transfer
+// can spend) and withdraw every classic pool share that holds one in its
+// reserves. repayAssets are SAC contract ids, compared through the passphrase.
+// no batches when nothing locks a repay asset.
+export function planClassicUnwind(
+  audit: AccountAudit,
+  repayAssets: readonly string[],
+  networkPassphrase: string,
+  destination: string,
+): ClassicUnwindPlan {
+  const wanted = new Set(repayAssets);
+  const locks = (asset: AssetIdentifier): boolean => {
+    if (asset.kind === "native") return wanted.has(Asset.native().contractId(networkPassphrase));
+    if (asset.kind === "credit") {
+      return wanted.has(new Asset(asset.code, asset.issuer).contractId(networkPassphrase));
+    }
+    return false;
+  };
+  const offers = audit.offers.filter((o) => locks(o.selling));
+  const pools = audit.poolShares.filter(
+    (p) =>
+      hasPositive(p.shareBalance) &&
+      p.reserves[0] !== undefined &&
+      p.reserves[1] !== undefined &&
+      p.reserves.some((r) => locks(r.asset)),
+  );
+  const ops = [...pools.map(poolWithdrawOp), ...offers.map(offerCancelOp)];
+  return {
+    batches: packLeading(ops, { destination, useMediator: false }),
+    offerIds: offers.map((o) => o.id),
+    poolIds: pools.map((p) => p.poolId),
+  };
 }

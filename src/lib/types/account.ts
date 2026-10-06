@@ -80,9 +80,14 @@ export interface ClaimableBalanceEntry {
   // filterClaimableNow evaluates for this account
   readonly predicate: unknown;
   readonly claimants: readonly string[];
-  // whether the auditing account can claim this balance right now (predicate
-  // evaluated against wall-clock time at audit). undefined in fixtures/legacy.
+  // whether the auditing account can claim this balance: its predicate evaluated
+  // against the latest ledger close time and kept claimable for the signing
+  // window. undefined in fixtures/legacy.
   readonly claimableNow?: boolean;
+  // set only on a claimable-now credit balance whose asset has no trustline on
+  // the account: the issuer's auth_required flag. false means the close can add
+  // the trustline and then claim. unset when the issuer account does not exist.
+  readonly issuerAuthRequired?: boolean;
 }
 
 export interface PoolShareEntry {
@@ -104,10 +109,11 @@ export interface SponsorshipInfo {
   readonly numSponsoring: number;
   readonly numSponsored: number;
   readonly sponsoredBy?: string;
-  // count of the account's OWN self-sponsored entries that the demolition will
-  // release on close (self-sponsored trustlines/offers/signers + claimable
-  // self-sponsored CBs). numSponsoring beyond this are foreign sponsorships
-  // that block the merge and must be resolved by the user first.
+  // claimable balances this account created with itself as a claimant and can
+  // claim now, as far as the audit alone can tell (assessMergeability counts the
+  // plan's actual claims). an account cannot sponsor its own trustlines, offers,
+  // signers or data entries, so numSponsoring beyond this is foreign sponsorship
+  // that blocks the merge.
   readonly coverable: number;
 }
 
@@ -117,7 +123,7 @@ export type Mergeability =
   | { readonly mergeable: true }
   | {
       readonly mergeable: false;
-      readonly reason: "AUTH_IMMUTABLE" | "IS_SPONSOR" | "MISSING_ACCOUNT";
+      readonly reason: "AUTH_IMMUTABLE" | "IS_SPONSOR" | "FROZEN_TRUSTLINE" | "SEQNUM_TOO_FAR";
       readonly detail?: string;
     };
 
