@@ -1065,7 +1065,14 @@ async function runFinalClassic(node: FinalClassicTxNode, run: Run): Promise<Conf
         );
       }
 
-      const sourceAccount = await withHorizonRetry(() => deps.horizon.loadAccount(publicKey));
+      let sourceAccount: Awaited<ReturnType<HorizonLike["loadAccount"]>>;
+      try {
+        sourceAccount = await withHorizonRetry(() => deps.horizon.loadAccount(publicKey));
+      } catch (err) {
+        // gone since the audit: an earlier submit of this close may have landed
+        if (isNotFound(err)) return mergeAlreadyLanded(node, run, err);
+        throw err;
+      }
       const fee = capFeeToBalance(feeBase, batch.operations.length, freshAudit, baseReserve);
       const built = buildClassicTransaction(batch, sourceAccount, deps.network, fee).transaction;
       if ("innerTransaction" in built) {
