@@ -26,10 +26,15 @@ import type {
 
 export interface AuditedClaimableBalance extends ClaimableBalanceEntry {
   // set only on a claimable-now credit balance whose asset has no trustline on the
-  // account: the issuer's auth_required flag. false means change_trust can add the
-  // line and the claim then succeeds. left unset when the issuer account does not
-  // exist (change_trust would fail op_no_issuer).
+  // account and that another account issued: the issuer's auth_required flag.
+  // false means change_trust can add the line and the claim then succeeds. left
+  // unset when the issuer account does not exist (change_trust would fail
+  // op_no_issuer).
   readonly issuerAuthRequired?: boolean;
+  // the audited account issued this credit asset. it claims the balance with no
+  // trustline (an issuer cannot hold one in its own asset, change_trust on it is
+  // op_malformed) and the claim burns it, whatever the account's own flags
+  readonly issuedByAccount?: true;
 }
 
 // the audit plus the ledger it was evaluated against, so later checks (merge
@@ -94,7 +99,12 @@ export async function auditAccount(
     ...cb,
     claimableNow: claimableIds.has(cb.id),
   }));
-  const claimableBalances = await withIssuerAuthRequired(server, evaluated, balances);
+  const claimableBalances = await withIssuerAuthRequired(
+    server,
+    account.account_id,
+    evaluated,
+    balances,
+  );
 
   // the only sponsorships the close releases itself are claimable balances this
   // account created with itself as a claimant. everything else in num_sponsoring
@@ -220,8 +230,8 @@ function parseThresholds(
   signers: readonly AuditSigner[],
   accountId: string,
 ): AuditThresholds {
-  // the master key is the signer whose key equals the account id, NOT merely
-  // the first ed25519 signer (added co-signers are ed25519 too).
+  // the master key is the signer whose key equals the account id, not merely
+  // the first ed25519 signer (added co-signers are ed25519 too)
   const master = signers.find((s) => s.key === accountId);
   return {
     low: t.low_threshold,
@@ -300,10 +310,10 @@ async function loadPoolShares(
   );
   if (poolBalances.length === 0) return [];
 
-  // fetch every pool's details in parallel: a single flaky pool no longer blocks
-  // the others sequentially. If any fail we still throw (pool reserves are needed
-  // to build a safe withdraw), but with ONE aggregated, pool-named error instead
-  // of aborting on whichever happened to be first.
+  // fetch every pool's details in parallel so one slow pool does not hold up the
+  // others. any failure still throws (pool reserves are needed to build a safe
+  // withdraw), as one error naming every failed pool rather than whichever
+  // happened to fail first
   const settled = await Promise.allSettled(
     poolBalances.map(async (pb): Promise<PoolShareEntry> => {
       const pool = await server.liquidityPools().liquidityPoolId(pb.asset.poolId).call();
@@ -336,15 +346,22 @@ const ISSUER_LOOKUP_CONCURRENCY = 8;
 
 // tags each claimable-now credit balance the account has no trustline for with
 // its issuer's auth_required flag, one lookup per distinct issuer. a missing
-// issuer leaves the flag unset; any other failure propagates.
+// issuer leaves the flag unset; any other failure propagates. a balance of the
+// account's own asset is tagged issuedByAccount instead and needs no lookup.
 async function withIssuerAuthRequired(
   server: Horizon.Server,
+  accountId: string,
   claimableBalances: readonly ClaimableBalanceEntry[],
   balances: readonly AuditBalance[],
 ): Promise<readonly AuditedClaimableBalance[]> {
   const trusted = new Set(balances.map((b) => assetKey(b.asset)));
+  const ownAsset = (cb: ClaimableBalanceEntry): boolean =>
+    cb.asset.kind === "credit" && cb.asset.issuer === accountId;
   const untrusted = (cb: ClaimableBalanceEntry): string | null =>
-    cb.claimableNow === true && cb.asset.kind === "credit" && !trusted.has(assetKey(cb.asset))
+    cb.claimableNow === true &&
+    cb.asset.kind === "credit" &&
+    !ownAsset(cb) &&
+    !trusted.has(assetKey(cb.asset))
       ? cb.asset.issuer
       : null;
   const issuers = [
@@ -359,7 +376,8 @@ async function withIssuerAuthRequired(
       if (!isHorizonNotFound(err)) throw err;
     }
   });
-  return claimableBalances.map((cb) => {
+  return claimableBalances.map((cb): AuditedClaimableBalance => {
+    if (ownAsset(cb)) return { ...cb, issuedByAccount: true };
     const issuer = untrusted(cb);
     const flag = issuer === null ? undefined : flags.get(issuer);
     return flag === undefined ? cb : { ...cb, issuerAuthRequired: flag };
@@ -425,12 +443,12 @@ export function computeCoverableSponsorships(
 }
 
 // the claimable balances a claim would succeed for, judged from the audit alone:
-// claimable now, and for a credit either an authorized trustline with room left
-// for it (claims of one asset share that room) or no trustline and an issuer
-// that does not require authorization, so the plan can add the line first. the
-// plan can still leave one behind (for example when the account cannot fund the
-// new trustline's reserve), so this only feeds the stored audit verdict;
-// assessMergeability takes the plan's own list.
+// claimable now, and for a credit either the account's own asset, an authorized
+// trustline with room left for it (claims of one asset share that room) or no
+// trustline and an issuer that does not require authorization, so the plan can
+// add the line first. the plan can still leave one behind (for example when the
+// account cannot fund the new trustline's reserve), so this only feeds the
+// stored audit verdict; assessMergeability takes the plan's own list.
 export function collectableClaimableBalanceIds(
   balances: readonly AuditBalance[],
   claimableBalances: readonly AuditedClaimableBalance[],
@@ -446,7 +464,7 @@ export function collectableClaimableBalanceIds(
   const out: string[] = [];
   for (const cb of claimableBalances) {
     if (cb.claimableNow !== true) continue;
-    if (cb.asset.kind !== "credit") {
+    if (cb.asset.kind !== "credit" || cb.issuedByAccount === true) {
       out.push(cb.id);
       continue;
     }

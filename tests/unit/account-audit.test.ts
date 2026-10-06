@@ -227,6 +227,17 @@ describe("collectableClaimableBalanceIds", () => {
   it("skips balances that are not claimable now", () => {
     expect(collectableClaimableBalanceIds([], [cb("later", ACC, false)])).toEqual([]);
   });
+
+  // an issuer claiming its own asset needs no trustline (it cannot hold one), so
+  // the claim succeeds whatever its own auth flags say
+  it("collects a balance of the account's own asset without a trustline", () => {
+    const own = {
+      ...creditCb("own", "OWN", "5"),
+      asset: { kind: "credit" as const, code: "OWN", issuer: ACC },
+      issuedByAccount: true as const,
+    };
+    expect(collectableClaimableBalanceIds([], [own])).toEqual(["own"]);
+  });
 });
 
 function baseAudit(overrides: Partial<AccountAudit> = {}): AccountAudit {
@@ -520,6 +531,48 @@ describe("auditAccount", () => {
     fakeHorizon.others = { [ISSUER_OPEN]: new NetworkError("Bad Gateway", { status: 502 }) };
     fakeHorizon.claimable = [cbRecord("open", `OPEN:${ISSUER_OPEN}`)];
     await expect(auditAccount(ACC, TESTNET)).rejects.toThrow("Bad Gateway");
+  });
+
+  // the account is the asset's issuer: it claims its own asset without a
+  // trustline, and change_trust on its own asset is op_malformed, so neither its
+  // auth_required flag nor an issuer lookup applies
+  it("marks a balance of the account's own asset as issued by it, with no lookup", async () => {
+    fakeHorizon.account = horizonAccount({
+      num_sponsoring: 0,
+      flags: {
+        auth_immutable: false,
+        auth_required: true,
+        auth_revocable: true,
+        auth_clawback_enabled: false,
+      },
+    });
+    fakeHorizon.claimable = [cbRecord("own", `OWN:${ACC}`)];
+    fakeHorizon.loads = [];
+    const audit = await auditAccount(ACC, TESTNET);
+    const own = audit.claimableBalances.find((c) => c.id === "own");
+    expect(own).toMatchObject({ issuedByAccount: true, claimableNow: true });
+    expect(own).not.toHaveProperty("issuerAuthRequired");
+    expect(fakeHorizon.loads).toEqual([ACC]);
+    expect(collectableClaimableBalanceIds(audit.balances, audit.claimableBalances)).toEqual([
+      "own",
+    ]);
+  });
+
+  it("counts a self-sponsored balance of its own asset as coverable", async () => {
+    fakeHorizon.account = horizonAccount({
+      num_sponsoring: 1,
+      data_attr: {},
+      flags: {
+        auth_immutable: false,
+        auth_required: true,
+        auth_revocable: false,
+        auth_clawback_enabled: false,
+      },
+    });
+    fakeHorizon.claimable = [cbRecord("own", `OWN:${ACC}`, ACC)];
+    const audit = await auditAccount(ACC, TESTNET);
+    expect(audit.sponsorship.coverable).toBe(1);
+    expect(audit.mergeability).toEqual({ mergeable: true });
   });
 
   // a self-sponsored CB the close cannot claim keeps num_sponsoring above zero
