@@ -46,6 +46,20 @@ function machineWithStubs(discoverGate: Promise<void>) {
         unroutableCredits: [],
         heldTokenWarnings: [],
       })) as never,
+      // runs until the close is interrupted, then reports it the way the real
+      // executor does at a step boundary
+      execute: fromPromise(
+        async ({ input }: { input: { tree: PlanTree; interrupt: AbortSignal } }) => {
+          await new Promise((resolve) => input.interrupt.addEventListener("abort", resolve));
+          return {
+            result: { ok: false, errors: ["The close was stopped."] },
+            tree: input.tree,
+            notes: [],
+            landedPhases: [],
+            failureKind: "interrupted",
+          };
+        },
+      ) as never,
     },
   });
 }
@@ -86,7 +100,13 @@ function Harness(props: {
       <button
         type="button"
         data-testid="confirm"
-        onClick={() => send({ type: "CONFIRM", typed: "XXXX" })}
+        onClick={() =>
+          send({
+            type: "CONFIRM",
+            typed: "XXXX",
+            expected: { publicKey: ORIGINAL, networkId: MAINNET.id },
+          })
+        }
       />
     </>
   );
@@ -149,5 +169,29 @@ describe("a plan built for one network or account is discarded when either chang
       await new Promise((r) => setTimeout(r, 0));
     });
     expect(screen.getByTestId("state").textContent).toBe("awaiting_confirmation");
+  });
+});
+
+describe("a close that is executing stops when the wallet or network changes (M-10)", () => {
+  it("interrupts the run at the next step boundary once the wallet disconnects", async () => {
+    const gate = deferred<void>();
+    gate.resolve();
+    const machine = machineWithStubs(gate.promise);
+    const { rerender } = render(
+      <Harness machine={machine} publicKey={ORIGINAL} network={MAINNET} />,
+    );
+    act(() => screen.getByTestId("start").click());
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(screen.getByTestId("state").textContent).toBe("awaiting_confirmation");
+    act(() => screen.getByTestId("confirm").click());
+    expect(screen.getByTestId("state").textContent).toBe("executing");
+
+    rerender(<Harness machine={machine} publicKey={null} network={MAINNET} />);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(screen.getByTestId("state").textContent).toBe("failed");
   });
 });

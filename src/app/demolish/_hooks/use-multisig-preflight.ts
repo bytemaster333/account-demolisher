@@ -7,10 +7,14 @@ import { errorMessage } from "@/lib/errors";
 import { AccountNotFoundError, auditAccount } from "@/lib/stellar/account-audit";
 import type { AuditSigner } from "@/lib/types/account";
 
+import { hasClassicPoolShares } from "../_lib/signing-bundle";
+
 export interface MultisigInfo {
   readonly required: boolean;
   readonly threshold: number;
   readonly signers: readonly AuditSigner[];
+  // a classic pool share rules out a signing request (withdrawn in its own tx)
+  readonly hasClassicPoolShares: boolean;
 }
 
 export type Preflight =
@@ -44,7 +48,12 @@ export function useMultisigPreflight(
         setEntry({
           key,
           status: "ready",
-          info: { required: a.requiresMultisig, threshold: a.thresholds.high, signers: a.signers },
+          info: {
+            required: a.requiresMultisig,
+            threshold: a.thresholds.high,
+            signers: a.signers,
+            hasClassicPoolShares: hasClassicPoolShares(a),
+          },
         });
       })
       .catch((err: unknown) => {

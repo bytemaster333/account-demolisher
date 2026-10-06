@@ -4,23 +4,25 @@
 
 import type { Horizon, Transaction } from "@stellar/stellar-sdk";
 
-import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
+import { openPositionCount, type ProtocolPositions } from "@/lib/adapters/positions/interface";
 import type { NetworkConfig } from "@/lib/config/networks";
+import { errorMessage } from "@/lib/errors";
 import {
   SIGNING_WINDOW_SECONDS,
   assessBundleability,
   type BundleabilityResult,
 } from "@/lib/multisig/signing-request";
 import type { PlanTree } from "@/lib/plan/tree";
+import { decimalToStroops } from "@/lib/stellar/amount";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
 import { filterClaimableNow } from "@/lib/stellar/claimable-balances";
 import type { AccountAudit, AssetIdentifier } from "@/lib/types/account";
 import type { ClassicBatch, ClassicMemo } from "@/lib/types/plan";
 
-function openPositionCount(p: ProtocolPositions): number {
-  return (
-    p.blend.length + p.backstop.length + p.aquarius.length + p.soroswap.length + p.fxdao.length
-  );
+// a classic pool share is withdrawn in its own leading batch, so an account that
+// holds one can never be closed by one signed transaction
+export function hasClassicPoolShares(audit: AccountAudit): boolean {
+  return audit.poolShares.some((p) => decimalToStroops(p.shareBalance) > 0n);
 }
 
 // whether the reviewed close can be published as a signing request. Everything a
@@ -34,6 +36,7 @@ export function assessSigningRequest(input: {
   readonly useMediator: boolean;
   // standalone tokens picked to sweep, on the page or in the built plan
   readonly heldTokensSelected: number;
+  readonly hasClassicPoolShares: boolean;
   readonly tree: PlanTree | null;
   // the plan was built with deterministic disposal (no market sells)
   readonly deterministic: boolean;
@@ -42,6 +45,8 @@ export function assessSigningRequest(input: {
     hasSorobanPositions: openPositionCount(input.positions) > 0,
     hasSelectedAllowances: input.allowanceCount > 0,
     useMediator: input.useMediator,
+    hasClassicPoolShares: input.hasClassicPoolShares,
+    hasSelectedHeldTokens: input.heldTokensSelected > 0,
   });
   if (!base.ok) return base;
 
@@ -53,15 +58,6 @@ export function assessSigningRequest(input: {
         `We couldn't confirm this account's DeFi positions (${protocols}). A signing request ` +
         "closes the account in one transaction, so it can't be offered while a position might " +
         "be missed. Try again once the network responds.",
-    };
-  }
-
-  if (input.heldTokensSelected > 0) {
-    return {
-      ok: false,
-      reason:
-        "Standalone tokens each need their own transaction, so they can't be swept by a signing " +
-        "request. Move them out of the account first, or leave them unselected.",
     };
   }
 
@@ -202,16 +198,27 @@ export function claimsAtRiskInWindow(args: {
       .map((o) => String(o.metadata["balanceId"])),
   );
   const end = args.nowMs + args.windowSeconds * 1000;
-  const trusted = new Set(
-    args.audit.balances.flatMap((b) =>
+  const ops = final.metadata.batches.flatMap((b) => b.operations);
+  // a line the account holds, or one the bundle opens right before the claim
+  const trusted = new Set([
+    ...args.audit.balances.flatMap((b) =>
       b.asset.kind === "credit" ? [`${b.asset.code}:${b.asset.issuer}`] : [],
     ),
-  );
+    ...ops.flatMap((o) => {
+      const asset = o.kind === "change_trust_add" ? (o.metadata["asset"] as AssetIdentifier) : null;
+      return asset?.kind === "credit" ? [`${asset.code}:${asset.issuer}`] : [];
+    }),
+  ]);
   const out: ClaimAtRisk[] = [];
   for (const cb of args.audit.claimableBalances) {
     if (!claimed.has(cb.id)) continue;
-    // claiming a credit asset needs a trustline, and the bundle adds none
-    if (cb.asset.kind === "credit" && !trusted.has(`${cb.asset.code}:${cb.asset.issuer}`)) {
+    // claiming a credit asset needs a trustline, except for the account's own
+    // asset, which it claims without one
+    if (
+      cb.asset.kind === "credit" &&
+      cb.asset.issuer !== args.audit.accountId &&
+      !trusted.has(`${cb.asset.code}:${cb.asset.issuer}`)
+    ) {
       out.push({ id: cb.id, asset: cb.asset, amount: cb.amount, reason: "untrusted" });
       continue;
     }
@@ -244,7 +251,7 @@ export async function reprobeBeforePublish(
   try {
     positions = await getPositions(publicKey, network);
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
+    const detail = errorMessage(err);
     return {
       ok: false,
       reason: `We couldn't re-check this account's DeFi positions before publishing (${detail}). Try again.`,

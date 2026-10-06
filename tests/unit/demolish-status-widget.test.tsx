@@ -1,11 +1,11 @@
 // @vitest-environment happy-dom
 
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { Keypair } from "@stellar/stellar-sdk";
 
 import { TESTNET } from "@/lib/config/networks";
-import { savePendingForward, clearPendingForward } from "@/lib/mediator/pending-flow";
+import { savePendingForward, type PendingForwardStatus } from "@/lib/mediator/pending-flow";
 import { topologicalOrder, type PlanTree } from "@/lib/plan/tree";
 
 import { DemolishStatusWidget } from "@/app/demolish/_components/StatusWidget";
@@ -15,11 +15,46 @@ import { ACC, DEST, blendPositions, makeTree } from "./demolish-fixtures";
 
 const MEDIATOR = Keypair.random().publicKey();
 
+// the forward banner reads the mediator's state from Horizon; here the chain's
+// answer is set per test, and the rest of the record store is the real one
+const chain = vi.hoisted(() => ({
+  status: { kind: "awaiting-forward" } as PendingForwardStatus,
+  inspected: [] as string[],
+}));
+vi.mock("@/lib/mediator/pending-flow", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("@/lib/mediator/pending-flow")>();
+  return {
+    ...orig,
+    isCloseInFlight: async () => false,
+    inspectPendingForward: async (r: { mediatorPublicKey: string }) => {
+      chain.inspected.push(r.mediatorPublicKey);
+      return chain.status;
+    },
+  };
+});
+
+beforeEach(() => {
+  // a record is only removed by naming its flow, so each test starts clean
+  window.localStorage.clear();
+  chain.status = { kind: "awaiting-forward" };
+  chain.inspected = [];
+});
+
 afterEach(() => {
   cleanup();
-  clearPendingForward();
   vi.unstubAllGlobals();
 });
+
+function saveRecord(mediatorPublicKey: string = MEDIATOR): void {
+  savePendingForward({
+    publicKey: ACC,
+    mediatorPublicKey,
+    flowToken: "token",
+    ultimateDestination: DEST,
+    networkId: "testnet",
+    savedAt: Date.now(),
+  });
+}
 
 type WidgetProps = Parameters<typeof DemolishStatusWidget>[0];
 
@@ -58,22 +93,50 @@ function mediatorTreeMergedForwardFailed(): PlanTree {
 }
 
 describe("failed state copy follows what actually ran (H-30)", () => {
-  it("after the merge into the helper account, never says the account is open", () => {
-    savePendingForward({
-      publicKey: ACC,
-      mediatorPublicKey: MEDIATOR,
-      flowToken: "token",
-      ultimateDestination: DEST,
-      networkId: "testnet",
-      savedAt: Date.now(),
-    });
+  it("after the merge into the helper account, never says the account is open", async () => {
+    saveRecord();
     renderWidget(mediatorTreeMergedForwardFailed());
     const text = document.body.textContent ?? "";
     expect(text).not.toMatch(/still open/i);
     expect(text).not.toMatch(/Nothing was lost/i);
     expect(text).not.toMatch(/funds are safe/i);
     expect(text).toMatch(/temporary forwarding account/i);
-    expect(screen.getByRole("button", { name: /Resume the forward/i })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /Resume the forward/i })).toBeTruthy();
+    // the note points at the resume, not at the generic retry promise
+    const note = screen.getByTestId("demolish-failure-note").textContent ?? "";
+    expect(note).not.toMatch(/steps marked done are not repeated/);
+  });
+
+  it("offers only the failed close's own forward, not another flow's record", async () => {
+    const other = Keypair.random().publicKey();
+    saveRecord(other);
+    renderWidget(mediatorTreeMergedForwardFailed());
+    // this close's record is missing, so there is nothing to resume from here
+    expect(screen.getByTestId("demolish-failure-note").textContent ?? "").toMatch(
+      /no saved record/i,
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(chain.inspected).not.toContain(other);
+    expect(screen.queryByRole("button", { name: /Resume the forward/i })).toBeNull();
+  });
+
+  it("switches the note once the forward is found delivered", async () => {
+    saveRecord();
+    chain.status = { kind: "delivered", txHash: "f".repeat(64), ledger: 12 };
+    renderWidget(mediatorTreeMergedForwardFailed());
+    await waitFor(() =>
+      expect(screen.getByTestId("demolish-failure-note").textContent ?? "").toMatch(
+        /forward was delivered/i,
+      ),
+    );
+    expect(document.body.textContent ?? "").toMatch(/Exchange forward delivered/);
+  });
+
+  it("marks a step with a landed receipt done even after a later event failed it", () => {
+    renderWidget(mediatorTreeMergedForwardFailed());
+    const rows = document.body.textContent ?? "";
+    expect(rows).toMatch(/Done: Close the account and send everything/);
+    expect(rows).not.toMatch(/Failed: Close the account and send everything/);
   });
 
   it("doesn't point at a resume button that isn't there when no record was saved", () => {

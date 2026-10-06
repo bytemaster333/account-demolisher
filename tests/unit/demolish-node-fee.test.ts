@@ -5,8 +5,9 @@ import type { PlanNode } from "@/lib/plan/tree";
 import type { ClassicBatch } from "@/lib/types/plan";
 
 // minimal PlanNode carrying only the fields the fee helpers read (id/kind/status
-// are required by the base shape); `simulated` drives the soroban fee.
-function sorobanNode(minResourceFee: string): PlanNode {
+// are required by the base shape); `simulated` drives the soroban fee. maxFee is
+// the fee the built transaction authorizes (inclusion bid plus resource fee).
+function sorobanNode(minResourceFee: string, maxFee: string): PlanNode {
   return {
     id: "n",
     kind: "RevokeAllowance",
@@ -18,6 +19,7 @@ function sorobanNode(minResourceFee: string): PlanNode {
       kind: "soroban",
       retval: null,
       minResourceFee,
+      maxFee,
       transactionData: undefined as never,
       latestLedger: 1,
       auth: [],
@@ -37,9 +39,10 @@ function batch(opCount: number): ClassicBatch {
   };
 }
 
-// a two-batch close: the preview simulation only reports the FIRST batch, so the
-// fee must come from every batch in the node metadata
-function classicNode(batches: readonly ClassicBatch[]): PlanNode {
+// a close the preview built at `feePerOp` per operation: the simulator totals
+// every batch, so estimatedFee covers all of them
+function classicNode(batches: readonly ClassicBatch[], feePerOp = 100): PlanNode {
+  const ops = batches.reduce((n, b) => n + b.operations.length, 0);
   return {
     id: "final-classic-tx",
     kind: "FinalClassicTx",
@@ -50,25 +53,23 @@ function classicNode(batches: readonly ClassicBatch[]): PlanNode {
     simulated: {
       kind: "classic",
       xdr: "",
-      operationCount: batches[0]?.operations.length ?? 0,
-      estimatedFee: String((batches[0]?.operations.length ?? 0) * 100),
+      operationCount: ops,
+      estimatedFee: String(ops * feePerOp),
+      transactionCount: batches.length,
     },
   } as unknown as PlanNode;
 }
 
 describe("nodeFeeStroops, the fee each step is built with", () => {
-  it("adds the 100000-stroop soroban inclusion fee every builder bids to minResourceFee", () => {
-    // assembleTransaction sets fee = inclusion fee + minResourceFee, and every
-    // soroban builder here passes SOROBAN_INCLUSION_FEE ("100000")
-    expect(nodeFeeStroops(sorobanNode("12345"))).toBe(112_345);
+  it("uses the fee the built soroban transaction authorizes, not minResourceFee plus a guess", () => {
+    // the assembled tx can carry more than minResourceFee (instruction leeway),
+    // and that is what the signer pays at most
+    expect(nodeFeeStroops(sorobanNode("12345", "131000"))).toBe(131_000);
   });
 
-  it("still adds the inclusion fee when the resource fee is zero", () => {
-    expect(nodeFeeStroops(sorobanNode("0"))).toBe(100_000);
-  });
-
-  it("counts every classic batch at the network minimum per operation", () => {
+  it("totals every classic batch at the fee base the preview built them with", () => {
     expect(nodeFeeStroops(classicNode([batch(100), batch(2)]))).toBe(10_200);
+    expect(nodeFeeStroops(classicNode([batch(100), batch(2)], 250))).toBe(25_500);
   });
 
   it("returns 0 for an un-simulated soroban node", () => {
@@ -89,6 +90,6 @@ describe("nodeMaxFeeStroops, the most execution may bid", () => {
   });
 
   it("keeps the soroban figure, which is already the signed maximum", () => {
-    expect(nodeMaxFeeStroops(sorobanNode("12345"))).toBe(112_345);
+    expect(nodeMaxFeeStroops(sorobanNode("12345", "131000"))).toBe(131_000);
   });
 });

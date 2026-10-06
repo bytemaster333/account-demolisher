@@ -51,7 +51,7 @@ function renderPanel(over: Partial<Props> = {}) {
     network: TESTNET,
     scamFindings: [],
     discoveryWarnings: [],
-    claimables: { collectCount: 0, leftBehind: [] },
+    claimables: { collectCount: 0, leftBehind: [], trustlineChanges: [] },
     sponsorshipCount: 0,
     baseReserveStroops: 5_000_000,
     highValue: null,

@@ -24,14 +24,18 @@ function treeWithBlendAquariusAndToken() {
 }
 
 describe("review step numbering follows execution order (L-61)", () => {
-  it("numbers WithdrawBlend after the held-token step it runs after", () => {
+  it("numbers each step in the order it runs", () => {
     const tree = treeWithBlendAquariusAndToken();
     const ordered = topologicalOrder(tree);
     const groups = groupPlanNodes(ordered);
     const numbers = planStepNumbers(groups);
+    // the held-token sweep waits on every exit, since an exit can pay out more
+    // of the same token, so it is numbered after the Blend withdraw
     const withdraw = ordered.find((n) => n.kind === "WithdrawBlend")!;
     const transfer = ordered.find((n) => n.kind === "TransferAsIs")!;
-    expect(numbers.get(withdraw.id)!).toBeGreaterThan(numbers.get(transfer.id)!);
+    expect(transfer.dependencies).toContain(withdraw.id);
+    expect(numbers.get(transfer.id)!).toBeGreaterThan(numbers.get(withdraw.id)!);
+    ordered.forEach((n, i) => expect(numbers.get(n.id)).toBe(i + 1));
     // the displayed sequence (groups flattened) is exactly the execution order
     expect(groups.flatMap((g) => g.nodes).map((n) => n.id)).toEqual(ordered.map((n) => n.id));
   });
