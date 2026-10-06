@@ -24,12 +24,15 @@ import {
   SearchGlyph,
 } from "@/components/ui";
 import { errorMessage } from "@/lib/errors";
-import { resolveNetwork, type NetworkConfig } from "@/lib/config/networks";
+import { NETWORKS, type NetworkConfig } from "@/lib/config/networks";
+import { trackVisit } from "@/lib/metrics/beacon";
 import {
+  AllowanceScanIncompleteError,
   confirmAllowancesOnChain,
   enumerateAllowances,
   type AllowanceRecord,
 } from "@/lib/soroban/allowances";
+import { describeIncompleteScan } from "@/lib/soroban/event-scan";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import type { Connector } from "@/lib/wallet/connector";
 import { WalletKitConnector } from "@/lib/wallet/connector";
@@ -61,7 +64,11 @@ export default function AllowancesPage(): React.JSX.Element {
   const connectorKind = useWalletStore((s) => s.connectorKind);
 
   const networkId = useNetworkStore((s) => s.networkId);
-  const network = useMemo<NetworkConfig>(() => resolveNetwork(networkId), [networkId]);
+  const network = useMemo<NetworkConfig>(() => NETWORKS[networkId], [networkId]);
+
+  useEffect(() => {
+    trackVisit("allowances");
+  }, []);
 
   const [address, setAddress] = useState<string>("");
   const [viewedAddress, setViewedAddress] = useState<string | null>(null);
@@ -71,6 +78,9 @@ export default function AllowancesPage(): React.JSX.Element {
   // true while a bulk revoke sweep runs, so per-row revokes are disabled
   const [bulkRunning, setBulkRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // set when the last scan could not cover the whole event window: its rows are
+  // shown, and this says which part of history it missed
+  const [scanGap, setScanGap] = useState<string | null>(null);
   const [showExpired, setShowExpired] = useState(false);
 
   // the live signing connector: the app-wide active one when present (the only
@@ -100,6 +110,7 @@ export default function AllowancesPage(): React.JSX.Element {
     async (override?: string) => {
       const seq = ++loadSeq.current;
       setError(null);
+      setScanGap(null);
       setRecords(null);
       setCurrentLedger(null);
 
@@ -115,9 +126,18 @@ export default function AllowancesPage(): React.JSX.Element {
         const rpc = getRpc(network);
         const latest = await rpc.getLatestLedger();
         const ledger = latest.sequence;
-        const list = await enumerateAllowances(rpc, target, ledger, undefined, {
-          includeExpired: true,
-        });
+        let list: readonly AllowanceRecord[];
+        let gap: string | null = null;
+        try {
+          list = await enumerateAllowances(rpc, target, ledger, undefined, {
+            includeExpired: true,
+          });
+        } catch (e: unknown) {
+          if (!(e instanceof AllowanceScanIncompleteError)) throw e;
+          // what was found is real, but the list isn't complete; show both
+          list = e.partial;
+          gap = `${describeIncompleteScan(e.incomplete, "allowances")} Allowances approved in the part it missed may be missing here, or show an older amount. Scan again to retry.`;
+        }
         // event amounts can be fabricated by a hostile token, so each one is
         // checked against the token's allowance() when there is a simulation
         // source. a failed or skipped check leaves the row marked unconfirmed.
@@ -127,6 +147,7 @@ export default function AllowancesPage(): React.JSX.Element {
             ? await confirmAllowancesOnChain(rpc, target, list, network, simSource)
             : list;
         if (loadSeq.current !== seq) return; // superseded (network switch or newer scan)
+        setScanGap(gap);
         setRecords(confirmed);
         setCurrentLedger(ledger);
         setViewedAddress(target);
@@ -160,6 +181,7 @@ export default function AllowancesPage(): React.JSX.Element {
     setViewedAddress(null);
     setCurrentLedger(null);
     setError(null);
+    setScanGap(null);
     setLoading(false);
   }, [networkId]);
 
@@ -321,6 +343,13 @@ export default function AllowancesPage(): React.JSX.Element {
 
         {/* results */}
         <div style={{ marginTop: 18 }}>
+          {scanGap !== null && records !== null && !loading ? (
+            <div style={{ marginBottom: 14 }} data-testid="allowance-scan-incomplete">
+              <Notice tone="warning" role="status" title="The scan didn't finish">
+                {scanGap}
+              </Notice>
+            </div>
+          ) : null}
           {allowInput ? (
             <EmptyState
               data-testid="allowance-initial-empty"
@@ -336,8 +365,16 @@ export default function AllowancesPage(): React.JSX.Element {
               <EmptyState
                 dashed={false}
                 data-testid="allowance-list-empty-wrapper"
-                title="No active allowances found"
-                body="No approvals were found for this address in about the last 7 days of on-chain history (the RPC's event-retention limit). An older, still-standing approval may not be discoverable by this scan."
+                title={
+                  scanGap === null
+                    ? "No active allowances found"
+                    : "No allowances found in the part the scan covered"
+                }
+                body={
+                  scanGap === null
+                    ? "No approvals were found for this address in about the last 7 days of on-chain history (the RPC's event-retention limit). An older, still-standing approval may not be discoverable by this scan."
+                    : "The scan stopped early, so this address may still have allowances it didn't reach."
+                }
               />
             ) : (
               <>

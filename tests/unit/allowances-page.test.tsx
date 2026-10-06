@@ -21,7 +21,8 @@ vi.mock("@/lib/soroban/rpc-client", () => ({
   getRpc: () => ({ getLatestLedger: async () => ({ sequence: 100 }) }),
 }));
 const sep41Source = vi.fn();
-vi.mock("@/lib/soroban/sep41", () => ({
+vi.mock("@/lib/soroban/sep41", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/soroban/sep41")>()),
   symbol: async (_rpc: unknown, _id: string, source: string) => {
     sep41Source(source);
     return "TKN";
@@ -38,9 +39,13 @@ vi.mock("@/components/layout/AppShell", () => ({
 vi.mock("@/lib/wallet/connector", () => ({
   WalletKitConnector: class {},
 }));
+const beacon = { visits: [] as unknown[][] };
+vi.mock("@/lib/metrics/beacon", () => ({
+  trackVisit: (...args: unknown[]) => beacon.visits.push(args),
+}));
 
 import AllowancesPage from "@/app/allowances/page";
-import type { AllowanceRecord } from "@/lib/soroban/allowances";
+import { AllowanceScanIncompleteError, type AllowanceRecord } from "@/lib/soroban/allowances";
 import { setActiveConnector } from "@/lib/wallet/active-connector";
 import type { Connector } from "@/lib/wallet/connector";
 import { useNetworkStore } from "@/stores/network";
@@ -145,5 +150,51 @@ describe("/allowances C-address scan", () => {
     await scanAddress(C_TARGET);
     expect(sep41Source).not.toHaveBeenCalled();
     expect(screen.getAllByTestId("row-token-hint").length).toBeGreaterThan(0);
+  });
+});
+
+describe("/allowances partial scan", () => {
+  it("lists what the scan found and says which part of history it missed", async () => {
+    scan.enumerate.mockRejectedValue(
+      new AllowanceScanIncompleteError([rec("GSPENDA")], {
+        reason: "budget",
+        coveredFromLedger: 90,
+        rangeStartLedger: 1,
+        lastLedger: 100,
+        detail: "budget",
+      }),
+    );
+    render(<AllowancesPage />);
+    await scanAddress(G_OWNER);
+
+    expect(screen.getAllByTestId("allowance-row")).toHaveLength(1);
+    const notice = screen.getByTestId("allowance-scan-incomplete").textContent ?? "";
+    expect(notice).toMatch(/ran out of time/);
+    expect(notice).toMatch(/may be missing/);
+    expect(screen.queryByText(/allowance scan incomplete \(budget\)/)).toBeNull();
+  });
+
+  it("still reports a scan that found nothing in the part it covered as incomplete", async () => {
+    scan.enumerate.mockRejectedValue(
+      new AllowanceScanIncompleteError([], {
+        reason: "rpc-error",
+        coveredFromLedger: 101,
+        rangeStartLedger: 1,
+        lastLedger: 100,
+        detail: "503",
+      }),
+    );
+    render(<AllowancesPage />);
+    await scanAddress(G_OWNER);
+    expect(screen.getByTestId("allowance-scan-incomplete").textContent).toMatch(/503/);
+    expect(screen.queryByText("No active allowances found")).toBeNull();
+  });
+});
+
+describe("/allowances visit metric", () => {
+  it("sends one allowances visit on mount", () => {
+    beacon.visits = [];
+    render(<AllowancesPage />);
+    expect(beacon.visits).toEqual([["allowances"]]);
   });
 });
