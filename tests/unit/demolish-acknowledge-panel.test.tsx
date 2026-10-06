@@ -74,6 +74,18 @@ describe("claimable balances that can't be collected yet (M-38)", () => {
     if (unlock.kind === "at") expect(unlock.at.toISOString()).toBe(new Date(UNLOCK).toISOString());
   });
 
+  it("does not call a balance it could claim now locked when the plan leaves it out", () => {
+    const audit = makeAudit({ claimableBalances: [cb(READY, { unconditional: true }, true)] });
+    // a plan built before this balance arrived (or with it unticked) doesn't claim it
+    const tree = makeTree({ audit, opts: { selectedClaimableBalanceIds: [] } });
+    const s = claimableSplit({ audit, tree, publicKey: ACC, nowMs: NOW });
+    expect(s.leftBehind.map((l) => l.unlock.kind)).toEqual(["now"]);
+    renderPanel({ claimables: s });
+    const notice = screen.getByTestId("locked-claimables-notice").textContent ?? "";
+    expect(notice).toMatch(/isn't part of this close/);
+    expect(notice).not.toMatch(/can no longer be collected/);
+  });
+
   it("counts only collectable balances and gates Continue on the left-behind card", () => {
     renderPanel({ claimables: split() });
     const text = document.body.textContent ?? "";

@@ -7,6 +7,9 @@ import { filterClaimableNow } from "@/lib/stellar/claimable-balances";
 import type { AccountAudit, AssetIdentifier } from "@/lib/types/account";
 
 export type UnlockTime =
+  // claimable right now, but the built plan doesn't claim it (it arrived after
+  // the plan was built, or was left out of the selection)
+  | { readonly kind: "now" }
   | { readonly kind: "at"; readonly at: Date }
   // this account can no longer claim it (its window has passed)
   | { readonly kind: "never" }
@@ -53,6 +56,7 @@ function earliestUnlock(
   publicKey: string,
   nowMs: number,
 ): UnlockTime {
+  if (filterClaimableNow([cb], publicKey, new Date(nowMs)).length > 0) return { kind: "now" };
   const thresholds: number[] = [];
   const flags = { rel: false };
   collectThresholds(cb.predicate, thresholds, flags);

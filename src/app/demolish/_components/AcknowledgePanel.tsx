@@ -66,6 +66,8 @@ function assetLabel(asset: AssetIdentifier): string {
 
 function unlockText(unlock: UnlockTime): string {
   switch (unlock.kind) {
+    case "now":
+      return "could be collected now, but isn't part of this close";
     case "at":
       return `can be collected from ${unlock.at.toLocaleString(undefined, {
         dateStyle: "medium",
@@ -262,9 +264,9 @@ export function AcknowledgePanel({
             />
           }
         >
-          These payments set aside for this account can&apos;t be collected now, so the close skips
-          them. Once the account is deleted it can&apos;t collect them, and the sender may take them
-          back. Wait until they unlock if you want them.
+          This close doesn&apos;t collect these payments set aside for this account. Once the
+          account is deleted it can&apos;t collect them, and the sender may take them back. If you
+          want them, collect them first (a locked one only once it unlocks), then close.
           <ul style={{ margin: "7px 0 0", paddingLeft: 18 }}>
             {claimables.leftBehind.map((c) => (
               <li key={c.id} style={{ lineHeight: 1.5 }}>

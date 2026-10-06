@@ -91,7 +91,9 @@ describe("signing-request gate covers what discovery found (C-08)", () => {
 
   it("refuses a tree with any step besides the classic close, even a skipped one", () => {
     const tree = makeTree({ positions: blendPositions() });
-    for (const n of tree.allNodes.values()) if (n.kind === "WithdrawBlend") n.status = "skipped";
+    // every Blend step skipped (a preview that couldn't build them), leaving only
+    // skipped nodes besides the close
+    for (const n of tree.allNodes.values()) if (n.kind !== "FinalClassicTx") n.status = "skipped";
     // positions cleared to prove the tree check stands on its own
     expect(gate({ tree }).ok).toBe(false);
   });
