@@ -2,7 +2,6 @@ import "server-only";
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { CLOSE_MARKER_NAME, CLOSE_MARKER_VALUE } from "@/lib/metrics/close-marker";
-import type { MetricNetwork } from "@/lib/metrics/events";
 import type { CloseOpCounts, VerifiedClose } from "@/server/metrics-store";
 
 // check a claimed close against Horizon before it is counted. the browser sends
@@ -83,8 +82,8 @@ interface Page<T> {
   _links?: { next?: { href?: string } };
 }
 
-// Convert a Horizon decimal XLM amount ("12.3456789") to stroops (1e7). Robust to
-// missing/extra fractional digits; ignores anything unparseable (returns 0n).
+// convert a Horizon decimal XLM amount ("12.3456789") to stroops (1e7). robust to
+// missing or extra fractional digits; anything unparseable is 0n.
 export function xlmToStroops(amount: string): bigint {
   const m = /^(\d+)(?:\.(\d{0,7}))?\d*$/.exec(amount.trim());
   if (!m) return 0n;
@@ -256,7 +255,7 @@ export async function verifyCloseTx(
     ok: true,
     close: {
       txHash,
-      network: network.id as MetricNetwork,
+      network: network.id,
       ledger: tx.body.ledger ?? 0,
       closedAt: Number.isFinite(closedAt) ? closedAt : 0,
       reclaimedStroops: reclaimed.toString(),
