@@ -39,8 +39,8 @@ export type FailureKind =
   // a backstop emissions claim that simulated at review can no longer run; the
   // plan is rebuilt so the user can acknowledge leaving the BLND unclaimed
   | "claim_unavailable"
-  // another run of the close for this account is still going in this tab; a
-  // retry after it ends re-runs only what did not land
+  // another run of the close for this account is still going, in this tab or
+  // another; a retry after it ends re-runs only what did not land
   | "close_running"
   | "unknown";
 

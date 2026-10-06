@@ -935,6 +935,47 @@ describe("one close per account runs in a tab", () => {
     first.stop();
     second.stop();
   });
+
+  it("says so at once when another tab holds the close, instead of waiting on its lock", async () => {
+    // another tab's close holds the exclusive lock; a request for it would never
+    // be granted while that close runs
+    const request = vi.fn(() => new Promise(() => {}));
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      locks: {
+        query: async () => ({ held: [{ name: `account-demolisher:close:${USER}` }], pending: [] }),
+        request,
+      },
+    });
+    try {
+      const actor = withPlan(
+        () =>
+          tree({
+            id: "final-classic-tx",
+            kind: "FinalClassicTx",
+            dependencies: [],
+            description: "close account",
+            status: "simulated",
+            metadata: {
+              kind: "FinalClassicTx",
+              batches: [],
+              destination: DEST,
+              useMediator: false,
+            },
+          } as PlanNode),
+        input({ destination: DEST, useMediator: false }),
+      );
+      await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+      actor.send({ type: "CONFIRM", typed: DEST.slice(-4), expected: RUN });
+      await settle(actor, "failed");
+      expect(actor.getSnapshot().context.failureKind).toBe("close_running");
+      expect(actor.getSnapshot().context.error).toMatch(/another tab/);
+      expect(request).not.toHaveBeenCalled();
+      actor.stop();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe("discovery reports partial scans and drops spent allowances", () => {

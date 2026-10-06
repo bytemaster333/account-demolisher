@@ -11,6 +11,7 @@ import { rebuildSorobanNodeTransaction } from "@/lib/plan/hydration";
 import { reissueMediatorFlow, startMediatorFlow } from "@/lib/mediator/client";
 import { FINAL_CLASSIC_TX_NODE_ID, MEDIATOR_FORWARD_NODE_ID } from "@/lib/mediator/refresh";
 import {
+  isCloseInFlight,
   latestPendingForward,
   removePendingForward,
   runWithCloseLock,
@@ -317,6 +318,20 @@ export const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ in
   }
   inFlight.add(runKey);
   try {
+    // a close running in another tab holds the lock. waiting for it would hang
+    // this tab with no word, and stopping can't end a lock wait, so say so now
+    if (await isCloseInFlight(input.publicKey)) {
+      const message =
+        "A close for this account is running in another tab. Let it finish there, then retry here.";
+      input.onProgress({ kind: "blocked", message });
+      return {
+        result: { ok: false, errors: [message] },
+        tree: input.tree,
+        failureKind: "close_running",
+        notes: [],
+        landedPhases: [],
+      };
+    }
     // the lock tells other tabs a close for this account is running, so they
     // don't offer to resume or dismiss its recovery record meanwhile
     return await runWithCloseLock(input.publicKey, () => runClose(input, signal));
