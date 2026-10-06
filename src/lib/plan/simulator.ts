@@ -4,11 +4,14 @@
 import { Account, BASE_FEE, type Horizon, type Transaction, type rpc } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
+import { errorMessage } from "@/lib/errors";
+import { FORWARD_OPERATION_COUNT, MAX_FORWARD_FEE } from "@/lib/mediator/forward-terms";
 import { simulate, type SimulationResult } from "@/lib/soroban/simulate";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
+import type { ClassicBatch } from "@/lib/types/plan";
 
 import type { PlanNode, SimulationOutcome } from "./tree";
-import { isSorobanNode } from "./tree";
+import { isSorobanNode, nodeTransaction } from "./tree";
 
 export interface SimulationDeps {
   readonly server: rpc.Server;
@@ -39,9 +42,20 @@ async function simulateSorobanNode(
   node: PlanNode,
   deps: SimulationDeps,
 ): Promise<SimulationOutcome> {
-  const tx = getSorobanTransaction(node);
+  const tx = nodeTransaction(node);
   if (!tx) {
     throw new NodeNotBuiltError(node);
+  }
+  if (node.kind === "AddBlndTrustline") {
+    // a classic change_trust: soroban rpc has nothing to simulate, so the built
+    // envelope itself is the check
+    return {
+      kind: "classic",
+      xdr: tx.toEnvelope().toXdr("base64"),
+      operationCount: tx.operations.length,
+      estimatedFee: tx.fee,
+      transactionCount: 1,
+    };
   }
   const simulateFn = deps.simulateFn ?? simulate;
   const result = await simulateFn(deps.server, tx);
@@ -64,41 +78,12 @@ async function simulateSorobanNode(
   };
 }
 
-// returns undefined until hydration attaches the tx
-function getSorobanTransaction(node: PlanNode): Transaction | undefined {
-  switch (node.kind) {
-    case "RevokeAllowance":
-      return node.metadata.transaction;
-    case "RepayBlend":
-      return node.metadata.transaction;
-    case "WithdrawBlend":
-      return node.metadata.transaction;
-    case "WithdrawAquarius":
-      return node.metadata.transaction;
-    case "WithdrawSoroswapLp":
-      return node.metadata.transaction;
-    case "ClaimBlendEmissions":
-      return node.metadata.transaction;
-    case "ClaimAquariusRewards":
-      return node.metadata.transaction;
-    case "ConvertSorobanToXLM":
-      return node.metadata.transaction;
-    case "BackstopQueue":
-      return node.metadata.transaction;
-    case "TransferAsIs":
-      return node.metadata.transaction;
-    case "FinalClassicTx":
-    case "MediatorForward":
-      return undefined;
-  }
-}
-
 async function simulateClassicNode(
   node: PlanNode,
   deps: SimulationDeps,
 ): Promise<SimulationOutcome> {
-  if (node.kind === "FinalClassicTx") {
-    return simulateFinalClassicTx(node, deps);
+  if (node.kind === "FinalClassicTx" || node.kind === "ClassicUnwind") {
+    return simulateClassicBatches(node, node.metadata.batches, deps);
   }
   if (node.kind === "MediatorForward") {
     return simulateMediatorForward(node, deps);
@@ -109,13 +94,13 @@ async function simulateClassicNode(
   );
 }
 
-async function simulateFinalClassicTx(
-  node: Extract<PlanNode, { kind: "FinalClassicTx" }>,
+async function simulateClassicBatches(
+  node: PlanNode,
+  batches: readonly ClassicBatch[],
   deps: SimulationDeps,
 ): Promise<SimulationOutcome> {
-  const batches = node.metadata.batches;
   if (batches.length === 0) {
-    throw new Error(`simulateNode: FinalClassicTx "${node.id}" has zero batches; cannot validate`);
+    throw new Error(`simulateNode: ${node.kind} "${node.id}" has zero batches; cannot validate`);
   }
   // In-memory validation: actually BUILD each batch's classic envelope. A synthetic
   // account (sequence 0) suffices because this is structural well-formedness, not a
@@ -134,9 +119,9 @@ async function simulateFinalClassicTx(
       built.push(tx);
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errorMessage(err);
     throw new SimulationFailedError(
-      `simulateNode: FinalClassicTx "${node.id}" failed in-memory validation: ${msg}`,
+      `simulateNode: ${node.kind} "${node.id}" failed in-memory validation: ${msg}`,
       node.id,
       msg,
     );
@@ -156,11 +141,11 @@ async function simulateMediatorForward(
   node: Extract<PlanNode, { kind: "MediatorForward" }>,
   _deps: SimulationDeps,
 ): Promise<SimulationOutcome> {
-  // The mediator forward is exactly one payment + one accountMerge, built and
-  // signed server-side against the mediator's live sequence at submit time (its
-  // envelope can't be reproduced here without the flow token). 2 ops is the fixed,
-  // known structure, not a guess, but validate the metadata carries what the
-  // forward needs so a malformed node fails at preview, not mid-execution.
+  // the forward is one payment plus one accountMerge out of the mediator. the
+  // browser builds it against the mediator's live sequence once the merge has
+  // landed and the server only co-signs it, so there is no envelope to show yet;
+  // the metadata it needs is checked here so a malformed node fails at preview,
+  // not mid-execution.
   const md = node.metadata;
   if (!md.mediatorPublicKey || !md.ultimateDestination || !md.flowToken) {
     throw new SimulationFailedError(
@@ -169,12 +154,14 @@ async function simulateMediatorForward(
       "malformed-mediator-forward",
     );
   }
-  const FORWARD_OP_COUNT = 2;
+  // its bid starts from recent fee_charged stats (the mode while ledgers have
+  // room, p90 under surge), triples on an insufficient-fee or expired attempt and
+  // stops at MAX_FORWARD_FEE, so that ceiling is the most it can cost
   return {
     kind: "classic",
     xdr: "",
-    operationCount: FORWARD_OP_COUNT,
-    estimatedFee: (Number.parseInt(BASE_FEE, 10) * FORWARD_OP_COUNT).toString(),
+    operationCount: FORWARD_OPERATION_COUNT,
+    estimatedFee: MAX_FORWARD_FEE.toString(),
     transactionCount: 1,
   };
 }

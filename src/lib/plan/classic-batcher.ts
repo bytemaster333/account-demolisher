@@ -1,5 +1,7 @@
 // classic demolition batcher: pure function from AccountAudit to ClassicBatch[]
 
+import { Asset } from "@stellar/stellar-sdk";
+
 import type {
   AccountAudit,
   AssetIdentifier,
@@ -940,4 +942,45 @@ export function unroutableCredits(
     });
   }
   return out;
+}
+
+export interface ClassicUnwindPlan {
+  readonly batches: readonly ClassicBatch[];
+  readonly offerIds: readonly string[];
+  readonly poolIds: readonly string[];
+}
+
+// the classic phase that frees repay assets before the repays: cancel every
+// offer that sells one (its selling liabilities lock the balance a SAC transfer
+// can spend) and withdraw every classic pool share that holds one in its
+// reserves. repayAssets are SAC contract ids, compared through the passphrase.
+// no batches when nothing locks a repay asset.
+export function planClassicUnwind(
+  audit: AccountAudit,
+  repayAssets: readonly string[],
+  networkPassphrase: string,
+  destination: string,
+): ClassicUnwindPlan {
+  const wanted = new Set(repayAssets);
+  const locks = (asset: AssetIdentifier): boolean => {
+    if (asset.kind === "native") return wanted.has(Asset.native().contractId(networkPassphrase));
+    if (asset.kind === "credit") {
+      return wanted.has(new Asset(asset.code, asset.issuer).contractId(networkPassphrase));
+    }
+    return false;
+  };
+  const offers = audit.offers.filter((o) => locks(o.selling));
+  const pools = audit.poolShares.filter(
+    (p) =>
+      hasPositive(p.shareBalance) &&
+      p.reserves[0] !== undefined &&
+      p.reserves[1] !== undefined &&
+      p.reserves.some((r) => locks(r.asset)),
+  );
+  const ops = [...pools.map(poolWithdrawOp), ...offers.map(offerCancelOp)];
+  return {
+    batches: packLeading(ops, { destination, useMediator: false }),
+    offerIds: offers.map((o) => o.id),
+    poolIds: pools.map((p) => p.poolId),
+  };
 }

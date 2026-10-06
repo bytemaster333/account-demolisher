@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildPlanTree,
   isSorobanNode,
+  nodeTransaction,
   planExitPayoutTokens,
   topologicalOrder,
 } from "@/lib/plan/tree";
@@ -227,5 +228,41 @@ describe("planExitPayoutTokens", () => {
       node("native-sweep"),
     ]);
     expect(planExitPayoutTokens(tree)).toEqual(["CA", "CB", "CC", "CD"]);
+  });
+});
+
+describe("plan tree, prepare-only plans and the classic unwind", () => {
+  const unwind: PlanNode = {
+    id: "classic-unwind",
+    kind: "ClassicUnwind",
+    dependencies: [],
+    description: "unwind",
+    status: "pending",
+    metadata: { kind: "ClassicUnwind", batches: [], offerIds: [], poolIds: [], repayAssets: [] },
+  };
+
+  it("keeps the unlock date on a plan without a merge", () => {
+    const unlocksAt = new Date(1_800_000_000_000);
+    const tree = buildPlanTree([node("a")], { prepareOnly: { unlocksAt, reason: "locked" } });
+    expect(tree.prepareOnly).toEqual({ unlocksAt, reason: "locked" });
+  });
+
+  it("refuses a prepare-only plan that still carries the merge", () => {
+    const final: PlanNode = {
+      id: "final-classic-tx",
+      kind: "FinalClassicTx",
+      dependencies: [],
+      description: "final",
+      status: "pending",
+      metadata: { kind: "FinalClassicTx", batches: [], destination: "GDEST", useMediator: false },
+    };
+    expect(() =>
+      buildPlanTree([final], { prepareOnly: { unlocksAt: new Date(0), reason: "locked" } }),
+    ).toThrow(/prepare-only/);
+  });
+
+  it("treats the classic unwind as a classic batch with no prebuilt transaction", () => {
+    expect(isSorobanNode(unwind)).toBe(false);
+    expect(nodeTransaction(unwind)).toBeUndefined();
   });
 });

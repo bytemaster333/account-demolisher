@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
 import fc from "fast-check";
-import { StrKey } from "@stellar/stellar-sdk";
+import { Account, StrKey, xdr, type Horizon } from "@stellar/stellar-sdk";
 
+import { TESTNET } from "@/lib/config/networks";
 import { batchClassicDemolition, MAX_OPS_PER_TX } from "@/lib/plan/classic-batcher";
+import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
 import { generatePlan } from "@/lib/plan/generator";
 import { buildPlanTree, topologicalOrder, type PlanNode } from "@/lib/plan/tree";
 import type { AccountAudit, AssetIdentifier } from "@/lib/types/account";
@@ -90,7 +92,8 @@ const arbPoolShare = fc
   }));
 
 const arbClaimable = fc.record({
-  id: arbHex64,
+  // horizon's claimable balance id: the 4-byte type then the 32-byte hash, in hex
+  id: arbHex64.map((h) => "00000000" + h),
   asset: arbAsset,
   amount: arbAmount,
   sponsor: arbG,
@@ -99,11 +102,22 @@ const arbClaimable = fc.record({
   claimableNow: fc.boolean(),
 });
 
-const arbSigner = fc.record({
-  key: arbG,
-  type: fc.constant("ed25519_public_key" as const),
-  weight: fc.integer({ min: 0, max: 10 }),
-});
+const arb32 = fc.uint8Array({ minLength: 32, maxLength: 32 }).map((b) => Buffer.from(b));
+// every signer type an account can hold, each with a strkey of its own kind
+const arbSignerKey = fc.oneof(
+  arbG.map((key) => ({ key, type: "ed25519_public_key" as const })),
+  arb32.map((b) => ({ key: StrKey.encodePreAuthTx(b), type: "preauth_tx" as const })),
+  arb32.map((b) => ({ key: StrKey.encodeSha256Hash(b), type: "sha256_hash" as const })),
+  fc.tuple(arb32, fc.uint8Array({ minLength: 1, maxLength: 64 })).map(([ed25519, payload]) => ({
+    key: StrKey.encodeSignedPayload(
+      new xdr.SignerKeyEd25519SignedPayload({ ed25519, payload: Buffer.from(payload) }).toXdr(),
+    ),
+    type: "ed25519_signed_payload" as const,
+  })),
+);
+const arbSigner = fc
+  .record({ signer: arbSignerKey, weight: fc.integer({ min: 0, max: 10 }) })
+  .map(({ signer, weight }) => ({ ...signer, weight }));
 
 // arrays are sized so a run can exceed MAX_OPS_PER_TX (100) and force the
 // high-subentry transaction-splitting path, and subentryCount is derived from the
@@ -256,10 +270,33 @@ describe("plan generation, property-based fuzzing", () => {
   it("produces a stranding-free DAG for any account carrying DeFi positions", () => {
     fc.assert(
       fc.property(arbAudit, arbPositions, (audit, positions) => {
-        const tree = generatePlan(audit, positions, [], DEST);
+        const tree = generatePlan(audit, positions, [], DEST, { network: TESTNET });
         assertStrandingFree(topologicalOrder(tree));
       }),
       { numRuns: 200 },
+    );
+  });
+
+  it("builds every classic batch into a real transaction, whatever signers the account holds", () => {
+    const mediator = StrKey.encodeEd25519PublicKey(Buffer.alloc(32, 7));
+    fc.assert(
+      fc.property(arbAudit, fc.boolean(), (audit, useMediator) => {
+        const batches = batchClassicDemolition(
+          audit,
+          useMediator
+            ? { destination: DEST, useMediator: true, mediatorPublicKey: mediator }
+            : { destination: DEST, useMediator: false },
+        );
+        for (const batch of batches) {
+          const built = buildClassicTransaction(
+            batch,
+            new Account(ACC, "0") as unknown as Horizon.AccountResponse,
+            TESTNET,
+          );
+          expect(built.transaction.operations.length).toBe(batch.operations.length);
+        }
+      }),
+      { numRuns: 250 },
     );
   });
 

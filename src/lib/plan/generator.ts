@@ -13,21 +13,41 @@ import type {
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import type { HeldToken } from "@/lib/soroban/held-tokens";
 import type {
+  AquariusConcentratedPositionSummary,
   AquariusPositionSummary,
   BlendPositionSummary,
   ProtocolPositions,
   SoroswapPositionSummary,
 } from "@/lib/adapters/positions/interface";
-import { batchClassicDemolition, planClaimableBalances } from "@/lib/plan/classic-batcher";
+import { NETWORKS, type NetworkConfig } from "@/lib/config/networks";
+import {
+  batchClassicDemolition,
+  closeMarkerPlanned,
+  planClaimableBalances,
+  planClassicUnwind,
+} from "@/lib/plan/classic-batcher";
 import { BACKSTOP_QUEUE_DURATION_SECONDS } from "@/lib/adapters/blend/constants";
+import { blndTrustlineRequirement } from "@/lib/adapters/blend/emissions-check";
+import {
+  BLEND_MAINNET_INFRASTRUCTURE,
+  BLEND_TESTNET_INFRASTRUCTURE,
+} from "@/lib/adapters/blend/pools";
 
-import { buildPlanTree, type PlanNode, type PlanTree } from "./tree";
+import {
+  buildPlanTree,
+  type FinalClassicTxMetadata,
+  type ForfeitedBackstopEmissions,
+  type PlanNode,
+  type PlanTree,
+  type PreparePlan,
+} from "./tree";
 
 export interface GeneratePlanOptions {
   readonly useMediator?: boolean;
   readonly mediatorPublicKey?: string;
-  // one-time token that authorizes signing the ephemeral mediator's forward;
-  // minted together with mediatorPublicKey
+  // flow token bound to the destination, network and memo, minted together with
+  // mediatorPublicKey. it authorizes the co-signature of the mediator's forward,
+  // stays usable until it expires and is renewed through /api/mediator/reissue
   readonly flowToken?: string;
   // allowance pairs opted in for revocation, keyed `${contractId}|${spender}`
   readonly selectedAllowances?: readonly string[];
@@ -58,14 +78,26 @@ export interface GeneratePlanOptions {
   // be defeated by an illiquid/unroutable token (which has no swap route), so it's
   // the safe default; conversion is opt-in for tokens the user knows are tradable.
   readonly convertHeldTokensToXLM?: boolean;
-  // the network passphrase, used to tell which tokens a DeFi exit pays out are
-  // classic assets (their SAC ids are derived from it). Contract tokens an exit
-  // pays out get a sweep of their own on a direct close; without the passphrase
-  // the generator can't tell them apart and plans no such sweep.
+  // per-token answers to a refused conversion (no route, or a price the user did
+  // not accept): contract ids to send as-is instead of converting, and held
+  // tokens to leave on the account. a token an exit pays out is always swept.
+  readonly sendHeldTokensAsIs?: readonly string[];
+  readonly leaveHeldTokens?: readonly string[];
+  // the network. it tells which tokens a DeFi exit pays out are classic assets
+  // (their SAC ids derive from its passphrase), which BLND the emissions claims
+  // pay, which offers and pools lock a repay asset, and which comet LP token a
+  // backstop withdraw pays out. networkPassphrase alone is enough for the payout
+  // sweeps; the other steps refuse to plan without a known network.
+  readonly network?: NetworkConfig;
   readonly networkPassphrase?: string;
+  // per-op fee the classic batches are bid at, for their reserve checks
+  readonly classicFeePerOp?: number;
+  // pools whose accrued backstop emissions the user agreed to forfeit because
+  // the claim can't run; their queue is planned without a claim ahead of it
+  readonly forfeitBackstopEmissionsPoolIds?: readonly string[];
   // wall-clock ms used only to ESTIMATE the Blend backstop unlock date shown on a
-  // BackstopQueue node (the real 17-day timer starts on-chain at submit). Defaults
-  // to Date.now(); tests pass a fixed value for determinism.
+  // BackstopQueue node (the real timer starts on-chain at submit). Defaults to
+  // Date.now(); tests pass a fixed value for determinism.
   readonly now?: number;
 }
 
@@ -85,6 +117,14 @@ export function generatePlan(
     // forward out of it can never be co-signed, stranding the funds
     throw new Error("generatePlan: useMediator=true requires opts.flowToken");
   }
+  const network = resolvePlanNetwork(opts);
+  const passphrase = network?.passphrase ?? opts.networkPassphrase;
+  const requireNetwork = (why: string): NetworkConfig => {
+    if (network === undefined) {
+      throw new Error(`generatePlan: opts.network is required to plan ${why}`);
+    }
+    return network;
+  };
 
   const selectedAllowances = new Set(opts.selectedAllowances ?? []);
   const acceptedPriceImpact = new Set(opts.acceptedPriceImpactAssetKeys ?? []);
@@ -137,6 +177,12 @@ export function generatePlan(
     fundingExitIds.push(id);
   }
 
+  // aquarius concentrated positions: the reward and the swap fees are claimed
+  // first, then each tick range is withdrawn on the pool itself
+  for (const pos of positions.aquariusConcentrated) {
+    fundingExitIds.push(...concentratedNodes(pos, nodes));
+  }
+
   // soroswap LPs
   for (const pos of positions.soroswap) {
     if (pos.shareBalance <= 0n) continue;
@@ -185,6 +231,42 @@ export function generatePlan(
     fundingExitIds.push(...(blendWithdrawIdsByPool.get(pool.poolId) ?? []));
   }
 
+  // a repay pulls its asset with a SAC transfer, which can only spend what open
+  // offers and classic pool shares don't hold. those are unwound in a classic
+  // phase ahead of every repay.
+  const repayAssets = [
+    ...new Set(
+      positions.blend.flatMap((pool) =>
+        [...pool.liabilities].filter(([, amount]) => amount > 0n).map(([asset]) => asset),
+      ),
+    ),
+  ];
+  const repayDeps = [...fundingExitIds];
+  if (repayAssets.length > 0 && (audit.offers.length > 0 || audit.poolShares.length > 0)) {
+    const net = requireNetwork("the classic unwind ahead of a Blend repay");
+    const unwind = planClassicUnwind(audit, repayAssets, net.passphrase, destination);
+    if (unwind.batches.length > 0) {
+      const id = "classic-unwind";
+      nodes.push({
+        id,
+        kind: "ClassicUnwind",
+        dependencies: [],
+        status: "pending",
+        description:
+          `Unwind classic offers and pools before repaying ` +
+          `(${unwind.offerIds.length} offer(s), ${unwind.poolIds.length} pool(s))`,
+        metadata: {
+          kind: "ClassicUnwind",
+          batches: unwind.batches,
+          offerIds: unwind.offerIds,
+          poolIds: unwind.poolIds,
+          repayAssets,
+        },
+      });
+      repayDeps.push(id);
+    }
+  }
+
   // blend repays, one node per (pool, asset) with amount > 0
   const blendRepayIdsByPool = new Map<string, string[]>();
   for (const pool of positions.blend) {
@@ -195,7 +277,7 @@ export function generatePlan(
       nodes.push({
         id,
         kind: "RepayBlend",
-        dependencies: [...fundingExitIds],
+        dependencies: repayDeps,
         status: "pending",
         description: `Repay ${amount.toString()} of ${shortAddr(asset)} on Blend pool ${shortAddr(pool.poolId)}`,
         metadata: {
@@ -218,16 +300,41 @@ export function generatePlan(
 
   // blend emissions, one per pool, after its withdraws. Emitted only when the
   // user actually has accrued emissions to claim, and targeting the SPECIFIC
-  // reserve_token_ids that carry them.
+  // reserve_token_ids that carry them. The pool pays BLND with a SAC transfer,
+  // so an account without a BLND trustline opens one first.
   const rewardClaimIds: string[] = [];
-  for (const pool of positions.blend) {
+  const claimingPools = positions.blend.filter((p) => p.emissionReserveTokenIds.length > 0);
+  let blndTrustlineId: string | null = null;
+  if (claimingPools.length > 0) {
+    const requirement = blndTrustlineRequirement(
+      audit,
+      positions.blend,
+      requireNetwork("the Blend emissions claims"),
+    );
+    if (requirement?.reason === "missing") {
+      blndTrustlineId = "blnd-trustline";
+      nodes.push({
+        id: blndTrustlineId,
+        kind: "AddBlndTrustline",
+        dependencies: [],
+        status: "pending",
+        description:
+          "Add a BLND trustline so the Blend emissions can be claimed " +
+          "(0.5 XLM reserve, released when the close removes the line)",
+        metadata: { kind: "AddBlndTrustline", code: requirement.code, issuer: requirement.issuer },
+      });
+    }
+  }
+  for (const pool of claimingPools) {
     const reserveTokenIds = pool.emissionReserveTokenIds;
-    if (reserveTokenIds.length === 0) continue;
     const id = makeId("blend-claim", pool.poolId);
     nodes.push({
       id,
       kind: "ClaimBlendEmissions",
-      dependencies: blendWithdrawIdsByPool.get(pool.poolId) ?? [],
+      dependencies: [
+        ...(blendWithdrawIdsByPool.get(pool.poolId) ?? []),
+        ...(blndTrustlineId !== null ? [blndTrustlineId] : []),
+      ],
       status: "pending",
       description:
         `Claim Blend emissions for pool ${shortAddr(pool.poolId)} ` +
@@ -259,7 +366,93 @@ export function generatePlan(
     rewardClaimIds.push(id);
   }
 
-  // classical credit balances are converted to xlm by path_payment_strict_send
+  // blend backstop: a deposit in the pool's own backstop contract. Shares are
+  // queued (locked 17 days on the v2 backstop, 21 on v1) after any accrued
+  // emissions are claimed into new shares; an already unlocked queue is
+  // withdrawn. While a locked queue remains the account can't merge, so the
+  // plan then only prepares the close.
+  const forfeit = new Set(opts.forfeitBackstopEmissionsPoolIds ?? []);
+  const forfeited: ForfeitedBackstopEmissions[] = [];
+  const backstopNow = opts.now ?? Date.now();
+  const backstopPayoutIds: string[] = [];
+  const backstopPayoutTokens: string[] = [];
+  let unlocksAt: Date | null = null;
+  for (const bs of positions.backstop) {
+    const duration = bs.queueDurationSeconds ?? BACKSTOP_QUEUE_DURATION_SECONDS;
+    const queueEndsAt = new Date(backstopNow + duration * 1000);
+    const accrued = bs.accruedEmissions ?? 0n;
+    const unlocked = bs.unlockedQueuedForWithdrawal ?? 0n;
+    let claimId: string | null = null;
+    if (bs.shares > 0n && accrued > 0n) {
+      if (forfeit.has(bs.poolId)) {
+        forfeited.push({ poolId: bs.poolId, accruedEmissions: accrued });
+      } else {
+        claimId = makeId("backstop-claim", bs.poolId);
+        nodes.push({
+          id: claimId,
+          kind: "ClaimBackstopEmissions",
+          dependencies: [],
+          status: "pending",
+          description:
+            `Claim ${formatBlnd(accrued)} BLND of Blend backstop emissions for pool ` +
+            `${shortAddr(bs.poolId)} into backstop shares, so they are queued too`,
+          metadata: {
+            kind: "ClaimBackstopEmissions",
+            poolId: bs.poolId,
+            accruedEmissions: accrued,
+          },
+        });
+      }
+    }
+    if (bs.shares > 0n) {
+      nodes.push({
+        id: makeId("backstop-queue", bs.poolId),
+        kind: "BackstopQueue",
+        dependencies: claimId !== null ? [claimId] : [],
+        status: "pending",
+        description:
+          `Queue Blend backstop withdrawal for pool ${shortAddr(bs.poolId)} ` +
+          `(${bs.shares.toString()} shares; unlocks ~${queueEndsAt.toISOString().slice(0, 10)})`,
+        metadata: {
+          kind: "BackstopQueue",
+          poolId: bs.poolId,
+          shares: bs.shares,
+          queueEndsAt,
+        },
+      });
+    }
+    if (unlocked > 0n) {
+      const lpToken = blendCometId(requireNetwork("a Blend backstop withdraw"));
+      const id = makeId("backstop-withdraw", bs.poolId);
+      nodes.push({
+        id,
+        kind: "BackstopWithdraw",
+        dependencies: [],
+        status: "pending",
+        description:
+          `Withdraw the unlocked Blend backstop queue for pool ${shortAddr(bs.poolId)} ` +
+          `(${unlocked.toString()} shares, paid out as BLND-USDC LP tokens)`,
+        metadata: { kind: "BackstopWithdraw", poolId: bs.poolId, amount: unlocked, lpToken },
+      });
+      backstopPayoutIds.push(id);
+      backstopPayoutTokens.push(lpToken);
+    }
+    // what stays locked once this plan has run: new queues, and the part of an
+    // existing queue that has not unlocked yet
+    if (bs.shares > 0n || bs.queuedForWithdrawal > unlocked) {
+      if (unlocksAt === null || queueEndsAt > unlocksAt) unlocksAt = queueEndsAt;
+    }
+  }
+  const prepareOnly: PreparePlan | undefined =
+    unlocksAt === null
+      ? undefined
+      : {
+          unlocksAt,
+          reason:
+            "A Blend backstop withdrawal stays locked after this run, and the account must " +
+            "exist to receive it. This run queues it and unwinds everything else; come back " +
+            "after the unlock date to withdraw it and finish the close.",
+        };
 
   // standalone SEP-41 tokens: sweep each to the destination before the merge so a
   // custom token held in contract storage isn't stranded on the deleted account.
@@ -269,15 +462,19 @@ export function generatePlan(
   // the executor treats a failed drain as skip-not-fatal, so a hostile airdropped
   // token that reverts on transfer can't wedge the close. They also run after
   // every exit, since an exit can pay out more of the same token; hydration reads
-  // the live balance when it builds the sweep.
-  if (!useMediator) {
+  // the live balance when it builds the sweep. A plan that only prepares the
+  // close sweeps nothing: the account stays open.
+  if (!useMediator && prepareOnly === undefined) {
     const sweepDeps = [
       ...new Set([
         ...fundingExitIds,
         ...[...blendWithdrawIdsByPool.values()].flat(),
         ...rewardClaimIds,
+        ...backstopPayoutIds,
       ]),
     ];
+    const asIs = new Set(opts.sendHeldTokensAsIs ?? []);
+    const leave = new Set(opts.leaveHeldTokens ?? []);
     const swept = new Set<string>();
     const sweep = (contractId: string, amount: bigint, fromExit: boolean): void => {
       swept.add(contractId);
@@ -285,10 +482,11 @@ export function generatePlan(
       const label = fromExit
         ? `token ${shortAddr(contractId)} paid out by your DeFi exits`
         : `held token ${shortAddr(contractId)}`;
-      if (opts.convertHeldTokensToXLM === true) {
+      if (opts.convertHeldTokensToXLM === true && !asIs.has(contractId)) {
         // convert the token to XLM via a Soroswap-router swap so the account ends
-        // as a single XLM balance. Best-effort: a token with no route fails to
-        // hydrate/simulate and is skipped (left behind), never wedging the close.
+        // as a single XLM balance. A conversion that can't be built (no route, a
+        // price over the cap) is refused at preview and the user picks what to
+        // do with the token.
         nodes.push({
           id: makeId("convert-token", contractId),
           kind: "ConvertSorobanToXLM",
@@ -321,14 +519,14 @@ export function generatePlan(
       });
     };
     for (const token of opts.heldTokens ?? []) {
-      if (token.balance <= 0n) continue;
+      if (token.balance <= 0n || leave.has(token.contractId)) continue;
       sweep(token.contractId, token.balance, false);
     }
     // contract tokens an exit pays out. Classic assets (the native SAC and the
     // SACs of assets the account trusts) are handled by the classic batches.
-    if (opts.networkPassphrase !== undefined) {
-      const classic = classicSacIds(audit, opts.networkPassphrase);
-      for (const token of exitPayoutTokens(positions)) {
+    if (passphrase !== undefined) {
+      const classic = classicSacIds(audit, passphrase);
+      for (const token of [...exitPayoutTokens(positions), ...backstopPayoutTokens]) {
         if (swept.has(token) || classic.has(token)) continue;
         // the payout isn't known until the exit lands; hydration reads it
         sweep(token, 0n, true);
@@ -336,46 +534,32 @@ export function generatePlan(
     }
   }
 
-  // blend backstop: a deposit in the SEPARATE backstop contract. The close can
-  // only START its withdrawal (a queued, 17-day-locked flow), so we emit a
-  // BackstopQueue node (queue_withdrawal) that carries the estimated unlock date,
-  // and the executor's merge guard refuses the close while the backstop is still
-  // active/queued (the account must survive to receive the withdrawal). Only
-  // emitted when there are active shares to queue; a deposit already fully queued
-  // has nothing new to submit but still blocks the merge via the reprobe.
-  const backstopNow = opts.now ?? Date.now();
-  const backstopQueueEndsAt = new Date(backstopNow + BACKSTOP_QUEUE_DURATION_SECONDS * 1000);
-  for (const bs of positions.backstop) {
-    if (bs.shares <= 0n) continue;
-    nodes.push({
-      id: makeId("backstop-queue", bs.poolId),
-      kind: "BackstopQueue",
-      dependencies: [],
-      status: "pending",
-      description:
-        `Queue Blend backstop withdrawal for pool ${shortAddr(bs.poolId)} ` +
-        `(${bs.shares.toString()} shares; unlocks ~${backstopQueueEndsAt.toISOString().slice(0, 10)})`,
-      metadata: {
-        kind: "BackstopQueue",
-        poolId: bs.poolId,
-        shares: bs.shares,
-        queueEndsAt: backstopQueueEndsAt,
-      },
-    });
-  }
+  const extras = {
+    ...(prepareOnly !== undefined ? { prepareOnly } : {}),
+    forfeitedBackstopEmissions: forfeited,
+  };
+  if (prepareOnly !== undefined) return buildPlanTree(nodes, extras);
 
   // final classic transaction. The reviewed claim list is recorded explicitly, so
   // the execute-time re-batch can't claim a balance that appeared after review.
   const finalId = "final-classic-tx";
+  const feePerOp = opts.classicFeePerOp;
   const claimableBalanceIds =
     opts.selectedClaimableBalanceIds ??
-    planClaimableBalances(audit, undefined).claimed.map((cb) => cb.id);
-  const reviewedReferenceQuotes = referenceQuotesOf(opts.paths);
-  const batchOptions: BatchOptions = {
+    planClaimableBalances(audit, undefined, {
+      ...(feePerOp !== undefined ? { feePerOpStroops: feePerOp } : {}),
+    }).claimed.map((cb) => cb.id);
+  const reviewedReferenceQuotes = quotesOf(opts.paths, (p) => p.reference);
+  const reviewedConversionQuotes = quotesOf(opts.paths, (p) => ({
+    sourceAmount: p.sourceAmount,
+    destinationAmount: p.destinationAmount,
+  }));
+  const finalMetadata: FinalClassicTxMetadata = {
+    kind: "FinalClassicTx",
+    batches: [],
     destination,
     useMediator,
     claimableBalanceIds,
-    ...(useMediator && opts.mediatorPublicKey ? { mediatorPublicKey: opts.mediatorPublicKey } : {}),
     ...(opts.returnToIssuerAssetKeys
       ? { returnToIssuerAssetKeys: opts.returnToIssuerAssetKeys }
       : {}),
@@ -385,9 +569,22 @@ export function generatePlan(
     ...(opts.acceptedPriceImpactAssetKeys
       ? { acceptedPriceImpactAssetKeys: opts.acceptedPriceImpactAssetKeys }
       : {}),
+    ...(reviewedReferenceQuotes ? { reviewedReferenceQuotes } : {}),
+    ...(reviewedConversionQuotes ? { reviewedConversionQuotes } : {}),
+    ...(useMediator && opts.mediatorPublicKey ? { mediatorPublicKey: opts.mediatorPublicKey } : {}),
+    // carry the memo so execute-time re-batching can re-apply it. The batcher
+    // only puts it on a DIRECT final batch (a mediator close routes the memo
+    // through the forward), so attaching it here unconditionally is safe.
     ...(opts.memo ? { memo: opts.memo } : {}),
   };
-  const batches: readonly ClassicBatch[] = batchClassicDemolition(audit, batchOptions, opts.paths);
+  const batches: readonly ClassicBatch[] = batchClassicDemolition(
+    audit,
+    finalBatchOptions(finalMetadata, {
+      ...(feePerOp !== undefined ? { feePerOpStroops: feePerOp } : {}),
+    }),
+    opts.paths,
+  );
+  const closeMarker = closeMarkerPlanned(batches);
 
   // every soroban node must complete before the merge
   const sorobanDeps: string[] = nodes
@@ -399,31 +596,13 @@ export function generatePlan(
     kind: "FinalClassicTx",
     dependencies: sorobanDeps,
     status: "pending",
-    description: `Final classic batch (${batches.length} tx, merge to ${shortAddr(useMediator ? (opts.mediatorPublicKey ?? destination) : destination)})`,
-    metadata: {
-      kind: "FinalClassicTx",
-      batches,
-      destination,
-      useMediator,
-      claimableBalanceIds,
-      ...(opts.returnToIssuerAssetKeys
-        ? { returnToIssuerAssetKeys: opts.returnToIssuerAssetKeys }
-        : {}),
-      ...(opts.sendToDestinationAssetKeys
-        ? { sendToDestinationAssetKeys: opts.sendToDestinationAssetKeys }
-        : {}),
-      ...(opts.acceptedPriceImpactAssetKeys
-        ? { acceptedPriceImpactAssetKeys: opts.acceptedPriceImpactAssetKeys }
-        : {}),
-      ...(reviewedReferenceQuotes ? { reviewedReferenceQuotes } : {}),
-      ...(useMediator && opts.mediatorPublicKey
-        ? { mediatorPublicKey: opts.mediatorPublicKey }
-        : {}),
-      // carry the memo so execute-time re-batching can re-apply it. The batcher
-      // only puts it on a DIRECT final batch (a mediator close routes the memo
-      // through the forward), so attaching it here unconditionally is safe.
-      ...(opts.memo ? { memo: opts.memo } : {}),
-    },
+    description:
+      `Final classic batch (${batches.length} tx, merge to ` +
+      `${shortAddr(useMediator ? (opts.mediatorPublicKey ?? destination) : destination)})` +
+      (closeMarker
+        ? ""
+        : "; not marked as an Account Demolisher close, so the close metrics will not count it"),
+    metadata: { ...finalMetadata, batches, closeMarker },
   });
 
   // optional mediator forward
@@ -446,7 +625,115 @@ export function generatePlan(
     });
   }
 
-  return buildPlanTree(nodes);
+  return buildPlanTree(nodes, extras);
+}
+
+// the batch options a FinalClassicTx was reviewed with, for the execute-time
+// re-batch from a fresh audit. live holds what only the executor knows then:
+// the mediator it holds, whether a phase already funded it, and its fee bid.
+export function finalBatchOptions(
+  md: FinalClassicTxMetadata,
+  live: {
+    readonly mediatorPublicKey?: string;
+    readonly mediatorAlreadyFunded?: boolean;
+    readonly feePerOpStroops?: number;
+  } = {},
+): BatchOptions {
+  const mediatorPublicKey = live.mediatorPublicKey ?? md.mediatorPublicKey;
+  return {
+    destination: md.destination,
+    useMediator: md.useMediator,
+    ...(md.claimableBalanceIds !== undefined
+      ? { claimableBalanceIds: md.claimableBalanceIds }
+      : {}),
+    ...(md.returnToIssuerAssetKeys ? { returnToIssuerAssetKeys: md.returnToIssuerAssetKeys } : {}),
+    ...(md.sendToDestinationAssetKeys
+      ? { sendToDestinationAssetKeys: md.sendToDestinationAssetKeys }
+      : {}),
+    ...(md.acceptedPriceImpactAssetKeys
+      ? { acceptedPriceImpactAssetKeys: md.acceptedPriceImpactAssetKeys }
+      : {}),
+    ...(md.reviewedReferenceQuotes ? { reviewedReferenceQuotes: md.reviewedReferenceQuotes } : {}),
+    ...(md.reviewedConversionQuotes
+      ? { reviewedConversionQuotes: md.reviewedConversionQuotes }
+      : {}),
+    ...(md.useMediator && mediatorPublicKey ? { mediatorPublicKey } : {}),
+    ...(live.mediatorAlreadyFunded === true ? { mediatorAlreadyFunded: true } : {}),
+    ...(live.feePerOpStroops !== undefined ? { feePerOpStroops: live.feePerOpStroops } : {}),
+    ...(md.memo ? { memo: md.memo } : {}),
+  };
+}
+
+// claim the reward and the fees, then withdraw every range; returns the node
+// ids, all of which pay tokens into the account
+function concentratedNodes(
+  pos: AquariusConcentratedPositionSummary,
+  nodes: PlanNode[],
+): readonly string[] {
+  const claims: string[] = [];
+  const label = `${pos.tokens.map(shortAddr).join("/")} (${shortAddr(pos.poolAddress)})`;
+  if (pos.pendingReward > 0n) {
+    const id = makeId("aquarius-cl-claim", pos.poolAddress);
+    nodes.push({
+      id,
+      kind: "ClaimAquariusRewards",
+      dependencies: [],
+      status: "pending",
+      description: `Claim Aquarius rewards for concentrated pool ${label}`,
+      metadata: {
+        kind: "ClaimAquariusRewards",
+        poolIndex: pos.poolIndex,
+        tokens: pos.tokens,
+        poolAddress: pos.poolAddress,
+      },
+    });
+    claims.push(id);
+  }
+  if (pos.pendingFees.some((fee) => fee > 0n)) {
+    const id = makeId("aquarius-cl-fees", pos.poolAddress);
+    nodes.push({
+      id,
+      kind: "ClaimAquariusConcentratedFees",
+      dependencies: [],
+      status: "pending",
+      description: `Collect the swap fees of concentrated pool ${label}`,
+      metadata: {
+        kind: "ClaimAquariusConcentratedFees",
+        poolAddress: pos.poolAddress,
+        tokens: pos.tokens,
+      },
+    });
+    claims.push(id);
+  }
+  const ids = [...claims];
+  for (const range of pos.ranges) {
+    if (range.liquidity <= 0n) continue;
+    const id = makeId(
+      "aquarius-cl-withdraw",
+      pos.poolAddress,
+      String(range.tickLower),
+      String(range.tickUpper),
+    );
+    nodes.push({
+      id,
+      kind: "WithdrawAquariusConcentrated",
+      dependencies: claims,
+      status: "pending",
+      description:
+        `Withdraw the ${range.tickLower} to ${range.tickUpper} tick range from concentrated ` +
+        `pool ${label}`,
+      metadata: {
+        kind: "WithdrawAquariusConcentrated",
+        poolAddress: pos.poolAddress,
+        tokens: pos.tokens,
+        tickLower: range.tickLower,
+        tickUpper: range.tickUpper,
+        liquidity: range.liquidity,
+      },
+    });
+    ids.push(id);
+  }
+  return ids;
 }
 
 // contract ids of every token a planned exit pays out, in plan order
@@ -457,6 +744,11 @@ function exitPayoutTokens(positions: ProtocolPositions): readonly string[] {
   };
   for (const pool of positions.aquarius) {
     if (pool.shareBalance > 0n) pool.tokens.forEach(add);
+  }
+  for (const pos of positions.aquariusConcentrated) {
+    if (pos.ranges.some((r) => r.liquidity > 0n) || pos.pendingFees.some((f) => f > 0n)) {
+      pos.tokens.forEach(add);
+    }
   }
   for (const pos of positions.soroswap) {
     if (pos.shareBalance <= 0n) continue;
@@ -482,13 +774,42 @@ function classicSacIds(audit: AccountAudit, passphrase: string): ReadonlySet<str
   return ids;
 }
 
-function referenceQuotesOf(
+function resolvePlanNetwork(opts: GeneratePlanOptions): NetworkConfig | undefined {
+  if (opts.network !== undefined) {
+    if (
+      opts.networkPassphrase !== undefined &&
+      opts.networkPassphrase !== opts.network.passphrase
+    ) {
+      throw new Error("generatePlan: opts.network and opts.networkPassphrase disagree");
+    }
+    return opts.network;
+  }
+  if (opts.networkPassphrase === undefined) return undefined;
+  return Object.values(NETWORKS).find((n) => n.passphrase === opts.networkPassphrase);
+}
+
+// the BLND-USDC comet LP token both backstops pay a withdraw out in (each
+// backstop's backstop_token, read on chain 2026-10-06: CAS3FL6T... for the
+// mainnet v1 and v2 backstops, CA5UTUUP... on testnet)
+function blendCometId(network: NetworkConfig): string {
+  const infra =
+    network.id === "mainnet" ? BLEND_MAINNET_INFRASTRUCTURE : BLEND_TESTNET_INFRASTRUCTURE;
+  const comet = infra.find((e) => e.name === "comet (BLND/USDC LP)");
+  if (comet === undefined) {
+    throw new Error(`generatePlan: no pinned Blend comet LP token on ${network.id}`);
+  }
+  return comet.id;
+}
+
+function quotesOf(
   paths: ReadonlyMap<string, PathResultRef> | undefined,
+  pick: (path: PathResultRef) => ReferenceQuote | undefined,
 ): Readonly<Record<string, ReferenceQuote>> | undefined {
   if (paths === undefined) return undefined;
   const out: Record<string, ReferenceQuote> = {};
   for (const [key, path] of paths) {
-    if (path.reference !== undefined) out[key] = path.reference;
+    const quote = pick(path);
+    if (quote !== undefined) out[key] = quote;
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }
@@ -522,6 +843,13 @@ function aquariusPoolLabel(pool: AquariusPositionSummary): string {
   return `${pool.tokens.map(shortAddr).join("/")} (${pool.poolIndex.slice(0, 8)}...)`;
 }
 
+// BLND has 7 decimals
+function formatBlnd(stroops: bigint): string {
+  const whole = stroops / 10_000_000n;
+  const frac = (stroops % 10_000_000n).toString().padStart(7, "0").replace(/0+$/, "");
+  return frac.length > 0 ? `${whole}.${frac}` : whole.toString();
+}
+
 // stable id format: lower-cased parts joined with ":"
 function makeId(...parts: readonly string[]): string {
   return parts.map((p) => p.toLowerCase()).join(":");
@@ -532,4 +860,9 @@ function shortAddr(s: string): string {
   return `${s.slice(0, 6)}...${s.slice(-4)}`;
 }
 
-export type { BlendPositionSummary, AquariusPositionSummary, SoroswapPositionSummary };
+export type {
+  BlendPositionSummary,
+  AquariusPositionSummary,
+  AquariusConcentratedPositionSummary,
+  SoroswapPositionSummary,
+};

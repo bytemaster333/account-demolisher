@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { Asset, Keypair, StrKey } from "@stellar/stellar-sdk";
 import { TESTNET } from "@/lib/config/networks";
-import { generatePlan } from "@/lib/plan/generator";
-import { topologicalOrder, type PlanTree } from "@/lib/plan/tree";
+import { finalBatchOptions, generatePlan } from "@/lib/plan/generator";
+import { planExitPayoutTokens, topologicalOrder, type PlanTree } from "@/lib/plan/tree";
 import type { AccountAudit } from "@/lib/types/account";
 import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
 
@@ -116,7 +116,7 @@ describe("generatePlan, memo handling (SEC-03: direct-path memo must survive)", 
 
 describe("generatePlan, protocol ordering invariants", () => {
   it("wires and orders Blend repay before that pool's withdraw", () => {
-    const tree = generatePlan(makeAudit(), richPositions(), [], DEST);
+    const tree = generatePlan(makeAudit(), richPositions(), [], DEST, { network: TESTNET });
     const repayId = id("blend-repay", POOL_ID, ASSET_A);
     const withdrawId = id("blend-withdraw-collateral", POOL_ID, ASSET_A);
     // edge exists (dropping it would let the withdraw run first on-chain)
@@ -126,7 +126,7 @@ describe("generatePlan, protocol ordering invariants", () => {
   });
 
   it("wires and orders Blend emissions claim after its withdraws and before the merge", () => {
-    const tree = generatePlan(makeAudit(), richPositions(), [], DEST);
+    const tree = generatePlan(makeAudit(), richPositions(), [], DEST, { network: TESTNET });
     const withdrawId = id("blend-withdraw-collateral", POOL_ID, ASSET_A);
     const claimId = id("blend-claim", POOL_ID);
     expect(dependsOn(tree, claimId, withdrawId)).toBe(true);
@@ -136,7 +136,7 @@ describe("generatePlan, protocol ordering invariants", () => {
   });
 
   it("wires and orders every soroban node before the final classic merge", () => {
-    const tree = generatePlan(makeAudit(), richPositions(), [], DEST);
+    const tree = generatePlan(makeAudit(), richPositions(), [], DEST, { network: TESTNET });
     const order = topologicalOrder(tree);
     const finalIdx = indexOf(order, "final-classic-tx");
     for (const node of tree.allNodes.values()) {
@@ -148,7 +148,7 @@ describe("generatePlan, protocol ordering invariants", () => {
   });
 
   it("leaves ASSET_B (no supply/collateral entry) out of the plan", () => {
-    const tree = generatePlan(makeAudit(), richPositions(), [], DEST);
+    const tree = generatePlan(makeAudit(), richPositions(), [], DEST, { network: TESTNET });
     expect(tree.allNodes.has(id("blend-withdraw-supply", POOL_ID, ASSET_B))).toBe(false);
   });
 });
@@ -156,6 +156,7 @@ describe("generatePlan, protocol ordering invariants", () => {
 describe("generatePlan, mediator forward", () => {
   it("wires mediator-forward on the final tx and orders it last", () => {
     const tree = generatePlan(makeAudit(), richPositions(), [], DEST, {
+      network: TESTNET,
       useMediator: true,
       mediatorPublicKey: MED,
       flowToken: "nonce.exp.mac",
@@ -176,6 +177,7 @@ describe("generatePlan, mediator forward", () => {
     // regression: an 'id' (numeric) CEX memo was dropped because only 'text' was
     // propagated, so the forward reached the exchange with no memo (fund loss).
     const tree = generatePlan(makeAudit(), richPositions(), [], DEST, {
+      network: TESTNET,
       useMediator: true,
       mediatorPublicKey: MED,
       flowToken: "nonce.exp.mac",
@@ -253,41 +255,162 @@ describe("generatePlan, held SEP-41 token auto-drain (SEP-41 auto-include)", () 
   });
 });
 
-describe("generatePlan, blend backstop (queued 17-day withdrawal)", () => {
+describe("generatePlan, blend backstop (queued withdrawal, prepare-only plan)", () => {
   const NOW = 1_700_000_000_000; // fixed so the estimated unlock date is deterministic
   const SEVENTEEN_DAYS_MS = 17 * 24 * 60 * 60 * 1000;
+  const TWENTY_ONE_DAYS_MS = 21 * 24 * 60 * 60 * 1000;
 
-  it("emits a BackstopQueue node carrying the estimated unlock date, gating the merge", () => {
+  it("queues the shares and only prepares the close while the queue is locked (PLCL-30)", () => {
     const positions = emptyPositions({
       backstop: [{ poolId: POOL_ID, shares: 1000n, queuedForWithdrawal: 0n }],
     });
     const tree = generatePlan(makeAudit(), positions, [], DEST, { now: NOW });
     const nodeId = id("backstop-queue", POOL_ID);
     const node = tree.allNodes.get(nodeId);
-    expect(node?.kind).toBe("BackstopQueue");
     if (node?.kind !== "BackstopQueue") throw new Error("expected BackstopQueue node");
     expect(node.metadata.poolId).toBe(POOL_ID);
     expect(node.metadata.shares).toBe(1000n);
-    // the shown unlock date is now + 17 days
+    // the shown unlock date is now + 17 days on the v2 backstop
     expect(node.metadata.queueEndsAt.getTime()).toBe(NOW + SEVENTEEN_DAYS_MS);
-    // the merge depends on the queue (it must run before the close attempt)
-    expect(dependsOn(tree, "final-classic-tx", nodeId)).toBe(true);
+    // no merge and no forward: the account has to exist to receive the withdrawal
+    expect(tree.allNodes.has("final-classic-tx")).toBe(false);
+    expect(tree.allNodes.has("mediator-forward")).toBe(false);
+    expect(tree.prepareOnly?.unlocksAt.getTime()).toBe(NOW + SEVENTEEN_DAYS_MS);
   });
 
-  it("does not emit a BackstopQueue node when there are no active shares to queue", () => {
-    // already fully queued: nothing new to submit (but the executor's reprobe
-    // still blocks the merge until the Q4W is withdrawn)
+  it("dates a v1 backstop queue 21 days out (C-07)", () => {
     const positions = emptyPositions({
-      backstop: [{ poolId: POOL_ID, shares: 0n, queuedForWithdrawal: 500n }],
+      backstop: [
+        {
+          poolId: POOL_ID,
+          shares: 10n,
+          queuedForWithdrawal: 0n,
+          queueDurationSeconds: 21 * 24 * 60 * 60,
+        },
+      ],
     });
     const tree = generatePlan(makeAudit(), positions, [], DEST, { now: NOW });
+    const node = tree.allNodes.get(id("backstop-queue", POOL_ID));
+    if (node?.kind !== "BackstopQueue") throw new Error("expected BackstopQueue node");
+    expect(node.metadata.queueEndsAt.getTime()).toBe(NOW + TWENTY_ONE_DAYS_MS);
+    expect(node.description).toContain(
+      new Date(NOW + TWENTY_ONE_DAYS_MS).toISOString().slice(0, 10),
+    );
+    expect(tree.prepareOnly?.unlocksAt.getTime()).toBe(NOW + TWENTY_ONE_DAYS_MS);
+  });
+
+  it("withdraws an unlocked queue and then closes the account (M-25)", () => {
+    const positions = emptyPositions({
+      backstop: [
+        {
+          poolId: POOL_ID,
+          shares: 0n,
+          queuedForWithdrawal: 500n,
+          unlockedQueuedForWithdrawal: 500n,
+        },
+      ],
+    });
+    const tree = generatePlan(makeAudit(), positions, [], DEST, { now: NOW, network: TESTNET });
+    const withdrawId = id("backstop-withdraw", POOL_ID);
+    const node = tree.allNodes.get(withdrawId);
+    if (node?.kind !== "BackstopWithdraw") throw new Error("expected BackstopWithdraw node");
+    expect(node.metadata.amount).toBe(500n);
+    // the testnet backstop pays out the BLND-USDC comet LP token
+    expect(node.metadata.lpToken).toBe("CA5UTUUPHYL5K22UBRUVC37EARZUGYOSGK3IKIXG2JLCC5ZZLI4BDWDM");
     expect(tree.allNodes.has(id("backstop-queue", POOL_ID))).toBe(false);
+    expect(tree.prepareOnly).toBeUndefined();
+    expect(dependsOn(tree, "final-classic-tx", withdrawId)).toBe(true);
+    // the LP tokens it pays out are swept to the destination after it, and the
+    // merge guard knows to look for them
+    const sweepId = id("drain-token", node.metadata.lpToken);
+    expect(dependsOn(tree, sweepId, withdrawId)).toBe(true);
+    expect(planExitPayoutTokens(tree)).toContain(node.metadata.lpToken);
+  });
+
+  it("stays prepare-only while part of the queue is still locked", () => {
+    const positions = emptyPositions({
+      backstop: [
+        {
+          poolId: POOL_ID,
+          shares: 0n,
+          queuedForWithdrawal: 800n,
+          unlockedQueuedForWithdrawal: 300n,
+        },
+      ],
+    });
+    const tree = generatePlan(makeAudit(), positions, [], DEST, { now: NOW, network: TESTNET });
+    expect(tree.allNodes.has(id("backstop-withdraw", POOL_ID))).toBe(true);
+    expect(tree.allNodes.has("final-classic-tx")).toBe(false);
+    expect(tree.prepareOnly).toBeDefined();
+  });
+
+  it("refuses to plan a backstop withdraw without the network", () => {
+    const positions = emptyPositions({
+      backstop: [
+        {
+          poolId: POOL_ID,
+          shares: 0n,
+          queuedForWithdrawal: 5n,
+          unlockedQueuedForWithdrawal: 5n,
+        },
+      ],
+    });
+    expect(() => generatePlan(makeAudit(), positions, [], DEST, { now: NOW })).toThrow(
+      /opts\.network is required/,
+    );
+  });
+
+  it("claims accrued backstop emissions before the queue (L-49)", () => {
+    const positions = emptyPositions({
+      backstop: [
+        { poolId: POOL_ID, shares: 1000n, queuedForWithdrawal: 0n, accruedEmissions: 25_000_000n },
+      ],
+    });
+    const tree = generatePlan(makeAudit(), positions, [], DEST, { now: NOW });
+    const claimId = id("backstop-claim", POOL_ID);
+    const claim = tree.allNodes.get(claimId);
+    if (claim?.kind !== "ClaimBackstopEmissions") throw new Error("expected the claim node");
+    expect(claim.metadata.accruedEmissions).toBe(25_000_000n);
+    expect(claim.description).toContain("2.5 BLND");
+    expect(dependsOn(tree, id("backstop-queue", POOL_ID), claimId)).toBe(true);
+    expect(tree.forfeitedBackstopEmissions).toBeUndefined();
+  });
+
+  it("queues without the claim once the user forfeits emissions the claim can't collect", () => {
+    const positions = emptyPositions({
+      backstop: [
+        { poolId: POOL_ID, shares: 1000n, queuedForWithdrawal: 0n, accruedEmissions: 25_000_000n },
+      ],
+    });
+    const tree = generatePlan(makeAudit(), positions, [], DEST, {
+      now: NOW,
+      forfeitBackstopEmissionsPoolIds: [POOL_ID],
+    });
+    expect(tree.allNodes.has(id("backstop-claim", POOL_ID))).toBe(false);
+    expect(tree.allNodes.get(id("backstop-queue", POOL_ID))?.dependencies).toEqual([]);
+    expect(tree.forfeitedBackstopEmissions).toEqual([
+      { poolId: POOL_ID, accruedEmissions: 25_000_000n },
+    ]);
+  });
+
+  it("never claims emissions accrued to a depositor with no shares", () => {
+    const positions = emptyPositions({
+      backstop: [],
+      backstopUnclaimedEmissions: [
+        { poolId: POOL_ID, backstopId: "CBACKSTOP", accruedEmissions: 9n },
+      ],
+    });
+    const tree = generatePlan(makeAudit(), positions, [], DEST, { now: NOW });
+    expect([...tree.allNodes.values()].some((n) => n.kind === "ClaimBackstopEmissions")).toBe(
+      false,
+    );
+    expect(tree.allNodes.has("final-classic-tx")).toBe(true);
   });
 });
 
 describe("generatePlan, blend emissions target the user's real reserve ids", () => {
   it("threads the discovered reserve_token_ids into the claim (not a hardcoded [0])", () => {
-    const tree = generatePlan(makeAudit(), richPositions(), [], DEST);
+    const tree = generatePlan(makeAudit(), richPositions(), [], DEST, { network: TESTNET });
     const claim = tree.allNodes.get(id("blend-claim", POOL_ID));
     expect(claim?.kind).toBe("ClaimBlendEmissions");
     if (claim?.kind !== "ClaimBlendEmissions") throw new Error("expected ClaimBlendEmissions");
@@ -349,7 +472,7 @@ describe("generatePlan, held-token disposition (transfer-as-is vs convert-to-XLM
     expect(node.metadata.priceImpactAccepted).toBe(true);
   });
 
-  it("never converts on a mediator (CEX) close: an exchange can't receive a raw token", () => {
+  it("plans no held-token sweep of either kind on a mediator (CEX) close; the preview asks to move them first", () => {
     const tree = generatePlan(makeAudit(), emptyPositions(), [], DEST, {
       useMediator: true,
       mediatorPublicKey: MED,
@@ -558,5 +681,258 @@ describe("H-11: the plan records the reviewed claimable balances", () => {
     const md = finalMetadata(tree);
     expect(md.reviewedReferenceQuotes).toEqual({ [key]: reference });
     expect(md.acceptedPriceImpactAssetKeys).toEqual([key]);
+  });
+});
+
+describe("H-26: Aquarius concentrated positions get exit steps", () => {
+  const POOL = StrKey.encodeContract(Buffer.alloc(32, 9));
+  const concentrated = {
+    poolAddress: POOL,
+    poolIndex: SHARED_INDEX,
+    tokens: [TOKEN_X, TOKEN_Y],
+    ranges: [
+      { tickLower: -15620, tickUpper: -15260, liquidity: 7_509_933_979_669n },
+      { tickLower: -100, tickUpper: 100, liquidity: 5n },
+    ],
+    pendingFees: [11_409_704n, 3_325_632n],
+    pendingReward: 2_704_551_200n,
+  };
+
+  it("claims the reward and the fees, then withdraws each range, all before the merge", () => {
+    const tree = generatePlan(
+      makeAudit(),
+      emptyPositions({ aquariusConcentrated: [concentrated] }),
+      [],
+      DEST,
+    );
+    const claimId = id("aquarius-cl-claim", POOL);
+    const feesId = id("aquarius-cl-fees", POOL);
+    const rangeA = id("aquarius-cl-withdraw", POOL, "-15620", "-15260");
+    const rangeB = id("aquarius-cl-withdraw", POOL, "-100", "100");
+    const claim = tree.allNodes.get(claimId);
+    if (claim?.kind !== "ClaimAquariusRewards") throw new Error("expected the reward claim");
+    expect(claim.metadata).toMatchObject({
+      poolIndex: SHARED_INDEX,
+      tokens: [TOKEN_X, TOKEN_Y],
+      poolAddress: POOL,
+    });
+    expect(tree.allNodes.get(feesId)?.kind).toBe("ClaimAquariusConcentratedFees");
+    const withdraw = tree.allNodes.get(rangeA);
+    if (withdraw?.kind !== "WithdrawAquariusConcentrated") throw new Error("expected a range");
+    expect(withdraw.metadata).toMatchObject({
+      poolAddress: POOL,
+      tickLower: -15620,
+      tickUpper: -15260,
+      liquidity: 7_509_933_979_669n,
+    });
+    for (const range of [rangeA, rangeB]) {
+      expect(dependsOn(tree, range, claimId)).toBe(true);
+      expect(dependsOn(tree, range, feesId)).toBe(true);
+      expect(dependsOn(tree, "final-classic-tx", range)).toBe(true);
+    }
+    expect(planExitPayoutTokens(tree)).toEqual(expect.arrayContaining([TOKEN_X, TOKEN_Y]));
+  });
+
+  it("plans only the claims for a pool with no live range", () => {
+    const tree = generatePlan(
+      makeAudit(),
+      emptyPositions({
+        aquariusConcentrated: [{ ...concentrated, ranges: [], pendingFees: [0n, 0n] }],
+      }),
+      [],
+      DEST,
+    );
+    const kinds = [...tree.allNodes.values()].map((n) => n.kind);
+    expect(kinds).toContain("ClaimAquariusRewards");
+    expect(kinds).not.toContain("ClaimAquariusConcentratedFees");
+    expect(kinds).not.toContain("WithdrawAquariusConcentrated");
+  });
+});
+
+describe("M-26: Blend emissions claims open the BLND trustline first", () => {
+  it("adds the trustline ahead of every claim when the account has none", () => {
+    const tree = generatePlan(makeAudit(), richPositions(), [], DEST, { network: TESTNET });
+    const line = tree.allNodes.get("blnd-trustline");
+    if (line?.kind !== "AddBlndTrustline") throw new Error("expected AddBlndTrustline");
+    expect(line.metadata.issuer).toBe("GATALTGTWIOT6BUDBCZM3Q4OQ4BO2COLOAZ7IYSKPLC2PMSOPPGF5V56");
+    expect(line.dependencies).toEqual([]);
+    expect(dependsOn(tree, id("blend-claim", POOL_ID), "blnd-trustline")).toBe(true);
+  });
+
+  it("adds no trustline when the account already holds an authorized one", () => {
+    const audit = makeAudit({
+      balances: [
+        {
+          asset: {
+            kind: "credit",
+            code: "BLND",
+            issuer: "GATALTGTWIOT6BUDBCZM3Q4OQ4BO2COLOAZ7IYSKPLC2PMSOPPGF5V56",
+          },
+          amount: "0.0000000",
+          buyingLiabilities: "0",
+          sellingLiabilities: "0",
+          isAuthorized: true,
+        },
+      ],
+    });
+    const tree = generatePlan(audit, richPositions(), [], DEST, { network: TESTNET });
+    expect(tree.allNodes.has("blnd-trustline")).toBe(false);
+    expect(tree.allNodes.get(id("blend-claim", POOL_ID))?.dependencies).not.toContain(
+      "blnd-trustline",
+    );
+  });
+
+  it("refuses to plan emissions claims without the network", () => {
+    expect(() => generatePlan(makeAudit(), richPositions(), [], DEST)).toThrow(
+      /opts\.network is required/,
+    );
+  });
+});
+
+describe("M-23: a repay asset locked in classic offers or pools is unwound first", () => {
+  const ISSUER = Keypair.random().publicKey();
+  const usdc = new Asset("USDC", ISSUER);
+  const usdcSac = usdc.contractId(TESTNET.passphrase);
+  const positions = emptyPositions({
+    blend: [
+      {
+        poolId: POOL_ID,
+        liabilities: new Map([[usdcSac, 100n]]),
+        collateral: new Map(),
+        supply: new Map(),
+        emissionReserveTokenIds: [],
+      },
+    ],
+  });
+  const usdcId = { kind: "credit", code: "USDC", issuer: ISSUER } as const;
+  const audit = makeAudit({
+    offers: [
+      {
+        id: "11",
+        selling: usdcId,
+        buying: { kind: "native" },
+        amount: "5",
+        priceR: { n: 1, d: 1 },
+      },
+      {
+        id: "12",
+        selling: { kind: "native" },
+        buying: usdcId,
+        amount: "5",
+        priceR: { n: 1, d: 1 },
+      },
+    ],
+    poolShares: [
+      {
+        poolId: "b".repeat(64),
+        poolType: "constant_product",
+        shareBalance: "10.0000000",
+        totalShares: "100.0000000",
+        shareLimit: "100.0000000",
+        fee: 30,
+        reserves: [
+          { asset: { kind: "native" }, amount: "50.0000000" },
+          { asset: usdcId, amount: "50.0000000" },
+        ],
+      },
+    ],
+  });
+
+  it("cancels the offer selling it and withdraws the pool holding it before the repay", () => {
+    const tree = generatePlan(audit, positions, [], DEST, { network: TESTNET });
+    const unwind = tree.allNodes.get("classic-unwind");
+    if (unwind?.kind !== "ClassicUnwind") throw new Error("expected ClassicUnwind");
+    expect(unwind.metadata.offerIds).toEqual(["11"]);
+    expect(unwind.metadata.poolIds).toEqual(["b".repeat(64)]);
+    expect(unwind.metadata.repayAssets).toEqual([usdcSac]);
+    expect(unwind.metadata.batches.flatMap((b) => b.operations.map((o) => o.kind))).toEqual([
+      "liquidity_pool_withdraw",
+      "manage_sell_offer_cancel",
+    ]);
+    expect(dependsOn(tree, id("blend-repay", POOL_ID, usdcSac), "classic-unwind")).toBe(true);
+    expect(dependsOn(tree, "final-classic-tx", "classic-unwind")).toBe(true);
+  });
+
+  it("plans no unwind when nothing classic holds the repay asset", () => {
+    const tree = generatePlan(makeAudit({ offers: [audit.offers[1]!] }), positions, [], DEST, {
+      network: TESTNET,
+    });
+    expect(tree.allNodes.has("classic-unwind")).toBe(false);
+  });
+});
+
+describe("M-52 and M-18: the final transaction's review facts are recorded", () => {
+  const ISSUER = Keypair.random().publicKey();
+  const KEY = `USDC:${ISSUER}`;
+  const audit = makeAudit({
+    balances: [
+      { asset: { kind: "native" }, amount: "50", buyingLiabilities: "0", sellingLiabilities: "0" },
+      {
+        asset: { kind: "credit", code: "USDC", issuer: ISSUER },
+        amount: "10",
+        buyingLiabilities: "0",
+        sellingLiabilities: "0",
+      },
+    ],
+  });
+  const paths = new Map([
+    [
+      KEY,
+      {
+        sourceAmount: "10",
+        destinationAmount: "40",
+        path: [],
+        reference: { sourceAmount: "0.01", destinationAmount: "0.04" },
+      },
+    ],
+  ]);
+
+  it("records the full-size quote the user reviewed and whether the marker is planned", () => {
+    const tree = generatePlan(audit, emptyPositions(), [], DEST, { paths });
+    const final = tree.allNodes.get("final-classic-tx");
+    if (final?.kind !== "FinalClassicTx") throw new Error("expected FinalClassicTx");
+    expect(final.metadata.reviewedConversionQuotes).toEqual({
+      [KEY]: { sourceAmount: "10", destinationAmount: "40" },
+    });
+    expect(final.metadata.closeMarker).toBe(true);
+    expect(final.description).not.toContain("not marked");
+    // the execute-time re-batch gets the same options back
+    const options = finalBatchOptions(final.metadata, { feePerOpStroops: 100 });
+    expect(options.reviewedConversionQuotes).toEqual(final.metadata.reviewedConversionQuotes);
+    expect(options.reviewedReferenceQuotes).toEqual(final.metadata.reviewedReferenceQuotes);
+    expect(options.claimableBalanceIds).toEqual([]);
+    expect(options.feePerOpStroops).toBe(100);
+  });
+
+  it("says when the close can't carry the marker", () => {
+    const tree = generatePlan(makeAudit(), emptyPositions(), [], DEST);
+    const final = tree.allNodes.get("final-classic-tx");
+    if (final?.kind !== "FinalClassicTx") throw new Error("expected FinalClassicTx");
+    expect(final.metadata.closeMarker).toBe(false);
+    expect(final.description).toContain("not marked as an Account Demolisher close");
+  });
+});
+
+describe("decision 3: per-token answers to a refused conversion", () => {
+  const A = StrKey.encodeContract(Buffer.alloc(32, 21));
+  const B = StrKey.encodeContract(Buffer.alloc(32, 22));
+
+  it("sends a token as-is or leaves it, as the user chose, while converting the rest", () => {
+    const C = StrKey.encodeContract(Buffer.alloc(32, 23));
+    const tree = generatePlan(makeAudit(), emptyPositions(), [], DEST, {
+      heldTokens: [
+        { contractId: A, balance: 5n },
+        { contractId: B, balance: 6n },
+        { contractId: C, balance: 7n },
+      ],
+      convertHeldTokensToXLM: true,
+      sendHeldTokensAsIs: [A],
+      leaveHeldTokens: [B],
+    });
+    expect(tree.allNodes.get(id("drain-token", A))?.kind).toBe("TransferAsIs");
+    expect(tree.allNodes.has(id("convert-token", A))).toBe(false);
+    expect(tree.allNodes.has(id("drain-token", B))).toBe(false);
+    expect(tree.allNodes.has(id("convert-token", B))).toBe(false);
+    expect(tree.allNodes.get(id("convert-token", C))?.kind).toBe("ConvertSorobanToXLM");
   });
 });

@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
-import { TransactionBuilder, type rpc, type Horizon } from "@stellar/stellar-sdk";
+import { Account, TransactionBuilder, type rpc, type Horizon } from "@stellar/stellar-sdk";
+import { buildBlndTrustlineTx } from "@/lib/adapters/blend/emissions-check";
+import { FORWARD_OPERATION_COUNT, MAX_FORWARD_FEE } from "@/lib/mediator/forward-terms";
 
 import { NodeNotBuiltError, simulateNode, SimulationFailedError } from "@/lib/plan/simulator";
 import type { SimulationDeps } from "@/lib/plan/simulator";
@@ -211,5 +213,82 @@ describe("simulator: Soroban node routes to rpc simulate", () => {
     await expect(simulateNode(node, baseDeps({ simulateFn }))).rejects.toBeInstanceOf(
       SimulationFailedError,
     );
+  });
+});
+
+describe("simulator: the forward reports its fee ceiling, not a fixed base fee (M-01)", () => {
+  it("shows the most the forward can bid while it escalates", async () => {
+    const out = await simulateNode(
+      {
+        id: "fwd",
+        kind: "MediatorForward",
+        dependencies: [],
+        status: "pending",
+        description: "fwd",
+        metadata: {
+          kind: "MediatorForward",
+          mediatorPublicKey: MED,
+          ultimateDestination: DEST,
+          flowToken: "tok",
+        },
+      },
+      baseDeps(),
+    );
+    if (out.kind !== "classic") throw new Error("expected classic");
+    expect(out.operationCount).toBe(FORWARD_OPERATION_COUNT);
+    expect(out.estimatedFee).toBe(MAX_FORWARD_FEE.toString());
+  });
+});
+
+describe("simulator: classic nodes outside the final batch", () => {
+  it("builds the classic unwind's batches like the final one", async () => {
+    const out = await simulateNode(
+      {
+        id: "classic-unwind",
+        kind: "ClassicUnwind",
+        dependencies: [],
+        status: "pending",
+        description: "unwind",
+        metadata: {
+          kind: "ClassicUnwind",
+          batches: [batch(2)],
+          offerIds: [],
+          poolIds: [],
+          repayAssets: [],
+        },
+      },
+      baseDeps(),
+    );
+    if (out.kind !== "classic") throw new Error("expected classic");
+    expect(out.operationCount).toBe(2);
+    expect(out.transactionCount).toBe(1);
+  });
+
+  it("validates the BLND change_trust in memory instead of asking soroban rpc", async () => {
+    const simulateFn = vi.fn();
+    const tx = buildBlndTrustlineTx(
+      TESTNET,
+      new Account(USER, "41") as unknown as Horizon.AccountResponse,
+    );
+    const out = await simulateNode(
+      {
+        id: "blnd-trustline",
+        kind: "AddBlndTrustline",
+        dependencies: [],
+        status: "pending",
+        description: "trust BLND",
+        metadata: {
+          kind: "AddBlndTrustline",
+          code: "BLND",
+          issuer: "GATALTGTWIOT6BUDBCZM3Q4OQ4BO2COLOAZ7IYSKPLC2PMSOPPGF5V56",
+          transaction: tx,
+        },
+      },
+      baseDeps({ simulateFn }),
+    );
+    expect(simulateFn).not.toHaveBeenCalled();
+    if (out.kind !== "classic") throw new Error("expected classic");
+    expect(out.operationCount).toBe(1);
+    expect(out.estimatedFee).toBe(tx.fee);
   });
 });
