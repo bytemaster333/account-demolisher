@@ -22,6 +22,7 @@ vi.mock("@/lib/stellar/horizon-client", () => ({
 }));
 
 import { closeMarkerOperations } from "@/lib/metrics/close-marker";
+import { signedSigners } from "@/lib/multisig/partial-xdr";
 import { POST as publishRoute } from "@/app/api/plan/route";
 import { POST as signRoute } from "@/app/api/plan/[id]/sign/route";
 import {
@@ -171,15 +172,45 @@ describe("createPlan", () => {
     expect(res).toMatchObject({ ok: false, code: "STALE_SEQUENCE" });
   });
 
-  it("caps open requests per account", async () => {
+  it("keeps at most 3 open requests per account by replacing the oldest", async () => {
+    // a rebuilt request (after a dust payment, say) uses the same sequence
+    // number, so only one of them can ever land; the newest replaces the oldest
+    // instead of locking the signers out for the rest of the window
     const a = newAccount();
     loadAccount.mockResolvedValue(accountResponse(a));
+    const ids: string[] = [];
     for (let i = 0; i < 3; i++) {
       const ok = await createPlan("testnet", signedBy(buildClose(a, { memo: `r${i}` }), a.kp));
       expect(ok.ok).toBe(true);
+      ids.push(ok.ok ? ok.id : "");
     }
+    let closed = 0;
+    subscribe(
+      ids[0]!,
+      () => {},
+      () => (closed += 1),
+      "203.0.113.9",
+    );
     const fourth = await createPlan("testnet", signedBy(buildClose(a, { memo: "r3" }), a.kp));
-    expect(fourth).toMatchObject({ ok: false, code: "ACCOUNT_LIMIT" });
+    expect(fourth.ok).toBe(true);
+    expect(getPlan(ids[0]!)).toBeNull();
+    expect(closed).toBe(1);
+    expect(getPlan(ids[1]!)).not.toBeNull();
+    expect(getPlan(ids[2]!)).not.toBeNull();
+    expect(getPlan(fourth.ok ? fourth.id : "")).not.toBeNull();
+  });
+
+  it("drops an account's requests whose sequence number has already been used", async () => {
+    const a = newAccount();
+    loadAccount.mockResolvedValueOnce(accountResponse(a));
+    const first = await createPlan("testnet", signedBy(buildClose(a), a.kp));
+    expect(first.ok).toBe(true);
+    // another transaction from the account landed: its sequence is now 1001
+    const moved = { ...a, sequence: "1001" };
+    loadAccount.mockResolvedValueOnce(accountResponse(moved));
+    const second = await createPlan("testnet", signedBy(buildClose(moved), a.kp));
+    expect(second.ok).toBe(true);
+    expect(getPlan(first.ok ? first.id : "")).toBeNull();
   });
 
   it(
@@ -243,6 +274,58 @@ describe("createPlan", () => {
       expect(TransactionBuilder.fromXdr(signed.plan.xdr, NET).signatures).toHaveLength(2);
   });
 
+  it("stops collecting once the signatures reach the close threshold (H-32)", async () => {
+    // three weight-1 signers, thresholds low 1 / med 2 / high 2: two signatures
+    // close the account, and a third would be unused and fail the transaction
+    const a = newAccount(2);
+    loadAccount.mockResolvedValue(accountResponse(a));
+    const tx = buildClose(a);
+    const res = await createPlan("testnet", signedBy(tx, a.kp));
+    expect(res.ok).toBe(true);
+    const id = res.ok ? res.id : "";
+    const updates: string[] = [];
+    subscribe(
+      id,
+      (p) => updates.push(p.xdr),
+      () => {},
+      "203.0.113.6",
+    );
+
+    const second = addSignature(id, signedBy(tx, a.cosigners[0]!));
+    expect(second.ok).toBe(true);
+    expect(TransactionBuilder.fromXdr(getPlan(id)!.xdr, NET).signatures).toHaveLength(2);
+    expect(updates).toHaveLength(1);
+
+    const third = addSignature(id, signedBy(tx, a.cosigners[1]!));
+    expect(third.ok).toBe(true);
+    const stored = getPlan(id)!.xdr;
+    expect(TransactionBuilder.fromXdr(stored, NET).signatures).toHaveLength(2);
+    expect(signedSigners(stored, NET, [a.cosigners[1]!.publicKey()])).toEqual([]);
+    expect(updates).toHaveLength(1);
+  });
+
+  it("never stores more signatures than the threshold needs", async () => {
+    const a = newAccount(3);
+    loadAccount.mockResolvedValue(accountResponse(a));
+    const tx = buildClose(a);
+    // published already carrying three signatures for a threshold of two
+    const res = await createPlan("testnet", signedBy(tx, a.kp, a.cosigners[0]!, a.cosigners[1]!));
+    expect(res.ok).toBe(true);
+    const id = res.ok ? res.id : "";
+    expect(TransactionBuilder.fromXdr(getPlan(id)!.xdr, NET).signatures).toHaveLength(2);
+
+    // one envelope bringing two new signatures when one is missing
+    const b = newAccount(3);
+    loadAccount.mockResolvedValue(
+      accountResponse({ ...b, thresholds: { low: 1, med: 2, high: 3 } }),
+    );
+    const txB = buildClose(b);
+    const pub = await createPlan("testnet", signedBy(txB, b.kp));
+    const idB = pub.ok ? pub.id : "";
+    expect(addSignature(idB, signedBy(txB, b.cosigners[0]!, b.cosigners[1]!)).ok).toBe(true);
+    expect(TransactionBuilder.fromXdr(getPlan(idB)!.xdr, NET).signatures).toHaveLength(3);
+  });
+
   it("a concurrent re-publish merges into the record instead of replacing it", async () => {
     const a = newAccount(1);
     const tx = buildClose(a);
@@ -279,6 +362,8 @@ describe("createPlan", () => {
 });
 
 describe("worst-case bundle size (M-46)", () => {
+  const ALL_21 = { low: 1, med: 1, high: 21 };
+
   // 97 credit/credit offer cancels + the close marker pair + the merge = 100 ops,
   // with a 28-byte text memo: the largest envelope the close builder can emit.
   // these run a few thousand pure-JS ed25519 checks (about 1ms each), so they get
@@ -305,8 +390,9 @@ describe("worst-case bundle size (M-46)", () => {
     "publishes and collects signatures up to the 20-signature limit",
     { timeout: 30_000 },
     async () => {
+      // a threshold above 20 so the relay keeps collecting up to the envelope cap
       const a = newAccount(20);
-      loadAccount.mockResolvedValue(accountResponse(a));
+      loadAccount.mockResolvedValue(accountResponse({ ...a, thresholds: ALL_21 }));
       const tx = worstCase(a);
       expect(tx.operations).toHaveLength(100);
 
@@ -333,7 +419,7 @@ describe("worst-case bundle size (M-46)", () => {
 
   it("both plan routes accept a body of about 20 KiB", { timeout: 30_000 }, async () => {
     const a = newAccount(20);
-    loadAccount.mockResolvedValue(accountResponse(a));
+    loadAccount.mockResolvedValue(accountResponse({ ...a, thresholds: ALL_21 }));
     const tx = worstCase(a);
     const signers = [a.kp, ...a.cosigners.slice(0, 18)];
     const bigXdr = signedBy(tx, ...signers);

@@ -1,11 +1,26 @@
 // the freshness check against a bundle built by the real close builder and a
 // real Horizon.AccountResponse; only the account state fed in is varied.
 
-import { Horizon, Keypair, TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
+import {
+  Account,
+  BASE_FEE,
+  Horizon,
+  Keypair,
+  NotFoundError,
+  Operation,
+  TransactionBuilder,
+  type Transaction,
+  type xdr,
+} from "@stellar/stellar-sdk";
 import { describe, expect, it } from "vitest";
 
 import { TESTNET } from "@/lib/config/networks";
-import { checkBundleFreshness, feeBumpBundle } from "@/lib/multisig/bundle-freshness";
+import { CLOSE_MARKER_NAME, closeMarkerOperations } from "@/lib/metrics/close-marker";
+import {
+  checkBundleFreshness,
+  feeBumpBundle,
+  loadBundleFreshness,
+} from "@/lib/multisig/bundle-freshness";
 import { buildCloseTransaction } from "@/lib/multisig/signing-request";
 import type { AccountAudit } from "@/lib/types/account";
 
@@ -190,5 +205,64 @@ describe("feeBumpBundle", () => {
     expect(inner.signatures).toHaveLength(2);
     expect(owner.verify(inner.hash(), inner.signatures[0]!.signature.toBytes())).toBe(true);
     expect(bump.feeSource).toBe(payer.publicKey());
+  });
+});
+
+describe("bundle freshness edge cases", () => {
+  function markerBundle(extra: xdr.Operation[] = []): string {
+    const tx = new TransactionBuilder(new Account(owner.publicKey(), "5000"), {
+      fee: BASE_FEE,
+      networkPassphrase: TESTNET.passphrase,
+      timebounds: { minTime: 0, maxTime: 0 },
+    });
+    for (const op of extra) tx.addOperation(op);
+    for (const op of closeMarkerOperations()) tx.addOperation(op);
+    tx.addOperation(Operation.accountMerge({ destination: dest }));
+    return tx.build().toXdr();
+  }
+
+  function bare(data: Record<string, string>): Horizon.AccountResponse {
+    return new Horizon.AccountResponse({
+      id: owner.publicKey(),
+      account_id: owner.publicKey(),
+      sequence: "5000",
+      balances: [{ asset_type: "native", balance: "100.0000000" }],
+      signers: [{ key: owner.publicKey(), weight: 1, type: "ed25519_public_key" }],
+      thresholds: { low_threshold: 0, med_threshold: 0, high_threshold: 0 },
+      data_attr: data,
+    } as unknown as ConstructorParameters<typeof Horizon.AccountResponse>[0]);
+  }
+
+  it("accepts an existing close marker entry, which the marker pair removes", () => {
+    const res = checkBundleFreshness({
+      xdr: markerBundle(),
+      passphrase: TESTNET.passphrase,
+      account: bare({ [CLOSE_MARKER_NAME]: "MQ==" }),
+      offerIds: [],
+      claimableBalances: [],
+    });
+    expect(res).toEqual({ ok: true });
+  });
+
+  it("treats a claimable balance Horizon answers 404 for as gone", async () => {
+    const id = `00000000${"3".repeat(64)}`;
+    const xdrStr = markerBundle([Operation.claimClaimableBalance({ balanceId: id })]);
+    const horizon = {
+      loadAccount: () => Promise.resolve(bare({})),
+      offers: () => ({
+        forAccount: () => ({
+          limit: () => ({ call: () => Promise.resolve({ records: [] }) }),
+        }),
+      }),
+      claimableBalances: () => ({
+        claimableBalance: () => ({
+          // a 404 from a proxy in front of Horizon carries no problem body
+          call: () => Promise.reject(new NotFoundError("Not Found", "<html>not found</html>")),
+        }),
+      }),
+    } as unknown as Horizon.Server;
+    const res = await loadBundleFreshness(horizon, xdrStr, TESTNET.passphrase);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reasons.join(" ")).toMatch(/no longer exists/);
   });
 });

@@ -11,10 +11,10 @@ import { createHash, timingSafeEqual } from "node:crypto";
 
 import { createLimiter, rateLimitByIp } from "@/server/rate-limit";
 import { readTextCapped, BodyTooLargeError } from "@/server/read-body";
-import { getMetricsStore } from "@/server/metrics-store";
+import { getMetricsStore, type MetricsSnapshot } from "@/server/metrics-store";
 import { verifyCloseTx } from "@/server/close-verify";
 import { metricEventSchema } from "@/lib/metrics/events";
-import { resolveNetwork } from "@/lib/config/networks";
+import { parseNetworkId } from "@/lib/config/networks";
 
 // node runtime: filesystem store + Horizon verification aren't edge-compatible
 export const runtime = "nodejs";
@@ -71,7 +71,13 @@ export async function POST(request: Request): Promise<Response> {
     if (await store.hasClose(event.txHash)) {
       return json({ ok: true, duplicate: true }, 200);
     }
-    const result = await verifyCloseTx(resolveNetwork(event.network), event.txHash);
+    // the schema only admits configured networks; never fall back to another
+    const network = parseNetworkId(event.network);
+    if (network === null) {
+      console.error(`metrics: close event names unknown network "${event.network}"`);
+      return json({ ok: false, reason: "Unknown network." }, 400);
+    }
+    const result = await verifyCloseTx(network, event.txHash);
     if (!result.ok) {
       return json({ ok: false, reason: result.reason }, result.retryable ? 503 : 422);
     }
@@ -109,7 +115,13 @@ export async function GET(request: Request): Promise<Response> {
     return json({ ok: false, reason: "Unauthorized." }, 401);
   }
 
-  const snapshot = await getMetricsStore().snapshot();
+  let snapshot: MetricsSnapshot;
+  try {
+    snapshot = await getMetricsStore().snapshot();
+  } catch (err) {
+    console.error("metrics snapshot failed", err);
+    return json({ ok: false, reason: "Metrics store unavailable." }, 503);
+  }
   return new Response(JSON.stringify(snapshot), {
     status: 200,
     headers: { "content-type": "application/json", "cache-control": "no-store" },

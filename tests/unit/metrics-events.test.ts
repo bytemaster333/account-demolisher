@@ -32,13 +32,20 @@ describe("metricEventSchema", () => {
     ).toBe(false);
   });
 
-  it("accepts exactly the networks in the app config, nothing the config dropped", () => {
-    expect([...METRIC_NETWORKS].sort()).toEqual(Object.keys(NETWORKS).sort());
-    for (const id of Object.keys(NETWORKS)) {
+  it("accepts mainnet and testnet only; futurenet is no longer a target", () => {
+    expect([...METRIC_NETWORKS].sort()).toEqual(["mainnet", "testnet"]);
+    for (const id of METRIC_NETWORKS) {
+      expect(id in NETWORKS).toBe(true);
       expect(
         metricEventSchema.safeParse({ type: "close", network: id, txHash: HASH }).success,
       ).toBe(true);
     }
+    expect(
+      metricEventSchema.safeParse({ type: "close", network: "futurenet", txHash: HASH }).success,
+    ).toBe(false);
+    expect(
+      metricEventSchema.safeParse({ type: "visit", page: "landing", network: "futurenet" }).success,
+    ).toBe(false);
   });
 
   it("rejects malformed tx hashes (wrong length, uppercase, non-hex)", () => {

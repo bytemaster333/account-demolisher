@@ -13,6 +13,8 @@ import {
   TooManySignaturesError,
   canonicalizeSignatures,
   mergeSignatures,
+  signedSigners,
+  trimToThreshold,
 } from "@/lib/multisig/partial-xdr";
 
 const NET = Networks.TESTNET;
@@ -225,5 +227,60 @@ describe("the 20-signature envelope limit", () => {
         expectedSigners,
       }),
     ).toThrow(TooManySignaturesError);
+  });
+});
+
+describe("trimToThreshold (H-32)", () => {
+  // core walks the envelope in order and stops at the needed weight; anything
+  // after that is unused and fails the transaction with tx_bad_auth_extra
+  it("keeps signatures in envelope order until the required weight is reached", () => {
+    const [a, b, c] = [Keypair.random(), Keypair.random(), Keypair.random()];
+    const signers = [a, b, c].map((k) => ({ key: k.publicKey(), weight: 1 }));
+    const env = TransactionBuilder.fromXdr(buildTx(a.publicKey(), "1").toXdr(), NET);
+    env.sign(c);
+    env.sign(a);
+    env.sign(b);
+    const res = trimToThreshold(env.toXdr(), NET, signers, 2);
+    expect(res.kept).toEqual([c.publicKey(), a.publicKey()]);
+    expect(res.weight).toBe(2);
+    expect(res.met).toBe(true);
+    expect(TransactionBuilder.fromXdr(res.xdr, NET).signatures).toHaveLength(2);
+    expect(
+      signedSigners(
+        res.xdr,
+        NET,
+        [a, b, c].map((k) => k.publicKey()),
+      ),
+    ).toEqual([a.publicKey(), c.publicKey()]);
+  });
+
+  it("drops signatures from non-signers and duplicates, and reports a short envelope", () => {
+    const [a, b, stranger] = [Keypair.random(), Keypair.random(), Keypair.random()];
+    const signers = [
+      { key: a.publicKey(), weight: 1 },
+      { key: b.publicKey(), weight: 2 },
+    ];
+    const env = TransactionBuilder.fromXdr(buildTx(a.publicKey(), "1").toXdr(), NET);
+    env.sign(stranger);
+    env.sign(a);
+    env.sign(a);
+    const res = trimToThreshold(env.toXdr(), NET, signers, 3);
+    expect(res.kept).toEqual([a.publicKey()]);
+    expect(res.weight).toBe(1);
+    expect(res.met).toBe(false);
+    expect(TransactionBuilder.fromXdr(res.xdr, NET).signatures).toHaveLength(1);
+  });
+
+  it("rewrites each kept signature with its signer's canonical hint", () => {
+    const a = Keypair.random();
+    const signed = TransactionBuilder.fromXdr(signPartial(a.publicKey(), "1", a), NET);
+    const sig = signed.signatures[0]!.signature.toBytes();
+    const odd = TransactionBuilder.fromXdr(buildTx(a.publicKey(), "1").toXdr(), NET);
+    odd.signatures.push(
+      new xdr.DecoratedSignature({ hint: Buffer.from([1, 2, 3, 4]), signature: sig }),
+    );
+    const res = trimToThreshold(odd.toXdr(), NET, [{ key: a.publicKey(), weight: 1 }], 1);
+    const hint = TransactionBuilder.fromXdr(res.xdr, NET).signatures[0]!.hint.toBytes();
+    expect(Buffer.from(hint).equals(Buffer.from(a.signatureHint()))).toBe(true);
   });
 });

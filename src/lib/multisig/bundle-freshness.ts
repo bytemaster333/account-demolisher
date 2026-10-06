@@ -10,6 +10,7 @@
 
 import {
   LiquidityPoolAsset,
+  NotFoundError,
   TransactionBuilder,
   getLiquidityPoolId,
   type FeeBumpTransaction,
@@ -148,6 +149,9 @@ export function checkBundleFreshness(input: FreshnessInput): FreshnessResult {
   const removed = new Set<string>();
   const cancelled = new Set<string>();
   const deleted = new Set<string>();
+  // the close marker is set and then deleted, so the pair also removes an entry
+  // of that name the account already holds
+  let markerDeleted = false;
   const liveCbs = new Map(input.claimableBalances.map((c) => [c.id, c]));
 
   for (const op of ops) {
@@ -169,9 +173,8 @@ export function checkBundleFreshness(input: FreshnessInput): FreshnessResult {
         if (op.offerId !== undefined && op.offerId !== "0") cancelled.add(op.offerId);
         break;
       case "manageData":
-        if (op.value === undefined && op.name !== undefined && op.name !== CLOSE_MARKER_NAME) {
-          deleted.add(op.name);
-        }
+        if (op.value === undefined && op.name === CLOSE_MARKER_NAME) markerDeleted = true;
+        else if (op.value === undefined && op.name !== undefined) deleted.add(op.name);
         break;
       case "claimClaimableBalance": {
         const id = op.balanceId ?? "";
@@ -234,6 +237,7 @@ export function checkBundleFreshness(input: FreshnessInput): FreshnessResult {
 
   const liveData = new Set(Object.keys(account.data_attr ?? {}));
   for (const name of liveData) {
+    if (name === CLOSE_MARKER_NAME && markerDeleted) continue;
     if (!deleted.has(name))
       reasons.push(`Data entry "${name}" exists but the bundle doesn't delete it.`);
   }
@@ -273,8 +277,7 @@ export async function loadBundleFreshness(
       claimableBalances.push({ id: op.balanceId, asset: cb.asset, amount: cb.amount });
     } catch (e) {
       // only a 404 means the balance is gone; anything else is a failed check
-      const status = (e as { response?: { status?: number } }).response?.status;
-      if (status !== 404) throw e;
+      if (!(e instanceof NotFoundError)) throw e;
     }
   }
 

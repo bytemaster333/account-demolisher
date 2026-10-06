@@ -18,19 +18,26 @@
 //  - a signature is only accepted if it belongs to a signer of the account
 //    (read from Horizon at publish time) and was made over this transaction;
 //    mergeSignatures enforces both.
+//  - collection stops at the close threshold. core rejects a transaction that
+//    carries a signature it didn't need (tx_bad_auth_extra), so the stored
+//    envelope never holds more than the signatures core will consume.
 //  - only classic account-close transactions are accepted, with a bounded expiry
 //    and the account's next sequence number, so a slot can't be parked for days
 //    with a transaction that could never be submitted.
 //  - capacity is split per network and capped per closing account, so free
-//    testnet accounts can't fill the slots mainnet users need.
+//    testnet accounts can't fill the slots mainnet users need. a new request
+//    for an account replaces its oldest one at the cap: requests for the same
+//    account share a sequence number, so at most one of them can ever land.
 
-import { Keypair, StrKey, TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
+import { StrKey, TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
 
-import { resolveNetwork, type StellarNetwork } from "@/lib/config/networks";
+import { parseNetworkId, requireNetwork, type StellarNetwork } from "@/lib/config/networks";
 import {
   TooManySignaturesError,
   canonicalizeSignatures,
   mergeSignatures,
+  signedSigners,
+  trimToThreshold,
 } from "@/lib/multisig/partial-xdr";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 
@@ -90,6 +97,10 @@ interface PlanRecord {
   readonly account: string;
   readonly signers: readonly PlanSigner[];
   readonly thresholds: PlanThresholds;
+  // the transaction's sequence number, to drop requests another transaction
+  // from the account has made unsubmittable
+  readonly sequence: bigint;
+  readonly createdAt: number;
   // when the plan stops being served, in epoch ms (see computeExpiry)
   readonly expiresAt: number;
   readonly subscribers: Set<Subscriber>;
@@ -127,6 +138,20 @@ function signerKeysOf(rec: PlanRecord): readonly string[] {
   return rec.signers.map((s) => s.key);
 }
 
+// the weight a close needs: the largest of the three thresholds, at least 1.
+// the bundle carries high ops (merge, signer cleanup) and medium ops, and core
+// checks the low threshold for the transaction itself. same rule as
+// thresholdForClose in signing-request.ts.
+function requiredWeight(t: PlanThresholds): number {
+  return Math.max(1, t.low, t.med, t.high);
+}
+
+function collectedWeight(xdr: string, passphrase: string, signers: readonly PlanSigner[]): number {
+  const keys = signers.map((s) => s.key);
+  const signed = new Set(signedSigners(xdr, passphrase, keys));
+  return signers.reduce((sum, s) => sum + (signed.has(s.key) ? s.weight : 0), 0);
+}
+
 // tear down a plan's live streams before dropping it, so no SSE heartbeat or
 // subscriber closure outlives the record it references.
 function terminate(rec: PlanRecord): void {
@@ -141,12 +166,14 @@ function terminate(rec: PlanRecord): void {
   rec.subscribers.clear();
 }
 
+function drop(id: string, rec: PlanRecord): void {
+  terminate(rec);
+  plans.delete(id);
+}
+
 function sweepExpired(now: number): void {
   for (const [id, rec] of plans) {
-    if (now >= rec.expiresAt) {
-      terminate(rec);
-      plans.delete(id);
-    }
+    if (now >= rec.expiresAt) drop(id, rec);
   }
 }
 
@@ -191,35 +218,6 @@ function isClassicTransaction(tx: Transaction | { innerTransaction?: unknown }):
   return candidate.feeSource === undefined && candidate.innerTransaction === undefined;
 }
 
-// number of decorated signatures on an envelope; -1 if it can't be parsed. used
-// to only wake SSE subscribers when a signature was actually added.
-function signatureCount(xdr: string, passphrase: string): number {
-  try {
-    const tx = TransactionBuilder.fromXdr(xdr, passphrase) as Transaction;
-    return Array.isArray(tx.signatures) ? tx.signatures.length : -1;
-  } catch {
-    return -1;
-  }
-}
-
-// which of the given signer keys have actually signed this transaction (full
-// signature verification over the tx hash, hint-agnostic).
-function signersOf(tx: Transaction, signerKeys: readonly string[]): string[] {
-  if (typeof tx.hash !== "function" || !Array.isArray(tx.signatures)) return [];
-  const hash = tx.hash();
-  const out: string[] = [];
-  for (const key of signerKeys) {
-    let kp: Keypair;
-    try {
-      kp = Keypair.fromPublicKey(key);
-    } catch {
-      continue;
-    }
-    if (tx.signatures.some((ds) => kp.verify(hash, ds.signature.toBytes()))) out.push(key);
-  }
-  return out;
-}
-
 // decode a close and identify the account it actually closes. the account is the
 // accountMerge operation's effective source (op.source ?? tx.source), not blindly
 // tx.source, and every operation must share that same effective source, so an
@@ -249,10 +247,12 @@ function decodeClose(xdr: string, passphrase: string): { tx: Transaction; source
   return { tx, source: closing };
 }
 
-// merge an incoming envelope's signatures into an existing record
+// merge an incoming envelope's signatures into an existing record. once the
+// stored envelope meets the threshold it is final: a later valid signature is
+// acknowledged but not added, since core would reject it as unused.
 function mergeInto(rec: PlanRecord, incomingXdr: string): SignResult {
-  const passphrase = resolveNetwork(rec.network).passphrase;
-  const before = signatureCount(rec.xdr, passphrase);
+  const passphrase = requireNetwork(rec.network).passphrase;
+  const required = requiredWeight(rec.thresholds);
   let merged: string;
   try {
     merged = mergeSignatures(rec.xdr, [incomingXdr], passphrase, {
@@ -264,10 +264,17 @@ function mergeInto(rec: PlanRecord, incomingXdr: string): SignResult {
     }
     return REJECTED;
   }
-  rec.xdr = merged;
+  if (collectedWeight(rec.xdr, passphrase, rec.signers) >= required) {
+    return { ok: true, plan: toPublic(rec) };
+  }
+  // one envelope can bring several new signatures; keep only what reaches the
+  // threshold, in envelope order, as core would
+  const trimmed = trimToThreshold(merged, passphrase, rec.signers, required).xdr;
+  const changed = trimmed !== rec.xdr;
+  rec.xdr = trimmed;
   // only broadcast when a new signature landed (a re-submitted duplicate must
   // not wake every SSE listener)
-  if (signatureCount(merged, passphrase) > before) notify(rec);
+  if (changed) notify(rec);
   return { ok: true, plan: toPublic(rec) };
 }
 
@@ -288,8 +295,8 @@ export async function createPlan(network: string, xdr: string): Promise<CreateRe
     return { ok: false, code: "BAD_XDR", reason: "Missing or oversized transaction." };
   }
   const budget = NETWORK_BUDGET[network];
-  const net = resolveNetwork(network);
-  if (budget === undefined || net.id !== network) {
+  const net = parseNetworkId(network);
+  if (budget === undefined || net === null) {
     return { ok: false, code: "BAD_NETWORK", reason: "Unknown network." };
   }
 
@@ -365,7 +372,8 @@ export async function createPlan(network: string, xdr: string): Promise<CreateRe
     };
   }
 
-  if (BigInt(decoded.tx.sequence) !== BigInt(accountSequence) + 1n) {
+  const sequence = BigInt(decoded.tx.sequence);
+  if (sequence !== BigInt(accountSequence) + 1n) {
     return {
       ok: false,
       code: "STALE_SEQUENCE",
@@ -378,7 +386,7 @@ export async function createPlan(network: string, xdr: string): Promise<CreateRe
   // proof of control: only an account's own authorized signer may open a request
   // to close it. this binds a slot to a real signer, so nobody can fill the store
   // with unsigned closes for accounts they don't control.
-  if (signersOf(decoded.tx, signerKeys).length === 0) {
+  if (signedSigners(xdr, net.passphrase, signerKeys).length === 0) {
     return {
       ok: false,
       code: "UNSIGNED",
@@ -395,31 +403,43 @@ export async function createPlan(network: string, xdr: string): Promise<CreateRe
     return merged.ok ? { ok: true, id } : merged;
   }
 
-  // capacity is checked after the awaited lookup, since concurrent publishes
-  // could each have passed an earlier check while all were in flight
-  if (countPlans((r) => r.network === net.id) >= budget) {
-    return { ok: false, code: "CAPACITY", reason: "Too many active signing requests; try later." };
-  }
-  if (
-    countPlans((r) => r.network === net.id && r.account === decoded.source) >= MAX_PLANS_PER_ACCOUNT
-  ) {
-    return {
-      ok: false,
-      code: "ACCOUNT_LIMIT",
-      reason: `This account already has ${MAX_PLANS_PER_ACCOUNT} open signing requests. Let one expire or finish it first.`,
-    };
-  }
-
   // keep only verified signatures from the account's signers, one per key, so
-  // junk or padding in the published envelope can't block later co-signers
+  // junk or padding in the published envelope can't block later co-signers,
+  // and no more of them than the threshold needs
   let canonicalXdr: string;
   try {
-    canonicalXdr = canonicalizeSignatures(xdr, net.passphrase, signerKeys);
+    canonicalXdr = trimToThreshold(
+      canonicalizeSignatures(xdr, net.passphrase, signerKeys),
+      net.passphrase,
+      signers,
+      requiredWeight(thresholds),
+    ).xdr;
   } catch (e) {
     if (e instanceof TooManySignaturesError) {
       return { ok: false, code: "TOO_MANY_SIGNATURES", reason: e.message };
     }
     throw e;
+  }
+
+  // the account's other requests: one whose sequence number is already used can
+  // never be submitted, and at the per-account cap the oldest gives way. the
+  // rest share this request's sequence number, so only one could land anyway.
+  const mine = [...plans].filter(([, r]) => r.network === net.id && r.account === decoded.source);
+  const live: [string, PlanRecord][] = [];
+  for (const [otherId, other] of mine) {
+    if (other.sequence <= BigInt(accountSequence)) drop(otherId, other);
+    else live.push([otherId, other]);
+  }
+  live.sort(([, x], [, y]) => x.createdAt - y.createdAt);
+  while (live.length >= MAX_PLANS_PER_ACCOUNT) {
+    const [oldestId, oldest] = live.shift()!;
+    drop(oldestId, oldest);
+  }
+
+  // capacity is checked after the awaited lookup, since concurrent publishes
+  // could each have passed an earlier check while all were in flight
+  if (countPlans((r) => r.network === net.id) >= budget) {
+    return { ok: false, code: "CAPACITY", reason: "Too many active signing requests; try later." };
   }
 
   plans.set(id, {
@@ -428,6 +448,8 @@ export async function createPlan(network: string, xdr: string): Promise<CreateRe
     account: decoded.source,
     signers,
     thresholds,
+    sequence,
+    createdAt: now,
     expiresAt,
     subscribers: new Set(),
   });
@@ -517,15 +539,20 @@ export function __resetRelayForTests(): void {
 
 // test-only: seed a plan directly, bypassing the Horizon signer lookup that
 // createPlan does, so the merge/subscribe/expiry logic can be exercised offline.
+// every signer has weight 1, and by default every one of them must sign.
 export function __seedPlanForTests(
   network: StellarNetwork,
   xdr: string,
   signerKeys: readonly string[],
   createdAt: number = Date.now(),
-  thresholds: PlanThresholds = { low: 0, med: 0, high: 0 },
+  thresholds: PlanThresholds = {
+    low: signerKeys.length,
+    med: signerKeys.length,
+    high: signerKeys.length,
+  },
 ): string {
   ensureSweeper();
-  const passphrase = resolveNetwork(network).passphrase;
+  const passphrase = requireNetwork(network).passphrase;
   const tx = TransactionBuilder.fromXdr(xdr, passphrase) as Transaction;
   const id = Buffer.from(tx.hash()).toString("hex");
   plans.set(id, {
@@ -534,6 +561,8 @@ export function __seedPlanForTests(
     account: tx.source,
     signers: signerKeys.map((key) => ({ key, weight: 1 })),
     thresholds,
+    sequence: BigInt(tx.sequence),
+    createdAt,
     expiresAt: computeExpiry(tx, createdAt),
     subscribers: new Set(),
   });

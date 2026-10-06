@@ -1,6 +1,14 @@
-// merges signatures from independently-signed envelopes into a canonical one
+// signature handling for multisig envelopes: merging signatures from
+// independently signed copies into one canonical envelope, trimming it to what
+// core will consume, and counting who has signed
 
-import { Keypair, TransactionBuilder, xdr, type Transaction } from "@stellar/stellar-sdk";
+import {
+  Keypair,
+  TransactionBuilder,
+  xdr,
+  type FeeBumpTransaction,
+  type Transaction,
+} from "@stellar/stellar-sdk";
 
 export interface MergeOptions {
   // allowlist of public keys we admit signatures for
@@ -139,9 +147,87 @@ export function canonicalizeSignatures(
   return tx.toXdr();
 }
 
-function isClassicTransaction(
-  tx: Transaction | import("@stellar/stellar-sdk").FeeBumpTransaction,
-): tx is Transaction {
+export interface WeightedSigner {
+  readonly key: string;
+  readonly weight: number;
+}
+
+export interface TrimResult {
+  readonly xdr: string;
+  // signer keys whose signatures were kept, in envelope order
+  readonly kept: readonly string[];
+  readonly weight: number;
+  readonly met: boolean;
+}
+
+// keep only the signatures core will consume. core walks the envelope in order,
+// counts each signature from a signer once, and stops at the needed weight; a
+// signature left over is unused and fails the transaction (tx_bad_auth_extra).
+// kept signatures get their key's canonical hint, since core skips a signature
+// whose hint doesn't match.
+export function trimToThreshold(
+  envelopeXdr: string,
+  networkPassphrase: string,
+  signers: readonly WeightedSigner[],
+  required: number,
+): TrimResult {
+  const tx = TransactionBuilder.fromXdr(envelopeXdr, networkPassphrase);
+  if (!isClassicTransaction(tx)) {
+    throw new Error("trimToThreshold: fee-bump envelopes are not supported here.");
+  }
+  const hash = tx.hash();
+  const remaining = signers.map((s) => ({ ...s, kp: Keypair.fromPublicKey(s.key) }));
+  const keptSigs: xdr.DecoratedSignature[] = [];
+  const kept: string[] = [];
+  let weight = 0;
+  for (const sig of tx.signatures) {
+    if (weight >= required) break;
+    const bytes = sig.signature.toBytes();
+    const idx = remaining.findIndex((s) => s.kp.verify(hash, bytes));
+    if (idx === -1) continue;
+    const signer = remaining[idx]!;
+    remaining.splice(idx, 1);
+    keptSigs.push(
+      new xdr.DecoratedSignature({ hint: signer.kp.signatureHint(), signature: bytes }),
+    );
+    kept.push(signer.key);
+    weight += signer.weight;
+  }
+  tx.signatures.splice(0, tx.signatures.length, ...keptSigs);
+  return { xdr: tx.toXdr(), kept, weight, met: weight >= required };
+}
+
+// which of the given signer keys have signed this envelope, in signerKeys order.
+// each key is confirmed by verifying a signature over the transaction hash, not
+// by its hint, so a wallet with an unusual hint is still counted. an envelope
+// that doesn't parse has no signers.
+export function signedSigners(
+  envelopeXdr: string,
+  networkPassphrase: string,
+  signerKeys: readonly string[],
+): readonly string[] {
+  let tx: Transaction | FeeBumpTransaction;
+  try {
+    tx = TransactionBuilder.fromXdr(envelopeXdr, networkPassphrase);
+  } catch {
+    return [];
+  }
+  if (!isClassicTransaction(tx)) return [];
+  const hash = tx.hash();
+  const out: string[] = [];
+  for (const key of signerKeys) {
+    let kp: Keypair;
+    try {
+      kp = Keypair.fromPublicKey(key);
+    } catch {
+      continue;
+    }
+    if (tx.signatures.some((ds) => kp.verify(hash, ds.signature.toBytes()))) out.push(key);
+  }
+  return out;
+}
+
+function isClassicTransaction(tx: Transaction | FeeBumpTransaction): tx is Transaction {
   // FeeBumpTransaction exposes feeSource + innerTransaction
   const candidate = tx as unknown as { feeSource?: unknown; innerTransaction?: unknown };
   return candidate.feeSource === undefined && candidate.innerTransaction === undefined;

@@ -149,4 +149,13 @@ describe("parseRelayPlan", () => {
     expect(parseRelayPlan(PLAN)).toEqual(PLAN);
     expect(parseRelayPlan({ ...PLAN, signers: [{ key: 1, weight: 1 }] })).toBeNull();
   });
+
+  it("rejects a plan for a network the app doesn't serve", () => {
+    expect(parseRelayPlan({ ...PLAN, network: "futurenet" })).toBeNull();
+    expect(parseRelayPlan({ ...PLAN, network: "bogus" })).toBeNull();
+    expect(parseRelayPlan({ ...PLAN, network: "mainnet" })).toEqual({
+      ...PLAN,
+      network: "mainnet",
+    });
+  });
 });

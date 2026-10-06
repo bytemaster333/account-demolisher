@@ -45,11 +45,10 @@ describe("signing-relay addSignature", () => {
     const dest = Keypair.random().publicKey();
 
     // seed with the initiator's (a) signature already present
-    const id = __seedPlanForTests(
-      NET === Networks.TESTNET ? "testnet" : "testnet",
-      signPartial(source, dest, a),
-      [a.publicKey(), b.publicKey()],
-    );
+    const id = __seedPlanForTests("testnet", signPartial(source, dest, a), [
+      a.publicKey(),
+      b.publicKey(),
+    ]);
 
     const res = addSignature(id, signPartial(source, dest, b));
     expect(res.ok).toBe(true);

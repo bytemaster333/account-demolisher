@@ -240,6 +240,8 @@ describe("assessBundleability", () => {
         hasSorobanPositions: false,
         hasSelectedAllowances: false,
         useMediator: false,
+        hasClassicPoolShares: false,
+        hasSelectedHeldTokens: false,
       }).ok,
     ).toBe(true);
   });
@@ -250,6 +252,8 @@ describe("assessBundleability", () => {
         hasSorobanPositions: false,
         hasSelectedAllowances: false,
         useMediator: true,
+        hasClassicPoolShares: false,
+        hasSelectedHeldTokens: false,
       }).ok,
     ).toBe(false);
     expect(
@@ -257,6 +261,8 @@ describe("assessBundleability", () => {
         hasSorobanPositions: true,
         hasSelectedAllowances: false,
         useMediator: false,
+        hasClassicPoolShares: false,
+        hasSelectedHeldTokens: false,
       }).ok,
     ).toBe(false);
     expect(
@@ -264,6 +270,8 @@ describe("assessBundleability", () => {
         hasSorobanPositions: false,
         hasSelectedAllowances: true,
         useMediator: false,
+        hasClassicPoolShares: false,
+        hasSelectedHeldTokens: false,
       }).ok,
     ).toBe(false);
   });
@@ -592,6 +600,7 @@ describe("liquidity pool shares cannot be bundled (L-94)", () => {
       hasSelectedAllowances: false,
       useMediator: false,
       hasClassicPoolShares: true,
+      hasSelectedHeldTokens: false,
     });
     expect(res.ok).toBe(false);
     expect(res.reason).toMatch(/liquidity pool share/i);
@@ -658,5 +667,200 @@ describe("liquidity pool shares cannot be bundled (L-94)", () => {
         sourceAccount: account,
       }),
     ).toThrow(/liquidity pool/i);
+  });
+});
+
+describe("buildCloseTransaction carries the reviewed choices (H-11, H-29, L-25)", () => {
+  const kp = Keypair.random();
+  const usdIssuer = Keypair.random().publicKey();
+  const usd = { kind: "credit", code: "USD", issuer: usdIssuer } as const;
+
+  function cb(id: string, asset: unknown, amount = "5.0000000") {
+    return {
+      id,
+      asset,
+      amount,
+      sponsor: Keypair.random().publicKey(),
+      predicate: { unconditional: true },
+      claimants: [kp.publicKey()],
+      claimableNow: true,
+    };
+  }
+
+  function audit(extra: { balances?: unknown[]; claimableBalances?: unknown[] } = {}) {
+    return {
+      accountId: kp.publicKey(),
+      sequence: "1",
+      subentryCount: 0,
+      thresholds: { low: 0, medium: 0, high: 0, masterWeight: 1 },
+      flags: {
+        authImmutable: false,
+        authRequired: false,
+        authRevocable: false,
+        authClawbackEnabled: false,
+      },
+      balances: [
+        {
+          asset: { kind: "native" },
+          amount: "100.0000000",
+          buyingLiabilities: "0",
+          sellingLiabilities: "0",
+        },
+        ...(extra.balances ?? []),
+      ],
+      signers: [{ key: kp.publicKey(), type: "ed25519_public_key", weight: 1 }],
+      offers: [],
+      data: [],
+      claimableBalances: extra.claimableBalances ?? [],
+      poolShares: [],
+      sponsorship: { numSponsoring: 0, numSponsored: 0, coverable: 0 },
+      requiresMultisig: true,
+      mergeability: { mergeable: true },
+    } as unknown as AccountAudit;
+  }
+
+  function source(): Horizon.AccountResponse {
+    return new Horizon.AccountResponse({
+      id: kp.publicKey(),
+      account_id: kp.publicKey(),
+      sequence: "1",
+      balances: [],
+      signers: [],
+      thresholds: { low_threshold: 0, med_threshold: 0, high_threshold: 0 },
+    } as unknown as ConstructorParameters<typeof Horizon.AccountResponse>[0]);
+  }
+
+  const claimedIds = (t: { operations: readonly { type: string }[] }) =>
+    t.operations
+      .filter((o) => o.type === "claimClaimableBalance")
+      .map((o) => (o as unknown as { balanceId: string }).balanceId);
+
+  const ID1 = `00000000${"1".repeat(64)}`;
+  const ID2 = `00000000${"2".repeat(64)}`;
+
+  it("puts the reviewed memo on the bundle", () => {
+    const tx = buildCloseTransaction({
+      audit: audit(),
+      destination: Keypair.random().publicKey(),
+      network: TESTNET,
+      sourceAccount: source(),
+      disposal: { memo: { type: "id", value: "777" } },
+    });
+    expect(tx.memo.type).toBe("id");
+    expect(String(tx.memo.value)).toBe("777");
+  });
+
+  it("claims only the reviewed claimable balances, and none for an empty list", () => {
+    const a = audit({
+      claimableBalances: [cb(ID1, { kind: "native" }), cb(ID2, { kind: "native" })],
+    });
+    const base = {
+      audit: a,
+      destination: Keypair.random().publicKey(),
+      network: TESTNET,
+    };
+    expect(claimedIds(buildCloseTransaction({ ...base, sourceAccount: source() }))).toEqual([
+      ID1,
+      ID2,
+    ]);
+    expect(
+      claimedIds(
+        buildCloseTransaction({
+          ...base,
+          sourceAccount: source(),
+          disposal: { claimableBalanceIds: [ID2] },
+        }),
+      ),
+    ).toEqual([ID2]);
+    expect(
+      claimedIds(
+        buildCloseTransaction({
+          ...base,
+          sourceAccount: source(),
+          disposal: { claimableBalanceIds: [] },
+        }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("anchors the expiry to the ledger close time when given", () => {
+    const ledgerCloseTime = 2_000_000_000;
+    const tx = buildCloseTransaction({
+      audit: audit(),
+      destination: Keypair.random().publicKey(),
+      network: TESTNET,
+      sourceAccount: source(),
+      timeoutSeconds: 3600,
+      ledgerCloseTime,
+    });
+    expect(Number(tx.timeBounds?.maxTime)).toBe(ledgerCloseTime + 3600);
+  });
+
+  it("names an undisposed claimed asset when that splits the close", () => {
+    const a = audit({
+      balances: [
+        {
+          asset: usd,
+          amount: "0.0000000",
+          limit: "1000.0000000",
+          buyingLiabilities: "0",
+          sellingLiabilities: "0",
+          isAuthorized: true,
+        },
+      ],
+      claimableBalances: [cb(ID1, usd)],
+    });
+    expect(() =>
+      buildCloseTransaction({
+        audit: a,
+        destination: Keypair.random().publicKey(),
+        network: TESTNET,
+        sourceAccount: source(),
+      }),
+    ).toThrow(/claimable balance/i);
+  });
+});
+
+describe("assessBundleability refuses selected held tokens (H-04)", () => {
+  it("refuses when standalone tokens are selected to move", () => {
+    const res = assessBundleability({
+      hasSorobanPositions: false,
+      hasSelectedAllowances: false,
+      useMediator: false,
+      hasClassicPoolShares: false,
+      hasSelectedHeldTokens: true,
+    });
+    expect(res.ok).toBe(false);
+    expect(res.reason).toMatch(/standalone tokens/i);
+  });
+});
+
+describe("inspectClose flags operations on another account", () => {
+  it("marks a payment sourced from a different account as unexpected", () => {
+    const closing = Keypair.random().publicKey();
+    const other = Keypair.random().publicKey();
+    const issuer = Keypair.random().publicKey();
+    const usd = new Asset("USD", issuer);
+    const dest = Keypair.random().publicKey();
+    const tx = new TransactionBuilder(new Account(closing, "1"), {
+      fee: BASE_FEE,
+      networkPassphrase: NET,
+      timebounds: { minTime: 0, maxTime: 0 },
+    })
+      .addOperation(
+        Operation.payment({ destination: issuer, asset: usd, amount: "5", source: other }),
+      )
+      .addOperation(
+        Operation.payment({ destination: dest, asset: usd, amount: "5", source: other }),
+      )
+      .addOperation(Operation.accountMerge({ destination: dest }))
+      .build();
+    const info = inspectClose(tx.toXdr(), NET)!;
+    for (const op of info.operations.slice(0, 2)) {
+      expect(op.danger).toBe(true);
+      expect(op.unexpected).toBe(true);
+      expect(op.detail).toContain(other);
+    }
+    expect(info.operations[2]!.unexpected).toBeFalsy();
   });
 });

@@ -33,9 +33,11 @@ const AMM_CONNECT_SRC = [
 ] as const;
 
 // WalletConnect / Reown AppKit hosts. reached only when a user picks the
-// WalletConnect wallet (the relay carries the encrypted session, the api/rpc
-// hosts back the modal, verify answers the domain-verification fetches from
-// @walletconnect/core). https and wss variants of the relay are both required.
+// WalletConnect wallet or signs with a restored WalletConnect session
+// (src/lib/wallet/kit.ts builds the module lazily). the relay carries the
+// encrypted session, the api/rpc hosts back the modal, and verify answers the
+// domain-verification fetches from @walletconnect/core. https and wss variants
+// of the relay are both required.
 const WALLETCONNECT_CONNECT_SRC = [
   "https://relay.walletconnect.com",
   "https://relay.walletconnect.org",
