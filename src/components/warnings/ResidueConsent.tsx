@@ -3,9 +3,11 @@
 // shown when the account holds credit balances with no XLM conversion path.
 // Such balances block the merge (their trustlines can't be removed with a live
 // balance). For each one the user picks a disposal: send it to the merge
-// destination (only offered when the destination already trusts the asset, so
-// the payment can't fail), or return it to its issuer (permanent, keeps
-// nothing). Doing nothing leaves it in place and keeps blocking the close.
+// destination, or return it to its issuer (permanent, keeps nothing). sending is
+// only offered when the destination's trustline was authorized and had room for
+// the whole balance at review; the executor checks that again right before the
+// close, since the destination can change in between. Doing nothing leaves it in
+// place and keeps blocking the close.
 
 import { Button, CopyableAddress, Notice } from "@/components/ui";
 import type { NetworkConfig } from "@/lib/config/networks";
@@ -18,8 +20,8 @@ export interface ResidueConsentCredit {
   readonly code: string;
   readonly issuer: string;
   readonly amount: string;
-  // true when the merge destination already holds a trustline for this asset, so
-  // "send to destination" is a safe option (no op_no_trust).
+  // true when, at review, the merge destination's trustline for this asset was
+  // authorized and had room for the whole balance
   readonly destinationTrusts?: boolean;
 }
 
@@ -126,7 +128,7 @@ export function ResidueConsent({
                       onSetDisposal(c.key, mode === "destination" ? "none" : "destination")
                     }
                     label="Send to your destination"
-                    srDetail={`: send ${c.amount} ${c.code} to your destination address, which already accepts this token. You keep it.`}
+                    srDetail={`: send ${c.amount} ${c.code}. The token goes to your destination address. Its trustline there was authorized and had room for this amount at review, and is checked again right before the close.`}
                   />
                 ) : null}
                 <DisposalOption
