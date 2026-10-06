@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button, Notice } from "@/components/ui";
+import { errorMessage } from "@/lib/errors";
 import { explorerTxUrl } from "@/lib/explorer";
 import {
   inspectPendingForward,
@@ -28,7 +29,7 @@ function shorten(addr: string): string {
 }
 
 function describeError(err: unknown, fallback: string): string {
-  return err instanceof Error ? err.message : fallback;
+  return errorMessage(err, fallback);
 }
 
 interface Delivered {
@@ -115,16 +116,25 @@ export function PendingForwardBanner({
     return () => controller.abort();
   }, [publicKey, records]);
 
-  // stable, so a row's chain check doesn't re-run on every banner render
-  const onDelivered = useCallback(
-    (record: PendingMediatorForward, txHash: string): void => {
-      setDelivered((prev) =>
-        prev.some((d) => d.txHash === txHash) ? prev : [...prev, { record, txHash }],
-      );
-      onResolved?.();
-    },
-    [onResolved],
-  );
+  // the parent's callback lives in a ref so onDelivered stays stable: a row's
+  // chain check depends on it, and an inline callback would otherwise send a
+  // horizon request on every parent render
+  const onResolvedRef = useRef(onResolved);
+  useEffect(() => {
+    onResolvedRef.current = onResolved;
+  }, [onResolved]);
+  // a delivery can be seen more than once (the record is written again by
+  // another tab, or the row re-checks), but the parent hears about it once
+  const reported = useRef(new Set<string>());
+
+  const onDelivered = useCallback((record: PendingMediatorForward, txHash: string): void => {
+    setDelivered((prev) =>
+      prev.some((d) => d.txHash === txHash) ? prev : [...prev, { record, txHash }],
+    );
+    if (reported.current.has(txHash)) return;
+    reported.current.add(txHash);
+    onResolvedRef.current?.();
+  }, []);
 
   if (publicKey === null) return null;
   const subject = current ? "This close" : "A previous close";

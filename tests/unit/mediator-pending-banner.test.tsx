@@ -239,6 +239,61 @@ describe("PendingForwardBanner", () => {
     expect(resolved).toHaveBeenCalledTimes(1);
   });
 
+  it("does not ask horizon again when a parent re-renders with an inline onResolved", async () => {
+    const record = await flowRecord();
+    fake.createAccount(record.mediatorPublicKey, 2n * XLM);
+    fake.mergeInto(user, record.mediatorPublicKey);
+    savePendingForward(record);
+    const historyPath = `GET /accounts/${record.mediatorPublicKey}/operations`;
+    const resolved = vi.fn();
+    const Parent = ({ tick }: { tick: number }): React.JSX.Element => (
+      <div data-tick={tick}>
+        <PendingForwardBanner
+          publicKey={user}
+          mediatorPublicKey={record.mediatorPublicKey}
+          current
+          onResolved={() => resolved(tick)}
+        />
+      </div>
+    );
+    const { rerender } = render(<Parent tick={0} />);
+    expect(await screen.findByText("An exchange forward was interrupted")).toBeTruthy();
+    const before = fake.requests.filter((r) => r === historyPath).length;
+    expect(before).toBe(1);
+
+    for (let tick = 1; tick <= 5; tick++) rerender(<Parent tick={tick} />);
+    await act(() => new Promise((r) => setTimeout(r, 50)));
+    expect(fake.requests.filter((r) => r === historyPath).length).toBe(before);
+
+    // the callback a parent passed last is the one that is called, once
+    fireEvent.click(screen.getByRole("button", { name: "Resume the forward" }));
+    expect(await screen.findByText("Exchange forward delivered")).toBeTruthy();
+    for (let tick = 6; tick <= 8; tick++) rerender(<Parent tick={tick} />);
+    await act(() => new Promise((r) => setTimeout(r, 50)));
+    expect(resolved).toHaveBeenCalledTimes(1);
+    expect(resolved).toHaveBeenCalledWith(5);
+  });
+
+  it("reports one delivery once even when the chain check sees it again", async () => {
+    const record = await flowRecord();
+    fake.createAccount(record.mediatorPublicKey, 2n * XLM);
+    fake.mergeInto(user, record.mediatorPublicKey);
+    savePendingForward(record);
+    const { resumePendingForward } = await import("@/lib/mediator/pending-flow");
+    await resumePendingForward(record, { sleep: async () => undefined });
+    const resolved = vi.fn();
+    render(<PendingForwardBanner publicKey={user} onResolved={resolved} />);
+
+    // the same delivered record comes back (another tab wrote it again) twice
+    act(() => savePendingForward(record));
+    await waitFor(() => expect(loadPendingForwards(user)).toEqual([]));
+    act(() => savePendingForward(record));
+    await waitFor(() => expect(loadPendingForwards(user)).toEqual([]));
+    await act(() => new Promise((r) => setTimeout(r, 20)));
+    expect(screen.getAllByText("Exchange forward delivered")).toHaveLength(1);
+    expect(resolved).toHaveBeenCalledTimes(1);
+  });
+
   it("points a record from an earlier build at the operator instead of offering a resume", async () => {
     const record = await flowRecord();
     fake.createAccount(record.mediatorPublicKey, 2n * XLM);
