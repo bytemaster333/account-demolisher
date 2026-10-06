@@ -20,10 +20,13 @@
 //   blend backstop queue_withdrawal        -> nothing nested
 //   blend backstop withdraw                -> nothing nested
 //   blend backstop claim                   -> nothing nested
+//   aquarius concentrated withdraw_position, claim_all_position_fees
+//                                          -> nothing nested
 //
 // recorded on mainnet (2026-10): swap, remove_liquidity, aquarius withdraw and
-// claim, blend repay, withdraw and claim, backstop queue_withdrawal (v2) and
-// withdraw (v1 and v2). the backstop claim traps inside the comet pool on
+// claim (full-range and concentrated pools), concentrated withdraw_position and
+// claim_all_position_fees, blend repay, withdraw and claim, backstop
+// queue_withdrawal (v2) and withdraw (v1 and v2). the backstop claim traps inside the comet pool on
 // mainnet today, so its tree is read from source instead: claim calls
 // from.require_auth() and then authorizes the blnd approve and the comet
 // deposit as the backstop itself (blend-contracts-v2 backstop/src/contract.rs,
@@ -46,6 +49,7 @@ import {
   type Transaction,
 } from "@stellar/stellar-sdk";
 
+import { findConcentratedPool } from "@/lib/adapters/aquarius/concentrated-pools";
 import { blendBackstopsForNetwork, blndTokenForNetwork } from "@/lib/adapters/blend/constants";
 import { getAllowlistForNetwork } from "@/lib/config/contracts";
 import type { NetworkConfig } from "@/lib/config/networks";
@@ -283,6 +287,43 @@ function expectedFor(
       if (a[2] !== md.amount) return `withdraw amount is ${show(a[2])}`;
       return [];
     }
+    // aquarius concentrated pools are called directly, never through the router
+    case "WithdrawAquariusConcentrated": {
+      const md = node.metadata as unknown as {
+        readonly poolAddress?: unknown;
+        readonly tickLower?: unknown;
+        readonly tickUpper?: unknown;
+        readonly liquidity?: unknown;
+      };
+      const pool = pinnedConcentratedPool(root, network, md.poolAddress);
+      if (typeof pool === "string") return pool;
+      if (root.fn !== "withdraw_position") return `calls ${root.fn}`;
+      // withdraw_position(owner, tick_lower, tick_upper, amount, min_amounts)
+      if (a.length !== 5 || a[0] !== user) return "withdraw_position is not for the user";
+      if (a[1] !== md.tickLower || a[2] !== md.tickUpper) {
+        return `withdraw_position names range ${String(a[1])}..${String(a[2])}`;
+      }
+      if (typeof md.liquidity !== "bigint" || a[3] !== md.liquidity) {
+        return `withdraw_position liquidity is ${show(a[3])}`;
+      }
+      const mins = a[4];
+      if (
+        !Array.isArray(mins) ||
+        mins.length !== pool.tokens.length ||
+        !mins.every((m) => typeof m === "bigint")
+      ) {
+        return "withdraw_position minimums do not match the pool's tokens";
+      }
+      return [];
+    }
+    case "ClaimAquariusConcentratedFees": {
+      const md = node.metadata as unknown as { readonly poolAddress?: unknown };
+      const pool = pinnedConcentratedPool(root, network, md.poolAddress);
+      if (typeof pool === "string") return pool;
+      if (root.fn !== "claim_all_position_fees") return `calls ${root.fn}`;
+      if (a.length !== 1 || a[0] !== user) return "claim_all_position_fees is not for the user";
+      return [];
+    }
   }
   switch (node.kind) {
     case "ConvertSorobanToXLM": {
@@ -490,6 +531,20 @@ function pinnedBackstop(
     return `targets backstop ${root.contract}, not the pool's ${String(named)}`;
   }
   return backstop;
+}
+
+// the call must go to the pool the step names, and that pool must be one of the
+// network's pinned concentrated pools
+function pinnedConcentratedPool(
+  root: RootCall,
+  network: NetworkConfig,
+  named: unknown,
+): NonNullable<ReturnType<typeof findConcentratedPool>> | string {
+  if (typeof named !== "string") return "the step names no pool";
+  if (root.contract !== named) return `targets ${root.contract}, not the pool ${named}`;
+  const pool = findConcentratedPool(root.contract, network);
+  if (pool === undefined) return `${root.contract} is not a pinned Aquarius concentrated pool`;
+  return pool;
 }
 
 // an aquarius pool or share token is picked by the router on chain, so it is

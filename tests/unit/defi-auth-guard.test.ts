@@ -795,3 +795,100 @@ describe("the BLND trustline step", () => {
     ).toThrow(/expected 1 operation, got 2/);
   });
 });
+
+// recorded on mainnet 2026-10-07 by read-only simulation through the app's own
+// builders (withdrawConcentratedPosition, claimConcentratedFees) for a real
+// holder of a tick range: the pool asks the user to authorize the root call only
+const CONCENTRATED = {
+  source: "GC6K27OC6OAA6XWVE3GGMJ2US5MOVMYZT5OJ326KOWKH4ZVMHXT6A7X4",
+  pool: "CBBMQBNHB2FYVZYV7VNHOJHUMTFJLR4PUMRVQYNW6RHIKZO2NQMIBUCV",
+  withdraw: {
+    args: [
+      "AAAAEgAAAAAAAAAAvK19wvOAD17VJsxmJ1SXWOqzGZ9cnevKdZR+Zqw95+A=",
+      "AAAABP//wvw=",
+      "AAAABP//xGQ=",
+      "AAAACQAAAAAAAAAAAAAG1IryeBU=",
+      "AAAAEAAAAAEAAAACAAAACQAAAAAAAAAAAAAAAAAAAAAAAAAJAAAAAAAAAAAAAAAAAAAAAA==",
+    ],
+    auth: "AAAAAAAAAAAAAAABQsgFpw6LiucV/Vp3JPRkypXHj6MjWGG29E6FZdpsGIAAAAARd2l0aGRyYXdfcG9zaXRpb24AAAAAAAAFAAAAEgAAAAAAAAAAvK19wvOAD17VJsxmJ1SXWOqzGZ9cnevKdZR+Zqw95+AAAAAE///C/AAAAAT//8RkAAAACQAAAAAAAAAAAAAG1IryeBUAAAAQAAAAAQAAAAIAAAAJAAAAAAAAAAAAAAAAAAAAAAAAAAkAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+  },
+  fees: {
+    args: ["AAAAEgAAAAAAAAAAvK19wvOAD17VJsxmJ1SXWOqzGZ9cnevKdZR+Zqw95+A="],
+    auth: "AAAAAAAAAAAAAAABQsgFpw6LiucV/Vp3JPRkypXHj6MjWGG29E6FZdpsGIAAAAAXY2xhaW1fYWxsX3Bvc2l0aW9uX2ZlZXMAAAAAAQAAABIAAAAAAAAAALytfcLzgA9e1SbMZidUl1jqsxmfXJ3rynWUfmasPefgAAAAAA==",
+  },
+} as const;
+
+describe("aquarius concentrated pools", () => {
+  const user = CONCENTRATED.source;
+  const pool = CONCENTRATED.pool;
+  const withdrawNode = (over: object = {}) =>
+    node({
+      id: "cw",
+      kind: "WithdrawAquariusConcentrated",
+      metadata: {
+        kind: "WithdrawAquariusConcentrated",
+        poolAddress: pool,
+        tickLower: -15620,
+        tickUpper: -15260,
+        liquidity: 7_509_933_979_669n,
+        ...over,
+      },
+    });
+  const feesNode = (poolAddress: string = pool) =>
+    node({
+      id: "cf",
+      kind: "ClaimAquariusConcentratedFees",
+      metadata: { kind: "ClaimAquariusConcentratedFees", poolAddress },
+    });
+  const recorded = (
+    which: "withdraw" | "fees",
+    subs: xdr.SorobanAuthorizedInvocation[] = [],
+    root: string = pool,
+  ) => {
+    const fixture = CONCENTRATED[which];
+    const fn = which === "withdraw" ? "withdraw_position" : "claim_all_position_fees";
+    const args = fixture.args.map((a) => xdr.ScVal.fromXdr(a, "base64"));
+    const auth =
+      subs.length === 0 && root === pool
+        ? xdr.SorobanAuthorizationEntry.fromXdr(fixture.auth, "base64")
+        : entry(inv(root, fn, args, subs));
+    return buildTx(user, root, fn, args, [auth]);
+  };
+
+  it("accepts the recorded withdraw_position and claim_all_position_fees", () => {
+    expect(() => assertDefiAuthTree(withdrawNode(), recorded("withdraw"), ctx(user))).not.toThrow();
+    expect(() => assertDefiAuthTree(feesNode(), recorded("fees"), ctx(user))).not.toThrow();
+  });
+
+  it("refuses a different range or liquidity than the plan holds", () => {
+    expect(() =>
+      assertDefiAuthTree(withdrawNode({ tickLower: -15000 }), recorded("withdraw"), ctx(user)),
+    ).toThrow(/names range -15620..-15260/);
+    expect(() =>
+      assertDefiAuthTree(withdrawNode({ liquidity: 1n }), recorded("withdraw"), ctx(user)),
+    ).toThrow(/liquidity is 7509933979669/);
+  });
+
+  it("refuses a call to a pool that is not the planned, pinned one", () => {
+    expect(() =>
+      assertDefiAuthTree(withdrawNode(), recorded("withdraw", [], EVIL), ctx(user)),
+    ).toThrow(/not the pool/);
+    expect(() =>
+      assertDefiAuthTree(
+        withdrawNode({ poolAddress: EVIL }),
+        recorded("withdraw", [], EVIL),
+        ctx(user),
+      ),
+    ).toThrow(/not a pinned Aquarius concentrated pool/);
+  });
+
+  it("refuses either call when it nests a drain", () => {
+    const drain = inv(XLM_SAC, "transfer", [addr(user), addr(ATTACKER), i128(1n)]);
+    expect(() =>
+      assertDefiAuthTree(withdrawNode(), recorded("withdraw", [drain]), ctx(user)),
+    ).toThrow(/expected 0/);
+    expect(() => assertDefiAuthTree(feesNode(), recorded("fees", [drain]), ctx(user))).toThrow(
+      /expected 0/,
+    );
+  });
+});
