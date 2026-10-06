@@ -1,18 +1,11 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 
-// Importing the demolish page pulls in the wallet stack, whose kit wrapper eagerly
-// evaluates @creit.tech/stellar-wallets-kit (a CJS/ESM-incompatible module in the
-// node test env). Stub the leaf kit wrapper so the page module imports cleanly;
-// nodeFeeStroops (the unit under test) does not touch it.
-vi.mock("@/lib/wallet/kit", () => ({
-  getKit: vi.fn(),
-}));
-
-import { nodeFeeStroops } from "@/app/demolish/page";
+import { nodeFeeStroops, nodeMaxFeeStroops } from "@/app/demolish/_lib/fees";
 import type { PlanNode } from "@/lib/plan/tree";
+import type { ClassicBatch } from "@/lib/types/plan";
 
-// minimal PlanNode carrying only the fields nodeFeeStroops reads (id/kind/status
-// are required by the base shape); `simulated` drives the fee.
+// minimal PlanNode carrying only the fields the fee helpers read (id/kind/status
+// are required by the base shape); `simulated` drives the soroban fee.
 function sorobanNode(minResourceFee: string): PlanNode {
   return {
     id: "n",
@@ -33,38 +26,52 @@ function sorobanNode(minResourceFee: string): PlanNode {
   } as unknown as PlanNode;
 }
 
-function classicNode(estimatedFee: string): PlanNode {
+function batch(opCount: number): ClassicBatch {
   return {
-    id: "n",
+    operations: Array.from({ length: opCount }, (_, i) => ({
+      kind: "manage_data_delete" as const,
+      summary: `delete data k${i}`,
+      metadata: { name: `k${i}` },
+    })),
+    destination: "GDEST",
+  };
+}
+
+// a two-batch close: the preview simulation only reports the FIRST batch, so the
+// fee must come from every batch in the node metadata
+function classicNode(batches: readonly ClassicBatch[]): PlanNode {
+  return {
+    id: "final-classic-tx",
     kind: "FinalClassicTx",
     dependencies: [],
     description: "",
     status: "simulated",
+    metadata: { kind: "FinalClassicTx", batches, destination: "GDEST", useMediator: false },
     simulated: {
       kind: "classic",
       xdr: "",
-      operationCount: 3,
-      estimatedFee,
+      operationCount: batches[0]?.operations.length ?? 0,
+      estimatedFee: String((batches[0]?.operations.length ?? 0) * 100),
     },
   } as unknown as PlanNode;
 }
 
-describe("nodeFeeStroops, soroban fee includes the per-op inclusion fee", () => {
-  it("adds BASE_FEE (100) to minResourceFee for a soroban node", () => {
-    // the submitted fee assembles as minResourceFee + BASE_FEE (single-op tx),
-    // so the estimate must be 12_345 + 100, not the bare 12_345.
-    expect(nodeFeeStroops(sorobanNode("12345"))).toBe(12_445);
+describe("nodeFeeStroops, the fee each step is built with", () => {
+  it("adds the 100000-stroop soroban inclusion fee every builder bids to minResourceFee", () => {
+    // assembleTransaction sets fee = inclusion fee + minResourceFee, and every
+    // soroban builder here passes SOROBAN_INCLUSION_FEE ("100000")
+    expect(nodeFeeStroops(sorobanNode("12345"))).toBe(112_345);
   });
 
-  it("still adds BASE_FEE when the resource fee is zero", () => {
-    expect(nodeFeeStroops(sorobanNode("0"))).toBe(100);
+  it("still adds the inclusion fee when the resource fee is zero", () => {
+    expect(nodeFeeStroops(sorobanNode("0"))).toBe(100_000);
   });
 
-  it("returns the classic estimatedFee verbatim (already tallies BASE_FEE * ops)", () => {
-    expect(nodeFeeStroops(classicNode("300"))).toBe(300);
+  it("counts every classic batch at the network minimum per operation", () => {
+    expect(nodeFeeStroops(classicNode([batch(100), batch(2)]))).toBe(10_200);
   });
 
-  it("returns 0 for an un-simulated node", () => {
+  it("returns 0 for an un-simulated soroban node", () => {
     const node = {
       id: "n",
       kind: "RevokeAllowance",
@@ -73,5 +80,15 @@ describe("nodeFeeStroops, soroban fee includes the per-op inclusion fee", () => 
       status: "pending",
     } as unknown as PlanNode;
     expect(nodeFeeStroops(node)).toBe(0);
+  });
+});
+
+describe("nodeMaxFeeStroops, the most execution may bid", () => {
+  it("prices classic batches at the executor's 1,000,000-stroop per-op surge ceiling", () => {
+    expect(nodeMaxFeeStroops(classicNode([batch(100), batch(2)]))).toBe(102_000_000);
+  });
+
+  it("keeps the soroban figure, which is already the signed maximum", () => {
+    expect(nodeMaxFeeStroops(sorobanNode("12345"))).toBe(112_345);
   });
 });
