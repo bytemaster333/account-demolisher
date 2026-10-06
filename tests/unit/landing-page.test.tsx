@@ -73,6 +73,11 @@ describe("landing page claims", () => {
     expect(text).toMatch(/last 7 days/);
   });
 
+  it("makes no claim about FxDAO, which shut down and is not supported", () => {
+    const { container } = render(<LandingPage />);
+    expect(container.textContent ?? "").not.toMatch(/FxDAO/i);
+  });
+
   it("links the security docs to the docs site, not the readme", () => {
     render(<LandingPage />);
     const link = screen.getByText("Read the security docs").closest("a");

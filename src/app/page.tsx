@@ -107,7 +107,7 @@ const CAP_ROWS: ReadonlyArray<CapRow> = [
   {
     n: "04",
     short: "Unwind Soroban DeFi",
-    desc: "Withdraw Blend, Aquarius, Soroswap, FxDAO positions.",
+    desc: "Withdraw Blend, Aquarius and Soroswap positions.",
     exchange: false,
     classic: false,
   },
@@ -179,8 +179,8 @@ const HANDLES: ReadonlyArray<Handle> = [
   {
     num: "09",
     tag: "SOROBAN",
-    label: "FxDAO vaults",
-    desc: "Open FxDAO vaults are closed so collateral can be merged out.",
+    label: "Blend backstop",
+    desc: "Backstop deposits are queued for withdrawal (17 days on the v2 backstop, 21 on v1) and withdrawn once unlocked.",
   },
   {
     num: "10",
@@ -247,7 +247,7 @@ const SECURITY: ReadonlyArray<SecurityRow> = [
   {
     num: "02",
     title: "Every DeFi call is on a hardcoded allow-list",
-    body: "DeFi exits call only the hardcoded Blend, Aquarius, Soroswap, and FxDAO allow-list, re-verified before each signature. Token revokes and transfers call the token's own contract and are shape-checked before signing.",
+    body: "DeFi exits call only the hardcoded Blend, Aquarius and Soroswap allow-list, re-verified before each signature. Token revokes and transfers call the token's own contract and are shape-checked before signing.",
     icon: "M9 11l3 3L22 4",
   },
   {
@@ -268,7 +268,6 @@ const PROTOCOLS: ReadonlyArray<Protocol> = [
   { initial: "B", name: "Blend" },
   { initial: "A", name: "Aquarius" },
   { initial: "S", name: "Soroswap" },
-  { initial: "F", name: "FxDAO" },
 ];
 
 const ALL_WALLETS: ReadonlyArray<Wallet> = [
@@ -297,7 +296,7 @@ const faqsFor = (walletConnect: boolean): ReadonlyArray<Faq> => [
   },
   {
     q: "Which Soroban DeFi protocols are supported?",
-    a: "Blend, Aquarius, Soroswap, and FxDAO. Each integration calls only the hardcoded official contract addresses, re-verified before every signature.",
+    a: "Blend, Aquarius and Soroswap. Each integration calls only the hardcoded official contract addresses, re-verified before every signature.",
   },
   {
     q: "What is the allowance viewer?",
