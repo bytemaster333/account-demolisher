@@ -121,7 +121,7 @@ async function simulateFinalClassicTx(
   }
   // In-memory validation: actually BUILD each batch's classic envelope. A synthetic
   // account (sequence 0) suffices because this is structural well-formedness, not a
-  // submit — buildClassicTransaction throws on an empty/malformed op set or a total
+  // submit: buildClassicTransaction throws on an empty/malformed op set or a total
   // fee over the u32 ceiling, so a doomed classic close surfaces at preview time
   // instead of xdr:"" hiding it. The executor rebuilds against live account state.
   const source = new Account(deps.userPublicKey, "0") as unknown as Horizon.AccountResponse;
@@ -161,7 +161,7 @@ async function simulateMediatorForward(
   // The mediator forward is exactly one payment + one accountMerge, built and
   // signed server-side against the mediator's live sequence at submit time (its
   // envelope can't be reproduced here without the flow token). 2 ops is the fixed,
-  // known structure — not a guess — but validate the metadata carries what the
+  // known structure, not a guess, but validate the metadata carries what the
   // forward needs so a malformed node fails at preview, not mid-execution.
   const md = node.metadata;
   if (!md.mediatorPublicKey || !md.ultimateDestination || !md.flowToken) {

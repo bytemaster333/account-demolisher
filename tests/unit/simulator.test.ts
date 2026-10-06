@@ -49,7 +49,7 @@ describe("simulator: FinalClassicTx in-memory validation", () => {
     expect(out.kind).toBe("classic");
     if (out.kind !== "classic") throw new Error("expected classic");
     expect(out.operationCount).toBe(3);
-    // the xdr is a real built envelope, not "" — and it decodes back to 3 ops
+    // the xdr is a real built envelope, not "", and it decodes back to 3 ops
     expect(out.xdr.length).toBeGreaterThan(0);
     const tx = TransactionBuilder.fromXdr(out.xdr, TESTNET.passphrase);
     expect("operations" in tx ? tx.operations.length : 0).toBe(3);

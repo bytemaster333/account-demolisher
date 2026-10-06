@@ -9,8 +9,8 @@ import type { AccountAudit, AssetIdentifier } from "@/lib/types/account";
 import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
 
 // Property-based fuzzing (Tranche-3 deliverable): assert that NO random account
-// state yields a "stranding sequence" — a plan where the irreversible merge runs
-// before a teardown/position step — and that the plan tree rejects any cycle.
+// state yields a "stranding sequence" (a plan where the irreversible merge runs
+// before a teardown/position step), and that the plan tree rejects any cycle.
 
 const DEST = "GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3";
 const ACC = "GB6NVEN5HSUBKMYCE5ZOWSK5K23TBWRUQLZY3KNMXUZ3AQ2ESC4MY4AQ";
@@ -208,7 +208,7 @@ function assertStrandingFree(order: readonly PlanNode[]): void {
   }
 }
 
-describe("plan generation — property-based fuzzing", () => {
+describe("plan generation, property-based fuzzing", () => {
   it("produces a valid, stranding-free DAG for any classic account state", () => {
     fc.assert(
       fc.property(arbAudit, (audit) => {

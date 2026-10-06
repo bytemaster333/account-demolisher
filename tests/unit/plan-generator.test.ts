@@ -362,7 +362,7 @@ describe("generatePlan, held-token disposition (transfer-as-is vs convert-to-XLM
     expect(node.metadata.priceImpactAccepted).toBe(true);
   });
 
-  it("never converts on a mediator (CEX) close — an exchange can't receive a raw token", () => {
+  it("never converts on a mediator (CEX) close: an exchange can't receive a raw token", () => {
     const tree = generatePlan(makeAudit(), emptyPositions(), [], DEST, {
       useMediator: true,
       mediatorPublicKey: MED,

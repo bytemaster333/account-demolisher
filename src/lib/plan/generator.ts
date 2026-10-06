@@ -290,7 +290,7 @@ export function generatePlan(
 
   // standalone SEP-41 tokens: sweep each to the destination before the merge so a
   // custom token held in contract storage isn't stranded on the deleted account.
-  // DIRECT closes only — a mediator/CEX destination can't receive a raw token
+  // DIRECT closes only: a mediator/CEX destination can't receive a raw token
   // (the preview surfaces a "move these first" warning for that case instead).
   // These become dependencies of the merge purely for ORDERING (drain runs first);
   // the executor treats a failed drain as skip-not-fatal, so a hostile airdropped
@@ -364,7 +364,7 @@ export function generatePlan(
   }
 
   // blend backstop: a deposit in the SEPARATE backstop contract. The close can
-  // only START its withdrawal — a queued, 17-day-locked flow — so we emit a
+  // only START its withdrawal (a queued, 17-day-locked flow), so we emit a
   // BackstopQueue node (queue_withdrawal) that carries the estimated unlock date,
   // and the executor's merge guard refuses the close while the backstop is still
   // active/queued (the account must survive to receive the withdrawal). Only

@@ -128,7 +128,7 @@ export async function hydratePlanTransactions(
 // timebound. Called at EXECUTE time immediately before signing, so a plan that
 // sat in the review step for minutes is not submitted carrying the preview-time
 // sequence/footprint/5-minute timebound (which would fail as tx_bad_seq, a stale
-// footprint, or an expired tx). No-op for classic/forward nodes — the executor
+// footprint, or an expired tx). No-op for classic/forward nodes: the executor
 // rebuilds the FinalClassicTx from fresh state itself and the MediatorForward is
 // re-minted per run. Throws if the rebuild's simulation fails (a genuinely broken
 // step surfaces its real error rather than submitting a stale tx).
