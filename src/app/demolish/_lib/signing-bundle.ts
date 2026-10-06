@@ -157,8 +157,9 @@ export interface ClaimAtRisk {
   readonly asset: AssetIdentifier;
   readonly amount: string;
   // expires: this account's claim window closes inside the signing window;
-  // reclaimable: another claimant (usually the sender) can take it first
-  readonly reason: "expires" | "reclaimable";
+  // reclaimable: another claimant (usually the sender) can take it first;
+  // untrusted: the account has no trustline for the asset, so the claim fails
+  readonly reason: "expires" | "reclaimable" | "untrusted";
 }
 
 // absolute time thresholds (ms) in a Horizon predicate tree; a predicate only
@@ -201,9 +202,19 @@ export function claimsAtRiskInWindow(args: {
       .map((o) => String(o.metadata["balanceId"])),
   );
   const end = args.nowMs + args.windowSeconds * 1000;
+  const trusted = new Set(
+    args.audit.balances.flatMap((b) =>
+      b.asset.kind === "credit" ? [`${b.asset.code}:${b.asset.issuer}`] : [],
+    ),
+  );
   const out: ClaimAtRisk[] = [];
   for (const cb of args.audit.claimableBalances) {
     if (!claimed.has(cb.id)) continue;
+    // claiming a credit asset needs a trustline, and the bundle adds none
+    if (cb.asset.kind === "credit" && !trusted.has(`${cb.asset.code}:${cb.asset.issuer}`)) {
+      out.push({ id: cb.id, asset: cb.asset, amount: cb.amount, reason: "untrusted" });
+      continue;
+    }
     const thresholds: number[] = [];
     predicateThresholds(cb.predicate, thresholds);
     const instants = [args.nowMs, end, ...thresholds.filter((t) => t > args.nowMs && t <= end)];

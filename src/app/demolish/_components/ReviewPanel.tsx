@@ -513,15 +513,17 @@ function SharedFooter({
             color: "var(--fg-2)",
           }}
         >
-          Some pending payments in this close may stop being collectable before every signer signs.
-          If that happens the whole close fails on submit and a new request is needed:
+          Some pending payments in this close may fail to be collected when it is submitted, after
+          every signer signed. If one fails, the whole close fails and a new request is needed:
           <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
             {shared.claimRisks.map((r) => (
               <li key={r.id}>
                 {r.amount} {r.asset.kind === "credit" ? r.asset.code : "XLM"}:{" "}
                 {r.reason === "expires"
                   ? "its claim window closes within the signing window"
-                  : "the sender (or another claimant) can take it back first"}
+                  : r.reason === "untrusted"
+                    ? "this account doesn't trust that asset, so the claim is rejected"
+                    : "the sender (or another claimant) can take it back first"}
               </li>
             ))}
           </ul>

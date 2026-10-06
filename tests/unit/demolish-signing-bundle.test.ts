@@ -219,6 +219,40 @@ describe("claims that may fail inside the 72h signing window (H-29)", () => {
     });
     expect(risky.map((r) => r.reason)).toEqual(["reclaimable"]);
   });
+
+  it("flags a balance in an asset the account holds no trustline for", () => {
+    const issuer = Keypair.random().publicKey();
+    const usdc = { kind: "credit" as const, code: "USDC", issuer };
+    const audit = makeAudit({
+      claimableBalances: [cb("cb-untrusted", { asset: usdc })],
+    });
+    const risky = claimsAtRiskInWindow({
+      audit,
+      tree: makeTree({ audit }),
+      publicKey: ACC,
+      nowMs: Date.now(),
+      windowSeconds: 72 * 3600,
+    });
+    expect(risky.map((r) => r.reason)).toEqual(["untrusted"]);
+
+    // the same balance is fine once the account trusts the asset
+    const trusted = makeAudit({
+      claimableBalances: [cb("cb-trusted", { asset: usdc })],
+      balances: [
+        ...makeAudit().balances,
+        { asset: usdc, amount: "0.0000000", buyingLiabilities: "0", sellingLiabilities: "0" },
+      ],
+    });
+    expect(
+      claimsAtRiskInWindow({
+        audit: trusted,
+        tree: makeTree({ audit: trusted }),
+        publicKey: ACC,
+        nowMs: Date.now(),
+        windowSeconds: 72 * 3600,
+      }),
+    ).toEqual([]);
+  });
 });
 
 describe("re-probe before publishing (C-08)", () => {
