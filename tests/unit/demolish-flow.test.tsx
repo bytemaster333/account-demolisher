@@ -116,14 +116,11 @@ vi.mock("@/lib/stellar/horizon-client", async () => {
 // reviewed plan is what's checked
 vi.mock("@/lib/multisig/plan-client", async () => {
   const sdk = await import("@stellar/stellar-sdk");
-  const { resolveNetwork } = await import("@/lib/config/networks");
+  const { requireNetwork } = await import("@/lib/config/networks");
   return {
     publishPlan: async (network: string, xdr: string) => {
       ctl.published.push({ network, xdr });
-      const tx = sdk.TransactionBuilder.fromXdr(
-        xdr,
-        resolveNetwork(network as "testnet").passphrase,
-      );
+      const tx = sdk.TransactionBuilder.fromXdr(xdr, requireNetwork(network).passphrase);
       return Buffer.from(tx.hash()).toString("hex");
     },
     fetchPlan: async () => {

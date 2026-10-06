@@ -1,10 +1,18 @@
 "use client";
 
 import { Button, InfoTip, Select } from "@/components/ui";
-import { cexMemoTypes, type CexInfo } from "@/lib/safety/cex-registry";
+import { cexMemoTypes, type CexInfo, type CexMemoType } from "@/lib/safety/cex-registry";
 
 import { SR_ONLY } from "../_lib/a11y";
 import type { FormState } from "../_lib/form";
+
+// the names the memo type picker below uses
+const MEMO_TYPE_NAME: Record<CexMemoType, string> = {
+  text: "Text",
+  id: "ID",
+  hash: "Hash",
+  return: "Return",
+};
 
 const DEMO_DESTINATION_ADDRESS = "GCAWLISZMTHWMMHJE7BRYYNNKR4OL2PR4COXKH2MKGVDOH4BP6DMAHPE";
 
@@ -205,7 +213,9 @@ export function ConfigurePanel({
               <strong style={{ color: "var(--fg)" }}>Exchange detected: {cex.name}.</strong>{" "}
               We&apos;ll route the transfer so your deposit memo reaches {cex.name} correctly.{" "}
               {cex.requiresMemo
-                ? `${cex.name} needs a ${cexMemoTypes(cex).join(" or ")} memo/tag, paste yours below, or your deposit could be lost.`
+                ? `${cex.name} needs a memo/tag (${cexMemoTypes(cex)
+                    .map((t) => MEMO_TYPE_NAME[t])
+                    .join(" or ")}), paste yours below, or your deposit could be lost.`
                 : ""}
             </span>
           </div>

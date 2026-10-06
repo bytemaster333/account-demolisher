@@ -6,6 +6,7 @@ import { Keypair } from "@stellar/stellar-sdk";
 import { useState } from "react";
 
 import { MAINNET, TESTNET } from "@/lib/config/networks";
+import { lookupCex } from "@/lib/safety/cex-registry";
 
 // the wallet pickers pull in the wallets kit, which doesn't load in this test
 // environment; IdleConnect only needs something it can show or hide
@@ -113,6 +114,13 @@ describe("ConfigurePanel", () => {
     expect(text).toMatch(/Exchanges don't credit an account merge/);
   });
 
+  it("names every memo type an exchange accepts (L-24)", () => {
+    const cex = lookupCex("GCZLCMUM4Q4H324CTT3753P6656CYR4KPLHYFPGYPGE6JVHONGLNRDI5");
+    expect(cex?.name).toBe("Upbit Deposits");
+    render(<ConfigureHarness cex={cex} />);
+    expect(screen.getByTestId("cex-warning").textContent).toMatch(/memo\/tag \(ID or Text\)/);
+  });
+
   it("shows a failed account check with a retry and keeps Continue off (M-32)", () => {
     const retry = vi.fn();
     render(
@@ -187,5 +195,18 @@ describe("IdleConnect after a network switch (L-55)", () => {
     expect(screen.queryByText("connect-wallet")).toBeNull();
     rerender(<IdleConnect {...props} network={MAINNET} />);
     expect(screen.getByText("connect-wallet")).toBeTruthy();
+  });
+
+  it("offers the practice account on testnet only, not on any network with a faucet (L-108)", () => {
+    const props = {
+      advancedOpen: false,
+      onToggleAdvanced: () => {},
+      onKitConnector: () => {},
+      onSecretConnector: () => {},
+    };
+    render(
+      <IdleConnect {...props} network={{ ...MAINNET, friendbot: "https://faucet.example" }} />,
+    );
+    expect(screen.queryByTestId("start-demo")).toBeNull();
   });
 });

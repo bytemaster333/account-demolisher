@@ -139,3 +139,70 @@ describe("released reserves wording (L-59)", () => {
     expect(text).not.toMatch(/2 XLM deposits/);
   });
 });
+
+describe("what the plan does with pending payments (H-09)", () => {
+  const ISSUER = Keypair.random().publicKey();
+  const usdc = { kind: "credit" as const, code: "USDC", issuer: ISSUER };
+  const balance = (id: string, issuerAuthRequired: boolean): ClaimableBalanceEntry => ({
+    ...cb(id, { unconditional: true }, true),
+    asset: usdc,
+    issuerAuthRequired,
+  });
+
+  it("opens a trustline it can and says why it leaves one it can't", () => {
+    const opened = makeAudit({ claimableBalances: [balance(READY, false)] });
+    const s1 = claimableSplit({
+      audit: opened,
+      tree: makeTree({ audit: opened }),
+      publicKey: ACC,
+      nowMs: NOW,
+    });
+    expect(s1.collectCount).toBe(1);
+    expect(s1.trustlineChanges).toEqual([{ asset: usdc, change: "add" }]);
+    renderPanel({ claimables: s1 });
+    expect(screen.getByTestId("auto-handled-notice").textContent).toMatch(
+      /Opens a trustline \(USDC\).*0\.5 XLM reserve/,
+    );
+    cleanup();
+
+    const refused = makeAudit({ claimableBalances: [balance(LOCKED, true)] });
+    const s2 = claimableSplit({
+      audit: refused,
+      tree: makeTree({ audit: refused }),
+      publicKey: ACC,
+      nowMs: NOW,
+    });
+    expect(s2.leftBehind.map((l) => l.reason)).toEqual(["no_trustline"]);
+    renderPanel({ claimables: s2 });
+    expect(screen.getByTestId("locked-claimables-notice").textContent).toMatch(
+      /25\.0000000 USDC, the account has no trustline for it/,
+    );
+  });
+
+  it("lets the user untick a payment, but not one this account sponsors", () => {
+    const toggled: [string, boolean][] = [];
+    renderPanel({
+      claimChoices: {
+        balances: [
+          { id: READY, asset: { kind: "native" }, amount: "25.0000000", locked: false },
+          { id: LOCKED, asset: { kind: "native" }, amount: "3.0000000", locked: true },
+        ],
+        selected: new Set([READY]),
+        onToggle: (id, v) => toggled.push([id, v]),
+      },
+    });
+    fireEvent.click(screen.getByTestId(`cb-checkbox-${READY}`));
+    expect(toggled).toEqual([[READY, false]]);
+    expect(screen.queryByTestId(`cb-checkbox-${LOCKED}`)).toBeNull();
+    expect(screen.getByTestId("claim-choices").textContent).toMatch(/always collected/);
+  });
+});
+
+describe("the high-value acknowledgement counts what the close moves (M-22)", () => {
+  it("states the estimated XLM and the holdings it can't price", () => {
+    renderPanel({ highValue: { estimatedXlm: "1500.0000000", unpricedHoldings: 2 } });
+    const text = screen.getByTestId("high-value-notice").textContent ?? "";
+    expect(text).toMatch(/about 1500\.0000000 XLM/);
+    expect(text).toMatch(/plus 2 holdings whose value couldn't be estimated/);
+  });
+});

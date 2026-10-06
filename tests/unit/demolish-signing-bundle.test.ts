@@ -333,7 +333,7 @@ describe("re-probe before publishing (C-08)", () => {
 
   it("refuses when the probe records an error or throws", async () => {
     const withError = await reprobeBeforePublish(ACC, TESTNET, async () =>
-      emptyPositions({ errors: [{ protocol: "FxDAO", message: "rpc down" }] }),
+      emptyPositions({ errors: [{ protocol: "Aquarius", message: "rpc down" }] }),
     );
     expect(withError.ok).toBe(false);
     const thrown = await reprobeBeforePublish(ACC, TESTNET, async () => {

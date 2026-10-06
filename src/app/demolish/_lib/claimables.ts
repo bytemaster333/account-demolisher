@@ -111,12 +111,14 @@ export function claimableSplit(args: {
       sim?.kind === "classic" && sim.operationCount > 0
         ? Number(BigInt(sim.estimatedFee) / BigInt(sim.operationCount))
         : undefined;
-    const plan = planClaimableBalances(
-      args.audit,
-      md.claimableBalanceIds,
-      feePerOp !== undefined ? { feePerOpStroops: feePerOp } : {},
-    );
-    for (const l of plan.leftBehind) reasons.set(l.balance.id, l.reason);
+    const options = feePerOp !== undefined ? { feePerOpStroops: feePerOp } : {};
+    // a balance the planner itself left out of the recorded list (the user made
+    // no pick) has a reason only in the planner's own pass over every balance
+    for (const ids of [undefined, md.claimableBalanceIds]) {
+      for (const l of planClaimableBalances(args.audit, ids, options).leftBehind) {
+        reasons.set(l.balance.id, l.reason);
+      }
+    }
   }
   const reviewed = md?.claimableBalanceIds === undefined ? null : new Set(md.claimableBalanceIds);
 
