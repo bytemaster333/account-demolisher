@@ -1,10 +1,11 @@
 // wrapper around horizon's strict-send path search
 
-import { Asset, BadRequestError, NetworkError, NotFoundError } from "@stellar/stellar-sdk";
+import { Asset } from "@stellar/stellar-sdk";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { isFrozenBalance } from "@/lib/stellar/account-audit";
 import { decimalToStroops, stroopsToDecimal } from "@/lib/stellar/amount";
 import { mapWithConcurrency } from "@/lib/stellar/concurrency";
+import { HORIZON_REQUEST_ATTEMPTS, withHorizonRetry } from "@/lib/stellar/horizon-retry";
 import { referenceTradeAmount } from "@/lib/plan/price-impact";
 import type { NetworkConfig } from "@/lib/config/networks";
 import type { AccountAudit, AssetIdentifier } from "@/lib/types/account";
@@ -41,7 +42,7 @@ export async function findPathToXLM(
   const sourceAsset = toSdkAsset(source);
 
   // constrain the search to xlm-only outputs
-  const page = await withRateLimitRetry(() =>
+  const page = await withHorizonRetry(() =>
     server.strictSendPaths(sourceAsset, amount, [Asset.native()]).call(),
   );
 
@@ -118,37 +119,7 @@ export async function resolveCreditPaths(
 // an account with hundreds of trustlines would otherwise fire hundreds of path
 // requests at once and trip public horizon's rate limit
 export const PATH_REQUEST_CONCURRENCY = 8;
-export const PATH_REQUEST_ATTEMPTS = 4;
-const RETRY_BASE_DELAY_MS = 250;
-
-// 429, 5xx and connection failures are transient; anything else (a 400 on a
-// malformed asset, a 404) is a real answer and is thrown at once. the last
-// error is surfaced as is once the attempts run out.
-async function withRateLimitRetry<T>(call: () => Promise<T>): Promise<T> {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      return await call();
-    } catch (err) {
-      if (attempt >= PATH_REQUEST_ATTEMPTS || !isTransientHorizonError(err)) throw err;
-      await new Promise((r) => setTimeout(r, RETRY_BASE_DELAY_MS * 2 ** (attempt - 1)));
-    }
-  }
-}
-
-function isTransientHorizonError(err: unknown): boolean {
-  if (err instanceof NotFoundError || err instanceof BadRequestError) return false;
-  if (err instanceof NetworkError) {
-    // the sdk stores the response body here; horizon problem documents carry the
-    // status, a proxy error page does not
-    const body = err.getResponse() as unknown;
-    const status =
-      typeof body === "object" && body !== null ? (body as { status?: unknown }).status : undefined;
-    if (typeof status !== "number") return true;
-    return status === 429 || status >= 500;
-  }
-  // no response at all: the request never reached horizon
-  return err instanceof Error;
-}
+export const PATH_REQUEST_ATTEMPTS = HORIZON_REQUEST_ATTEMPTS;
 
 function hasPositiveAmount(s: string): boolean {
   for (const ch of s) if (ch >= "1" && ch <= "9") return true;

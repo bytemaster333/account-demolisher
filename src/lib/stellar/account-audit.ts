@@ -3,6 +3,7 @@ import { getHorizon } from "@/lib/stellar/horizon-client";
 import { decimalToStroops } from "@/lib/stellar/amount";
 import { filterClaimableNow } from "@/lib/stellar/claimable-balances";
 import { mapWithConcurrency } from "@/lib/stellar/concurrency";
+import { withHorizonRetry } from "@/lib/stellar/horizon-retry";
 import {
   DEFAULT_TX_VALIDITY_SECONDS,
   fetchLedgerClock,
@@ -345,8 +346,9 @@ async function loadPoolShares(
 const ISSUER_LOOKUP_CONCURRENCY = 8;
 
 // tags each claimable-now credit balance the account has no trustline for with
-// its issuer's auth_required flag, one lookup per distinct issuer. a missing
-// issuer leaves the flag unset; any other failure propagates. a balance of the
+// its issuer's auth_required flag, one lookup per distinct issuer, each retried
+// on a rate limit or server error. a missing issuer leaves the flag unset; any
+// other failure propagates. a balance of the
 // account's own asset is tagged issuedByAccount instead and needs no lookup.
 async function withIssuerAuthRequired(
   server: Horizon.Server,
@@ -370,7 +372,7 @@ async function withIssuerAuthRequired(
   const flags = new Map<string, boolean>();
   await mapWithConcurrency(issuers, ISSUER_LOOKUP_CONCURRENCY, async (issuer) => {
     try {
-      const account = await server.loadAccount(issuer);
+      const account = await withHorizonRetry(() => server.loadAccount(issuer));
       flags.set(issuer, account.flags.auth_required);
     } catch (err) {
       if (!isHorizonNotFound(err)) throw err;

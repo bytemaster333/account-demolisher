@@ -38,7 +38,7 @@ vi.mock("@/lib/stellar/horizon-client", () => ({
   }),
 }));
 
-import { NetworkError, NotFoundError } from "@stellar/stellar-sdk";
+import { BadRequestError, NetworkError, NotFoundError } from "@stellar/stellar-sdk";
 import {
   assessMergeability,
   auditAccount,
@@ -524,6 +524,35 @@ describe("auditAccount", () => {
     expect(audit.claimableBalances.find((c) => c.id === "trusted")).not.toHaveProperty(
       "issuerAuthRequired",
     );
+  });
+
+  // spam balances can name many issuers; one rate-limited lookup must not fail
+  // the whole audit
+  it("retries a rate-limited issuer lookup", async () => {
+    fakeHorizon.account = horizonAccount({ num_sponsoring: 0 });
+    let refusals = 1;
+    fakeHorizon.others = {
+      get [ISSUER_OPEN]() {
+        if (refusals-- > 0) return new NetworkError("Too Many Requests", { status: 429 });
+        return issuerAccount(ISSUER_OPEN, false);
+      },
+    };
+    fakeHorizon.claimable = [cbRecord("open", `OPEN:${ISSUER_OPEN}`)];
+    fakeHorizon.loads = [];
+    const audit = await auditAccount(ACC, TESTNET);
+    expect(fakeHorizon.loads.filter((id) => id === ISSUER_OPEN)).toHaveLength(2);
+    expect(
+      (audit.claimableBalances[0] as { issuerAuthRequired?: boolean }).issuerAuthRequired,
+    ).toBe(false);
+  });
+
+  it("does not retry an issuer lookup horizon refused outright", async () => {
+    fakeHorizon.account = horizonAccount({ num_sponsoring: 0 });
+    fakeHorizon.others = { [ISSUER_OPEN]: new BadRequestError("Bad Request", { status: 400 }) };
+    fakeHorizon.claimable = [cbRecord("open", `OPEN:${ISSUER_OPEN}`)];
+    fakeHorizon.loads = [];
+    await expect(auditAccount(ACC, TESTNET)).rejects.toThrow("Bad Request");
+    expect(fakeHorizon.loads.filter((id) => id === ISSUER_OPEN)).toHaveLength(1);
   });
 
   it("surfaces an issuer lookup failure other than not-found", async () => {
