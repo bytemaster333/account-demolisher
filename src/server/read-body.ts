@@ -5,8 +5,8 @@
 //
 // the early reject only helps because /api is excluded from the proxy.ts
 // matcher: a request that passes through the node proxy has its whole body
-// buffered by next before the route runs. the reverse proxy in front of the app
-// is the outer bound on body size.
+// buffered by next before the route runs. the outer bound is the shipped caddy
+// proxy, which refuses an /api body over 64 KB (Caddyfile request_body).
 
 // ceiling for the small JSON routes (mediator forward, soroswap quotes)
 export const MAX_JSON_BODY_BYTES = 16_384;

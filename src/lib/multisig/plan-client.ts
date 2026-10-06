@@ -4,6 +4,7 @@
 // drops. only transaction envelopes cross the wire, never a secret key.
 
 import type { StellarNetwork } from "@/lib/config/networks";
+import { errorMessage } from "@/lib/errors";
 
 export interface RelaySigner {
   readonly key: string;
@@ -199,7 +200,7 @@ export function subscribePlan(
       report({
         mode: "polling",
         terminal: false,
-        error: e instanceof Error ? e.message : String(e),
+        error: errorMessage(e),
       });
       pollDelay = Math.min(pollDelay * 2, POLL_MAX_MS);
     }

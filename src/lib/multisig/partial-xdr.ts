@@ -27,6 +27,12 @@ export class TooManySignaturesError extends Error {
   }
 }
 
+export interface MergeResult {
+  readonly xdr: string;
+  // how many signatures the partials added to the canonical envelope
+  readonly added: number;
+}
+
 // merges novel signatures from partialXdrs into canonicalXdr and returns the
 // merged envelope. throws when a partial is for a different transaction, carries
 // a signature from an unknown key, or would push the envelope past 20 signatures.
@@ -36,6 +42,17 @@ export function mergeSignatures(
   networkPassphrase: string,
   options: MergeOptions = {},
 ): string {
+  return mergeNewSignatures(canonicalXdr, partialXdrs, networkPassphrase, options).xdr;
+}
+
+// mergeSignatures, also reporting how many signatures were added, so a caller
+// can skip further work when a partial brought nothing new
+export function mergeNewSignatures(
+  canonicalXdr: string,
+  partialXdrs: readonly string[],
+  networkPassphrase: string,
+  options: MergeOptions = {},
+): MergeResult {
   if (typeof canonicalXdr !== "string" || canonicalXdr.length === 0) {
     throw new Error("mergeSignatures: canonicalXdr must be a non-empty base64 string.");
   }
@@ -54,12 +71,12 @@ export function mergeSignatures(
 
   // collect candidate public keys. with expectedSigners we trust the
   // allowlist; without it we fall back to the tx + per-op source accounts
-  const candidates: readonly string[] = collectCandidateSigners(
+  const candidates = collectCandidateSigners(
     canonical,
     partialXdrs,
     networkPassphrase,
     options.expectedSigners,
-  );
+  ).map((key) => Keypair.fromPublicKey(key));
 
   // dedup by the RECOVERED SIGNER KEY, not by wire bytes. the decorated
   // signature's 4-byte hint is attacker-chosen, so keying on wire bytes lets one
@@ -68,9 +85,10 @@ export function mergeSignatures(
   // exactly what weighted multisig needs, so recover each key and admit it once.
   const presentKeys = new Set<string>();
   for (const sig of canonical.signatures) {
-    const k = recoverSigningKey(sig, canonicalHash, candidates);
-    if (k) presentKeys.add(k);
+    const i = matchSigner(sig, canonicalHash, candidates);
+    if (i !== -1) presentKeys.add(candidates[i]!.publicKey());
   }
+  let added = 0;
 
   for (const partialXdr of partialXdrs) {
     if (typeof partialXdr !== "string" || partialXdr.length === 0) {
@@ -92,21 +110,22 @@ export function mergeSignatures(
     }
 
     for (const decorated of partial.signatures) {
-      const signingKey = recoverSigningKey(decorated, canonicalHash, candidates);
-      if (!signingKey) {
+      const i = matchSigner(decorated, canonicalHash, candidates);
+      if (i === -1) {
         throw new Error(
           "mergeSignatures: partial envelope contains a signature that does not match " +
             "any known signer for the canonical transaction (rejected).",
         );
       }
 
+      const kp = candidates[i]!;
+      const signingKey = kp.publicKey();
       if (presentKeys.has(signingKey)) continue;
       if (canonical.signatures.length >= MAX_ENVELOPE_SIGNATURES) {
         throw new TooManySignaturesError();
       }
       // store with the canonical hint for the recovered key, so a forged hint
       // can never occupy a parallel slot for a signer that already signed.
-      const kp = Keypair.fromPublicKey(signingKey);
       canonical.signatures.push(
         new xdr.DecoratedSignature({
           hint: kp.signatureHint(),
@@ -114,10 +133,11 @@ export function mergeSignatures(
         }),
       );
       presentKeys.add(signingKey);
+      added += 1;
     }
   }
 
-  return canonical.toXdr();
+  return { xdr: canonical.toXdr(), added };
 }
 
 // rebuild an envelope with exactly one verified signature per expected signer,
@@ -133,17 +153,18 @@ export function canonicalizeSignatures(
     throw new Error("canonicalizeSignatures: fee-bump envelopes are not supported here.");
   }
   const hash = tx.hash();
+  const keypairs = [...new Set(expectedSigners)].map((key) => Keypair.fromPublicKey(key));
   const original = [...tx.signatures];
+  const owner = original.map((ds) => matchSigner(ds, hash, keypairs));
   tx.signatures.length = 0;
-  for (const key of new Set(expectedSigners)) {
-    const kp = Keypair.fromPublicKey(key);
-    const sig = original.find((ds) => kp.verify(hash, ds.signature.toBytes()));
-    if (sig === undefined) continue;
+  keypairs.forEach((kp, i) => {
+    const sig = original[owner.indexOf(i)];
+    if (sig === undefined) return;
     if (tx.signatures.length >= MAX_ENVELOPE_SIGNATURES) throw new TooManySignaturesError();
     tx.signatures.push(
       new xdr.DecoratedSignature({ hint: kp.signatureHint(), signature: sig.signature.toBytes() }),
     );
-  }
+  });
   return tx.toXdr();
 }
 
@@ -176,19 +197,23 @@ export function trimToThreshold(
     throw new Error("trimToThreshold: fee-bump envelopes are not supported here.");
   }
   const hash = tx.hash();
-  const remaining = signers.map((s) => ({ ...s, kp: Keypair.fromPublicKey(s.key) }));
+  const keypairs = signers.map((s) => Keypair.fromPublicKey(s.key));
+  const used = new Set<number>();
   const keptSigs: xdr.DecoratedSignature[] = [];
   const kept: string[] = [];
   let weight = 0;
   for (const sig of tx.signatures) {
     if (weight >= required) break;
-    const bytes = sig.signature.toBytes();
-    const idx = remaining.findIndex((s) => s.kp.verify(hash, bytes));
-    if (idx === -1) continue;
-    const signer = remaining[idx]!;
-    remaining.splice(idx, 1);
+    const idx = matchSigner(sig, hash, keypairs);
+    // a second signature from the same signer is never consumed either
+    if (idx === -1 || used.has(idx)) continue;
+    used.add(idx);
+    const signer = signers[idx]!;
     keptSigs.push(
-      new xdr.DecoratedSignature({ hint: signer.kp.signatureHint(), signature: bytes }),
+      new xdr.DecoratedSignature({
+        hint: keypairs[idx]!.signatureHint(),
+        signature: sig.signature.toBytes(),
+      }),
     );
     kept.push(signer.key);
     weight += signer.weight;
@@ -198,9 +223,9 @@ export function trimToThreshold(
 }
 
 // which of the given signer keys have signed this envelope, in signerKeys order.
-// each key is confirmed by verifying a signature over the transaction hash, not
-// by its hint, so a wallet with an unusual hint is still counted. an envelope
-// that doesn't parse has no signers.
+// each key is confirmed by verifying a signature over the transaction hash; the
+// hint only decides which key is tried first, so a wallet with an unusual hint
+// is still counted. an envelope that doesn't parse has no signers.
 export function signedSigners(
   envelopeXdr: string,
   networkPassphrase: string,
@@ -214,17 +239,21 @@ export function signedSigners(
   }
   if (!isClassicTransaction(tx)) return [];
   const hash = tx.hash();
-  const out: string[] = [];
+  const valid: { key: string; kp: Keypair }[] = [];
   for (const key of signerKeys) {
-    let kp: Keypair;
     try {
-      kp = Keypair.fromPublicKey(key);
+      valid.push({ key, kp: Keypair.fromPublicKey(key) });
     } catch {
       continue;
     }
-    if (tx.signatures.some((ds) => kp.verify(hash, ds.signature.toBytes()))) out.push(key);
   }
-  return out;
+  const keypairs = valid.map((v) => v.kp);
+  const signed = new Set<string>();
+  for (const ds of tx.signatures) {
+    const i = matchSigner(ds, hash, keypairs);
+    if (i !== -1) signed.add(valid[i]!.key);
+  }
+  return signerKeys.filter((key) => signed.has(key));
 }
 
 function isClassicTransaction(tx: Transaction | FeeBumpTransaction): tx is Transaction {
@@ -268,28 +297,23 @@ function collectCandidateSigners(
   return Array.from(candidates);
 }
 
-// recover the public key that signed sig over txHash
-function recoverSigningKey(
+// index of the keypair that made sig over txHash, or -1. keys whose hint matches
+// are tried first and the rest only when none of them verifies (a wallet with an
+// unusual hint), so a normal envelope costs one ed25519 check per signature
+// instead of one per signer.
+function matchSigner(
   sig: xdr.DecoratedSignature,
   txHash: Uint8Array,
-  candidates: readonly string[],
-): string | null {
+  keypairs: readonly Keypair[],
+): number {
   const hint = Buffer.from(sig.hint.toBytes());
   const signature = sig.signature.toBytes();
-
-  // hint-narrowed first
-  for (const key of candidates) {
-    const kp = Keypair.fromPublicKey(key);
-    if (Buffer.from(kp.signatureHint()).equals(hint) && kp.verify(txHash, signature)) {
-      return key;
-    }
+  const hinted = keypairs.map((kp) => Buffer.from(kp.signatureHint()).equals(hint));
+  for (let i = 0; i < keypairs.length; i++) {
+    if (hinted[i] && keypairs[i]!.verify(txHash, signature)) return i;
   }
-
-  // full sweep for quirky wallets with unusual hints
-  for (const key of candidates) {
-    const kp = Keypair.fromPublicKey(key);
-    if (kp.verify(txHash, signature)) return key;
+  for (let i = 0; i < keypairs.length; i++) {
+    if (!hinted[i] && keypairs[i]!.verify(txHash, signature)) return i;
   }
-
-  return null;
+  return -1;
 }

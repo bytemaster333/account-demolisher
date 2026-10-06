@@ -11,6 +11,7 @@
 
 import {
   SignerKey,
+  StrKey,
   TransactionBuilder,
   type Horizon,
   type Transaction,
@@ -20,9 +21,10 @@ import type { NetworkConfig } from "@/lib/config/networks";
 import { CLOSE_MARKER_NAME } from "@/lib/metrics/close-marker";
 import { mergeSignatures, signedSigners, trimToThreshold } from "@/lib/multisig/partial-xdr";
 import { batchClassicDemolition } from "@/lib/plan/classic-batcher";
+import { stroopsToDecimal } from "@/lib/stellar/amount";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
-import type { AccountAudit } from "@/lib/types/account";
-import type { BatchOptions, ClassicMemo } from "@/lib/types/plan";
+import type { AccountAudit, AssetIdentifier } from "@/lib/types/account";
+import { pathKey, type BatchOptions, type ClassicMemo } from "@/lib/types/plan";
 
 export { mergeSignatures, signedSigners, trimToThreshold };
 
@@ -168,14 +170,23 @@ export function buildCloseTransaction(params: {
     );
   }
   if (batches.length > 1) {
+    // the batcher's leading phase holds pool withdraws and credit claims with no
+    // explicit disposal; an oversized close can also put other claims in an
+    // earlier batch, which is just the operation count
     const first = batches[0]!;
-    const withdrawsFirst =
-      first.operations.length > 0 &&
-      first.operations.every((op) => op.kind === "liquidity_pool_withdraw");
-    if (withdrawsFirst) {
+    if (first.operations.some((op) => op.kind === "liquidity_pool_withdraw")) {
       throw new Error(`buildCloseTransaction: ${POOL_SHARE_REASON}`);
     }
-    if (first.operations.some((op) => op.kind === "claim_claimable_balance")) {
+    const disposed = new Set([
+      ...(disposal?.sendToDestinationAssetKeys ?? []),
+      ...(disposal?.returnToIssuerAssetKeys ?? []),
+    ]);
+    const undisposedClaim = first.operations.some((op) => {
+      if (op.kind !== "claim_claimable_balance") return false;
+      const asset = op.metadata["asset"] as AssetIdentifier;
+      return asset.kind === "credit" && !disposed.has(pathKey(asset));
+    });
+    if (undisposedClaim) {
       throw new Error(
         "buildCloseTransaction: a claimable balance in a credit asset has no disposal chosen " +
           "(send it to the destination or return it to its issuer), so it would have to be " +
@@ -380,10 +391,12 @@ function describeSetOptions(op: RawOp): OperationSummary {
   if (s !== undefined) {
     const weight = s.weight ?? 0;
     let label: string;
+    // strkey form, the way horizon lists the account's signers
     if (typeof s.ed25519PublicKey === "string") label = `signer ${s.ed25519PublicKey}`;
     else if (s.preAuthTx !== undefined)
-      label = `pre-authorized transaction signer ${toHex(s.preAuthTx)}`;
-    else if (s.sha256Hash !== undefined) label = `hash signer ${toHex(s.sha256Hash)}`;
+      label = `pre-authorized transaction signer ${StrKey.encodePreAuthTx(s.preAuthTx)}`;
+    else if (s.sha256Hash !== undefined)
+      label = `hash signer ${StrKey.encodeSha256Hash(s.sha256Hash)}`;
     else if (typeof s.ed25519SignedPayload === "string")
       label = `signed-payload signer ${s.ed25519SignedPayload}`;
     else label = "an unknown signer";
@@ -653,13 +666,6 @@ function describePreconditions(tx: Transaction): ClosePreconditions | null {
   return Object.keys(out).length === 0 ? null : out;
 }
 
-function stroopsToXlm(stroops: string): string {
-  const n = BigInt(stroops);
-  const whole = n / 10_000_000n;
-  const frac = (n % 10_000_000n).toString().padStart(7, "0");
-  return `${whole}.${frac}`;
-}
-
 // decode a signing request's transaction into a plain-language summary. returns
 // null for anything that isn't a classic transaction (fee-bumps have no ops).
 export function inspectClose(xdrStr: string, passphrase: string): CloseInspection | null {
@@ -694,7 +700,7 @@ export function inspectClose(xdrStr: string, passphrase: string): CloseInspectio
     mergeDestination: ctx.mergeDestination,
     timeBounds,
     feeStroops: tx.fee,
-    feeXlm: stroopsToXlm(tx.fee),
+    feeXlm: stroopsToDecimal(BigInt(tx.fee)),
     memo: describeMemo(tx),
     sequence: tx.sequence,
     preconditions: describePreconditions(tx),

@@ -20,6 +20,10 @@ import {
 } from "@stellar/stellar-sdk";
 
 import { CLOSE_MARKER_NAME } from "@/lib/metrics/close-marker";
+import {
+  decimalToStroops as toStroops,
+  stroopsToDecimal as fromStroops,
+} from "@/lib/stellar/amount";
 
 export interface SignerSnapshot {
   readonly signers: readonly { readonly key: string; readonly weight: number }[];
@@ -68,17 +72,6 @@ interface RawOp {
   readonly balanceId?: string;
   readonly asset?: AssetLike;
   readonly line?: AssetLike | LiquidityPoolAsset;
-}
-
-function toStroops(amount: string): bigint {
-  const m = /^(\d+)(?:\.(\d{1,7}))?$/.exec(amount.trim());
-  if (m === null) throw new Error(`bundle-freshness: unparseable amount "${amount}"`);
-  return BigInt(m[1]!) * 10_000_000n + BigInt((m[2] ?? "").padEnd(7, "0"));
-}
-
-function fromStroops(n: bigint): string {
-  const frac = (n % 10_000_000n).toString().padStart(7, "0");
-  return `${n / 10_000_000n}.${frac}`;
 }
 
 function assetKey(a: AssetLike): string {

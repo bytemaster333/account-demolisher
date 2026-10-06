@@ -200,6 +200,34 @@ describe("createPlan", () => {
     expect(getPlan(fourth.ok ? fourth.id : "")).not.toBeNull();
   });
 
+  it("at the cap gives way with the request that has collected the least weight", async () => {
+    // one signer below the threshold publishing new closes must not be able to
+    // push out a request other signers have already signed
+    const a = newAccount(3);
+    const [c1, , attacker] = a.cosigners;
+    loadAccount.mockResolvedValue(
+      accountResponse({ ...a, thresholds: { low: 1, med: 1, high: 4 } }),
+    );
+    const targetTx = buildClose(a, { memo: "target" });
+    const target = await createPlan("testnet", signedBy(targetTx, a.kp));
+    const targetId = target.ok ? target.id : "";
+    expect(addSignature(targetId, signedBy(targetTx, c1!)).ok).toBe(true);
+
+    const spam: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const res = await createPlan(
+        "testnet",
+        signedBy(buildClose(a, { memo: `spam${i}` }), attacker!),
+      );
+      expect(res.ok).toBe(true);
+      spam.push(res.ok ? res.id : "");
+    }
+    expect(getPlan(targetId)).not.toBeNull();
+    expect(TransactionBuilder.fromXdr(getPlan(targetId)!.xdr, NET).signatures).toHaveLength(2);
+    // the newest two spam requests remain next to the target
+    expect(spam.map((id) => getPlan(id) !== null)).toEqual([false, false, false, true, true]);
+  });
+
   it("drops an account's requests whose sequence number has already been used", async () => {
     const a = newAccount();
     loadAccount.mockResolvedValueOnce(accountResponse(a));
@@ -446,6 +474,52 @@ describe("worst-case bundle size (M-46)", () => {
       { params: Promise.resolve({ id }) },
     );
     expect(sign.status).toBe(200);
+  });
+});
+
+describe("verification cost per sign request (H-32)", () => {
+  // the stored envelope is public (GET /api/plan/[id]), so anyone can replay it
+  // to the sign route. each ed25519 check is about a millisecond of blocking
+  // cpu, so the relay must not check every signer against every signature.
+  const NEVER_MET = { low: 1, med: 1, high: 255 };
+
+  async function fullPlan(): Promise<{ id: string; tx: Transaction; a: AccountShape }> {
+    const a = newAccount(19);
+    loadAccount.mockResolvedValue(accountResponse({ ...a, thresholds: NEVER_MET }));
+    const tx = buildClose(a);
+    const res = await createPlan("testnet", signedBy(tx, a.kp));
+    const id = res.ok ? res.id : "";
+    for (let i = 0; i < 18; i++)
+      expect(addSignature(id, signedBy(tx, a.cosigners[i]!)).ok).toBe(true);
+    return { id, tx, a };
+  }
+
+  it("replaying the published envelope costs about one check per signature", async () => {
+    const { id } = await fullPlan();
+    const published = getPlan(id)!.xdr;
+    expect(TransactionBuilder.fromXdr(published, NET).signatures).toHaveLength(19);
+
+    const verify = vi.spyOn(Keypair.prototype, "verify");
+    try {
+      expect(addSignature(id, published).ok).toBe(true);
+      // 19 stored + 19 incoming signatures, each matched by its hint
+      expect(verify.mock.calls.length).toBeLessThanOrEqual(2 * 19);
+    } finally {
+      verify.mockRestore();
+    }
+    expect(getPlan(id)!.xdr).toBe(published);
+  });
+
+  it("adding one signature stays linear in the signature count", async () => {
+    const { id, tx, a } = await fullPlan();
+    const verify = vi.spyOn(Keypair.prototype, "verify");
+    try {
+      expect(addSignature(id, signedBy(tx, a.cosigners[18]!)).ok).toBe(true);
+      expect(verify.mock.calls.length).toBeLessThanOrEqual(3 * 20);
+    } finally {
+      verify.mockRestore();
+    }
+    expect(TransactionBuilder.fromXdr(getPlan(id)!.xdr, NET).signatures).toHaveLength(20);
   });
 });
 

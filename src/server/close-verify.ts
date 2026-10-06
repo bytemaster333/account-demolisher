@@ -2,6 +2,7 @@ import "server-only";
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { CLOSE_MARKER_NAME, CLOSE_MARKER_VALUE } from "@/lib/metrics/close-marker";
+import { decimalToStroops } from "@/lib/stellar/amount";
 import type { CloseOpCounts, VerifiedClose } from "@/server/metrics-store";
 
 // check a claimed close against Horizon before it is counted. the browser sends
@@ -86,9 +87,9 @@ interface Page<T> {
 // always sends a non-negative amount with up to 7 decimals; anything else throws
 // rather than being counted as some other number.
 export function xlmToStroops(amount: string): bigint {
-  const m = /^(\d+)(?:\.(\d{1,7}))?$/.exec(amount);
-  if (!m) throw new Error(`close-verify: unreadable amount "${amount}"`);
-  return BigInt(m[1]!) * 10_000_000n + BigInt((m[2] ?? "").padEnd(7, "0"));
+  const stroops = decimalToStroops(amount);
+  if (stroops < 0n) throw new Error(`close-verify: negative credited amount "${amount}"`);
+  return stroops;
 }
 
 function countOps(ops: readonly HorizonOp[]): CloseOpCounts {

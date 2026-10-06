@@ -26,16 +26,20 @@
 //    with a transaction that could never be submitted.
 //  - capacity is split per network and capped per closing account, so free
 //    testnet accounts can't fill the slots mainnet users need. a new request
-//    for an account replaces its oldest one at the cap: requests for the same
-//    account share a sequence number, so at most one of them can ever land.
+//    for an account replaces one of its requests at the cap, the one with the
+//    least signer weight collected: requests for the same account share a
+//    sequence number, so at most one of them can ever land. a signer can still
+//    push out a request holding no more weight than their own signature.
 
 import { StrKey, TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
 
 import { parseNetworkId, requireNetwork, type StellarNetwork } from "@/lib/config/networks";
 import {
   TooManySignaturesError,
+  type MergeResult,
+  type TrimResult,
   canonicalizeSignatures,
-  mergeSignatures,
+  mergeNewSignatures,
   signedSigners,
   trimToThreshold,
 } from "@/lib/multisig/partial-xdr";
@@ -97,6 +101,9 @@ interface PlanRecord {
   readonly account: string;
   readonly signers: readonly PlanSigner[];
   readonly thresholds: PlanThresholds;
+  // signer weight the stored envelope already carries, kept so a sign request
+  // doesn't re-verify every stored signature to learn it
+  weight: number;
   // the transaction's sequence number, to drop requests another transaction
   // from the account has made unsubmittable
   readonly sequence: bigint;
@@ -253,9 +260,9 @@ function decodeClose(xdr: string, passphrase: string): { tx: Transaction; source
 function mergeInto(rec: PlanRecord, incomingXdr: string): SignResult {
   const passphrase = requireNetwork(rec.network).passphrase;
   const required = requiredWeight(rec.thresholds);
-  let merged: string;
+  let merged: MergeResult;
   try {
-    merged = mergeSignatures(rec.xdr, [incomingXdr], passphrase, {
+    merged = mergeNewSignatures(rec.xdr, [incomingXdr], passphrase, {
       expectedSigners: signerKeysOf(rec),
     });
   } catch (e) {
@@ -264,17 +271,15 @@ function mergeInto(rec: PlanRecord, incomingXdr: string): SignResult {
     }
     return REJECTED;
   }
-  if (collectedWeight(rec.xdr, passphrase, rec.signers) >= required) {
-    return { ok: true, plan: toPublic(rec) };
-  }
+  // a replayed envelope (the stored one is public) or a signature past the
+  // threshold changes nothing, and must not wake every SSE listener
+  if (merged.added === 0 || rec.weight >= required) return { ok: true, plan: toPublic(rec) };
   // one envelope can bring several new signatures; keep only what reaches the
   // threshold, in envelope order, as core would
-  const trimmed = trimToThreshold(merged, passphrase, rec.signers, required).xdr;
-  const changed = trimmed !== rec.xdr;
-  rec.xdr = trimmed;
-  // only broadcast when a new signature landed (a re-submitted duplicate must
-  // not wake every SSE listener)
-  if (changed) notify(rec);
+  const trimmed = trimToThreshold(merged.xdr, passphrase, rec.signers, required);
+  rec.xdr = trimmed.xdr;
+  rec.weight = trimmed.weight;
+  notify(rec);
   return { ok: true, plan: toPublic(rec) };
 }
 
@@ -406,14 +411,14 @@ export async function createPlan(network: string, xdr: string): Promise<CreateRe
   // keep only verified signatures from the account's signers, one per key, so
   // junk or padding in the published envelope can't block later co-signers,
   // and no more of them than the threshold needs
-  let canonicalXdr: string;
+  let canonical: TrimResult;
   try {
-    canonicalXdr = trimToThreshold(
+    canonical = trimToThreshold(
       canonicalizeSignatures(xdr, net.passphrase, signerKeys),
       net.passphrase,
       signers,
       requiredWeight(thresholds),
-    ).xdr;
+    );
   } catch (e) {
     if (e instanceof TooManySignaturesError) {
       return { ok: false, code: "TOO_MANY_SIGNATURES", reason: e.message };
@@ -422,15 +427,17 @@ export async function createPlan(network: string, xdr: string): Promise<CreateRe
   }
 
   // the account's other requests: one whose sequence number is already used can
-  // never be submitted, and at the per-account cap the oldest gives way. the
-  // rest share this request's sequence number, so only one could land anyway.
+  // never be submitted, and at the per-account cap the one with the least signer
+  // weight collected gives way (the oldest among equals), so a single signer
+  // publishing new closes can't push out a request others have already signed.
+  // the rest share this request's sequence number, so only one could land anyway.
   const mine = [...plans].filter(([, r]) => r.network === net.id && r.account === decoded.source);
   const live: [string, PlanRecord][] = [];
   for (const [otherId, other] of mine) {
     if (other.sequence <= BigInt(accountSequence)) drop(otherId, other);
     else live.push([otherId, other]);
   }
-  live.sort(([, x], [, y]) => x.createdAt - y.createdAt);
+  live.sort(([, x], [, y]) => x.weight - y.weight || x.createdAt - y.createdAt);
   while (live.length >= MAX_PLANS_PER_ACCOUNT) {
     const [oldestId, oldest] = live.shift()!;
     drop(oldestId, oldest);
@@ -444,10 +451,11 @@ export async function createPlan(network: string, xdr: string): Promise<CreateRe
 
   plans.set(id, {
     network: net.id,
-    xdr: canonicalXdr,
+    xdr: canonical.xdr,
     account: decoded.source,
     signers,
     thresholds,
+    weight: canonical.weight,
     sequence,
     createdAt: now,
     expiresAt,
@@ -555,12 +563,14 @@ export function __seedPlanForTests(
   const passphrase = requireNetwork(network).passphrase;
   const tx = TransactionBuilder.fromXdr(xdr, passphrase) as Transaction;
   const id = Buffer.from(tx.hash()).toString("hex");
+  const signers = signerKeys.map((key) => ({ key, weight: 1 }));
   plans.set(id, {
     network,
     xdr,
     account: tx.source,
-    signers: signerKeys.map((key) => ({ key, weight: 1 })),
+    signers,
     thresholds,
+    weight: collectedWeight(xdr, passphrase, signers),
     sequence: BigInt(tx.sequence),
     createdAt,
     expiresAt: computeExpiry(tx, createdAt),

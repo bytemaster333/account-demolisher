@@ -8,6 +8,7 @@ import {
   Memo,
   Networks,
   Operation,
+  StrKey,
   TransactionBuilder,
   xdr,
 } from "@stellar/stellar-sdk";
@@ -16,6 +17,7 @@ import { describe, expect, it } from "vitest";
 import { TESTNET } from "@/lib/config/networks";
 import { closeMarkerOperations } from "@/lib/metrics/close-marker";
 import type { AccountAudit, AuditSigner } from "@/lib/types/account";
+import { pathKey } from "@/lib/types/plan";
 import {
   assessBundleability,
   buildCloseTransaction,
@@ -443,6 +445,38 @@ describe("inspectClose: full transaction facts and op details (L-91)", () => {
     expect(op.detail).toMatch(/pre-authorized transaction/i);
   });
 
+  it("describes the removal of every signer kind the close removes (M-17)", () => {
+    const preAuth = new Uint8Array(32).fill(7);
+    const hashX = new Uint8Array(32).fill(9);
+    const payload = StrKey.encodeSignedPayload(
+      new xdr.SignerKeyEd25519SignedPayload({
+        ed25519: Keypair.random().rawPublicKey(),
+        payload: Buffer.alloc(4, 1),
+      }).toXdr(),
+    );
+    const info = inspectClose(
+      build([
+        Operation.setOptions({ signer: { preAuthTx: preAuth, weight: 0 } }),
+        Operation.setOptions({ signer: { sha256Hash: hashX, weight: 0 } }),
+        Operation.setOptions({ signer: { ed25519SignedPayload: payload, weight: 0 } }),
+        Operation.accountMerge({ destination: dest }),
+      ]),
+      NET,
+    )!;
+    const [a, b, c] = info.operations;
+    for (const op of [a!, b!, c!]) {
+      expect(op.danger).toBeUndefined();
+      expect(op.unexpected).toBeUndefined();
+    }
+    // named the way Horizon lists the account's signers, so a co-signer can
+    // match each removal against the signer set
+    expect(a!.detail).toBe(
+      `Removes pre-authorized transaction signer ${StrKey.encodePreAuthTx(Buffer.from(preAuth))}.`,
+    );
+    expect(b!.detail).toBe(`Removes hash signer ${StrKey.encodeSha256Hash(Buffer.from(hashX))}.`);
+    expect(c!.detail).toBe(`Removes signed-payload signer ${payload}.`);
+  });
+
   it("flags flag, home domain and inflation changes as danger", () => {
     const info = inspectClose(
       build([
@@ -667,6 +701,28 @@ describe("liquidity pool shares cannot be bundled (L-94)", () => {
         sourceAccount: account,
       }),
     ).toThrow(/liquidity pool/i);
+
+    // open offers are cancelled in the same leading batch as the withdraw
+    const withOffer = {
+      ...audit,
+      offers: [
+        {
+          id: "42",
+          selling: { kind: "native" },
+          buying: { kind: "credit", code: "USD", issuer: issuerA },
+          amount: "1.0000000",
+          priceR: { n: 1, d: 1 },
+        },
+      ],
+    } as unknown as AccountAudit;
+    expect(() =>
+      buildCloseTransaction({
+        audit: withOffer,
+        destination: Keypair.random().publicKey(),
+        network: TESTNET,
+        sourceAccount: account,
+      }),
+    ).toThrow(/liquidity pool/i);
   });
 });
 
@@ -687,7 +743,9 @@ describe("buildCloseTransaction carries the reviewed choices (H-11, H-29, L-25)"
     };
   }
 
-  function audit(extra: { balances?: unknown[]; claimableBalances?: unknown[] } = {}) {
+  function audit(
+    extra: { balances?: unknown[]; claimableBalances?: unknown[]; data?: unknown[] } = {},
+  ) {
     return {
       accountId: kp.publicKey(),
       sequence: "1",
@@ -710,7 +768,7 @@ describe("buildCloseTransaction carries the reviewed choices (H-11, H-29, L-25)"
       ],
       signers: [{ key: kp.publicKey(), type: "ed25519_public_key", weight: 1 }],
       offers: [],
-      data: [],
+      data: extra.data ?? [],
       claimableBalances: extra.claimableBalances ?? [],
       poolShares: [],
       sponsorship: { numSponsoring: 0, numSponsored: 0, coverable: 0 },
@@ -818,6 +876,56 @@ describe("buildCloseTransaction carries the reviewed choices (H-11, H-29, L-25)"
         sourceAccount: source(),
       }),
     ).toThrow(/claimable balance/i);
+  });
+
+  // 110 data entries push the close past 100 operations; packing then moves
+  // claims that need no isolation into an earlier batch, which must not be
+  // blamed on a claimable balance
+  const manyEntries = Array.from({ length: 110 }, (_, i) => ({
+    name: `entry-${i}`,
+    value: "MQ==",
+  }));
+  const usdLine = {
+    asset: usd,
+    amount: "0.0000000",
+    limit: "1000.0000000",
+    buyingLiabilities: "0",
+    sellingLiabilities: "0",
+    isAuthorized: true,
+  };
+
+  it("reports the operation count for an oversized close with a native claim", () => {
+    const a = audit({ data: manyEntries, claimableBalances: [cb(ID1, { kind: "native" })] });
+    let message = "";
+    try {
+      buildCloseTransaction({
+        audit: a,
+        destination: Keypair.random().publicKey(),
+        network: TESTNET,
+        sourceAccount: source(),
+      });
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toMatch(/needs \d+ operations/);
+    expect(message).not.toMatch(/claimable balance/i);
+  });
+
+  it("reports the operation count when the claimed credit asset has a disposal", () => {
+    const a = audit({
+      data: manyEntries,
+      balances: [usdLine],
+      claimableBalances: [cb(ID1, usd)],
+    });
+    expect(() =>
+      buildCloseTransaction({
+        audit: a,
+        destination: Keypair.random().publicKey(),
+        network: TESTNET,
+        sourceAccount: source(),
+        disposal: { returnToIssuerAssetKeys: [pathKey(usd)] },
+      }),
+    ).toThrow(/needs \d+ operations/);
   });
 });
 

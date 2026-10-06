@@ -19,10 +19,8 @@ import { z } from "zod";
 
 import type { StellarNetwork } from "@/lib/config/networks";
 
-// the networks the app is built for. futurenet was dropped as a target, so an
-// event naming it is refused here rather than verified anywhere. the type stays
-// StellarNetwork so callers holding a network id need no narrowing; the schema
-// below is what rejects anything else.
+// the networks the app is built for. the schema below refuses an event naming
+// any other id, such as futurenet from an older build.
 export const METRIC_NETWORKS = ["mainnet", "testnet"] as const satisfies readonly StellarNetwork[];
 export type MetricNetwork = StellarNetwork;
 
