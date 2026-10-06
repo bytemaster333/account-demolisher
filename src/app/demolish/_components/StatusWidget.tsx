@@ -133,6 +133,7 @@ export function DemolishStatusWidget({
     network,
     mergeHash,
     ordered: planGroups.flatMap((g) => g.nodes),
+    ...(tree.prepareOnly ? { preparedUntil: tree.prepareOnly.unlocksAt } : {}),
   });
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const copyReceipt = async (): Promise<void> => {

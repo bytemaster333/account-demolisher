@@ -62,7 +62,20 @@ export function buildReceiptText(args: {
   readonly network: NetworkConfig;
   readonly mergeHash: string | null;
   readonly ordered: readonly PlanNode[];
+  // set when the run only prepared the close: the account is still open
+  readonly preparedUntil?: Date;
 }): string {
+  const steps = args.ordered
+    .filter((n) => n.kind !== "FinalClassicTx" && n.executed?.txHash)
+    .map((n) => `${nodeLabel(n)}: ${explorerTxUrl(args.network, n.executed!.txHash)}`);
+  if (args.preparedUntil !== undefined) {
+    return [
+      "Account Demolisher, close prepared (the account is still open)",
+      `Account: ${args.closedAccount}`,
+      `Come back on or after ${args.preparedUntil.toISOString().slice(0, 10)} to finish the close to ${args.destination}`,
+      ...steps,
+    ].join("\n");
+  }
   const lines = [
     "Account Demolisher, account closed",
     `Closed account: ${args.closedAccount}`,
@@ -70,9 +83,7 @@ export function buildReceiptText(args: {
       ? `Delivered ${args.deliveredXlm} XLM to ${args.destination}`
       : `Your remaining balance was sent to ${args.destination}`,
     args.mergeHash ? `Merge tx: ${explorerTxUrl(args.network, args.mergeHash)}` : "",
-    ...args.ordered
-      .filter((n) => n.kind !== "FinalClassicTx" && n.executed?.txHash)
-      .map((n) => `${nodeLabel(n)}: ${explorerTxUrl(args.network, n.executed!.txHash)}`),
+    ...steps,
   ];
   return lines.filter((l) => l.length > 0).join("\n");
 }

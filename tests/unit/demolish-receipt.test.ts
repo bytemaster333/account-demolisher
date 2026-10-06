@@ -118,4 +118,19 @@ describe("receipt text (M-34)", () => {
     expect(text).toContain(`Your remaining balance was sent to ${DEST}`);
     expect(text).not.toMatch(/\d+(\.\d+)? XLM to/);
   });
+
+  it("records a run that only prepared the close as not closed (M-25)", () => {
+    const text = buildReceiptText({
+      closedAccount: ACC,
+      destination: DEST,
+      deliveredXlm: null,
+      network: TESTNET,
+      mergeHash: null,
+      ordered: [],
+      preparedUntil: new Date("2026-10-24T00:00:00Z"),
+    });
+    expect(text).toMatch(/still open/);
+    expect(text).not.toMatch(/Closed account/);
+    expect(text).toContain("2026-10-24");
+  });
 });
