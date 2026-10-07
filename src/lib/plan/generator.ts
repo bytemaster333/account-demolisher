@@ -664,31 +664,61 @@ export function generatePlan(
   return buildPlanTree(nodes, extras);
 }
 
+// a backstop deposit with, when discovery read it, the latest unlock of its
+// still-locked queue entries (the q4w exp)
+type BackstopDeposit = ProtocolPositions["backstop"][number] & {
+  readonly latestQueueUnlocksAt?: Date;
+};
+
 // whether a plan for these positions can only prepare the close: a backstop
 // queue stays locked after it runs (new queues, and the part of an existing one
 // that has not unlocked), and the account must exist to receive it. callers can
 // ask before minting anything only a full close uses, such as a mediator flow.
-// discovery does not report when an existing queue entry expires, so it is dated
-// a full queue duration from now: the date is the latest it can unlock.
+// a queue this run creates is dated from now, though its lock only starts when
+// it lands (preparedUnlocksAt re-dates it after the run). an existing locked
+// queue is dated from the unlock discovery read, or else a full queue period
+// from now, which is the latest it can unlock.
 export function preparePlanFor(
   positions: ProtocolPositions,
   now: number = Date.now(),
 ): PreparePlan | undefined {
-  let unlocksAt: Date | null = null;
-  for (const bs of positions.backstop) {
-    const unlocked = bs.unlockedQueuedForWithdrawal ?? 0n;
-    if (bs.shares <= 0n && bs.queuedForWithdrawal <= unlocked) continue;
+  const later = (a: Date | undefined, b: Date): Date => (a === undefined || b > a ? b : a);
+  let newQueueUnlocksAt: Date | undefined;
+  let queuedUnlocksAt: Date | undefined;
+  let queuedEstimated = false;
+  for (const bs of positions.backstop as readonly BackstopDeposit[]) {
     const duration = bs.queueDurationSeconds ?? BACKSTOP_QUEUE_DURATION_SECONDS;
-    const queueEndsAt = new Date(now + duration * 1000);
-    if (unlocksAt === null || queueEndsAt > unlocksAt) unlocksAt = queueEndsAt;
+    const fullPeriod = new Date(now + duration * 1000);
+    if (bs.shares > 0n) newQueueUnlocksAt = later(newQueueUnlocksAt, fullPeriod);
+    const unlocked = bs.unlockedQueuedForWithdrawal ?? 0n;
+    if (bs.queuedForWithdrawal > unlocked) {
+      if (bs.latestQueueUnlocksAt === undefined) queuedEstimated = true;
+      queuedUnlocksAt = later(queuedUnlocksAt, bs.latestQueueUnlocksAt ?? fullPeriod);
+    }
   }
-  if (unlocksAt === null) return undefined;
+  const unlocksAt =
+    newQueueUnlocksAt === undefined ? queuedUnlocksAt : later(queuedUnlocksAt, newQueueUnlocksAt);
+  if (unlocksAt === undefined) return undefined;
+  const reason = [
+    "A Blend backstop withdrawal stays locked after this run, and the account must exist " +
+      "to receive it, so this run unwinds everything else and leaves the account open.",
+  ];
+  if (newQueueUnlocksAt !== undefined) {
+    reason.push(
+      "A withdrawal this run queues stays locked for the backstop's full queue period " +
+        "from the moment it lands on chain, so its unlock date counts from then.",
+    );
+  }
+  if (queuedEstimated) {
+    reason.push(
+      "The unlock of the withdrawal already queued could not be read, so it is dated a " +
+        "full queue period from now, the latest it can unlock.",
+    );
+  }
   return {
     unlocksAt,
-    reason:
-      "A Blend backstop withdrawal stays locked after this run, and the account must " +
-      "exist to receive it. This run queues it and unwinds everything else. It unlocks " +
-      "by the date shown at the latest; come back then to withdraw it and finish the close.",
+    ...(queuedUnlocksAt !== undefined ? { queuedUnlocksAt } : {}),
+    reason: reason.join(" "),
   };
 }
 

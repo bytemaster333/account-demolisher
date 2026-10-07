@@ -385,10 +385,13 @@ export type PlanNode =
 // a plan that can't merge yet: a backstop deposit stays locked after it runs,
 // so it queues and unwinds now and the close is finished in a later run
 export interface PreparePlan {
-  // latest moment a withdrawal this plan queues (or one already queued) unlocks.
-  // an existing queue entry is dated a full duration from now, so it can unlock
-  // earlier than this
+  // when the last withdrawal the plan leaves locked unlocks. a queue this run
+  // creates is dated from the review, but its lock starts when it lands on
+  // chain; preparedUnlocksAt re-dates it from the transaction built at execute
   readonly unlocksAt: Date;
+  // when the entries queued before this run unlock, if any are still locked:
+  // read by discovery, or a full queue period from now when it wasn't
+  readonly queuedUnlocksAt?: Date;
   readonly reason: string;
 }
 
@@ -533,6 +536,25 @@ export function topologicalOrder(tree: PlanTree): readonly PlanNode[] {
     );
   }
   return order;
+}
+
+// when a prepare-only plan's locked withdrawals unlock, from what it built: each
+// BackstopQueue carries the unlock of the transaction hydration last built for
+// it, which at execute is the one signed, so the date counts from the queue's
+// real start rather than the review. undefined for a plan that merges.
+export function preparedUnlocksAt(tree: PlanTree): Date | undefined {
+  const prepare = tree.prepareOnly;
+  if (prepare === undefined) return undefined;
+  const queues = [...tree.allNodes.values()].filter(
+    (n): n is BackstopQueueNode => n.kind === "BackstopQueue",
+  );
+  if (queues.length === 0) return prepare.unlocksAt;
+  let latest = prepare.queuedUnlocksAt;
+  for (const queue of queues) {
+    const ends = queue.metadata.queueEndsAt;
+    if (latest === undefined || ends > latest) latest = ends;
+  }
+  return latest;
 }
 
 // contract ids of the tokens the plan's DeFi exits pay into the account, in plan

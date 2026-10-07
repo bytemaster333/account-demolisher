@@ -2,7 +2,12 @@ import { describe, it, expect } from "vitest";
 import { Asset, Keypair, StrKey } from "@stellar/stellar-sdk";
 import { TESTNET } from "@/lib/config/networks";
 import { finalBatchOptions, generatePlan, preparePlanFor } from "@/lib/plan/generator";
-import { planExitPayoutTokens, topologicalOrder, type PlanTree } from "@/lib/plan/tree";
+import {
+  planExitPayoutTokens,
+  preparedUnlocksAt,
+  topologicalOrder,
+  type PlanTree,
+} from "@/lib/plan/tree";
 import type { AccountAudit } from "@/lib/types/account";
 import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
 
@@ -1078,10 +1083,6 @@ describe("PLCL-30: callers can tell a prepare-only plan before minting a mediato
     backstop: [{ poolId: POOL_ID, shares: 5n, queuedForWithdrawal: 0n }],
   });
 
-  it("says the date is the latest the queue unlocks", () => {
-    expect(preparePlanFor(locked, NOW)?.reason).toMatch(/at the latest/);
-  });
-
   it("reports the unlock date for positions that keep a locked queue, and nothing otherwise", () => {
     expect(preparePlanFor(locked, NOW)?.unlocksAt.getTime()).toBe(NOW + 17 * 24 * 60 * 60 * 1000);
     expect(preparePlanFor(emptyPositions(), NOW)).toBeUndefined();
@@ -1092,5 +1093,102 @@ describe("PLCL-30: callers can tell a prepare-only plan before minting a mediato
     expect(tree.prepareOnly).toBeDefined();
     expect(tree.allNodes.has("mediator-forward")).toBe(false);
     expect(tree.allNodes.has(id("backstop-queue", POOL_ID))).toBe(true);
+  });
+});
+
+describe("M-25: the prepare-only unlock date is honest", () => {
+  const NOW = 1_700_000_000_000;
+  const DAY = 24 * 60 * 60 * 1000;
+  const newQueue = emptyPositions({
+    backstop: [{ poolId: POOL_ID, shares: 5n, queuedForWithdrawal: 0n }],
+  });
+
+  // the queue lands when the run executes, after the review
+  it("does not call a new queue's review-time date the latest it unlocks", () => {
+    const prepare = preparePlanFor(newQueue, NOW);
+    expect(prepare?.unlocksAt.getTime()).toBe(NOW + 17 * DAY);
+    expect(prepare?.queuedUnlocksAt).toBeUndefined();
+    expect(prepare?.reason).not.toMatch(/the latest it can unlock/);
+    expect(prepare?.reason).toMatch(/from the moment it lands on chain/);
+  });
+
+  it("dates an already locked queue from the unlock discovery read", () => {
+    const readUnlock = new Date(NOW + 3 * DAY);
+    // discovery reads the latest exp of the locked queue entries
+    const deposit = {
+      poolId: POOL_ID,
+      shares: 0n,
+      queuedForWithdrawal: 800n,
+      unlockedQueuedForWithdrawal: 300n,
+      latestQueueUnlocksAt: readUnlock,
+    };
+    const prepare = preparePlanFor(emptyPositions({ backstop: [deposit] }), NOW);
+    expect(prepare?.unlocksAt).toEqual(readUnlock);
+    expect(prepare?.queuedUnlocksAt).toEqual(readUnlock);
+    expect(prepare?.reason).not.toMatch(/the latest it can unlock/);
+  });
+
+  it("dates a locked queue with no read unlock a full queue period out, as the latest", () => {
+    const prepare = preparePlanFor(
+      emptyPositions({
+        backstop: [
+          {
+            poolId: POOL_ID,
+            shares: 0n,
+            queuedForWithdrawal: 800n,
+            unlockedQueuedForWithdrawal: 300n,
+          },
+        ],
+      }),
+      NOW,
+    );
+    expect(prepare?.unlocksAt.getTime()).toBe(NOW + 17 * DAY);
+    expect(prepare?.queuedUnlocksAt?.getTime()).toBe(NOW + 17 * DAY);
+    expect(prepare?.reason).toMatch(/the latest it can unlock/);
+  });
+
+  it("takes the later of a new queue and an existing one", () => {
+    const deposit = {
+      poolId: POOL_ID,
+      shares: 5n,
+      queuedForWithdrawal: 10n,
+      unlockedQueuedForWithdrawal: 0n,
+      latestQueueUnlocksAt: new Date(NOW + 2 * DAY),
+    };
+    const prepare = preparePlanFor(emptyPositions({ backstop: [deposit] }), NOW);
+    expect(prepare?.unlocksAt.getTime()).toBe(NOW + 17 * DAY);
+    expect(prepare?.queuedUnlocksAt?.getTime()).toBe(NOW + 2 * DAY);
+  });
+
+  it("re-dates a new queue from the transaction built at execute", () => {
+    const tree = generatePlan(makeAudit(), newQueue, [], DEST, { now: NOW });
+    expect(preparedUnlocksAt(tree)?.getTime()).toBe(NOW + 17 * DAY);
+    const queue = tree.allNodes.get(id("backstop-queue", POOL_ID));
+    if (queue?.kind !== "BackstopQueue") throw new Error("expected the queue node");
+    // what hydration records when it builds the queue right before signing
+    const built = new Date(NOW + 17 * DAY + 40 * 60 * 1000);
+    (queue.metadata as { queueEndsAt: Date }).queueEndsAt = built;
+    expect(preparedUnlocksAt(tree)).toEqual(built);
+  });
+
+  it("keeps an existing queue's later unlock when the new queue unlocks first", () => {
+    const later = new Date(NOW + 20 * DAY);
+    const deposit = {
+      poolId: POOL_ID,
+      shares: 5n,
+      queuedForWithdrawal: 10n,
+      unlockedQueuedForWithdrawal: 0n,
+      latestQueueUnlocksAt: later,
+    };
+    const tree = generatePlan(makeAudit(), emptyPositions({ backstop: [deposit] }), [], DEST, {
+      now: NOW,
+    });
+    expect(preparedUnlocksAt(tree)).toEqual(later);
+  });
+
+  it("has no unlock date for a plan that merges", () => {
+    expect(preparedUnlocksAt(generatePlan(makeAudit(), emptyPositions(), [], DEST))).toBe(
+      undefined,
+    );
   });
 });
