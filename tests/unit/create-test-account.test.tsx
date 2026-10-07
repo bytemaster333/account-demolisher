@@ -12,9 +12,9 @@ vi.mock("@/lib/wallet/demo-account", async (importOriginal) => {
 });
 
 import { CreateTestAccountButton } from "@/components/wallet/CreateTestAccountButton";
-import { resolveNetwork } from "@/lib/config/networks";
+import { MAINNET, TESTNET } from "@/lib/config/networks";
 
-const network = resolveNetwork("testnet");
+const network = TESTNET;
 
 beforeEach(() => {
   runDemoSetup.mockReset();
@@ -70,7 +70,7 @@ describe("CreateTestAccountButton way back", () => {
 
 describe("CreateTestAccountButton network gate", () => {
   it("renders nothing off testnet, even for a network that has a friendbot", () => {
-    const mainnetWithFaucet = { ...resolveNetwork("mainnet"), friendbot: network.friendbot };
+    const mainnetWithFaucet = { ...MAINNET, friendbot: network.friendbot };
     render(
       <CreateTestAccountButton
         network={mainnetWithFaucet}

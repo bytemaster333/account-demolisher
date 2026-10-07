@@ -21,10 +21,10 @@ let rpcServer: object = {};
 vi.mock("@/lib/soroban/rpc-client", () => ({ getRpc: () => rpcServer }));
 
 import { AllowanceList } from "@/components/allowance-viewer/AllowanceList";
-import { resolveNetwork } from "@/lib/config/networks";
+import { TESTNET } from "@/lib/config/networks";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
 
-const network = resolveNetwork("testnet");
+const network = TESTNET;
 const C_OWNER = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
 const G_WALLET = "GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3";
 

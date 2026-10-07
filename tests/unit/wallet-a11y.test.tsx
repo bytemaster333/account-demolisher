@@ -8,7 +8,7 @@ vi.mock("@/lib/soroban/sep41", () => ({ balance: async () => 0n }));
 
 import { DemoStepList, type DemoStepRow } from "@/components/wallet/DemoStepList";
 import { StandaloneTokensCard } from "@/components/wallet/StandaloneTokensCard";
-import { resolveNetwork } from "@/lib/config/networks";
+import { TESTNET } from "@/lib/config/networks";
 
 afterEach(cleanup);
 
@@ -50,7 +50,7 @@ describe("StandaloneTokensCard manual add", () => {
         unreadable={[]}
         selected={[]}
         onChange={() => {}}
-        network={resolveNetwork("testnet")}
+        network={TESTNET}
         userPublicKey="GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3"
         isCex={false}
         onRebuild={() => {}}
