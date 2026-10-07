@@ -72,6 +72,8 @@ const ctl = vi.hoisted(() => ({
   resolvePaths: null as
     null | ((audit: unknown, network: unknown, opts: unknown) => Promise<unknown>),
   resolvePathCalls: [] as unknown[],
+  // the look-alike check over standalone tokens fails with this, when set
+  heldScamError: null as string | null,
 }));
 
 vi.mock("@/components/wallet/ConnectButton", () => ({
@@ -175,6 +177,16 @@ vi.mock("@/lib/soroban/sep41", async (importOriginal) => {
     ...orig,
     symbol: async () => ctl.tokenSymbol,
     name: async () => "Some token",
+  };
+});
+vi.mock("@/lib/safety/scam-heuristics", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("@/lib/safety/scam-heuristics")>();
+  return {
+    ...orig,
+    runHeldTokenScamHeuristics: (...args: Parameters<typeof orig.runHeldTokenScamHeuristics>) => {
+      if (ctl.heldScamError !== null) throw new Error(ctl.heldScamError);
+      return orig.runHeldTokenScamHeuristics(...args);
+    },
   };
 });
 vi.mock("@/lib/adapters/positions/direct", async () => {
@@ -324,6 +336,7 @@ beforeEach(() => {
   ctl.ledgerCloseMs = null;
   ctl.resolvePaths = null;
   ctl.resolvePathCalls = [];
+  ctl.heldScamError = null;
 });
 
 afterEach(() => {
@@ -1225,5 +1238,25 @@ describe("standalone tokens get the scam checks too (L-22)", () => {
     await configureAndStart();
     await screen.findByTestId("ack-scam");
     expect(screen.getByTestId("scam-token-notice").textContent).toMatch(/Hidden characters/);
+  });
+
+  it("says the check failed and keeps Continue locked until a rebuild checks again", async () => {
+    ctl.heldScamError = "bad token metadata";
+    ctl.discover = async () => ({
+      audit: makeAudit(),
+      positions: emptyPositions(),
+      heldTokens: [{ contractId: TOKEN_C, balance: 9n }],
+    });
+    connect();
+    render(<DemolishFlow />);
+    await configureAndStart();
+    const notice = await screen.findByTestId("acknowledge-rebuild-needed");
+    expect(notice.textContent).toMatch(/bad token metadata/);
+    expect((screen.getByTestId("acknowledge-continue") as HTMLButtonElement).disabled).toBe(true);
+
+    ctl.heldScamError = null;
+    fireEvent.click(screen.getByTestId("acknowledge-rebuild"));
+    await waitFor(() => expect(screen.queryByTestId("acknowledge-rebuild-needed")).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/Checking the standalone tokens/)).toBeNull());
   });
 });

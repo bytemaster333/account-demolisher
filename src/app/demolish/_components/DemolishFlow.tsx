@@ -975,14 +975,18 @@ export function DemolishFlow(): React.JSX.Element {
 
   // choices made on the Warnings step only reach the plan by a rebuild
   const claimSelectionDirty = claimSelection !== null && !sameSet(claimSelection, builtClaimList);
+  // a failed look-alike check over the standalone tokens checked none of them, so
+  // the close waits for a rebuild, which reads their names again
   const rebuildRequired =
-    runInput !== null &&
-    !multisigRequired &&
-    heldSelectionDirty(selectedHeldTokens, convertHeldTokensToXLM, runInput)
-      ? "Your token choices aren't in the plan yet. Rebuild the plan to apply them before continuing."
-      : runInput !== null && claimSelectionDirty
-        ? "Your choice of pending payments isn't in the plan yet. Rebuild the plan to apply it before continuing."
-        : null;
+    heldScam.error !== null
+      ? `The standalone tokens' names couldn't be checked for look-alikes (${heldScam.error}). Rebuild the plan to check them again.`
+      : runInput !== null &&
+          !multisigRequired &&
+          heldSelectionDirty(selectedHeldTokens, convertHeldTokensToXLM, runInput)
+        ? "Your token choices aren't in the plan yet. Rebuild the plan to apply them before continuing."
+        : runInput !== null && claimSelectionDirty
+          ? "Your choice of pending payments isn't in the plan yet. Rebuild the plan to apply it before continuing."
+          : null;
 
   const preflightView: PreflightView =
     preflight.status === "error"
