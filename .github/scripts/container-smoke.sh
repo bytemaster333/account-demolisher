@@ -55,9 +55,16 @@ const fail = (m) => { console.error(m); process.exit(1); };
   const sitemap = await (await fetch(base + '/sitemap.xml')).text();
   if (!sitemap.includes('<loc>${site_url}/demolish</loc>')) fail('sitemap does not carry ${site_url}');
 
+  // the app only runs behind a proxy and rate-limits by the address it appends
+  // to x-forwarded-for. the container is reached directly here, so the request
+  // carries that header itself, as caddy would.
   const visit = await fetch(base + '/api/metrics', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', origin: base },
+    headers: {
+      'content-type': 'application/json',
+      origin: base,
+      'x-forwarded-for': '203.0.113.7',
+    },
     body: JSON.stringify({ type: 'visit', page: 'landing', network: 'testnet' }),
   });
   if (visit.status !== 204) fail('POST /api/metrics returned ' + visit.status);
