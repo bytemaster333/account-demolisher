@@ -2,16 +2,18 @@
 //
 // assembleSubmittable takes the resource fee and the declared resources from the
 // simulation, and the simulation runs whatever the invoked contracts do. for an
-// untrusted token (revoke, held-token transfer, held-token convert) that is
-// attacker code: its transfer/approve can write large persistent entries with a
-// long TTL and the rent lands on the signer. a faulty or hostile rpc can inflate
-// the numbers too. so every Soroban tx is checked against a cap for its class
-// right before signing, and refused with the fee spelled out when it is over.
+// untrusted token (revoke, held-token transfer, held-token convert, a token in
+// a permissionless pool being exited) that is attacker code: its transfer or
+// approve can write large persistent entries with a long TTL and the rent lands
+// on the signer. a faulty or hostile rpc can inflate the numbers too. so every
+// Soroban tx is checked against a cap for its class right before signing, and
+// refused with the fee spelled out when it is over.
 //
 // resource fees (stroops) measured by simulating the app's own builders through
 // assembleSubmittable (with its instruction leeway), read-only. "archived" means
 // the call restores entries from the archive (protocol 23 does that inside the
-// call), "idle" that it pays rent to bump entries close to expiry.
+// call), "idle" that it pays rent to bump entries close to expiry. fees drift
+// with network state, so a re-run lands near these, not on them.
 //                                                  testnet     mainnet
 //   approve(0) revoke, live token                   16,321      16,321
 //   approve(0) revoke, token instance archived     300,759     936,287
@@ -25,47 +27,76 @@
 //   aquarius router withdraw, live state               -        65,319
 //   aquarius router withdraw, archived user state      -    15,993,759
 //   aquarius router claim, archived user state         -    16,305,049
-//   aquarius withdraw_position (concentrated)          -       178,136
-//   aquarius claim_all_position_fees                   -       137,855
+//   aquarius withdraw_position (concentrated)          -     4,517,897
+//   aquarius claim_all_position_fees                   -     6,317,225
 //   blend submit withdraw_collateral, live             -        35,811
 //   blend submit withdraw, archived Positions          -    11,763,314
 //   blend backstop queue_withdrawal, archived          -     2,524,898
-// the archived rows come from sweeps on 2026-10-06 and 2026-10-07: lp holders of
-// every archived mainnet soroswap pair (16) and of 70 archived testnet pairs,
-// every aquarius standard and stable pool (318) for a holder whose share balance
-// is archived, and archived blend Positions and backstop balances in every pinned
-// pool. the aquarius worst cases restore the pool's reward pages (one
-// RewardInvData page is 3,316 bytes), the blend ones up to 8 entries. idle state
-// sets the legitimate ceiling, not the common case.
-// 17 of the 71 testnet remove_liquidity runs cost 36,812,907 to 174,326,303 and
-// declared 14,700 to 53,284 write bytes: those checked restore an archived
+// the rows come from sweeps on 2026-10-06 and 2026-10-07: lp holders of every
+// archived mainnet soroswap pair (16) and of 70 archived testnet pairs, every
+// aquarius standard and stable pool (318) for a holder whose share balance is
+// archived, two position holders in each of the 37 pinned concentrated pools
+// (no archived entry among them), and archived blend Positions and backstop
+// balances in every pinned pool except YieldBloxV2, whose archived withdraws
+// failed simulation. the aquarius worst
+// cases restore the pool's reward pages (one RewardInvData page is 3,316 bytes),
+// the blend ones up to 8 entries.
+//
+// 17 of the 70 testnet remove_liquidity runs cost 36,812,907 to 174,084,607 and
+// declared 14,700 to 53,204 write bytes: those checked restore an archived
 // contract code entry (the token's or an old pair's wasm, 17 to 24 KB each). that
 // is the same shape a hostile token would use to push rent onto the signer, so
-// the untrusted classes refuse it rather than pay for it; the step fails with the
+// the bounded classes refuse it rather than pay for it; the step fails with the
 // fee spelled out. no mainnet pair needed that in the sweep.
-// untrusted-token (revoke, held-token transfer): about twice the largest
-// measured case, the archived-instance revoke. untrusted-convert (a held token
-// sold through the router, or a soroswap lp exit, both of which run token code
-// nobody vetted): about twice the archived-pair remove_liquidity. defi-exit
-// (allow-listed protocol code only): about twice the archived aquarius claim.
-// declared write bytes and read-write entries are bounded for both untrusted
-// classes (largest measured without a code restore: 3,128 bytes for the
-// archived one-hop convert, 10 entries).
+//
+// the classes, each capped at about twice its largest measured case:
+// untrusted-token (revoke, held-token transfer): the archived-instance revoke.
+// untrusted-convert (a held token sold through the router, or a soroswap lp
+// exit; both run token code nobody vetted): the archived-pair remove_liquidity.
+// pool-exit (aquarius standard, stable and concentrated pools; the protocol code
+// is pinned but the pools are permissionless, so a pool token can be anything):
+// the archived router claim. defi-exit (blend steps against the pinned pools and
+// backstops): the archived blend withdraw, with headroom left for the unmeasured
+// YieldBloxV2 case.
+// declared write bytes and read-write entries are bounded for the first three
+// (largest measured without a code restore: 3,128 bytes and 10 entries for the
+// archived one-hop convert; 15,984 bytes for a concentrated withdraw and 22
+// entries for another). within those bounds it is the resource-fee cap that
+// limits what a hostile pool token can add in rent: up to about 3.3 XLM for a
+// pool exit, where the worst legitimate one measured cost 1.6 XLM.
 
 import type { FeeBumpTransaction, Transaction } from "@stellar/stellar-sdk";
 
 import { SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
 
-export type SorobanFeeClass = "untrusted-token" | "untrusted-convert" | "defi-exit";
+export type SorobanFeeClass = "untrusted-token" | "untrusted-convert" | "pool-exit" | "defi-exit";
 
 export const SOROBAN_RESOURCE_FEE_CAPS: Readonly<Record<SorobanFeeClass, bigint>> = {
   "untrusted-token": 2_000_000n,
   "untrusted-convert": 14_000_000n,
+  "pool-exit": 33_000_000n,
   "defi-exit": 33_000_000n,
 };
 
 export const UNTRUSTED_TOKEN_MAX_WRITE_BYTES = 8_192;
 export const UNTRUSTED_TOKEN_MAX_READ_WRITE_ENTRIES = 16;
+export const POOL_EXIT_MAX_WRITE_BYTES = 32_768;
+export const POOL_EXIT_MAX_READ_WRITE_ENTRIES = 40;
+
+// the classes whose declared writes are bounded, and the bounds
+const WRITE_BOUNDS: Readonly<
+  Partial<Record<SorobanFeeClass, { readonly bytes: number; readonly entries: number }>>
+> = {
+  "untrusted-token": {
+    bytes: UNTRUSTED_TOKEN_MAX_WRITE_BYTES,
+    entries: UNTRUSTED_TOKEN_MAX_READ_WRITE_ENTRIES,
+  },
+  "untrusted-convert": {
+    bytes: UNTRUSTED_TOKEN_MAX_WRITE_BYTES,
+    entries: UNTRUSTED_TOKEN_MAX_READ_WRITE_ENTRIES,
+  },
+  "pool-exit": { bytes: POOL_EXIT_MAX_WRITE_BYTES, entries: POOL_EXIT_MAX_READ_WRITE_ENTRIES },
+};
 
 const STROOPS_PER_XLM = 10_000_000n;
 
@@ -135,19 +166,20 @@ export function assertSorobanFeeWithinCap(
       `total fee over the ${formatXlm(b.inclusionFee + cap)} XLM cap`,
     );
   }
-  if (feeClass === "untrusted-token" || feeClass === "untrusted-convert") {
-    if (b.writeBytes > UNTRUSTED_TOKEN_MAX_WRITE_BYTES) {
+  const bound = WRITE_BOUNDS[feeClass];
+  if (bound !== undefined) {
+    if (b.writeBytes > bound.bytes) {
       throw new SorobanFeeCapError(
         feeClass,
         b,
-        `the token asks to write ${b.writeBytes} bytes, over the ${UNTRUSTED_TOKEN_MAX_WRITE_BYTES}-byte limit`,
+        `the token asks to write ${b.writeBytes} bytes, over the ${bound.bytes}-byte limit`,
       );
     }
-    if (b.readWriteEntries > UNTRUSTED_TOKEN_MAX_READ_WRITE_ENTRIES) {
+    if (b.readWriteEntries > bound.entries) {
       throw new SorobanFeeCapError(
         feeClass,
         b,
-        `the token asks to modify ${b.readWriteEntries} ledger entries, over the limit of ${UNTRUSTED_TOKEN_MAX_READ_WRITE_ENTRIES}`,
+        `the token asks to modify ${b.readWriteEntries} ledger entries, over the limit of ${bound.entries}`,
       );
     }
   }
