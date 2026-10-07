@@ -111,25 +111,79 @@ export interface AllowanceScanOptions {
   readonly budgetMs?: number;
 }
 
+// any contract can emit approve(user, spender) events for spenders of its own
+// choosing, and its allowance() is its own code too, so it can answer non-zero
+// for every one of them: neither the event decoding nor the on-chain confirm
+// filters a fabricated row. an honest token approved for this many spenders
+// within the scan window is not a real use, so a contract's rows are cut to the
+// most recent ones here, which bounds the confirm reads, the revokes a close
+// plans and the rows the page renders. the cut is reported, never hidden.
+export const MAX_SPENDERS_PER_CONTRACT = 20;
+
+// a contract whose live approvals were cut to MAX_SPENDERS_PER_CONTRACT
+export interface AllowanceOverflow {
+  readonly contractId: string;
+  // distinct spenders that passed the scan's filters (by default: live and
+  // non-zero)
+  readonly spenders: number;
+  readonly kept: number;
+}
+
 export interface AllowanceScan {
   readonly records: AllowanceRecord[];
   // set when the scan did not cover the whole window; an allowance whose latest
   // approve falls in the uncovered part is missing or shows an older amount
   readonly incomplete: EventScanIncomplete | null;
+  // contracts whose rows were cut; empty when nothing was
+  readonly overflow: readonly AllowanceOverflow[];
 }
 
 // thrown by enumerateAllowances for a partial scan, carrying what was found
 export class AllowanceScanIncompleteError extends Error {
   readonly partial: readonly AllowanceRecord[];
   readonly incomplete: EventScanIncomplete;
-  constructor(partial: readonly AllowanceRecord[], incomplete: EventScanIncomplete) {
+  // contracts whose rows were also cut, if any
+  readonly overflow: readonly AllowanceOverflow[];
+  constructor(
+    partial: readonly AllowanceRecord[],
+    incomplete: EventScanIncomplete,
+    overflow: readonly AllowanceOverflow[] = [],
+  ) {
     super(
       `allowance scan incomplete (${incomplete.reason}): ledgers ${incomplete.rangeStartLedger}-${incomplete.coveredFromLedger - 1} not covered; ${incomplete.detail}`,
     );
     this.name = "AllowanceScanIncompleteError";
     this.partial = partial;
     this.incomplete = incomplete;
+    this.overflow = overflow;
   }
+}
+
+// thrown by enumerateAllowances when the scan covered the window but some
+// contract's rows were cut, carrying the rows that were kept
+export class AllowanceScanOverflowError extends Error {
+  readonly partial: readonly AllowanceRecord[];
+  readonly overflow: readonly AllowanceOverflow[];
+  // always null: a scan that is also incomplete throws AllowanceScanIncompleteError
+  readonly incomplete: null = null;
+  constructor(partial: readonly AllowanceRecord[], overflow: readonly AllowanceOverflow[]) {
+    super(describeAllowanceOverflow(overflow));
+    this.name = "AllowanceScanOverflowError";
+    this.partial = partial;
+    this.overflow = overflow;
+  }
+}
+
+// one sentence per cut contract, for the page and the close plan
+export function describeAllowanceOverflow(overflow: readonly AllowanceOverflow[]): string {
+  return overflow
+    .map(
+      (o) =>
+        `Token contract ${o.contractId} reports approvals for ${o.spenders} different spenders, ` +
+        `so only the ${o.kept} most recent are listed. Approval events can be fabricated by the ` +
+        `token itself, and no real use needs that many, so treat this token as hostile.`,
+    )
+    .join(" ");
 }
 
 // scan the user's sep-41 approve events and fold them into the latest allowance
@@ -173,23 +227,40 @@ export async function scanAllowances(
 
   // the scan returns events in on-chain order (ledger, tx, op, event), so the
   // last approve seen for a key is the one in force, even two in one ledger
-  const latest = new Map<string, AllowanceRecord>();
-  for (const ev of scan.events) {
+  const latest = new Map<string, { readonly rec: AllowanceRecord; readonly order: number }>();
+  scan.events.forEach((ev, order) => {
     const decoded = tryDecodeApproveEvent(ev, userAddress);
-    if (decoded === null) continue;
-    latest.set(`${decoded.contractId}|${decoded.spender}`, decoded);
-  }
+    if (decoded === null) return;
+    latest.set(`${decoded.contractId}|${decoded.spender}`, { rec: decoded, order });
+  });
 
   // stamp each record with its expiry and filter by default
-  const records: AllowanceRecord[] = [];
-  for (const rec of latest.values()) {
+  const byContract = new Map<string, { readonly rec: AllowanceRecord; readonly order: number }[]>();
+  for (const { rec, order } of latest.values()) {
     const expired = rec.live_until_ledger < currentLedger;
     if (expired && options.includeExpired !== true) continue;
     // approve(0) is how a revoke looks; it leaves nothing to show or revoke
     if (rec.amount === 0n && options.includeZero !== true) continue;
-    records.push({ ...rec, expired });
+    const rows = byContract.get(rec.contractId) ?? [];
+    rows.push({ rec: { ...rec, expired }, order });
+    byContract.set(rec.contractId, rows);
   }
-  return { records, incomplete: scan.incomplete };
+
+  // the cap counts every row that would be returned, so expired rows kept on
+  // request cannot flood the list either
+  const records: AllowanceRecord[] = [];
+  const overflow: AllowanceOverflow[] = [];
+  for (const [contractId, rows] of byContract) {
+    if (rows.length <= MAX_SPENDERS_PER_CONTRACT) {
+      for (const r of rows) records.push(r.rec);
+      continue;
+    }
+    const kept = [...rows].sort((a, b) => b.order - a.order).slice(0, MAX_SPENDERS_PER_CONTRACT);
+    kept.sort((a, b) => a.order - b.order);
+    for (const r of kept) records.push(r.rec);
+    overflow.push({ contractId, spenders: rows.length, kept: kept.length });
+  }
+  return { records, incomplete: scan.incomplete, overflow };
 }
 
 // enumerate active sep-41 allowances the user granted. a scan that could not
@@ -204,7 +275,10 @@ export async function enumerateAllowances(
 ): Promise<AllowanceRecord[]> {
   const scan = await scanAllowances(server, userAddress, currentLedger, scanWindowLedgers, options);
   if (scan.incomplete !== null) {
-    throw new AllowanceScanIncompleteError(scan.records, scan.incomplete);
+    throw new AllowanceScanIncompleteError(scan.records, scan.incomplete, scan.overflow);
+  }
+  if (scan.overflow.length > 0) {
+    throw new AllowanceScanOverflowError(scan.records, scan.overflow);
   }
   return scan.records;
 }

@@ -2,8 +2,11 @@ import { afterEach, describe, it, expect, vi } from "vitest";
 import { Address, StrKey, nativeToScVal, xdr, type rpc } from "@stellar/stellar-sdk";
 import {
   AllowanceScanIncompleteError,
+  AllowanceScanOverflowError,
   CONFIRM_CONCURRENCY,
+  MAX_SPENDERS_PER_CONTRACT,
   confirmAllowancesOnChain,
+  describeAllowanceOverflow,
   enumerateAllowances,
   scanAllowances,
   withoutConfirmedZero,
@@ -330,5 +333,84 @@ describe("confirming allowances on chain", () => {
       { ...record(3), onChainAmount: null },
     ];
     expect(withoutConfirmedZero(rows).map((r) => r.onChainAmount)).toEqual([4n, null]);
+  });
+});
+
+describe("approvals one contract reports for many spenders", () => {
+  const currentLedger = 100_000;
+  const spender = (i: number): string => StrKey.encodeEd25519PublicKey(Buffer.alloc(32, i + 1));
+
+  // any contract can emit approve(victim, spender) for spenders of its choosing,
+  // and its own allowance() can answer non-zero for each, so neither the event
+  // nor the on-chain confirm filters them out
+  function flood(count: number, contractSeed = 9): FakeEvent[] {
+    return Array.from({ length: count }, (_, i) =>
+      approveEvent(10_000 + i, vecValue(1n, currentLedger + 100), {
+        contractSeed,
+        spender: spender(i),
+      }),
+    );
+  }
+
+  it("keeps the most recent spenders per contract and reports the rest", async () => {
+    const honest = approveEvent(5_000, vecValue(7n, currentLedger + 100), { contractSeed: 3 });
+    const server = serverWithEvents([honest, ...flood(MAX_SPENDERS_PER_CONTRACT + 30)]);
+
+    const scan = await scanAllowances(server, USER, currentLedger, currentLedger);
+
+    const hostile = StrKey.encodeContract(Buffer.alloc(32, 9));
+    const kept = scan.records.filter((r) => r.contractId === hostile);
+    expect(kept).toHaveLength(MAX_SPENDERS_PER_CONTRACT);
+    // the newest approvals win
+    expect(Math.min(...kept.map((r) => r.lastSeenLedger))).toBe(10_030);
+    expect(scan.records.filter((r) => r.contractId !== hostile).map((r) => r.amount)).toEqual([7n]);
+    expect(scan.overflow).toEqual([
+      {
+        contractId: hostile,
+        spenders: MAX_SPENDERS_PER_CONTRACT + 30,
+        kept: MAX_SPENDERS_PER_CONTRACT,
+      },
+    ]);
+    expect(scan.incomplete).toBeNull();
+  });
+
+  it("does not count revoked or expired approvals toward the cap", async () => {
+    const revoked = Array.from({ length: 40 }, (_, i) =>
+      approveEvent(20_000 + i, vecValue(0n, currentLedger + 100), {
+        contractSeed: 9,
+        spender: spender(100 + i),
+      }),
+    );
+    const server = serverWithEvents([...flood(MAX_SPENDERS_PER_CONTRACT), ...revoked]);
+    const scan = await scanAllowances(server, USER, currentLedger, currentLedger);
+    expect(scan.records).toHaveLength(MAX_SPENDERS_PER_CONTRACT);
+    expect(scan.overflow).toEqual([]);
+  });
+
+  // the allowances page asks for expired rows too
+  it("caps expired rows when they are asked for", async () => {
+    const expired = Array.from({ length: MAX_SPENDERS_PER_CONTRACT + 5 }, (_, i) =>
+      approveEvent(30_000 + i, vecValue(1n, 50), { contractSeed: 9, spender: spender(i) }),
+    );
+    const server = serverWithEvents(expired);
+    const scan = await scanAllowances(server, USER, currentLedger, currentLedger, {
+      includeExpired: true,
+    });
+    expect(scan.records).toHaveLength(MAX_SPENDERS_PER_CONTRACT);
+    expect(scan.overflow.map((o) => o.spenders)).toEqual([MAX_SPENDERS_PER_CONTRACT + 5]);
+  });
+
+  it("refuses to pass a capped list off as complete", async () => {
+    const server = serverWithEvents(flood(MAX_SPENDERS_PER_CONTRACT + 1));
+    const err = await enumerateAllowances(server, USER, currentLedger, currentLedger).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(AllowanceScanOverflowError);
+    const overflow = err as AllowanceScanOverflowError;
+    expect(overflow.partial).toHaveLength(MAX_SPENDERS_PER_CONTRACT);
+    expect(overflow.incomplete).toBeNull();
+    expect(describeAllowanceOverflow(overflow.overflow)).toMatch(
+      new RegExp(`${MAX_SPENDERS_PER_CONTRACT + 1} different spenders`),
+    );
   });
 });
