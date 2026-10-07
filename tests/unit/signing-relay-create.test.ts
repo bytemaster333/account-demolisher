@@ -488,7 +488,10 @@ describe("worst-case bundle size (M-46)", () => {
   });
 });
 
-describe("verification cost per sign request (H-32)", () => {
+// building each 19-signature plan takes 18 sign requests of pure-JS ed25519 checks, so
+// like the 20-signature tests above these need more than the default timeout
+// when the suite runs in parallel. the bound under test is the verify count.
+describe("verification cost per sign request (H-32)", { timeout: 30_000 }, () => {
   // the stored envelope is public (GET /api/plan/[id]), so anyone can replay it
   // to the sign route. each ed25519 check is about a millisecond of blocking
   // cpu, so the relay must not check every signer against every signature.
