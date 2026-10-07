@@ -9,7 +9,7 @@ vi.mock("server-only", () => ({}));
 vi.mock("@/server/close-verify", () => ({ verifyCloseTx: vi.fn() }));
 
 import { verifyCloseTx } from "@/server/close-verify";
-import { __resetMetricsStoreForTests, getMetricsStore } from "@/server/metrics-store";
+import { __resetMetricsStoreForTests } from "@/server/metrics-store";
 import { GET, POST } from "@/app/api/metrics/route";
 
 const TOKEN = "unit-test-admin-token-000";
@@ -111,15 +111,18 @@ describe("POST /api/metrics", () => {
   });
 
   it("does not answer ok once the network's daily close cap is reached", async () => {
-    const store = getMetricsStore();
+    // today's 200 testnet closes are already in the ledger the store loads
     const now = Date.now();
-    for (let i = 0; i < 200; i++) {
-      await store.recordClose({
-        ...okClose.close,
-        txHash: i.toString(16).padStart(64, "0"),
-        recordedAt: now,
-      });
-    }
+    const ledger = Array.from(
+      { length: 200 },
+      (_, i) =>
+        JSON.stringify({
+          ...okClose.close,
+          txHash: i.toString(16).padStart(64, "0"),
+          recordedAt: now,
+        }) + "\n",
+    ).join("");
+    await fs.writeFile(path.join(dir, "closes.jsonl"), ledger);
     vi.mocked(verifyCloseTx).mockResolvedValue({
       ...okClose,
       close: { ...okClose.close, txHash: "b".repeat(64) },
@@ -148,12 +151,14 @@ describe("POST /api/metrics", () => {
   });
 
   it("rate-limits a single client after the bucket empties (429)", async () => {
+    // the limiter runs before the body is read, so a malformed body uses up the
+    // bucket the same way a visit does, without a durable write per request
     const ip = "203.0.113.7";
     const hit = (): Promise<Response> =>
       POST(
         new Request("http://x/api/metrics", {
           method: "POST",
-          body: JSON.stringify({ type: "visit", page: "landing" }),
+          body: "{",
           headers: { "content-type": "application/json", "x-forwarded-for": ip },
         }),
       );
