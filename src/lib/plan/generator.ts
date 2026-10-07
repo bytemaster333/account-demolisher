@@ -485,29 +485,13 @@ export function generatePlan(
   }
   const prepareOnly = preparePlanFor(positions, backstopNow);
 
-  // an exchange close forwards only XLM. a token an exit pays out that is not a
-  // classic balance of this account (the backstop's LP token, a pool token with
-  // no trustline here) could not be swept anywhere, and the merge guard would
-  // stop the close after every exit had run. refused here, before anything runs;
-  // a prepare-only run keeps the account open, so its payouts stay with it.
   if (useMediator && prepareOnly === undefined) {
-    const payouts = [...exitPayoutTokens(positions), ...backstopPayoutTokens];
-    if (payouts.length > 0) {
-      const net = requireNetwork("the DeFi exits of an exchange close");
-      const classic = classicSacIds(audit, net.passphrase, exitLines.byToken.keys());
-      const stuck = [...new Set(payouts)].filter((t) => !classic.has(t));
-      if (stuck.length > 0) {
-        const comet = backstopPayoutTokens[0];
-        const names = stuck.map((t) =>
-          t === comet ? `the Blend backstop's BLND-USDC LP token ${shortAddr(t)}` : shortAddr(t),
-        );
-        throw new Error(
-          `An exchange close can only forward XLM, and the DeFi exits in this plan pay out ` +
-            `tokens this account does not hold as classic balances (${names.join(", ")}). ` +
-            `Close to your own Stellar address instead, or exit those positions first.`,
-        );
-      }
-    }
+    assertExchangeCloseCanRun(audit, positions, {
+      ...(network !== undefined ? { network } : {}),
+      ...(opts.exitTrustlineGaps !== undefined
+        ? { exitTrustlineGaps: opts.exitTrustlineGaps }
+        : {}),
+    });
   }
 
   // standalone SEP-41 tokens: sweep each to the destination before the merge so a
@@ -686,6 +670,49 @@ export function generatePlan(
   }
 
   return buildPlanTree(nodes, extras);
+}
+
+// an exchange close forwards only XLM. a token an exit pays out that is not a
+// classic balance of this account (the backstop's LP token, a pool token with no
+// trustline here and none the plan opens) could not be swept anywhere, and the
+// merge guard would stop the close after every exit had run. generatePlan
+// refuses it before anything runs, and callers can ask the same before minting
+// a mediator flow. only for a plan that merges: a prepare-only run keeps the
+// account open, so its payouts stay with it (see preparePlanFor).
+export function assertExchangeCloseCanRun(
+  audit: AccountAudit,
+  positions: ProtocolPositions,
+  opts: {
+    readonly network?: NetworkConfig;
+    readonly exitTrustlineGaps?: readonly ExitTrustlineGap[];
+  } = {},
+): void {
+  const unlockedQueues = positions.backstop.some(
+    (bs) => (bs.unlockedQueuedForWithdrawal ?? 0n) > 0n,
+  );
+  const exitTokens = exitPayoutTokens(positions);
+  const gaps = opts.exitTrustlineGaps ?? [];
+  if (exitTokens.length === 0 && !unlockedQueues && gaps.length === 0) return;
+  const network = opts.network;
+  if (network === undefined) {
+    throw new Error(
+      "generatePlan: opts.network is required to plan the DeFi exits of an exchange close",
+    );
+  }
+  const comet = unlockedQueues ? blendCometId(network) : undefined;
+  const payouts = [...exitTokens, ...(comet !== undefined ? [comet] : [])];
+  const lines = exitTrustlineNodes(positions, gaps, network).byToken.keys();
+  const classic = classicSacIds(audit, network.passphrase, lines);
+  const stuck = [...new Set(payouts)].filter((t) => !classic.has(t));
+  if (stuck.length === 0) return;
+  const names = stuck.map((t) =>
+    t === comet ? `the Blend backstop's BLND-USDC LP token ${shortAddr(t)}` : shortAddr(t),
+  );
+  throw new Error(
+    `An exchange close can only forward XLM, and the DeFi exits in this plan pay out ` +
+      `tokens this account does not hold as classic balances (${names.join(", ")}). ` +
+      `Close to your own Stellar address instead, or exit those positions first.`,
+  );
 }
 
 // a backstop deposit with, when discovery read it, the latest unlock of its

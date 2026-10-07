@@ -1,7 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { Asset, Keypair, StrKey } from "@stellar/stellar-sdk";
 import { TESTNET } from "@/lib/config/networks";
-import { finalBatchOptions, generatePlan, preparePlanFor } from "@/lib/plan/generator";
+import {
+  assertExchangeCloseCanRun,
+  finalBatchOptions,
+  generatePlan,
+  preparePlanFor,
+} from "@/lib/plan/generator";
 import {
   planExitPayoutTokens,
   preparedUnlocksAt,
@@ -1049,6 +1054,17 @@ describe("M-25: an exchange close can't take exit payouts it can't forward", () 
   it("refuses before any step runs when the backstop withdraw pays out LP tokens", () => {
     expect(() => generatePlan(makeAudit(), unlocked(500n), [], DEST, exchange)).toThrow(
       /exchange close can only forward XLM.*BLND-USDC LP token CA5UTU\.\.\.DWDM/,
+    );
+  });
+
+  // the preview asks before it mints a mediator flow the refused plan never uses
+  it("gives callers the same refusal before a mediator is minted", () => {
+    expect(() =>
+      assertExchangeCloseCanRun(makeAudit(), unlocked(500n), { network: TESTNET }),
+    ).toThrow(/exchange close can only forward XLM.*BLND-USDC LP token/);
+    expect(() => assertExchangeCloseCanRun(makeAudit(), emptyPositions())).not.toThrow();
+    expect(() => assertExchangeCloseCanRun(makeAudit(), unlocked(500n))).toThrow(
+      /opts\.network is required/,
     );
   });
 
