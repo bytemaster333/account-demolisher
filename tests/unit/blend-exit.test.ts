@@ -319,13 +319,20 @@ describe("Blend v1 pools get finite request amounts (H-23)", () => {
     expect(submitRequest(built.transaction).amount).toBe(5_0050000n);
   });
 
-  it("keeps i128::MAX for v2 withdrawals, which the v2 pool caps", async () => {
+  // the v2 pool converts the request to bTokens before capping it at the
+  // position: to_b_token_up = ceil(amount * 1e12 / b_rate) in i128
+  // (blend-contracts-v2 pool/src/pool/actions.rs apply_withdraw, reserve.rs)
+  function toBTokenUp(amount: bigint, bRate: bigint): bigint {
+    return (amount * 10n ** 12n + bRate - 1n) / bRate;
+  }
+
+  async function v2WithdrawAmount(bRate: bigint, bTokens: bigint): Promise<bigint> {
     const v2 = makePool({
       version: "V2",
       poolId: POOL_V2,
       backstop: BLEND_BACKSTOP_MAINNET_ID,
-      reserves: [{ assetId: XLM_SAC, index: 0, dRate: V2_RATE_1, bRate: V2_RATE_1 }],
-      user: { collateral: [[0, 10n]] },
+      reserves: [{ assetId: XLM_SAC, index: 0, dRate: V2_RATE_1, bRate }],
+      user: { collateral: [[0, bTokens]] },
     });
     const built = await buildBlendWithdrawTx(
       MAINNET,
@@ -334,7 +341,28 @@ describe("Blend v1 pools get finite request amounts (H-23)", () => {
       account([{ balance: "10.0000000" }]),
       deps({ poolLoader: loaderFor(v2) }),
     );
-    expect(submitRequest(built.transaction).amount).toBe(I128_MAX);
+    expect(built.amount).toBe(submitRequest(built.transaction).amount);
+    return built.amount;
+  }
+
+  it("asks a v2 pool for more than the position, which the pool caps", async () => {
+    for (const bRate of [V2_RATE_1, 1_213_896_311_078n, 5n * V2_RATE_1]) {
+      const amount = await v2WithdrawAmount(bRate, 10n);
+      expect(toBTokenUp(amount, bRate)).toBeGreaterThan(10n ** 30n);
+      expect(toBTokenUp(amount, bRate)).toBeLessThanOrEqual(I128_MAX);
+    }
+  });
+
+  it("never overflows the bToken conversion of a v2 pool whose b_rate fell below 1", async () => {
+    // YieldBloxV2's XLM and USDC reserves on 2026-10-07: i128::MAX trapped
+    // there (UnreachableCodeReached in submit) for every holder
+    for (const bRate of [475_616_154_671n, 980_386_811_687n, 1n]) {
+      const amount = await v2WithdrawAmount(bRate, 21_336_569_771n);
+      expect(toBTokenUp(amount, bRate)).toBeLessThanOrEqual(I128_MAX);
+      // even if b_rate halves again before inclusion
+      expect(toBTokenUp(amount, bRate / 2n > 0n ? bRate / 2n : 1n)).toBeLessThanOrEqual(I128_MAX);
+      expect(toBTokenUp(amount, bRate)).toBeGreaterThan(21_336_569_771n);
+    }
   });
 
   it("buildExitSequence decides the version from chain, not from the caller's label", async () => {

@@ -173,9 +173,9 @@ export async function buildBlendRepayTx(
 }
 
 // withdraw the user's whole collateral or supply position in one asset. the v2
-// pool caps a withdraw at the position, so i128::MAX drains it exactly; the v1
-// pool overflows on i128::MAX before that cap, so it gets the buffered
-// underlying amount, which it caps the same way.
+// pool caps a withdraw at the position, so a request far above it drains it
+// exactly (see v2WithdrawRequest); the v1 pool overflows on huge amounts before
+// that cap, so it gets the buffered underlying amount, which it caps the same way.
 export async function buildBlendWithdrawTx(
   network: NetworkConfig,
   target: {
@@ -205,7 +205,10 @@ export async function buildBlendWithdrawTx(
       `no ${target.bucket} position in ${target.asset} in Blend pool ${target.poolId}`,
     );
   }
-  const amount = pool.version === "V2" ? I128_MAX : withBuffer(reserve.toAssetFromBToken(bTokens));
+  const amount =
+    pool.version === "V2"
+      ? v2WithdrawRequest(reserve)
+      : withBuffer(reserve.toAssetFromBToken(bTokens));
   const transaction = await buildSubmitTx(
     network,
     server,
@@ -661,6 +664,25 @@ async function readBackstop(
     backstopLoader.loadUser(sdkNetwork, backstop, poolId, userPublicKey),
   );
   return { backstop, state };
+}
+
+// the v2 pool turns a withdraw request into bTokens, ceil(amount * 1e12 /
+// b_rate) in i128, before it caps the burn at the position (blend-contracts-v2
+// pool/src/pool/actions.rs apply_withdraw). once bad debt pushes b_rate below
+// 1e12, i128::MAX overflows there and the call traps: on 2026-10-07 every
+// YieldBloxV2 withdraw did. so ask for an amount that converts to at most a
+// quarter of i128::MAX, which leaves room for b_rate to halve before inclusion
+// and is still far above any real position.
+export function v2WithdrawRequest(reserve: Reserve): bigint {
+  const bRate = reserve.data.bRate;
+  if (bRate <= 0n) {
+    throw new Error(
+      `Blend reserve ${reserve.assetId} has a zero bToken rate; nothing can be withdrawn`,
+    );
+  }
+  const scalar = 10n ** BigInt(reserve.rateDecimals);
+  const amount = (I128_MAX / 4n / scalar) * bRate;
+  return amount < I128_MAX ? amount : I128_MAX;
 }
 
 function withBuffer(amount: bigint): bigint {
