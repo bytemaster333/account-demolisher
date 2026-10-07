@@ -42,7 +42,7 @@ export const MAX_TIME_BOUND_SECONDS = 3600;
 //   op0 = mediator-sourced native payment -> destination D
 //   op1 = mediator accountMerge           -> destination D (same D)
 // carrying the committed memo, a bounded fee and no precondition beyond a short
-// timebound. For an exchange the destination is a shared omnibus address and
+// timebound. for an exchange the destination is a shared omnibus address and
 // the memo decides whose account gets credited, so the memo is bound as tightly
 // as the destination.
 export function validateMediatorForwardEnvelope(
@@ -124,7 +124,7 @@ export function validateMediatorForwardEnvelope(
     };
   }
   // the payout (op0) and the reserve-reclaiming merge (op1) must go to the SAME
-  // final destination. Without this, a crafted envelope could pay the mediator's
+  // final destination. without this, a crafted envelope could pay the mediator's
   // balance to an attacker while merging the reserve elsewhere.
   if (op0.destination !== op1.destination) {
     return {

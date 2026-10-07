@@ -11,24 +11,24 @@ import {
 } from "@/lib/mediator/forward-terms";
 import { getMediatorSecret } from "@/server/server-env";
 
-// Ephemeral per-flow mediator keys.
+// ephemeral per-flow mediator keys.
 //
-// The mediator co-signs a 2-op "forward" (native payout + accountMerge) so a
+// the mediator co-signs a 2-op "forward" (native payout + accountMerge) so a
 // close-out can reach a memo-required exchange. MEDIATOR_SECRET is only a master
 // key: each close-out gets its own throwaway keypair, derived from a random
 // per-flow nonce, and an HMAC flow token carries that nonce together with the
-// terms the forward must meet (network, destination, deposit memo). The honest
+// terms the forward must meet (network, destination, deposit memo). the honest
 // sign route only co-signs a forward that matches those terms.
 //
-// What this does not protect against: whoever holds MEDIATOR_SECRET (the
+// what this does not protect against: whoever holds MEDIATOR_SECRET (the
 // operator, or anyone who compromises the server) can derive every mediator key
-// and move any balance that is sitting in a mediator. The server also serves the
-// app code. Exposure is bounded by how long funds sit in a mediator, not by
-// cryptography. Script running in the page can mint its own flow, so the token
+// and move any balance that is sitting in a mediator. the server also serves the
+// app code. exposure is bounded by how long funds sit in a mediator, not by
+// cryptography. script running in the page can mint its own flow, so the token
 // binding does not help against a compromised page either; it limits what a
 // token that leaks on its own (storage, logs) can be used for.
 //
-// Derivation is stateless (no per-flow seed storage), so it survives across
+// derivation is stateless (no per-flow seed storage), so it survives across
 // server instances, and an expired token can be re-issued for the same nonce.
 
 // long enough to build, sign and submit a close; an expired token is not a dead
@@ -40,7 +40,7 @@ const KEY_DERIVATION_LABEL = "mediator-flow-key";
 const TOKEN_MAC_LABEL = "mediator-flow-token-v2";
 
 // the 32-byte ed25519 seed of MEDIATOR_SECRET, used purely as the HMAC master
-// key, never as a signing key. Memoized.
+// key, never as a signing key. memoized.
 let cachedMaster: Buffer | null = null;
 
 function getMasterSecret(): Buffer {

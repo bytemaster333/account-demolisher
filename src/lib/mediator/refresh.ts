@@ -1,10 +1,10 @@
-// Re-point an already-built plan's mediator nodes at a freshly minted flow.
+// re-point an already-built plan's mediator nodes at a freshly minted flow.
 //
-// The preview mints a flow so the plan can show and simulate the merge into a
-// mediator. The orchestrator mints again at execute time and swaps the new flow
-// in here, so the token in use is younger than the one the user reviewed. The
+// the preview mints a flow so the plan can show and simulate the merge into a
+// mediator. the orchestrator mints again at execute time and swaps the new flow
+// in here, so the token in use is younger than the one the user reviewed. the
 // mediator account is internal and ephemeral; the reviewed destination and memo
-// do not change. The token still expires 15 minutes after this mint, which can
+// do not change. the token still expires 15 minutes after this mint, which can
 // fall inside a long close; the forward renews an expired token through the
 // re-issue route, so a late forward is not stranded by it.
 
@@ -75,10 +75,10 @@ function repointBatches(batches: unknown, from: string, to: string): unknown {
   }));
 }
 
-// Re-point FinalClassicTx (funds and merges INTO the mediator) and
-// MediatorForward (sweeps OUT of it, under the flow token) at `flow`. Both must
+// re-point FinalClassicTx (funds and merges INTO the mediator) and
+// MediatorForward (sweeps OUT of it, under the flow token) at `flow`. both must
 // carry the SAME mediatorPublicKey or the merge and the forward would target
-// different accounts. Returns true when the tree is a mediator close (a forward
+// different accounts. returns true when the tree is a mediator close (a forward
 // node exists) and was updated; false otherwise (nothing to do).
 export function applyRefreshedMediatorFlow(tree: MediatorFlowTree, flow: RefreshedFlow): boolean {
   const forwardNode = tree.allNodes.get(MEDIATOR_FORWARD_NODE_ID);

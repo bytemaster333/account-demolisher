@@ -49,10 +49,10 @@ export interface PendingForwardBannerProps {
   readonly onResolved?: () => void;
 }
 
-// Recovery for exchange closes that were interrupted between the merge into the
-// mediator and the forward out of it. Every stored record for the connected
+// recovery for exchange closes that were interrupted between the merge into the
+// mediator and the forward out of it. every stored record for the connected
 // account is checked against the chain before anything is shown, so the banner
-// only asks for action when the balance really sits in a mediator. It re-reads
+// only asks for action when the balance really sits in a mediator. it re-reads
 // the records whenever they change (in this tab or another), rechecks rows that
 // had nothing to show yet, and stays hidden while a close for this account is
 // running somewhere.
@@ -186,7 +186,7 @@ export function PendingForwardBanner({
   );
 }
 
-// a record is written when a close starts, well before its merge. Until it is
+// a record is written when a close starts, well before its merge. until it is
 // this old, "no merge yet" may just mean the close is still on its way there;
 // nothing has moved, so there is no reason to speak up early.
 const NOT_MERGED_QUIET_MS = 15 * 60 * 1000;
