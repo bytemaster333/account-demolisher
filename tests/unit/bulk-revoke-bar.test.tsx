@@ -14,8 +14,7 @@ vi.mock("@/lib/soroban/revoke", () => ({
 }));
 
 import { BulkRevokeBar } from "@/components/allowance-viewer/BulkRevokeBar";
-import type { NetworkConfig } from "@/lib/config/networks";
-import { resolveNetwork } from "@/lib/config/networks";
+import { TESTNET, type NetworkConfig } from "@/lib/config/networks";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import type { Connector } from "@/lib/wallet/connector";
 import { useNetworkStore } from "@/stores/network";
@@ -47,7 +46,7 @@ function deferred(): { promise: Promise<string>; resolve: () => void } {
   return { promise, resolve };
 }
 
-const network: NetworkConfig = resolveNetwork("testnet");
+const network: NetworkConfig = TESTNET;
 const connectorRef = { current: {} as Connector };
 
 function renderBar() {

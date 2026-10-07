@@ -5,11 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // the wallet kit is a browser extension bridge that doesn't load under happy-dom;
 // the fake records whether the header tore the session down
-const kit = { disconnects: 0 };
+const kit = { disconnects: 0, failure: null as Error | null };
 vi.mock("@/lib/wallet/kit", () => ({
   restoreKitSession: async () => null,
   disconnectKit: async () => {
     kit.disconnects += 1;
+    if (kit.failure !== null) throw kit.failure;
   },
 }));
 vi.mock("@/lib/wallet/connector", () => ({ WalletKitConnector: class {} }));
@@ -49,6 +50,7 @@ beforeEach(() => {
   if (typeof window.confirm !== "function") window.confirm = () => true;
   window.localStorage.clear();
   kit.disconnects = 0;
+  kit.failure = null;
   useCloseBusy.setState({ busy: false });
   useNetworkStore.setState({ networkId: "testnet", lockReason: null });
   useWalletStore.setState({ publicKey: null, connectorKind: null });
@@ -133,5 +135,65 @@ describe("AppShell while a close runs", () => {
     fireEvent.click(screen.getByTestId("wallet-disconnect"));
     await settle();
     expect(useWalletStore.getState().publicKey).toBeNull();
+  });
+});
+
+describe("AppShell when the wallet can't be let go of", () => {
+  const RELAY = "WalletConnect could not reach its relay. Check your connection and try again.";
+
+  it("disconnects the app and shows why the wallet may still be connected", async () => {
+    kit.failure = new Error(RELAY);
+    useWalletStore.setState({ publicKey: G, connectorKind: "kit" });
+    renderShell();
+    await settle();
+    fireEvent.click(screen.getByTestId("wallet-menu-trigger"));
+    fireEvent.click(screen.getByTestId("wallet-disconnect"));
+    await settle();
+    expect(useWalletStore.getState().publicKey).toBeNull();
+    const notice = screen.getByTestId("wallet-teardown-notice").textContent ?? "";
+    expect(notice).toMatch(/could not be fully disconnected/);
+    expect(notice).toContain(RELAY);
+  });
+
+  it("says the same after a network switch", async () => {
+    kit.failure = new AggregateError(
+      [new Error("relay down"), new Error("Freighter refused")],
+      "the wallet could not be disconnected",
+    );
+    useNetworkStore.setState({ networkId: "mainnet" });
+    useWalletStore.setState({ publicKey: G, connectorKind: "kit" });
+    window.localStorage.setItem("demolisher.mainnetAck", "1");
+    renderShell();
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: /Select network/ }));
+    fireEvent.click(screen.getByRole("option", { name: /TESTNET/ }));
+    await settle();
+    expect(useNetworkStore.getState().networkId).toBe("testnet");
+    expect(useWalletStore.getState().publicKey).toBeNull();
+    const notice = screen.getByTestId("wallet-teardown-notice").textContent ?? "";
+    expect(notice).toContain("relay down. Freighter refused.");
+  });
+
+  it("lets the user dismiss the notice", async () => {
+    kit.failure = new Error(RELAY);
+    useWalletStore.setState({ publicKey: G, connectorKind: "kit" });
+    renderShell();
+    await settle();
+    fireEvent.click(screen.getByTestId("wallet-menu-trigger"));
+    fireEvent.click(screen.getByTestId("wallet-disconnect"));
+    await settle();
+    fireEvent.click(screen.getByTestId("wallet-teardown-dismiss"));
+    expect(screen.queryByTestId("wallet-teardown-notice")).toBeNull();
+  });
+
+  it("shows nothing when the wallet lets go", async () => {
+    useWalletStore.setState({ publicKey: G, connectorKind: "kit" });
+    renderShell();
+    await settle();
+    fireEvent.click(screen.getByTestId("wallet-menu-trigger"));
+    fireEvent.click(screen.getByTestId("wallet-disconnect"));
+    await settle();
+    expect(useWalletStore.getState().publicKey).toBeNull();
+    expect(screen.queryByTestId("wallet-teardown-notice")).toBeNull();
   });
 });

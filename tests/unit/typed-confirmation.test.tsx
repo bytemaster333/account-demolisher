@@ -136,4 +136,55 @@ describe("TypedConfirmation memo", () => {
     expect(memo).toContain("Memo (TEXT): deposit-42");
     expect(memo).toMatch(/mediator/);
   });
+
+  // same rendering as /sign and CollectSignatures, so the final gate cannot
+  // show a reordered or partly invisible memo
+  it("strips bidi and zero-width characters and says they were there", () => {
+    render(
+      <TypedConfirmation
+        destination={DEST}
+        memo={{ type: "text", value: "12‮34​5" }}
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(screen.getByTestId("typed-confirmation-memo").textContent).toBe(
+      "Memo (TEXT): 12345 (contains hidden characters)",
+    );
+  });
+});
+
+describe("TypedConfirmation prepare-only run", () => {
+  afterEach(cleanup);
+
+  const DEST = "GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3";
+
+  it("says a normal close sends everything and closes the account", () => {
+    render(
+      <TypedConfirmation destination={DEST} delayMs={0} onConfirm={() => {}} onCancel={() => {}} />,
+    );
+    const summary = screen.getByTestId("typed-confirmation-summary").textContent ?? "";
+    expect(summary).toMatch(/permanently closes the account/);
+    expect(screen.getByRole("heading").textContent).toBe("Confirm closing your account");
+    expect(screen.getByTestId("typed-confirmation-confirm").textContent).toBe("Close account");
+  });
+
+  it("does not claim a prepare-only run closes the account or sends funds", () => {
+    render(
+      <TypedConfirmation
+        destination={DEST}
+        delayMs={0}
+        prepareOnly
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    const summary = screen.getByTestId("typed-confirmation-summary").textContent ?? "";
+    expect(summary).not.toMatch(/permanently closes/);
+    expect(summary).toMatch(/only prepares the close/);
+    expect(summary).toMatch(/stays open/);
+    expect(summary).toMatch(/nothing is sent to the address below yet/);
+    expect(screen.getByRole("heading").textContent).toBe("Confirm preparing the close");
+    expect(screen.getByTestId("typed-confirmation-confirm").textContent).toBe("Prepare the close");
+  });
 });

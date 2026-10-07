@@ -8,6 +8,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 
 import { AddressActions } from "@/components/ui";
+import { hasHiddenCharacters, safeDisplay } from "@/lib/safe-display";
 import type { ClassicMemo } from "@/lib/types/plan";
 
 export interface TypedConfirmationProps {
@@ -20,6 +21,9 @@ export interface TypedConfirmationProps {
   readonly memo?: ClassicMemo | null | undefined;
   // an exchange close: the mediator puts the memo on its forward to the exchange
   readonly memoViaMediator?: boolean;
+  // the run only prepares the close (a locked backstop queue): nothing merges,
+  // so the dialog must not say the account closes or the funds leave
+  readonly prepareOnly?: boolean;
   // delay before confirm enables. defaults to 4000ms
   readonly delayMs?: number;
   // receives the last-4 chars the user re-typed; the flow machine re-checks it
@@ -37,6 +41,7 @@ export function TypedConfirmation({
   explorerUrl,
   memo,
   memoViaMediator = false,
+  prepareOnly = false,
   delayMs = DEFAULT_DELAY_MS,
   onConfirm,
   onCancel,
@@ -192,7 +197,7 @@ export function TypedConfirmation({
               color: "var(--fg)",
             }}
           >
-            Confirm closing your account
+            {prepareOnly ? "Confirm preparing the close" : "Confirm closing your account"}
           </h2>
           <button
             type="button"
@@ -225,6 +230,7 @@ export function TypedConfirmation({
           </button>
         </div>
         <p
+          data-testid="typed-confirmation-summary"
           style={{
             margin: "0 0 14px",
             fontSize: 14.5,
@@ -233,8 +239,9 @@ export function TypedConfirmation({
             color: "var(--fg)",
           }}
         >
-          This sends all your funds to the address below and permanently closes the account. It
-          cannot be undone.
+          {prepareOnly
+            ? "This run only prepares the close. Your account stays open and nothing is sent to the address below yet. Run the close again after the withdrawal unlocks to finish it."
+            : "This sends all your funds to the address below and permanently closes the account. It cannot be undone."}
         </p>
         <div
           style={{
@@ -279,8 +286,9 @@ export function TypedConfirmation({
               <>
                 Memo ({memo.type.toUpperCase()}):{" "}
                 <span style={{ font: "600 13px/1.5 'Geist Mono', monospace", color: "var(--fg)" }}>
-                  {memo.value}
+                  {safeDisplay(memo.value)}
                 </span>
+                {hasHiddenCharacters(memo.value) ? " (contains hidden characters)" : null}
                 {memoViaMediator ? " (the mediator adds it to its forward to the exchange)" : null}
               </>
             )}
@@ -428,7 +436,7 @@ export function TypedConfirmation({
             >
               <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
             </svg>
-            Close account
+            {prepareOnly ? "Prepare the close" : "Close account"}
           </button>
         )}
         {delayElapsed && !matches ? (

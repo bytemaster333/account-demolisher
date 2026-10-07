@@ -271,6 +271,17 @@ describe("/sign signer set", () => {
     expect(screen.getByRole("alert").textContent).toMatch(/not a signer/);
   });
 
+  // a request evicted from the relay and published again carries a fresh
+  // snapshot under the same id; the open tab must count against that one
+  it("counts against the signer set of the latest relay frame", async () => {
+    await openPage();
+    expect(screen.getByTestId("sign-progress").textContent).toBe("1 of 3");
+    act(() => relay.update?.(relayPlan(T2, [owner, a, b])));
+    await settle();
+    expect(screen.getByTestId("sign-progress").textContent).toBe("1 of 2");
+    expect(screen.queryAllByText(c.publicKey()).length).toBe(0);
+  });
+
   it("refuses a request whose relay snapshot is for another account", async () => {
     relay.plan = { ...relayPlan(T3, [owner, a]), account: Keypair.random().publicKey() };
     await openPage();
@@ -372,6 +383,24 @@ describe("/sign wallet signing", () => {
     const notice = screen.getByTestId("sign-teardown-notice").textContent ?? "";
     expect(notice).toMatch(/Your signature was recorded/);
     expect(notice).toMatch(/refused to disconnect/);
+  });
+
+  // the kit throws an AggregateError when several closes fail; its summary
+  // names no wallet and no reason
+  it("lists each reason when more than one part of the teardown failed", async () => {
+    wallet.keypair = a;
+    wallet.teardownError = new AggregateError(
+      [new Error("relay down"), new Error("Freighter refused")],
+      "the wallet could not be disconnected",
+    );
+    relay.submitSignature.mockResolvedValue({ ...relay.plan!, xdr: signedBy(owner, a) });
+    await openPage();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("sign-wallet"));
+    });
+    await settle();
+    const notice = screen.getByTestId("sign-teardown-notice").textContent ?? "";
+    expect(notice).toContain("relay down. Freighter refused.");
   });
 });
 

@@ -13,7 +13,7 @@ vi.mock("@/lib/soroban/revoke", () => ({
 }));
 
 import { RevokeButton } from "@/components/allowance-viewer/RevokeButton";
-import { resolveNetwork } from "@/lib/config/networks";
+import { TESTNET } from "@/lib/config/networks";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import type { Connector } from "@/lib/wallet/connector";
 
@@ -25,7 +25,7 @@ const record: AllowanceRecord = {
   lastSeenLedger: 1,
   expired: false,
 };
-const network = resolveNetwork("testnet");
+const network = TESTNET;
 const testId = "revoke-button-CTOKEN-GSPENDER";
 
 function deferred(): {
