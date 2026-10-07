@@ -12,6 +12,7 @@
 // cannot.
 
 import type { Connector } from "./connector";
+import { reportTeardownError } from "./teardown-report";
 
 let active: Connector | null = null;
 
@@ -27,29 +28,50 @@ export function getActiveConnector(): Connector | null {
 // apart:
 //   1. the in-memory connector (cleared here),
 //   2. the display store (cleared through clearStore), and
-//   3. the kit's persisted selection (disconnectKit).
+//   3. the kit's persisted selection and wallet sessions (disconnectKit).
 // clearing only the store would leave the extension still authorizing the site,
-// and a later connect could quietly reuse that session. a kit connector forwards
-// its own disconnect() to the kit; disconnectKit() also covers a kit selection
-// left with no live connector. the ui is disconnected before the wallet is told,
-// so a wallet whose teardown fails cannot keep the app connected.
-export async function disconnectSession(clearStore: () => void): Promise<void> {
+// and a later connect could quietly reuse that session. a kit connector's own
+// disconnect() is the kit teardown; for any other connector, or none,
+// disconnectKit() still covers a kit selection left behind.
+//
+// the ui is disconnected before the wallet is told, so a wallet whose teardown
+// fails cannot keep the app connected. that failure (an extension refusing, or
+// the walletconnect relay unreachable so the pairing may still be live on the
+// phone) goes to onTeardownError for the caller to show, or to the console when
+// the caller passes none. the returned promise always resolves.
+export async function disconnectSession(
+  clearStore: () => void,
+  onTeardownError: (error: unknown) => void = logTeardownError,
+): Promise<void> {
   const conn = active;
   active = null;
   clearStore();
+  const failures: unknown[] = [];
   try {
     await conn?.disconnect();
-  } catch {
-    // ignore: a wallet whose teardown throws (e.g. WalletConnect already gone)
-    // must not block the disconnect the user asked for
+  } catch (e) {
+    failures.push(e);
   }
-  try {
-    // dynamic import so the browser-only wallet-kit (and its Freighter dep) is
-    // pulled in only at disconnect time, not by every module that reads the
-    // active connector (get/set stay dependency-free and unit-testable).
-    const { disconnectKit } = await import("./kit");
-    await disconnectKit();
-  } catch {
-    // ignore: best-effort forget of the kit's persisted selection
+  if (conn?.kind !== "kit") {
+    try {
+      // dynamic import so the browser-only wallet-kit (and its Freighter dep) is
+      // pulled in only at disconnect time, not by every module that reads the
+      // active connector (get/set stay dependency-free and unit-testable).
+      const { disconnectKit } = await import("./kit");
+      await disconnectKit();
+    } catch (e) {
+      failures.push(e);
+    }
   }
+  if (failures.length === 1) reportTeardownError(onTeardownError, failures[0]);
+  if (failures.length > 1) {
+    reportTeardownError(
+      onTeardownError,
+      new AggregateError(failures, "the wallet could not be disconnected"),
+    );
+  }
+}
+
+function logTeardownError(error: unknown): void {
+  console.error("the wallet could not be disconnected", error);
 }

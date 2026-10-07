@@ -55,6 +55,10 @@ vi.mock("@creit.tech/stellar-wallets-kit/modules/wallet-connect", async (importO
     async disconnect() {
       for (const topic of [...wc.sessions]) await this.closeSession(topic);
     }
+    // the sign client's own session list, which outlives a failed close
+    async getSessions() {
+      return [...wc.sessions].map((topic) => ({ topic }));
+    }
   }
   return { ...original, WalletConnectModule: CountingWalletConnectModule };
 });
@@ -91,7 +95,11 @@ let kitApi: typeof import("@creit.tech/stellar-wallets-kit");
 beforeAll(async () => {
   process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID = "test-project-id";
   kitApi = await import("@creit.tech/stellar-wallets-kit");
-});
+  // transform our wrappers once here, so the first test is not the one that pays
+  // for it (on a loaded machine that alone ran past the 5s test timeout)
+  await import("@/lib/wallet/kit");
+  await import("@/lib/wallet/connector");
+}, 60_000);
 
 // a fresh page: our kit wrapper is re-imported (its module state starts empty)
 // and the kit's session state is what it reads from localStorage on load
@@ -386,6 +394,121 @@ describe("a failed wallet teardown never costs the signature or its error", () =
     expect(wc.disconnects).toEqual(["topic-cosigner"]);
     expect(kitApi.activeAddress.value).toBe(A);
     expect(kitApi.selectedModuleId.value).toBe("freighter");
+  });
+});
+
+describe("a teardown report that throws does not cost the signature", () => {
+  it("returns the signature and logs the reporter's own failure", async () => {
+    const page = await pageLoad({ [ADDRESS]: A, [MODULE]: "freighter" });
+    page.kit.getKit(TESTNET);
+    const xbull = kitApi.activeModules.value.find((m) => m.productId === "xbull")!;
+    const refused = new Error("extension refused to disconnect");
+    vi.spyOn(xbull, "disconnect").mockRejectedValue(refused);
+    const reporterBroke = new Error("setState after unmount");
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const result = await page.connector.withScopedKitSession(
+      TESTNET,
+      async () => {
+        pickInModal("xbull", B);
+        return "signed";
+      },
+      () => {
+        throw reporterBroke;
+      },
+    );
+    expect(result).toBe("signed");
+    expect(logged).toHaveBeenCalledOnce();
+    expect(logged.mock.calls[0]).toContain(reporterBroke);
+    expect(logged.mock.calls[0]).toContain(refused);
+    expect(kitApi.activeAddress.value).toBe(A);
+  });
+});
+
+describe("a user disconnect closes the wallet and reports what failed", () => {
+  function emptySession() {
+    expect(kitApi.activeAddress.value).toBeUndefined();
+    expect(kitApi.selectedModuleId.value).toBeUndefined();
+    expect(kitApi.wcSessionPaths.value).toEqual([]);
+    expect(window.localStorage.getItem(ADDRESS)).toBeNull();
+    expect(window.localStorage.getItem(MODULE)).toBeNull();
+  }
+
+  it("waits for the extension to disconnect and rejects with its failure", async () => {
+    const { kit } = await pageLoad({ [ADDRESS]: A, [MODULE]: "xbull" });
+    kit.getKit(TESTNET);
+    const xbull = kitApi.activeModules.value.find((m) => m.productId === "xbull")!;
+    const refused = new Error("extension refused to disconnect");
+    vi.spyOn(xbull, "disconnect").mockRejectedValue(refused);
+    await expect(kit.disconnectKit()).rejects.toBe(refused);
+    emptySession();
+  });
+
+  it("disconnects the extension through the connector too", async () => {
+    const { kit, connector } = await pageLoad({ [ADDRESS]: A, [MODULE]: "xbull" });
+    kit.getKit(TESTNET);
+    await new connector.WalletKitConnector(TESTNET).disconnect();
+    expect(extensionDisconnects).toEqual(["xbull"]);
+    emptySession();
+  });
+
+  it("ends a WalletConnect session restored from the last visit", async () => {
+    const { kit } = await pageLoad({ [ADDRESS]: A, [MODULE]: "wallet_connect" });
+    await kit.restoreKitSession(MAINNET);
+    kitApi.wcSessionPaths.value = [{ publicKey: A, topic: "topic-app" }];
+    wc.sessions.add("topic-app");
+    expect(wc.constructed).toBe(0);
+    await kit.disconnectKit();
+    await settle();
+    expect(wc.constructed).toBe(1);
+    expect(wc.disconnects).toEqual(["topic-app"]);
+    expect(wc.sessions.size).toBe(0);
+    emptySession();
+  });
+
+  it("rejects when the WalletConnect relay refuses the disconnect", async () => {
+    const { kit } = await pageLoad({ [ADDRESS]: A, [MODULE]: "wallet_connect" });
+    await kit.restoreKitSession(MAINNET);
+    kitApi.wcSessionPaths.value = [{ publicKey: A, topic: "topic-app" }];
+    wc.sessions.add("topic-app");
+    wc.failTopic = "topic-app";
+    await expect(kit.disconnectKit()).rejects.toThrow("Failed to publish payload");
+    await settle();
+    emptySession();
+  });
+
+  it("ends a co-signer's WalletConnect pairing whose earlier close failed", async () => {
+    const { kit, connector } = await pageLoad({});
+    wc.failTopic = "topic-cosigner";
+    const teardown = vi.fn();
+    await connector.withScopedKitSession(
+      TESTNET,
+      () => pickWalletConnect(B, "topic-cosigner"),
+      teardown,
+    );
+    await settle();
+    expect(teardown).toHaveBeenCalledOnce();
+    expect([...wc.sessions]).toEqual(["topic-cosigner"]);
+    wc.failTopic = null;
+    await kit.disconnectKit();
+    await settle();
+    expect(wc.sessions.size).toBe(0);
+    emptySession();
+  });
+
+  it("tells the kit's listeners, as the kit's own disconnect does", async () => {
+    const { kit, connector } = await pageLoad({ [ADDRESS]: A, [MODULE]: "freighter" });
+    kit.getKit(TESTNET);
+    const heard = vi.fn();
+    const unsubscribe = kitApi.StellarWalletsKit.on(kitApi.KitEventType.DISCONNECT, heard);
+    try {
+      await kit.disconnectKit();
+      expect(heard).toHaveBeenCalledOnce();
+      // a co-signature with no app session before also ends disconnected
+      await connector.withScopedKitSession(TESTNET, async () => pickInModal("xbull", B), vi.fn());
+      expect(heard).toHaveBeenCalledTimes(2);
+    } finally {
+      unsubscribe();
+    }
   });
 });
 

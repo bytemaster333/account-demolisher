@@ -20,9 +20,9 @@ const isDev = process.env.NODE_ENV !== "production";
 //
 // the demolish page runs its close in an xstate actor whose execute step must
 // not run twice at once. enabling cacheComponents or react <Activity> here lets
-// an actor stop and restart re-invoke that step while the first run continues,
-// so it needs the execute in-flight guard in
-// src/lib/orchestrator/page-flow-machine.ts to be in place first.
+// an actor stop and restart re-invoke that step while the first run continues.
+// the in-flight guard in src/lib/orchestrator/actors/execute.ts refuses that
+// second run, so it has to stay if either is turned on.
 
 const config: NextConfig = {
   reactStrictMode: true,

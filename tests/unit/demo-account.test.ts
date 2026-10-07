@@ -249,7 +249,9 @@ describe("demo soroban submission (L-110)", () => {
     "swap_exact_tokens_for_tokens",
     swapArgs(demo.publicKey()),
   );
-  const fast = { timeoutMs: 50, intervalMs: 1 };
+  // a generous deadline: each poll answers at once, so a passing run never waits
+  // for it, and a busy machine cannot run out the clock between two polls
+  const fast = { timeoutMs: 10_000, intervalMs: 1 };
 
   it("fails at once with the real status when the RPC says TRY_AGAIN_LATER", async () => {
     const getTransaction = vi.fn();

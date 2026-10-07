@@ -43,20 +43,9 @@ const config = [
     },
   },
   {
-    // files that still carry the pattern, each owned by another part of the
-    // remediation. remove a file from this list once it uses errorMessage().
-    files: [
-      "src/app/demolish/_lib/signing-bundle.ts",
-      "src/app/api/mediator/_shared/http.ts",
-      "src/lib/plan/simulator.ts",
-      "src/lib/plan/hydration.ts",
-      "src/lib/multisig/plan-client.ts",
-      "src/lib/adapters/aquarius/concentrated.ts",
-      "src/lib/adapters/aquarius/pools.ts",
-      "src/lib/adapters/blend/client.ts",
-      "src/lib/adapters/positions/direct.ts",
-      "src/lib/mediator/pending-flow.ts",
-    ],
+    // the last file that still carries the pattern. delete this whole block
+    // once it uses errorMessage().
+    files: ["src/app/demolish/_lib/signing-bundle.ts"],
     rules: { "no-restricted-syntax": "off" },
   },
 ];

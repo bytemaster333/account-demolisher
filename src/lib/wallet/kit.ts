@@ -4,10 +4,13 @@ import "@/lib/wallet/buffer-polyfill"; // Ledger needs a browser Buffer global
 import {
   activeAddress,
   activeModules,
+  closeEvent,
+  disconnectEvent,
   hardwareWalletPaths,
   Networks as KitNetworks,
   LocalStorageKeys,
   ModuleType,
+  routerHistory,
   selectedModuleId,
   StellarWalletsKit,
   wcSessionPaths,
@@ -137,6 +140,37 @@ function setWalletConnectChain(network: NetworkConfig): void {
 // how long a picked WalletConnect waits for its relay handshake before failing
 const WC_READY_TIMEOUT_MS = 15_000;
 
+// the real module, once its sign client is up. it has no session list or
+// closeSession before that.
+async function readyWalletConnect(projectId: string): Promise<WalletConnectModule> {
+  const real = realWalletConnect(projectId);
+  const deadline = Date.now() + WC_READY_TIMEOUT_MS;
+  while (!(await real.isAvailable())) {
+    if (Date.now() >= deadline) {
+      throw new Error(
+        "WalletConnect could not reach its relay. Check your connection and try again.",
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return real;
+}
+
+// walletconnect for closing sessions. a session restored from the last visit
+// has to be closed through the relay too, so this starts the module when it is
+// not running yet.
+async function walletConnectForTeardown(): Promise<WalletConnectModule> {
+  if (wcModule !== null) return readyWalletConnect(wcModule.wcParams.projectId);
+  const projectId = getPublicEnv().NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID;
+  if (!projectId) {
+    throw new Error(
+      "A WalletConnect session is open, but WalletConnect is not configured on this site, " +
+        "so it cannot be closed from here. End it in your wallet app.",
+    );
+  }
+  return readyWalletConnect(projectId);
+}
+
 // stands in for WalletConnect in the module list until it is used. the picker
 // only needs the id, name, icon and availability, none of which require the
 // relay, so the real module (and its network traffic) waits for the first call
@@ -167,18 +201,8 @@ class LazyWalletConnectModule implements ModuleInterface {
     return host?.provider === "freighter" && host?.platform === "mobile";
   }
 
-  async #ready(): Promise<WalletConnectModule> {
-    const real = realWalletConnect(this.#projectId);
-    const deadline = Date.now() + WC_READY_TIMEOUT_MS;
-    while (!(await real.isAvailable())) {
-      if (Date.now() >= deadline) {
-        throw new Error(
-          "WalletConnect could not reach its relay. Check your connection and try again.",
-        );
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    return real;
+  #ready(): Promise<WalletConnectModule> {
+    return readyWalletConnect(this.#projectId);
   }
 
   async getAddress(): Promise<{ address: string }> {
@@ -254,13 +278,15 @@ export function getKit(network: NetworkConfig): KitHandle {
   return StellarWalletsKit;
 }
 
-// fully disconnect the kit: forget the selected wallet and reset its state, so
-// the extension no longer treats the site as connected and a later connect opens
-// the picker again. does nothing when the kit was never initialized, and is safe
-// to repeat.
+// fully disconnect the kit: close the selected wallet and every walletconnect
+// session, and reset the kit's state, so the extension no longer treats the site
+// as connected and a later connect opens the picker again. the state is reset
+// even when a wallet refuses; the refusal is thrown afterwards so the caller can
+// tell the user. does nothing when the kit was never initialized, and is safe to
+// repeat.
 export async function disconnectKit(): Promise<void> {
   if (initializedPassphrase === null) return;
-  await StellarWalletsKit.disconnect();
+  await returnKitTo(NO_SESSION, true);
 }
 
 // the kit persists the connected session as these two keys (and clears both on
@@ -322,36 +348,48 @@ const NO_SESSION: KitSessionSnapshot = {
 // phone pairing would otherwise stay live on the relay), and a different
 // extension or device is disconnected. with no session in the snapshot the kit
 // ends up fully disconnected.
-//
-// the kit's own disconnect() is never used here. it calls the selected module's
-// disconnect() without awaiting it, so a failure would be an unhandled rejection,
-// and the WalletConnect module's closeSession() calls it once the last session
-// path is gone, which with WalletConnect still selected closes every relay
-// session a second time while the first close is in flight. so the selection is
-// cleared before anything is closed, and the snapshot is written back afterwards
-// whether or not the closing worked. every close is attempted; failures are
-// thrown together at the end.
 export async function restoreKitSessionSnapshot(snapshot: KitSessionSnapshot): Promise<void> {
   const target =
     snapshot.activeAddress === undefined || snapshot.selectedModuleId === undefined
       ? NO_SESSION
       : snapshot;
+  await returnKitTo(target, false);
+}
+
+// the kit's own disconnect() is never used here. it calls the selected module's
+// disconnect() without awaiting it, so a failure would be an unhandled rejection,
+// and the WalletConnect module's closeSession() calls it once the last session
+// path is gone, which with WalletConnect still selected closes every relay
+// session a second time while the first close is in flight. so the selection is
+// cleared before anything is closed, and the target is written back afterwards
+// whether or not the closing worked. every close is attempted; failures are
+// thrown together at the end.
+//
+// allWalletConnect also closes sign client sessions the kit no longer lists, such
+// as a co-signer pairing whose earlier close failed on the relay.
+async function returnKitTo(target: KitSessionSnapshot, allWalletConnect: boolean): Promise<void> {
   const between = activeModules.value.find((m) => m.productId === selectedModuleId.value);
   const keptTopics = new Set(target.wcSessionPaths.map((p) => p.topic));
-  const strayTopics = [
-    ...new Set(wcSessionPaths.value.map((p) => p.topic).filter((t) => !keptTopics.has(t))),
-  ];
+  const listedTopics = wcSessionPaths.value.map((p) => p.topic).filter((t) => !keptTopics.has(t));
   const failures: unknown[] = [];
   selectedModuleId.value = undefined;
   try {
-    for (const topic of strayTopics) {
+    if (listedTopics.length > 0 || (allWalletConnect && wcModule !== null)) {
       try {
-        if (wcModule === null) {
-          throw new Error(
-            `WalletConnect session ${topic} is open but WalletConnect is not running`,
-          );
+        const wc = await walletConnectForTeardown();
+        const topics = new Set(listedTopics);
+        if (allWalletConnect) {
+          for (const session of await wc.getSessions()) {
+            if (!keptTopics.has(session.topic)) topics.add(session.topic);
+          }
         }
-        await wcModule.closeSession(topic);
+        for (const topic of topics) {
+          try {
+            await wc.closeSession(topic);
+          } catch (e) {
+            failures.push(e);
+          }
+        }
       } catch (e) {
         failures.push(e);
       }
@@ -372,9 +410,15 @@ export async function restoreKitSessionSnapshot(snapshot: KitSessionSnapshot): P
     wcSessionPaths.value = target.wcSessionPaths;
     selectedModuleId.value = target.selectedModuleId;
     activeAddress.value = target.activeAddress;
+    if (target === NO_SESSION) {
+      // what the kit's own disconnect does last, for anything listening to it
+      routerHistory.value = [];
+      disconnectEvent.next();
+      closeEvent.next();
+    }
   }
   if (failures.length === 1) throw failures[0];
   if (failures.length > 1) {
-    throw new AggregateError(failures, "the wallet used for signing could not be disconnected");
+    throw new AggregateError(failures, "the wallet could not be disconnected");
   }
 }

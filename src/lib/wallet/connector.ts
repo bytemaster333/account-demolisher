@@ -5,6 +5,7 @@ import { LEDGER_ID, type LedgerModule } from "@creit.tech/stellar-wallets-kit/mo
 
 import {
   applyKitTheme,
+  disconnectKit,
   getKit,
   restoreKitSessionSnapshot,
   snapshotKitSession,
@@ -12,6 +13,7 @@ import {
 } from "@/lib/wallet/kit";
 import { toLedgerSigningError } from "@/lib/wallet/ledger-errors";
 import { verifySignedEnvelope } from "@/lib/wallet/signed-envelope";
+import { reportTeardownError } from "@/lib/wallet/teardown-report";
 import type { NetworkConfig } from "@/lib/config/networks";
 
 export type ConnectorKind = "kit" | "secret";
@@ -47,9 +49,11 @@ export class WalletKitConnector implements Connector {
     return { publicKey: address };
   }
 
+  // the kit's own disconnect() does not wait for the wallet, so a refusal would
+  // be an unhandled rejection. disconnectKit waits and throws it.
   async disconnect(): Promise<void> {
     this.cachedAddress = null;
-    await this.kit.disconnect();
+    await disconnectKit();
   }
 
   async getPublicKey(): Promise<string> {
@@ -118,7 +122,7 @@ export async function withScopedKitSession<T>(
   try {
     await restoreKitSessionSnapshot(before);
   } catch (error) {
-    onTeardownError(error);
+    reportTeardownError(onTeardownError, error);
   }
   if (!outcome.ok) throw outcome.error;
   return outcome.value;
