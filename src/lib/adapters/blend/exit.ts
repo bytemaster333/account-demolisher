@@ -374,8 +374,8 @@ export async function buildBackstopWithdrawTx(
 // amount. a v2 claim that simulates but mints no shares is the same case: the
 // BLND would go into the comet for nothing. typed so the plan can show the
 // accrued BLND and ask the user to forfeit it before queueing without the
-// claim. an rpc transport failure is never this error, so a flaky endpoint is
-// never read as a forfeit.
+// claim. an rpc transport failure or a success answer missing its return value
+// is never this error, so a flaky endpoint is never read as a forfeit.
 export class BackstopClaimUnavailableError extends Error {
   readonly poolId: string;
   readonly backstopId: string;
@@ -383,7 +383,9 @@ export class BackstopClaimUnavailableError extends Error {
   readonly accruedEmissions: bigint;
   // one line, safe to show: the rpc error's first line or why the mint is unusable
   readonly simulationError: string;
-  // the rpc's whole error text with its diagnostic event log, for logs only
+  // the rpc's whole error text with its diagnostic event log. kept off the
+  // message so the review stays one line; a caller that logs the error (or its
+  // cause chain) can include it.
   readonly simulationLog: string | undefined;
   constructor(
     poolId: string,
@@ -463,11 +465,17 @@ export async function buildBackstopClaimTx(
     return { transaction, backstop };
   }
 
-  if (sim.retval === null) {
-    throw unavailable("it returned no LP amount");
+  // a v2 claim that simulates returns the i128 LP it minted. an answer without
+  // one is a broken rpc response rather than the chain refusing the claim, so it
+  // fails like any rpc fault and is never offered as a forfeit.
+  const minted = sim.retval === null ? undefined : (scValToNative(sim.retval) as unknown);
+  if (typeof minted !== "bigint") {
+    throw new Error(
+      `the Blend backstop ${backstop.id} claim simulation for pool ${target.poolId} ` +
+        `succeeded but returned no LP amount; try again`,
+    );
   }
-  const minted = scValToNative(sim.retval) as unknown;
-  if (typeof minted !== "bigint" || minted <= 0n) {
+  if (minted <= 0n) {
     throw unavailable("it mints no backstop shares for the accrued BLND");
   }
   const minOut = BigInt(applySlippageMin(minted.toString(), resolveConfiguredSlippageBps()));
