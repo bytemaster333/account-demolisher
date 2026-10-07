@@ -36,7 +36,7 @@ export function flowPhaseFor(args: {
 
 export function buildFlowSteps(args: {
   readonly phase: FlowPhase;
-  // Resolve (blocker action) and Acknowledge (read warnings) are each shown only
+  // the Resolve (blocker action) and Acknowledge (read warnings) are each shown only
   // when the built plan surfaced that kind of item; empty steps are omitted.
   readonly hasResolve: boolean;
   readonly hasAcknowledge: boolean;

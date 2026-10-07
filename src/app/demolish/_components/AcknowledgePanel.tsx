@@ -48,7 +48,7 @@ const ARROW_RIGHT = (
   </svg>
 );
 
-// The Acknowledge step, INFORMATION only. Warnings and info that don't block
+// the Acknowledge step, information only. Warnings and info that don't block
 // the close-out but must be read and understood. "Continue to review" is gated
 // until every card is acknowledged.
 function assetLabel(asset: AssetIdentifier): string {

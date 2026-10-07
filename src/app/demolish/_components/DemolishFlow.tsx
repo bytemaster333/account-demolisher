@@ -102,7 +102,7 @@ export function DemolishFlow(): React.JSX.Element {
   const setLockReason = useNetworkStore((s) => s.setLockReason);
   const network = useMemo<NetworkConfig>(() => NETWORKS[networkId], [networkId]);
 
-  // Do we have a live connector that can actually SIGN here? Derived (not stored)
+  // do we have a live connector that can actually SIGN here? Derived (not stored)
   // so it stays in sync with the app-wide wallet session across client-side
   // navigation: a kit connection can always be reconstructed, and any live
   // connector shared via setActiveConnector (e.g. from /allowances) counts. A
@@ -111,7 +111,7 @@ export function DemolishFlow(): React.JSX.Element {
   const hasConnector =
     publicKey !== null && (getActiveConnector() !== null || connectorKind === "kit");
 
-  // Populate connectorRef when arriving already-connected (e.g. connected on
+  // populate connectorRef when arriving already-connected (e.g. connected on
   // /allowances, then navigated here client-side). connectorRef starts empty on
   // each mount, but the wallet session is shared, so recover the live connector
   // for signing. Sets a ref only (no state) so the derived hasConnector above is
@@ -422,7 +422,7 @@ export function DemolishFlow(): React.JSX.Element {
 
   // initialise the confirm stage per built plan: resolve blockers first, then
   // acknowledge warnings/info, then the clean review, skipping any empty step.
-  // A refusal shown for the previous plan doesn't belong to the new one.
+  // a refusal shown for the previous plan doesn't belong to the new one
   const initedTreeRef = useRef<unknown>(null);
   useEffect(() => {
     if (tree !== null && isAwaitingConfirmation) {
@@ -472,7 +472,7 @@ export function DemolishFlow(): React.JSX.Element {
   );
 
   // ── shared-account signing request ────────────────────────────────────────
-  // Configure only knows the destination kind, the pool shares and the token
+  // the Configure step only knows the destination kind, the pool shares and the token
   // pick; the full gate (positions, the built tree, deterministic disposal)
   // applies once a plan exists
   const configureGate = assessBundleability({
@@ -828,7 +828,7 @@ export function DemolishFlow(): React.JSX.Element {
     setClaimSelection(null);
   }, []);
 
-  // Back from the first confirmation stage returns to Configure with the form
+  // back from the first confirmation stage returns to Configure with the form
   // as it was: the plan is discarded (cancel), then the run is reset to idle.
   // Nothing else cancels a run by hand, so a cancelled run on screen always
   // came from the run guard (wallet or network changed). The answers given for

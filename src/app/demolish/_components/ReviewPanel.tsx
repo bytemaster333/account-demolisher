@@ -55,7 +55,7 @@ export interface SharedReview {
   readonly onRebuildShared?: () => void;
 }
 
-// The Review step, the clean "here is what will happen": every step in the
+// the Review step, the clean "here is what will happen": every step in the
 // order it runs, the destination and memo, and the money figures. Cautions are
 // acknowledged in the earlier steps; the final gate is the typed confirmation.
 export function ReviewPanel({
