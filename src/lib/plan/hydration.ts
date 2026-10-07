@@ -61,6 +61,12 @@ export interface HydrationFailure {
   readonly priceImpactRefused: boolean;
   readonly noSoroswapRoute: boolean;
   readonly backstopClaimUnavailable: boolean;
+  // which answer a refused conversion waits on, set with the two flags above
+  // (unset only for a price refusal thrown without its detail)
+  readonly refusal?: ConversionRefusal | "no_route";
+  // the thrown value itself, so a caller can read what the error carries (the
+  // accrued BLND of a BackstopEmissionsClaimError, the quote of a refusal)
+  readonly error: unknown;
 }
 
 export interface HydrationDeps {
@@ -125,6 +131,7 @@ export async function hydratePlanTransactions(
     } catch (err) {
       const reason = errorMessage(err);
       const deferred = node.dependencies.length > 0 && !needsUserAnswer(err);
+      const refusal = conversionRefusalOf(err);
       failures.push({
         nodeId: node.id,
         reason,
@@ -132,6 +139,8 @@ export async function hydratePlanTransactions(
         priceImpactRefused: err instanceof PriceImpactRefusedError,
         noSoroswapRoute: err instanceof NoSoroswapRouteError,
         backstopClaimUnavailable: err instanceof BackstopEmissionsClaimError,
+        ...(refusal !== undefined ? { refusal } : {}),
+        error: err,
       });
       if (deferred) {
         node.deferred = { after: node.dependencies, reason };
@@ -327,6 +336,9 @@ async function hydrateNode(
         // a failed account read or rpc call is an ordinary failure
         if (err instanceof BackstopClaimUnavailableError) {
           throw new BackstopEmissionsClaimError(err);
+        }
+        if (err instanceof Error && NOTHING_ACCRUED.test(err.message)) {
+          throw new BackstopEmissionsAlreadyClaimedError(node.metadata.poolId, err);
         }
         throw err;
       }
@@ -829,12 +841,39 @@ export class BackstopEmissionsClaimError extends Error {
   }
 }
 
+// buildBackstopClaimTx (adapters/blend/exit.ts) throws a plain Error with this
+// message when the on-chain accrual it reads is zero
+const NOTHING_ACCRUED = /^no accrued backstop emissions to claim\b/;
+
+// the plan has a backstop claim because discovery saw accrued BLND, and the
+// build finds none: it was claimed elsewhere in between. nothing is forfeited,
+// but the plan no longer matches the chain, so the review has to run again.
+export class BackstopEmissionsAlreadyClaimedError extends Error {
+  readonly poolId: string;
+  constructor(poolId: string, cause: Error) {
+    super(
+      `ClaimBackstopEmissions: the backstop emissions for pool ${poolId} were claimed since ` +
+        `the account was read, so there is nothing left to claim; review the close again`,
+      { cause },
+    );
+    this.name = "BackstopEmissionsAlreadyClaimedError";
+    this.poolId = poolId;
+  }
+}
+
+function conversionRefusalOf(err: unknown): ConversionRefusal | "no_route" | undefined {
+  if (err instanceof NoSoroswapRouteError) return "no_route";
+  if (err instanceof PriceImpactRefusedError) return err.reason;
+  return undefined;
+}
+
 // failures no earlier step can resolve: they wait on the user
 function needsUserAnswer(err: unknown): boolean {
   return (
     err instanceof PriceImpactRefusedError ||
     err instanceof NoSoroswapRouteError ||
     err instanceof BackstopEmissionsClaimError ||
+    err instanceof BackstopEmissionsAlreadyClaimedError ||
     // a BLND line the issuer has not authorized: no step in the plan fixes it
     (err instanceof BlndTrustlineMissingError && err.reason === "unauthorized")
   );

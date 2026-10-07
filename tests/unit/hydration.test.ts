@@ -21,6 +21,8 @@ import {
 import { spendableFromAccount } from "@/lib/adapters/blend/spendable";
 import { NoSoroswapRouteError } from "@/lib/adapters/soroswap/swap";
 import {
+  BackstopEmissionsAlreadyClaimedError,
+  BackstopEmissionsClaimError,
   hydratePlanTransactions,
   PriceImpactRefusedError,
   rebuildSorobanNodeTransaction,
@@ -534,6 +536,7 @@ describe("hydratePlanTransactions, steps behind other steps are deferred", () =>
       priceImpactRefused: false,
       noSoroswapRoute: false,
       backstopClaimUnavailable: false,
+      error: expect.any(Error),
     };
     expect(failures).toEqual([
       { nodeId: "repay", reason: "Error(Contract, #1205)", deferred: false, ...plain },
@@ -962,13 +965,150 @@ describe("hydration, Blend backstop steps take their amounts from the built tran
         priceImpactRefused: false,
         noSoroswapRoute: false,
         backstopClaimUnavailable: false,
+        error: expect.any(Error),
       },
     ]);
     expect(claim.error).not.toMatch(/forfeit/);
   });
+
+  // what undici throws when the rpc can't be reached, and its plain-Error form
+  it.each([
+    ["TypeError", new TypeError("fetch failed")],
+    ["Error", new Error("fetch failed")],
+  ])("never reads an unreachable rpc (%s fetch failed) as a forfeit", async (_name, thrown) => {
+    const buildBackstopClaimTx = vi.fn(async () => {
+      throw thrown;
+    });
+    const claim = claimNode();
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([claim]),
+      USER,
+      baseDeps({ adapters: { buildBackstopClaimTx } }),
+    );
+    expect(failures).toEqual([
+      expect.objectContaining({
+        nodeId: "claim",
+        reason: "fetch failed",
+        backstopClaimUnavailable: false,
+        error: thrown,
+      }),
+    ]);
+    const rebuilt = rebuildSorobanNodeTransaction(
+      claimNode(),
+      USER,
+      baseDeps({ adapters: { buildBackstopClaimTx } }),
+    );
+    await expect(rebuilt).rejects.toBe(thrown);
+    await expect(rebuilt).rejects.not.toBeInstanceOf(BackstopEmissionsClaimError);
+  });
+
+  // the accrual was claimed elsewhere between discovery and this build: there is
+  // nothing to forfeit, and the plan is stale, so the review is run again
+  it("fails a claim with nothing left to claim as a stale plan, not a forfeit", async () => {
+    const buildBackstopClaimTx = vi.fn(async () => {
+      throw new Error("no accrued backstop emissions to claim for Blend pool CPOOL");
+    });
+    const before: PlanNode = {
+      id: "before",
+      kind: "BackstopWithdraw",
+      dependencies: [],
+      description: "already built",
+      status: "pending",
+      metadata: {
+        kind: "BackstopWithdraw",
+        poolId: "CPOOL",
+        amount: 1n,
+        lpToken: "CCOMET",
+        transaction: { fake: "tx" } as never,
+      },
+    };
+    const claim = claimNode(["before"]);
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([before, claim]),
+      USER,
+      baseDeps({ adapters: { buildBackstopClaimTx } }),
+    );
+    expect(failures).toEqual([
+      expect.objectContaining({
+        nodeId: "claim",
+        deferred: false,
+        backstopClaimUnavailable: false,
+        error: expect.any(BackstopEmissionsAlreadyClaimedError),
+      }),
+    ]);
+    expect(claim.status).toBe("failed");
+    expect(claim.error).toMatch(/claimed since the account was read/);
+    expect(claim.error).not.toMatch(/forfeit/);
+    await expect(
+      rebuildSorobanNodeTransaction(
+        claimNode(),
+        USER,
+        baseDeps({ adapters: { buildBackstopClaimTx } }),
+      ),
+    ).rejects.toMatchObject({ name: "BackstopEmissionsAlreadyClaimedError", poolId: "CPOOL" });
+  });
 });
 
 describe("hydration, failures say which user answer they wait on", () => {
+  it("carries the refusal kind and the thrown error of a refused conversion", async () => {
+    const thinPool = (x: bigint): bigint => (x * 1_000_000n) / (1_000_000n + x);
+    const market = swapMarket(thinPool);
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([convertNode()]),
+      USER,
+      baseDeps({
+        rpc: market.rpc,
+        adapters: {
+          buildSwapToXLM: market.buildSwapToXLM,
+          quoteRouteToXLM: market.quoteRouteToXLM,
+          readTokenBalance: async () => 1_000_000n,
+        },
+      }),
+    );
+    expect(failures).toHaveLength(1);
+    expect(failures[0]!.refusal).toBe("price_impact");
+    expect(failures[0]!.error).toBeInstanceOf(PriceImpactRefusedError);
+
+    const noRoute = new NoSoroswapRouteError(HELD_TOKEN, []);
+    const routeless = await hydratePlanTransactions(
+      buildPlanTree([convertNode()]),
+      USER,
+      baseDeps({
+        adapters: {
+          quoteRouteToXLM: async () => {
+            throw noRoute;
+          },
+          readTokenBalance: async () => 1_000_000n,
+        },
+      }),
+    );
+    expect(routeless.failures).toEqual([
+      expect.objectContaining({ refusal: "no_route", error: noRoute }),
+    ]);
+  });
+
+  it("sets no refusal kind on a failure that is not a refused conversion", async () => {
+    const buildBackstopClaimTx = vi.fn(async () => {
+      throw new Error("timeout");
+    });
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([
+        {
+          id: "claim",
+          kind: "ClaimBackstopEmissions",
+          dependencies: [],
+          description: "claim",
+          status: "pending",
+          metadata: { kind: "ClaimBackstopEmissions", poolId: "CPOOL", accruedEmissions: 7n },
+        },
+      ]),
+      USER,
+      baseDeps({ adapters: { buildBackstopClaimTx } }),
+    );
+    expect(failures).toHaveLength(1);
+    expect("refusal" in failures[0]!).toBe(false);
+  });
+
   it("flags a conversion refused for its price", async () => {
     const thinPool = (x: bigint): bigint => (x * 1_000_000n) / (1_000_000n + x);
     const market = swapMarket(thinPool);
@@ -1106,6 +1246,7 @@ describe("hydration, the BLND trustline and the emissions claim behind it", () =
         priceImpactRefused: false,
         noSoroswapRoute: false,
         backstopClaimUnavailable: false,
+        error: expect.any(Error),
       },
     ]);
     expect(claim.status).toBe("pending");
