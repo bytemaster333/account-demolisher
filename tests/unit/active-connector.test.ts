@@ -62,7 +62,7 @@ describe("disconnectSession", () => {
     disconnectKit.mockClear();
   });
 
-  it("clears the connector, runs its disconnect, forgets the kit, and clears the store", async () => {
+  it("clears the connector and the store, and lets a kit connector close the kit once", async () => {
     const disconnect = vi.fn(async () => {});
     const clearStore = vi.fn();
     setActiveConnector({ ...fakeConnector("kit"), disconnect });
@@ -70,9 +70,23 @@ describe("disconnectSession", () => {
     await disconnectSession(clearStore);
 
     expect(getActiveConnector()).toBeNull(); // connector dropped
-    expect(disconnect).toHaveBeenCalledTimes(1); // wallet teardown ran
-    expect(disconnectKit).toHaveBeenCalledTimes(1); // kit selection forgotten
+    // a kit connector's disconnect is the kit teardown, so it is not run twice
+    // (a second close of a failing walletconnect session would report it twice)
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    expect(disconnectKit).not.toHaveBeenCalled();
     expect(clearStore).toHaveBeenCalledTimes(1); // display store cleared
+  });
+
+  it("forgets the kit after a pasted-key connector disconnects", async () => {
+    const disconnect = vi.fn(async () => {});
+    const clearStore = vi.fn();
+    setActiveConnector({ ...fakeConnector("secret"), disconnect });
+
+    await disconnectSession(clearStore);
+
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    expect(disconnectKit).toHaveBeenCalledTimes(1);
+    expect(clearStore).toHaveBeenCalledTimes(1);
   });
 
   it("still clears the store and forgets the kit when there is no active connector", async () => {
@@ -83,16 +97,61 @@ describe("disconnectSession", () => {
     expect(getActiveConnector()).toBeNull();
   });
 
-  it("still completes teardown when the connector's disconnect throws", async () => {
+  it("clears the app first and reports a wallet that refuses to disconnect", async () => {
     const clearStore = vi.fn();
+    const gone = new Error("wallet already gone");
     const disconnect = vi.fn(async () => {
-      throw new Error("wallet already gone");
+      expect(clearStore).toHaveBeenCalledTimes(1);
+      throw gone;
     });
+    const onTeardownError = vi.fn();
     setActiveConnector({ ...fakeConnector("kit"), disconnect });
 
-    await expect(disconnectSession(clearStore)).resolves.toBeUndefined();
+    await expect(disconnectSession(clearStore, onTeardownError)).resolves.toBeUndefined();
     expect(getActiveConnector()).toBeNull();
     expect(clearStore).toHaveBeenCalledTimes(1);
-    expect(disconnectKit).toHaveBeenCalledTimes(1);
+    expect(onTeardownError).toHaveBeenCalledExactlyOnceWith(gone);
+  });
+
+  it("reports a kit teardown failure after a pasted-key disconnect", async () => {
+    const relay = new Error("Failed to publish payload, please try again.");
+    disconnectKit.mockRejectedValueOnce(relay);
+    const onTeardownError = vi.fn();
+    setActiveConnector(fakeConnector("secret"));
+
+    await disconnectSession(vi.fn(), onTeardownError);
+    expect(onTeardownError).toHaveBeenCalledExactlyOnceWith(relay);
+  });
+
+  it("reports both failures together", async () => {
+    const seed = new Error("seed wipe failed");
+    const relay = new Error("relay down");
+    disconnectKit.mockRejectedValueOnce(relay);
+    const onTeardownError = vi.fn();
+    setActiveConnector({
+      ...fakeConnector("secret"),
+      disconnect: async () => {
+        throw seed;
+      },
+    });
+
+    await disconnectSession(vi.fn(), onTeardownError);
+    expect(onTeardownError).toHaveBeenCalledOnce();
+    const reported = onTeardownError.mock.calls[0]![0] as AggregateError;
+    expect(reported).toBeInstanceOf(AggregateError);
+    expect(reported.errors).toEqual([seed, relay]);
+  });
+
+  it("logs the failure when the caller passes no reporter", async () => {
+    const relay = new Error("relay down");
+    disconnectKit.mockRejectedValueOnce(relay);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(disconnectSession(vi.fn())).resolves.toBeUndefined();
+      expect(logged).toHaveBeenCalledOnce();
+      expect(logged.mock.calls[0]).toContain(relay);
+    } finally {
+      logged.mockRestore();
+    }
   });
 });
