@@ -42,12 +42,6 @@ const config = [
       ],
     },
   },
-  {
-    // the last file that still carries the pattern. delete this whole block
-    // once it uses errorMessage().
-    files: ["src/app/demolish/_lib/signing-bundle.ts"],
-    rules: { "no-restricted-syntax": "off" },
-  },
 ];
 
 export default config;
