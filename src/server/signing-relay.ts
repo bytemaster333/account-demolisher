@@ -389,10 +389,32 @@ export async function createPlan(network: string, xdr: string): Promise<CreateRe
   }
 
   const signerKeys = signers.map((s) => s.key);
+  // keep only verified signatures from the account's signers, one per key, so
+  // junk or padding in the published envelope can't block later co-signers,
+  // and no more of them than the threshold needs. canonicalizing is the one
+  // pass that checks the published signatures against every signer (junk under
+  // a hint no signer has costs a check per signer); trimming the result only
+  // checks canonical hints.
+  let canonical: TrimResult;
+  try {
+    canonical = trimToThreshold(
+      canonicalizeSignatures(xdr, net.passphrase, signerKeys),
+      net.passphrase,
+      signers,
+      requiredWeight(thresholds),
+    );
+  } catch (e) {
+    if (e instanceof TooManySignaturesError) {
+      return { ok: false, code: "TOO_MANY_SIGNATURES", reason: e.message };
+    }
+    throw e;
+  }
+
   // proof of control: only an account's own authorized signer may open a request
   // to close it. this binds a slot to a real signer, so nobody can fill the store
-  // with unsigned closes for accounts they don't control.
-  if (signedSigners(xdr, net.passphrase, signerKeys).length === 0) {
+  // with unsigned closes for accounts they don't control. the threshold is at
+  // least 1, so any verified signer signature survives the trim.
+  if (canonical.kept.length === 0) {
     return {
       ok: false,
       code: "UNSIGNED",
@@ -407,24 +429,6 @@ export async function createPlan(network: string, xdr: string): Promise<CreateRe
   if (raced !== undefined) {
     const merged = mergeInto(raced, xdr);
     return merged.ok ? { ok: true, id } : merged;
-  }
-
-  // keep only verified signatures from the account's signers, one per key, so
-  // junk or padding in the published envelope can't block later co-signers,
-  // and no more of them than the threshold needs
-  let canonical: TrimResult;
-  try {
-    canonical = trimToThreshold(
-      canonicalizeSignatures(xdr, net.passphrase, signerKeys),
-      net.passphrase,
-      signers,
-      requiredWeight(thresholds),
-    );
-  } catch (e) {
-    if (e instanceof TooManySignaturesError) {
-      return { ok: false, code: "TOO_MANY_SIGNATURES", reason: e.message };
-    }
-    throw e;
   }
 
   // the account's other requests: one whose sequence number is already used can

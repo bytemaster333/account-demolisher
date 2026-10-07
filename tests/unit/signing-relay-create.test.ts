@@ -543,6 +543,28 @@ describe("verification cost per sign request (H-32)", () => {
     expect(getPlan(id)!.xdr).toBe(published);
   });
 
+  it("checks a padded published envelope's signatures against the signers only once", async () => {
+    // junk under a zero hint matches no signer by hint, so each one costs a check
+    // per signer; publishing must not pay that twice
+    const a = newAccount(19);
+    loadAccount.mockResolvedValue(accountResponse({ ...a, thresholds: NEVER_MET }));
+    const padded = TransactionBuilder.fromXdr(signedBy(buildClose(a), a.kp), NET) as Transaction;
+    for (let i = 0; i < 19; i++) {
+      padded.signatures.push(
+        new xdr.DecoratedSignature({ hint: Buffer.alloc(4), signature: Buffer.alloc(64, i + 1) }),
+      );
+    }
+    const verify = vi.spyOn(Keypair.prototype, "verify");
+    try {
+      const res = await createPlan("testnet", padded.toXdr());
+      expect(res.ok).toBe(true);
+      // 19 junk signatures against 20 signers, plus the one valid signature
+      expect(verify.mock.calls.length).toBeLessThanOrEqual(19 * 20 + 20);
+    } finally {
+      verify.mockRestore();
+    }
+  });
+
   it("adding one signature stays linear in the signature count", async () => {
     const { id, tx, a } = await fullPlan();
     const verify = vi.spyOn(Keypair.prototype, "verify");
