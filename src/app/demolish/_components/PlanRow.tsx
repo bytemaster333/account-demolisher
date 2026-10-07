@@ -6,7 +6,9 @@ import { explorerTxUrl } from "@/lib/explorer";
 import type { PlanNode } from "@/lib/plan/tree";
 
 import { SR_ONLY } from "../_lib/a11y";
-import { nodeFeeStroops, stroopsToXlm } from "../_lib/fees";
+import { errorMessage } from "@/lib/errors";
+
+import { nodeFeeStroops, nodeMaxFeeStroops, stroopsToXlm } from "../_lib/fees";
 import { truncateHash } from "../_lib/format";
 import { nodeExplainer, nodeLabel, nodePlainLabel, simulatedBadgeLabel } from "../_lib/plan-copy";
 
@@ -46,20 +48,22 @@ export function PlanRow({
 
   // plan mode surfaces the network fee up-front so cost is visible before
   // signing; live mode drops it (once submitted the fee is spent and the tx
-  // link is what matters). "auth" (Soroban auth-entry count) is dev-only noise
-  // and is no longer shown anywhere.
-  const feeStroops = nodeFeeStroops(node);
+  // link is what matters). A step built only after earlier ones land has no fee
+  // yet, and a fee the page can't read is shown on this row rather than taking
+  // the whole Review down.
+  const deferred = node.deferred !== undefined && node.status === "pending";
+  const fee = mode === "plan" && !deferred ? stepFee(node) : null;
   // a swap shows what it expects and the floor it signs (XLM has 7 decimals)
   const quote =
     mode === "plan" && node.kind === "ConvertSorobanToXLM"
       ? (node.metadata.reviewedQuote ?? node.metadata.quote ?? null)
       : null;
-  const showFee = mode === "plan" && feeStroops > 0;
+
   // live mode highlights the step that's currently signing/submitting
   const highlight = mode === "live" && isRunning;
 
   return (
-    <div style={{ borderRadius: 10, overflow: "hidden" }}>
+    <div data-testid="plan-row" style={{ borderRadius: 10, overflow: "hidden" }}>
       <div
         style={{
           width: "100%",
@@ -347,8 +351,9 @@ export function PlanRow({
                 skipped
               </span>
             ) : null}
-            {showFee ? (
+            {fee !== null && fee.kind !== "error" && fee.typical > 0 ? (
               <span
+                data-testid="plan-row-fee"
                 style={{
                   marginLeft: "auto",
                   font: "500 11px/1 'Geist Mono', monospace",
@@ -356,8 +361,9 @@ export function PlanRow({
                   whiteSpace: "nowrap",
                 }}
               >
-                fee up to{" "}
-                <span style={{ color: "var(--fg-2)" }}>{stroopsToXlm(feeStroops)} XLM</span>
+                {fee.kind === "capped"
+                  ? `fee up to ${stroopsToXlm(fee.typical)} XLM`
+                  : `fee about ${stroopsToXlm(fee.typical)} XLM, up to ${stroopsToXlm(fee.max)} XLM`}
               </span>
             ) : null}
           </div>
@@ -429,7 +435,21 @@ export function PlanRow({
                 : ", price impact unknown"}
             </div>
           ) : null}
-          {node.deferred !== undefined && node.status === "pending" ? (
+          {fee?.kind === "error" ? (
+            <div
+              data-testid="plan-row-fee-error"
+              role="alert"
+              style={{
+                marginTop: 5,
+                font: "500 11px/1.45 'Geist Mono', monospace",
+                color: "var(--danger)",
+                wordBreak: "break-word",
+              }}
+            >
+              The fee for this step can&apos;t be read: {fee.message}
+            </div>
+          ) : null}
+          {deferred ? (
             <div
               data-testid="deferred-note"
               style={{ marginTop: 5, fontSize: 11.5, color: "var(--fg-3)", lineHeight: 1.45 }}
@@ -444,6 +464,7 @@ export function PlanRow({
           ) : null}
           {node.error && !landed ? (
             <div
+              data-testid="plan-row-error"
               style={{
                 marginTop: 5,
                 font: "500 11px/1.45 'Geist Mono', monospace",
@@ -458,4 +479,23 @@ export function PlanRow({
       </div>
     </div>
   );
+}
+
+type StepFee =
+  // the figure is what the signed transaction authorizes: a real maximum
+  | { readonly kind: "capped"; readonly typical: number }
+  // the usual fee, and the most the executor's surge bidding can reach
+  | { readonly kind: "estimate"; readonly typical: number; readonly max: number }
+  | { readonly kind: "error"; readonly message: string };
+
+// a soroban step's built fee is its maximum; a classic step and the forward are
+// bid at the preview's fee and may be re-bid up to the executor's ceiling
+function stepFee(node: PlanNode): StepFee {
+  try {
+    const typical = nodeFeeStroops(node);
+    const max = nodeMaxFeeStroops(node);
+    return max > typical ? { kind: "estimate", typical, max } : { kind: "capped", typical };
+  } catch (err) {
+    return { kind: "error", message: errorMessage(err) };
+  }
 }

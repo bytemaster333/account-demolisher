@@ -11,6 +11,7 @@ import {
   StatGrid,
 } from "@/components/ui";
 import type { NetworkConfig } from "@/lib/config/networks";
+import { errorMessage } from "@/lib/errors";
 import { explorerAccountUrl } from "@/lib/explorer";
 import type { BundleabilityResult } from "@/lib/multisig/signing-request";
 import type { PlanNode, PreparePlan } from "@/lib/plan/tree";
@@ -27,7 +28,7 @@ import {
   runnableSteps,
   type PlanGroup,
 } from "../_lib/plan-copy";
-import { computeReviewMoney, reserveReleasedStroops } from "../_lib/review-money";
+import { computeReviewMoney, reserveReleasedStroops, type ReviewMoney } from "../_lib/review-money";
 import type { ClaimAtRisk } from "../_lib/signing-bundle";
 import { PlanRow } from "./PlanRow";
 
@@ -98,12 +99,30 @@ export function ReviewPanel({
   const ordered = planGroups.flatMap((g) => g.nodes);
   const numbers = planStepNumbers(planGroups);
   const { runnable, skipped } = runnableSteps(ordered);
-  const money = computeReviewMoney({ audit, ordered });
+  // a fee the page can't read leaves no honest floor to show, so the figures say
+  // so and nothing can be confirmed
+  let money: ReviewMoney | null = null;
+  let moneyError: string | null = null;
+  try {
+    money = computeReviewMoney({ audit, ordered });
+  } catch (err) {
+    moneyError = errorMessage(err);
+  }
   const reserve = reserveReleasedStroops(audit, baseReserveStroops);
-  const atLeast = `at least ${stroopsToXlm(money.atLeastStroops)} XLM`;
+  const atLeast =
+    money === null
+      ? "an amount that can't be worked out"
+      : `at least ${stroopsToXlm(money.atLeastStroops)} XLM`;
   const labels = new Map(ordered.map((n) => [n.id, nodePlainLabel(n)]));
   const conversions = conversionsOf(ordered);
-  const blocked = blockers.length > 0;
+  const allBlockers =
+    moneyError === null
+      ? blockers
+      : [
+          ...blockers,
+          `The network fees of this plan can't be read (${moneyError}). Rebuild the plan.`,
+        ];
+  const blocked = allBlockers.length > 0;
   const unlockDate = prepareOnly?.unlocksAt.toLocaleDateString(undefined, {
     year: "numeric",
     month: "long",
@@ -145,7 +164,7 @@ export function ReviewPanel({
             This close can&apos;t start yet.
           </strong>
           <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
-            {blockers.map((b) => (
+            {allBlockers.map((b) => (
               <li key={b}>{b}</li>
             ))}
           </ul>
@@ -155,15 +174,18 @@ export function ReviewPanel({
       <StatGrid
         stats={[
           {
-            label: money.spendsBalance
+            label: money?.spendsBalance
               ? "Destination receives, before repayments"
               : "Destination receives",
-            value: atLeast,
+            value: money === null ? "can't be worked out" : atLeast,
             tone: "accent",
           },
           {
             label: "Network fees",
-            value: `about ${stroopsToXlm(money.typicalFeeStroops)} XLM, at most ${stroopsToXlm(money.maxFeeStroops)} XLM`,
+            value:
+              money === null
+                ? "can't be read"
+                : `about ${stroopsToXlm(money.typicalFeeStroops)} XLM, at most ${stroopsToXlm(money.maxFeeStroops)} XLM`,
           },
           {
             label: "Reserve released (included)",
@@ -184,7 +206,7 @@ export function ReviewPanel({
           </InfoTip>{" "}
           is already part of that balance.
         </p>
-        {money.notCounted.length > 0 ? (
+        {money !== null && money.notCounted.length > 0 ? (
           <div data-testid="review-not-counted" style={{ marginTop: 6 }}>
             Not counted in that figure:
             <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
@@ -356,7 +378,7 @@ export function ReviewPanel({
               <span style={{ font: "600 13px 'Geist Mono', monospace", color: "var(--fg)" }}>
                 {atLeast}
               </span>
-              {money.spendsBalance ? " before loan repayments" : ""} after network fees.
+              {money?.spendsBalance ? " before loan repayments" : ""} after network fees.
             </div>
           )}
           {useMediator && !prepareOnly ? (
