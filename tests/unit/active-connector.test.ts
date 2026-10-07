@@ -140,6 +140,10 @@ describe("disconnectSession", () => {
     const reported = onTeardownError.mock.calls[0]![0] as AggregateError;
     expect(reported).toBeInstanceOf(AggregateError);
     expect(reported.errors).toEqual([seed, relay]);
+    // the ui shows only the message, so it carries both reasons
+    expect(reported.message).toBe(
+      "The wallet could not be disconnected: seed wipe failed; relay down",
+    );
   });
 
   it("logs the failure when the caller passes no reporter", async () => {

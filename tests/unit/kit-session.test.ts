@@ -15,6 +15,12 @@ const wc = vi.hoisted(() => ({
   disconnects: [] as string[],
   // a topic whose relay disconnect fails (the relay is unreachable)
   failTopic: null as string | null,
+  // false while the relay handshake has not finished: the module has no sign
+  // client yet and isAvailable() says so
+  relayUp: true,
+  // when set, every relay disconnect waits for it, so a test can act while a
+  // teardown is still in flight
+  hold: null as Promise<void> | null,
 }));
 
 vi.mock("@creit.tech/stellar-wallets-kit/modules/wallet-connect", async (importOriginal) => {
@@ -26,12 +32,39 @@ vi.mock("@creit.tech/stellar-wallets-kit/modules/wallet-connect", async (importO
   // both pass validation and the later delete throws
   class CountingWalletConnectModule {
     wcParams: { allowedChains?: string[] };
+    readonly #client: {
+      session: { keys: string[] };
+      disconnect: (p: { topic: string }) => Promise<void>;
+    };
+    // the real module assigns its sign client once SignClient.init resolves
+    get signClient() {
+      return wc.relayUp ? this.#client : undefined;
+    }
     constructor(params: { allowedChains?: string[] }) {
       wc.constructed++;
       this.wcParams = params;
+      this.#client = {
+        session: {
+          get keys() {
+            return [...wc.sessions];
+          },
+        },
+        disconnect: async ({ topic }) => {
+          wc.disconnects.push(topic);
+          if (!wc.sessions.has(topic)) {
+            throw new Error(`Session or pairing topic not found: ${topic}`);
+          }
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          if (wc.hold) await wc.hold;
+          if (topic === wc.failTopic)
+            throw new Error("Failed to publish payload, please try again.");
+          if (!wc.sessions.has(topic)) throw new Error(`No matching key. session: ${topic}`);
+          wc.sessions.delete(topic);
+        },
+      };
     }
     async isAvailable() {
-      return true;
+      return wc.relayUp;
     }
     async getAddress() {
       return { address: wc.address };
@@ -42,15 +75,7 @@ vi.mock("@creit.tech/stellar-wallets-kit/modules/wallet-connect", async (importO
       // the real module calls the kit's internal disconnect() here, unawaited,
       // and that calls the selected module's disconnect() unawaited too
       if (kit.wcSessionPaths.value.length === 0) void kit.StellarWalletsKit.disconnect();
-      await this.signClientDisconnect(topic);
-    }
-    async signClientDisconnect(topic: string) {
-      wc.disconnects.push(topic);
-      if (!wc.sessions.has(topic)) throw new Error(`Session or pairing topic not found: ${topic}`);
-      await new Promise((resolve) => setTimeout(resolve, 5));
-      if (topic === wc.failTopic) throw new Error("Failed to publish payload, please try again.");
-      if (!wc.sessions.has(topic)) throw new Error(`No matching key. session: ${topic}`);
-      wc.sessions.delete(topic);
+      await this.#client.disconnect({ topic });
     }
     async disconnect() {
       for (const topic of [...wc.sessions]) await this.closeSession(topic);
@@ -110,6 +135,8 @@ async function pageLoad(storage: Record<string, string>) {
   wc.sessions.clear();
   wc.disconnects = [];
   wc.failTopic = null;
+  wc.relayUp = true;
+  wc.hold = null;
   extensionDisconnects.length = 0;
   window.localStorage.clear();
   for (const [k, v] of Object.entries(storage)) window.localStorage.setItem(k, v);
@@ -509,6 +536,135 @@ describe("a user disconnect closes the wallet and reports what failed", () => {
     } finally {
       unsubscribe();
     }
+  });
+});
+
+// AppShell, DemolishFlow and the connect button clear the app first and let the
+// kit teardown finish in the background, so the user can already be connecting
+// again while a slow extension or the walletconnect relay is still closing
+describe("a teardown never undoes a wallet connected while it ran", () => {
+  function held() {
+    let release!: () => void;
+    const until = new Promise<void>((resolve) => (release = resolve));
+    return { until, release };
+  }
+
+  async function onWalletConnect() {
+    const page = await pageLoad({ [ADDRESS]: A, [MODULE]: "wallet_connect" });
+    await page.kit.restoreKitSession(MAINNET);
+    kitApi.wcSessionPaths.value = [{ publicKey: A, topic: "topic-app" }];
+    wc.sessions.add("topic-app");
+    return page;
+  }
+
+  it("keeps a wallet picked while the old extension was still disconnecting", async () => {
+    const { kit } = await pageLoad({ [ADDRESS]: A, [MODULE]: "xbull" });
+    kit.getKit(TESTNET);
+    const xbull = kitApi.activeModules.value.find((m) => m.productId === "xbull")!;
+    const slow = held();
+    vi.spyOn(xbull, "disconnect").mockReturnValue(slow.until);
+    const teardown = kit.disconnectKit();
+    await settle();
+    pickInModal("freighter", B);
+    slow.release();
+    await teardown;
+    await settle();
+    expect(kitApi.selectedModuleId.value).toBe("freighter");
+    expect(kitApi.activeAddress.value).toBe(B);
+    expect(window.localStorage.getItem(MODULE)).toBe("freighter");
+    expect(window.localStorage.getItem(ADDRESS)).toBe(B);
+  });
+
+  it("keeps a wallet picked while a WalletConnect session was still closing", async () => {
+    const { kit } = await onWalletConnect();
+    const slow = held();
+    wc.hold = slow.until;
+    const teardown = kit.disconnectKit();
+    await settle();
+    pickInModal("freighter", B);
+    slow.release();
+    await teardown;
+    await settle();
+    expect(wc.disconnects).toEqual(["topic-app"]);
+    expect(wc.sessions.size).toBe(0);
+    expect(extensionDisconnects).toEqual([]);
+    expect(kitApi.selectedModuleId.value).toBe("freighter");
+    expect(kitApi.activeAddress.value).toBe(B);
+    expect(window.localStorage.getItem(ADDRESS)).toBe(B);
+  });
+
+  it("leaves a new WalletConnect pairing open while the old one was still closing", async () => {
+    const { kit } = await onWalletConnect();
+    const slow = held();
+    wc.hold = slow.until;
+    const teardown = kit.disconnectKit();
+    await settle();
+    await pickWalletConnect(B, "topic-new");
+    slow.release();
+    await teardown;
+    await settle();
+    expect(wc.disconnects).toEqual(["topic-app"]);
+    expect([...wc.sessions]).toEqual(["topic-new"]);
+    expect(kitApi.wcSessionPaths.value).toEqual([{ publicKey: B, topic: "topic-new" }]);
+    expect(kitApi.selectedModuleId.value).toBe("wallet_connect");
+    expect(kitApi.activeAddress.value).toBe(B);
+  });
+
+  it("keeps a wallet picked while a co-signer's extension was still disconnecting", async () => {
+    const { kit, connector } = await pageLoad({});
+    kit.getKit(TESTNET);
+    const xbull = kitApi.activeModules.value.find((m) => m.productId === "xbull")!;
+    const slow = held();
+    vi.spyOn(xbull, "disconnect").mockReturnValue(slow.until);
+    const signed = connector.withScopedKitSession(
+      TESTNET,
+      async () => {
+        pickInModal("xbull", B);
+        return "signed";
+      },
+      vi.fn(),
+    );
+    await settle();
+    pickInModal("freighter", A);
+    slow.release();
+    await expect(signed).resolves.toBe("signed");
+    await settle();
+    expect(kitApi.selectedModuleId.value).toBe("freighter");
+    expect(kitApi.activeAddress.value).toBe(A);
+  });
+
+  it("closes a WalletConnect session once when two disconnects overlap", async () => {
+    const { kit } = await onWalletConnect();
+    await expect(Promise.all([kit.disconnectKit(), kit.disconnectKit()])).resolves.toEqual([
+      undefined,
+      undefined,
+    ]);
+    await settle();
+    expect(wc.disconnects).toEqual(["topic-app"]);
+    expect(wc.sessions.size).toBe(0);
+    expect(kitApi.selectedModuleId.value).toBeUndefined();
+  });
+
+  it("does not wait for a WalletConnect relay that never came up when nothing is open on it", async () => {
+    const { kit } = await pageLoad({});
+    kit.getKit(TESTNET);
+    // the user picked WalletConnect, its relay never answered, and they connected
+    // Freighter instead
+    wc.relayUp = false;
+    const walletConnect = kitApi.activeModules.value.find((m) => m.productId === "wallet_connect")!;
+    const abandoned = walletConnect.getAddress();
+    await settle();
+    expect(wc.constructed).toBe(1);
+    pickInModal("freighter", A);
+    const outcome = await Promise.race([
+      kit.disconnectKit().then(() => "disconnected"),
+      new Promise((resolve) => setTimeout(() => resolve("still waiting"), 1_000)),
+    ]);
+    expect(outcome).toBe("disconnected");
+    expect(kitApi.selectedModuleId.value).toBeUndefined();
+    // let the abandoned pick finish so nothing keeps polling after the test
+    wc.relayUp = true;
+    await abandoned;
   });
 });
 

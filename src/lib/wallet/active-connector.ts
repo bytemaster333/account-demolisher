@@ -12,7 +12,7 @@
 // cannot.
 
 import type { Connector } from "./connector";
-import { reportTeardownError } from "./teardown-report";
+import { reportTeardownError, teardownFailures } from "./teardown-report";
 
 let active: Connector | null = null;
 
@@ -64,12 +64,7 @@ export async function disconnectSession(
     }
   }
   if (failures.length === 1) reportTeardownError(onTeardownError, failures[0]);
-  if (failures.length > 1) {
-    reportTeardownError(
-      onTeardownError,
-      new AggregateError(failures, "the wallet could not be disconnected"),
-    );
-  }
+  if (failures.length > 1) reportTeardownError(onTeardownError, teardownFailures(failures));
 }
 
 function logTeardownError(error: unknown): void {
