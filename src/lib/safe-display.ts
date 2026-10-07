@@ -6,10 +6,12 @@
 // text around it (for example to spoof an amount or a destination).
 //
 // call sites: AllowanceList (components/allowance-viewer) renders sep-41
-// symbol() text through safeDisplay, and it is the only rendering call site.
-// the scam heuristics use safeDisplay for their messages and
-// hasHiddenCharacters to flag a held token's name, which takes effect only
-// where a page runs runHeldTokenScamHeuristics over the held tokens. other
+// symbol() text through safeDisplay and badges a non-ASCII one with
+// hasNonAscii. the multisig memo label (components/multisig/memo-label.ts)
+// shows a signing request's text memo through it, and the root error boundary
+// (app/error.tsx) its error message. the scam heuristics use safeDisplay for
+// their messages and hasHiddenCharacters to flag a held token's name; the
+// demolish page runs them over the held tokens (use-held-token-scam). other
 // on-chain strings are not routed through here.
 //
 // removed (matched by unicode property, so the source itself carries none of the
@@ -40,4 +42,17 @@ export function hasHiddenCharacters(value: string): boolean {
 // "non-ASCII" badge: homoglyphs such as a Cyrillic "С" render like Latin letters.
 export function hasNonAscii(value: string): boolean {
   return /[^\x20-\x7e]/.test(value);
+}
+
+// the one short form for keys, contract ids and hashes in copy and logs. a
+// value no more than two characters longer than head + tail is kept whole,
+// since the ellipsis would save next to nothing. slicing from length - tail
+// (not -tail) keeps a tail of 0 from returning the whole value.
+export function shortAddress(value: string, head = 6, tail = 4): string {
+  if (!Number.isInteger(head) || !Number.isInteger(tail) || head < 0 || tail < 0) {
+    throw new RangeError(`shortAddress: head and tail must be non-negative integers`);
+  }
+  return value.length > head + tail + 2
+    ? `${value.slice(0, head)}…${value.slice(value.length - tail)}`
+    : value;
 }
