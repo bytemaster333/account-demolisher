@@ -1326,3 +1326,101 @@ describe("M-23: the classic unwind is rebuilt from the state at execute time", (
     expect(buildClassicUnwindBatches(fresh, reviewed)).toEqual([]);
   });
 });
+
+describe("H-12: a pool withdraw counts against the trustline room a claim needs", () => {
+  const CAP = { kind: "credit", code: "CAP", issuer: ISSUER } as const;
+  const capLine = (amount: string, limit: string): AuditBalance => ({
+    asset: CAP,
+    amount,
+    limit,
+    buyingLiabilities: "0",
+    sellingLiabilities: "0",
+    isAuthorized: true,
+  });
+  // 10 of 100 shares in a pool holding 300 CAP and 1000 XLM: the withdraw pays
+  // 30 CAP and 100 XLM into the account ahead of the claims
+  const capPool = {
+    poolId: POOL_ID,
+    poolType: "constant_product",
+    shareBalance: "10",
+    totalShares: "100",
+    shareLimit: "100",
+    fee: 30,
+    reserves: [
+      { asset: { kind: "native" }, amount: "1000" },
+      { asset: CAP, amount: "300" },
+    ],
+  } as const;
+  const capCb = (id: string, amount: string): ClaimableBalanceEntry => ({
+    id,
+    asset: CAP,
+    amount,
+    sponsor: OTHER,
+    predicate: {},
+    claimants: [ACC],
+    claimableNow: true,
+  });
+
+  // testnet: [liquidity_pool_withdraw, claim_claimable_balance] in one
+  // transaction returned [op_success, op_line_full] for a claim that fit the
+  // audited room but not the room the withdraw left
+  it("raises a line the withdraw fills before claiming into it", () => {
+    const audit = makeAudit({
+      balances: [nativeLine("100"), capLine("40", "100")],
+      poolShares: [capPool],
+      claimableBalances: [capCb(CB_ID(20), "50")],
+    });
+    const plan = planClaimableBalances(audit, undefined);
+    expect(plan.claimed.map((c) => c.id)).toEqual([CB_ID(20)]);
+    expect(plan.trustlineChanges).toEqual([{ asset: CAP, change: "raise" }]);
+    const ops = allOps(batchClassicDemolition(audit, directOptions)).map((o) => o.kind);
+    expect(ops.indexOf("change_trust_add")).toBeGreaterThanOrEqual(0);
+    expect(ops.indexOf("change_trust_add")).toBeLessThan(ops.indexOf("claim_claimable_balance"));
+  });
+
+  it("still claims as-is what fits beside the withdraw", () => {
+    const audit = makeAudit({
+      balances: [nativeLine("100"), capLine("40", "100")],
+      poolShares: [capPool],
+      claimableBalances: [capCb(CB_ID(21), "30")],
+    });
+    const plan = planClaimableBalances(audit, undefined);
+    expect(plan.claimed.map((c) => c.id)).toEqual([CB_ID(21)]);
+    expect(plan.trustlineChanges).toEqual([]);
+  });
+
+  it("leaves a claim behind when the withdraw leaves no room even at the maximum limit", () => {
+    const max = "922337203685.4775807";
+    const audit = makeAudit({
+      balances: [nativeLine("100"), capLine("922337203600", max)],
+      poolShares: [capPool],
+      claimableBalances: [capCb(CB_ID(22), "60")],
+    });
+    // 85.4775807 of room before the withdraw, 55.4775807 after it
+    const plan = planClaimableBalances(audit, undefined);
+    expect(plan.claimed).toEqual([]);
+    expect(plan.leftBehind).toEqual([{ balance: audit.claimableBalances[0], reason: "line_full" }]);
+  });
+
+  it("rounds the withdraw down like core does", () => {
+    // 1 of 3 shares of 0.0000010 CAP pays 0.0000003 (3.33 stroops rounded down)
+    const audit = makeAudit({
+      balances: [nativeLine("100"), capLine("0", "0.0000010")],
+      poolShares: [
+        {
+          ...capPool,
+          shareBalance: "0.0000001",
+          totalShares: "0.0000003",
+          reserves: [
+            { asset: { kind: "native" }, amount: "1" },
+            { asset: CAP, amount: "0.0000010" },
+          ],
+        },
+      ],
+      claimableBalances: [capCb(CB_ID(23), "0.0000007")],
+    });
+    const plan = planClaimableBalances(audit, undefined);
+    expect(plan.claimed.map((c) => c.id)).toEqual([CB_ID(23)]);
+    expect(plan.trustlineChanges).toEqual([]);
+  });
+});

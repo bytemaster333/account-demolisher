@@ -41,6 +41,7 @@ export type PlanNodeKind =
   | "WithdrawAquariusConcentrated"
   | "WithdrawSoroswapLp"
   | "AddBlndTrustline"
+  | "AddExitTrustline"
   | "ClaimBlendEmissions"
   | "ClaimAquariusRewards"
   | "ClaimAquariusConcentratedFees"
@@ -146,6 +147,20 @@ export interface AddBlndTrustlineMetadata {
   readonly kind: "AddBlndTrustline";
   readonly code: "BLND";
   readonly issuer: string;
+  readonly transaction?: Transaction;
+}
+
+// change_trust for a classic credit asset a pool exit pays out through its
+// stellar asset contract. the SAC writes the payout into the account's
+// trustline, and with none the exit traps with Error(Contract, #13). built and
+// submitted like the BLND line; the final batch disposes of the asset and
+// removes the line again.
+export interface AddExitTrustlineMetadata {
+  readonly kind: "AddExitTrustline";
+  readonly code: string;
+  readonly issuer: string;
+  // the asset's SAC, the token the exits pay out
+  readonly contractId: string;
   readonly transaction?: Transaction;
 }
 
@@ -321,6 +336,10 @@ export interface AddBlndTrustlineNode extends PlanNodeBase {
   readonly kind: "AddBlndTrustline";
   readonly metadata: AddBlndTrustlineMetadata;
 }
+export interface AddExitTrustlineNode extends PlanNodeBase {
+  readonly kind: "AddExitTrustline";
+  readonly metadata: AddExitTrustlineMetadata;
+}
 export interface ClaimBlendEmissionsNode extends PlanNodeBase {
   readonly kind: "ClaimBlendEmissions";
   readonly metadata: ClaimBlendEmissionsMetadata;
@@ -371,6 +390,7 @@ export type PlanNode =
   | WithdrawAquariusConcentratedNode
   | WithdrawSoroswapLpNode
   | AddBlndTrustlineNode
+  | AddExitTrustlineNode
   | ClaimBlendEmissionsNode
   | ClaimAquariusRewardsNode
   | ClaimAquariusConcentratedFeesNode
@@ -385,10 +405,13 @@ export type PlanNode =
 // a plan that can't merge yet: a backstop deposit stays locked after it runs,
 // so it queues and unwinds now and the close is finished in a later run
 export interface PreparePlan {
-  // latest moment a withdrawal this plan queues (or one already queued) unlocks.
-  // an existing queue entry is dated a full duration from now, so it can unlock
-  // earlier than this
+  // when the last withdrawal the plan leaves locked unlocks. a queue this run
+  // creates is dated from the review, but its lock starts when it lands on
+  // chain; preparedUnlocksAt re-dates it from the transaction built at execute
   readonly unlocksAt: Date;
+  // when the entries queued before this run unlock, if any are still locked:
+  // read by discovery, or a full queue period from now when it wasn't
+  readonly queuedUnlocksAt?: Date;
   readonly reason: string;
 }
 
@@ -535,6 +558,25 @@ export function topologicalOrder(tree: PlanTree): readonly PlanNode[] {
   return order;
 }
 
+// when a prepare-only plan's locked withdrawals unlock, from what it built: each
+// BackstopQueue carries the unlock of the transaction hydration last built for
+// it, which at execute is the one signed, so the date counts from the queue's
+// real start rather than the review. undefined for a plan that merges.
+export function preparedUnlocksAt(tree: PlanTree): Date | undefined {
+  const prepare = tree.prepareOnly;
+  if (prepare === undefined) return undefined;
+  const queues = [...tree.allNodes.values()].filter(
+    (n): n is BackstopQueueNode => n.kind === "BackstopQueue",
+  );
+  if (queues.length === 0) return prepare.unlocksAt;
+  let latest = prepare.queuedUnlocksAt;
+  for (const queue of queues) {
+    const ends = queue.metadata.queueEndsAt;
+    if (latest === undefined || ends > latest) latest = ends;
+  }
+  return latest;
+}
+
 // contract ids of the tokens the plan's DeFi exits pay into the account, in plan
 // order. A balance of one of these still there at the merge (and not a classic
 // asset's SAC) is the user's exit proceeds and would be deleted with the
@@ -568,9 +610,9 @@ export function planExitPayoutTokens(tree: PlanTree): readonly string[] {
 
 // true for the kinds that carry their own prebuilt transaction, signed and
 // submitted one by one and rebuilt from fresh state before signing: every
-// soroban call, plus the BLND change_trust that has to land before the claims.
-// false for the classic batches the executor builds itself (ClassicUnwind,
-// FinalClassicTx) and the mediator forward.
+// soroban call, plus the change_trusts that have to land before the claims and
+// exits paying into them. false for the classic batches the executor builds
+// itself (ClassicUnwind, FinalClassicTx) and the mediator forward.
 export function isSorobanNode(node: PlanNode): boolean {
   switch (node.kind) {
     case "RevokeAllowance":
@@ -580,6 +622,7 @@ export function isSorobanNode(node: PlanNode): boolean {
     case "WithdrawAquariusConcentrated":
     case "WithdrawSoroswapLp":
     case "AddBlndTrustline":
+    case "AddExitTrustline":
     case "ClaimBlendEmissions":
     case "ClaimAquariusRewards":
     case "ClaimAquariusConcentratedFees":

@@ -12,6 +12,7 @@ import type {
 } from "@/lib/types/plan";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import type { HeldToken } from "@/lib/soroban/held-tokens";
+import type { ExitTrustlineGap } from "@/lib/soroban/stellar-asset";
 import type {
   AquariusConcentratedPositionSummary,
   AquariusPositionSummary,
@@ -95,6 +96,15 @@ export interface GeneratePlanOptions {
   readonly networkPassphrase?: string;
   // per-op fee the classic batches are bid at, for their reserve checks
   readonly classicFeePerOp?: number;
+  // the credit assets a pool exit pays out through their SACs that the account
+  // can't receive yet (exitTrustlineGaps in soroban/stellar-asset). a missing
+  // line is opened ahead of the exits paying into it; a line the issuer has not
+  // authorized refuses the plan, since no step can fix it.
+  readonly exitTrustlineGaps?: readonly ExitTrustlineGap[];
+  // the token the aquarius reward claims pay out (the router's RewardToken). a
+  // gap for it opens a line ahead of those claims; without it, a gap only counts
+  // for the tokens the planned withdraws and fee claims pay.
+  readonly aquariusRewardToken?: string;
   // pools whose accrued backstop emissions the user agreed to forfeit because
   // the claim can't run; their queue is planned without a claim ahead of it
   readonly forfeitBackstopEmissionsPoolIds?: readonly string[];
@@ -163,6 +173,20 @@ export function generatePlan(
     }
   }
 
+  // trustlines the pool exits pay into, opened ahead of every exit that needs one
+  const exitLines = exitTrustlineNodes(
+    positions,
+    opts.exitTrustlineGaps ?? [],
+    (opts.exitTrustlineGaps ?? []).length > 0
+      ? requireNetwork("the payout trustlines of the DeFi exits")
+      : undefined,
+    opts.aquariusRewardToken,
+  );
+  nodes.push(...exitLines.nodes);
+  const linesFor = (tokens: readonly string[]): string[] => [
+    ...new Set(tokens.flatMap((t) => exitLines.byToken.get(t) ?? [])),
+  ];
+
   // allowance revocations
   for (const allowance of allowances) {
     const key = `${allowance.contractId}|${allowance.spender}`;
@@ -196,7 +220,7 @@ export function generatePlan(
     nodes.push({
       id,
       kind: "WithdrawAquarius",
-      dependencies: [],
+      dependencies: linesFor(pool.tokens),
       status: "pending",
       description: `Withdraw ${pool.shareBalance.toString()} shares from Aquarius pool ${aquariusPoolLabel(pool)}`,
       metadata: {
@@ -213,7 +237,7 @@ export function generatePlan(
   // aquarius concentrated positions: the reward and the swap fees are claimed
   // first, then each tick range is withdrawn on the pool itself
   for (const pos of positions.aquariusConcentrated) {
-    fundingExitIds.push(...concentratedNodes(pos, nodes));
+    fundingExitIds.push(...concentratedNodes(pos, nodes, linesFor(pos.tokens), exitLines.reward));
   }
 
   // soroswap LPs
@@ -223,7 +247,7 @@ export function generatePlan(
     nodes.push({
       id,
       kind: "WithdrawSoroswapLp",
-      dependencies: [],
+      dependencies: linesFor([pos.pair.tokenA, pos.pair.tokenB]),
       status: "pending",
       description: `Withdraw Soroswap LP ${shortAddr(pos.pair.tokenA)}/${shortAddr(pos.pair.tokenB)}`,
       metadata: {
@@ -247,13 +271,17 @@ export function generatePlan(
     for (const [asset, amount] of pool.collateral) {
       if (amount <= 0n) continue;
       const id = makeId("blend-withdraw-collateral", pool.poolId, asset);
-      nodes.push(withdrawBlendNode(id, pool.poolId, asset, "collateral", deps));
+      nodes.push(
+        withdrawBlendNode(id, pool.poolId, asset, "collateral", [...deps, ...linesFor([asset])]),
+      );
       ids.push(id);
     }
     for (const [asset, amount] of pool.supply) {
       if (amount <= 0n) continue;
       const id = makeId("blend-withdraw-supply", pool.poolId, asset);
-      nodes.push(withdrawBlendNode(id, pool.poolId, asset, "supply", deps));
+      nodes.push(
+        withdrawBlendNode(id, pool.poolId, asset, "supply", [...deps, ...linesFor([asset])]),
+      );
       ids.push(id);
     }
     if (ids.length > 0) blendWithdrawIdsByPool.set(pool.poolId, ids);
@@ -367,7 +395,7 @@ export function generatePlan(
     nodes.push({
       id,
       kind: "ClaimAquariusRewards",
-      dependencies: [withdrawId],
+      dependencies: [withdrawId, ...exitLines.reward],
       status: "pending",
       description: `Claim Aquarius rewards for pool ${aquariusPoolLabel(pool)}`,
       metadata: {
@@ -462,29 +490,16 @@ export function generatePlan(
   }
   const prepareOnly = preparePlanFor(positions, backstopNow);
 
-  // an exchange close forwards only XLM. a token an exit pays out that is not a
-  // classic balance of this account (the backstop's LP token, a pool token with
-  // no trustline here) could not be swept anywhere, and the merge guard would
-  // stop the close after every exit had run. refused here, before anything runs;
-  // a prepare-only run keeps the account open, so its payouts stay with it.
   if (useMediator && prepareOnly === undefined) {
-    const payouts = [...exitPayoutTokens(positions), ...backstopPayoutTokens];
-    if (payouts.length > 0) {
-      const net = requireNetwork("the DeFi exits of an exchange close");
-      const classic = classicSacIds(audit, net.passphrase);
-      const stuck = [...new Set(payouts)].filter((t) => !classic.has(t));
-      if (stuck.length > 0) {
-        const comet = backstopPayoutTokens[0];
-        const names = stuck.map((t) =>
-          t === comet ? `the Blend backstop's BLND-USDC LP token ${shortAddr(t)}` : shortAddr(t),
-        );
-        throw new Error(
-          `An exchange close can only forward XLM, and the DeFi exits in this plan pay out ` +
-            `tokens this account does not hold as classic balances (${names.join(", ")}). ` +
-            `Close to your own Stellar address instead, or exit those positions first.`,
-        );
-      }
-    }
+    assertExchangeCloseCanRun(audit, positions, {
+      ...(network !== undefined ? { network } : {}),
+      ...(opts.exitTrustlineGaps !== undefined
+        ? { exitTrustlineGaps: opts.exitTrustlineGaps }
+        : {}),
+      ...(opts.aquariusRewardToken !== undefined
+        ? { aquariusRewardToken: opts.aquariusRewardToken }
+        : {}),
+    });
   }
 
   // standalone SEP-41 tokens: sweep each to the destination before the merge so a
@@ -556,9 +571,10 @@ export function generatePlan(
       sweep(token.contractId, token.balance, false);
     }
     // contract tokens an exit pays out. Classic assets (the native SAC and the
-    // SACs of assets the account trusts) are handled by the classic batches.
+    // SACs of assets the account trusts, or will once the plan opens the line)
+    // are handled by the classic batches.
     if (passphrase !== undefined) {
-      const classic = classicSacIds(audit, passphrase);
+      const classic = classicSacIds(audit, passphrase, exitLines.byToken.keys());
       for (const token of [...exitPayoutTokens(positions), ...backstopPayoutTokens]) {
         if (swept.has(token) || classic.has(token)) continue;
         // the payout isn't known until the exit lands; hydration reads it
@@ -664,31 +680,105 @@ export function generatePlan(
   return buildPlanTree(nodes, extras);
 }
 
+// an exchange close forwards only XLM. a token an exit pays out that is not a
+// classic balance of this account (the backstop's LP token, a pool token with no
+// trustline here and none the plan opens) could not be swept anywhere, and the
+// merge guard would stop the close after every exit had run. generatePlan
+// refuses it before anything runs, and callers can ask the same before minting
+// a mediator flow. only for a plan that merges: a prepare-only run keeps the
+// account open, so its payouts stay with it (see preparePlanFor).
+export function assertExchangeCloseCanRun(
+  audit: AccountAudit,
+  positions: ProtocolPositions,
+  opts: {
+    readonly network?: NetworkConfig;
+    readonly exitTrustlineGaps?: readonly ExitTrustlineGap[];
+    readonly aquariusRewardToken?: string;
+  } = {},
+): void {
+  const unlockedQueues = positions.backstop.some(
+    (bs) => (bs.unlockedQueuedForWithdrawal ?? 0n) > 0n,
+  );
+  const exitTokens = exitPayoutTokens(positions);
+  const gaps = opts.exitTrustlineGaps ?? [];
+  if (exitTokens.length === 0 && !unlockedQueues && gaps.length === 0) return;
+  const network = opts.network;
+  if (network === undefined) {
+    throw new Error(
+      "generatePlan: opts.network is required to plan the DeFi exits of an exchange close",
+    );
+  }
+  const comet = unlockedQueues ? blendCometId(network) : undefined;
+  const payouts = [...exitTokens, ...(comet !== undefined ? [comet] : [])];
+  const lines = exitTrustlineNodes(positions, gaps, network, opts.aquariusRewardToken);
+  const classic = classicSacIds(audit, network.passphrase, lines.byToken.keys());
+  const stuck = [...new Set(payouts)].filter((t) => !classic.has(t));
+  if (stuck.length === 0) return;
+  const names = stuck.map((t) =>
+    t === comet ? `the Blend backstop's BLND-USDC LP token ${shortAddr(t)}` : shortAddr(t),
+  );
+  throw new Error(
+    `An exchange close can only forward XLM, and the DeFi exits in this plan pay out ` +
+      `tokens this account does not hold as classic balances (${names.join(", ")}). ` +
+      `Close to your own Stellar address instead, or exit those positions first.`,
+  );
+}
+
+// a backstop deposit with, when discovery read it, the latest unlock of its
+// still-locked queue entries (the q4w exp)
+type BackstopDeposit = ProtocolPositions["backstop"][number] & {
+  readonly latestQueueUnlocksAt?: Date;
+};
+
 // whether a plan for these positions can only prepare the close: a backstop
 // queue stays locked after it runs (new queues, and the part of an existing one
 // that has not unlocked), and the account must exist to receive it. callers can
 // ask before minting anything only a full close uses, such as a mediator flow.
-// discovery does not report when an existing queue entry expires, so it is dated
-// a full queue duration from now: the date is the latest it can unlock.
+// a queue this run creates is dated from now, though its lock only starts when
+// it lands (preparedUnlocksAt re-dates it after the run). an existing locked
+// queue is dated from the unlock discovery read, or else a full queue period
+// from now, which is the latest it can unlock.
 export function preparePlanFor(
   positions: ProtocolPositions,
   now: number = Date.now(),
 ): PreparePlan | undefined {
-  let unlocksAt: Date | null = null;
-  for (const bs of positions.backstop) {
-    const unlocked = bs.unlockedQueuedForWithdrawal ?? 0n;
-    if (bs.shares <= 0n && bs.queuedForWithdrawal <= unlocked) continue;
+  const later = (a: Date | undefined, b: Date): Date => (a === undefined || b > a ? b : a);
+  let newQueueUnlocksAt: Date | undefined;
+  let queuedUnlocksAt: Date | undefined;
+  let queuedEstimated = false;
+  for (const bs of positions.backstop as readonly BackstopDeposit[]) {
     const duration = bs.queueDurationSeconds ?? BACKSTOP_QUEUE_DURATION_SECONDS;
-    const queueEndsAt = new Date(now + duration * 1000);
-    if (unlocksAt === null || queueEndsAt > unlocksAt) unlocksAt = queueEndsAt;
+    const fullPeriod = new Date(now + duration * 1000);
+    if (bs.shares > 0n) newQueueUnlocksAt = later(newQueueUnlocksAt, fullPeriod);
+    const unlocked = bs.unlockedQueuedForWithdrawal ?? 0n;
+    if (bs.queuedForWithdrawal > unlocked) {
+      if (bs.latestQueueUnlocksAt === undefined) queuedEstimated = true;
+      queuedUnlocksAt = later(queuedUnlocksAt, bs.latestQueueUnlocksAt ?? fullPeriod);
+    }
   }
-  if (unlocksAt === null) return undefined;
+  const unlocksAt =
+    newQueueUnlocksAt === undefined ? queuedUnlocksAt : later(queuedUnlocksAt, newQueueUnlocksAt);
+  if (unlocksAt === undefined) return undefined;
+  const reason = [
+    "A Blend backstop withdrawal stays locked after this run, and the account must exist " +
+      "to receive it, so this run unwinds everything else and leaves the account open.",
+  ];
+  if (newQueueUnlocksAt !== undefined) {
+    reason.push(
+      "A withdrawal this run queues stays locked for the backstop's full queue period " +
+        "from the moment it lands on chain, so its unlock date counts from then.",
+    );
+  }
+  if (queuedEstimated) {
+    reason.push(
+      "The unlock of the withdrawal already queued could not be read, so it is dated a " +
+        "full queue period from now, the latest it can unlock.",
+    );
+  }
   return {
     unlocksAt,
-    reason:
-      "A Blend backstop withdrawal stays locked after this run, and the account must " +
-      "exist to receive it. This run queues it and unwinds everything else. It unlocks " +
-      "by the date shown at the latest; come back then to withdraw it and finish the close.",
+    ...(queuedUnlocksAt !== undefined ? { queuedUnlocksAt } : {}),
+    reason: reason.join(" "),
   };
 }
 
@@ -729,19 +819,22 @@ export function finalBatchOptions(
 }
 
 // claim the reward and the fees, then withdraw every range; returns the node
-// ids, all of which pay tokens into the account
+// ids, all of which pay tokens into the account. tokenLines and rewardLines are
+// the payout trustlines the pool's own tokens and the reward token need first.
 function concentratedNodes(
   pos: AquariusConcentratedPositionSummary,
   nodes: PlanNode[],
+  tokenLines: readonly string[],
+  rewardLines: readonly string[],
 ): readonly string[] {
   const claims: string[] = [];
-  const label = `${pos.tokens.map(shortAddr).join("/")} (${shortAddr(pos.poolAddress)})`;
+  const label = concentratedLabel(pos);
   if (pos.pendingReward > 0n) {
     const id = makeId("aquarius-cl-claim", pos.poolAddress);
     nodes.push({
       id,
       kind: "ClaimAquariusRewards",
-      dependencies: [],
+      dependencies: rewardLines,
       status: "pending",
       description: `Claim Aquarius rewards for concentrated pool ${label}`,
       metadata: {
@@ -758,7 +851,7 @@ function concentratedNodes(
     nodes.push({
       id,
       kind: "ClaimAquariusConcentratedFees",
-      dependencies: [],
+      dependencies: tokenLines,
       status: "pending",
       description: `Collect the swap fees of concentrated pool ${label}`,
       metadata: {
@@ -781,7 +874,7 @@ function concentratedNodes(
     nodes.push({
       id,
       kind: "WithdrawAquariusConcentrated",
-      dependencies: claims,
+      dependencies: [...claims, ...tokenLines],
       status: "pending",
       description:
         `Withdraw the ${range.tickLower} to ${range.tickUpper} tick range from concentrated ` +
@@ -827,10 +920,113 @@ function exitPayoutTokens(positions: ProtocolPositions): readonly string[] {
   return out;
 }
 
-// SAC ids of XLM and every classic asset the account trusts; balances an exit
-// pays out in these land on classic balances the batcher already handles
-function classicSacIds(audit: AccountAudit, passphrase: string): ReadonlySet<string> {
-  const ids = new Set<string>([Asset.native().contractId(passphrase)]);
+// the payout trustlines the plan opens, one per asset, and which of them the
+// exits need. a gap counts only for a token a planned step pays: a withdraw or
+// fee claim's pool token, or the reward token when a reward claim is planned.
+// any other gap (say a pool token of a position kept only for its reward) needs
+// no line and blocks nothing.
+function exitTrustlineNodes(
+  positions: ProtocolPositions,
+  gaps: readonly ExitTrustlineGap[],
+  network: NetworkConfig | undefined,
+  rewardToken: string | undefined,
+): {
+  readonly nodes: readonly PlanNode[];
+  // payout token contract id -> the node that opens its line
+  readonly byToken: ReadonlyMap<string, string>;
+  // the line the reward claims pay into, if the plan opens one
+  readonly reward: readonly string[];
+} {
+  const byToken = new Map<string, string>();
+  const reward: string[] = [];
+  const nodes: PlanNode[] = [];
+  if (gaps.length === 0 || network === undefined) return { nodes, byToken, reward };
+  const paidByExit = new Set(exitPayoutTokens(positions));
+  const rewardClaims =
+    positions.aquarius.some((p) => p.shareBalance > 0n) ||
+    positions.aquariusConcentrated.some((p) => p.pendingReward > 0n);
+  for (const gap of gaps) {
+    // the line must be the asset the token wraps, or the exit still traps and
+    // the account opens a line nothing pays into
+    const derived = new Asset(gap.code, gap.issuer).contractId(network.passphrase);
+    if (derived !== gap.contractId) {
+      throw new Error(
+        `generatePlan: the payout trustline ${gap.code}:${gap.issuer} is not the asset of ` +
+          `token ${gap.contractId}`,
+      );
+    }
+    const byExit = paidByExit.has(gap.contractId);
+    const byReward = rewardClaims && gap.contractId === rewardToken;
+    if (!byExit && !byReward) continue;
+    if (gap.reason === "unauthorized") {
+      const payers = [
+        ...(byExit ? exitsPaying(positions, gap.contractId) : []),
+        ...(byReward ? ["the Aquarius reward claims"] : []),
+      ];
+      throw new Error(
+        `The ${gap.code}:${gap.issuer} trustline of this account is not authorized by its ` +
+          `issuer, so it can't receive the payout of ${payers.join(" and ")}. Ask the issuer ` +
+          `to authorize the line, or exit that position outside this app, before closing.`,
+      );
+    }
+    if (byToken.has(gap.contractId)) continue;
+    const id = makeId("exit-trustline", gap.contractId);
+    nodes.push({
+      id,
+      kind: "AddExitTrustline",
+      dependencies: [],
+      status: "pending",
+      description:
+        `Add a ${gap.code} trustline so the pool can pay it out ` +
+        "(0.5 XLM reserve, released when the close removes the line)",
+      metadata: {
+        kind: "AddExitTrustline",
+        code: gap.code,
+        issuer: gap.issuer,
+        contractId: gap.contractId,
+      },
+    });
+    byToken.set(gap.contractId, id);
+    if (byReward) reward.push(id);
+  }
+  return { nodes, byToken, reward };
+}
+
+// the planned exits that pay out a token, named for the user
+function exitsPaying(positions: ProtocolPositions, token: string): string[] {
+  const out: string[] = [];
+  for (const pos of positions.soroswap) {
+    if (pos.shareBalance > 0n && (pos.pair.tokenA === token || pos.pair.tokenB === token)) {
+      out.push(`the Soroswap pool ${shortAddr(pos.pair.tokenA)}/${shortAddr(pos.pair.tokenB)}`);
+    }
+  }
+  for (const pool of positions.aquarius) {
+    if (pool.shareBalance > 0n && pool.tokens.includes(token)) {
+      out.push(`the Aquarius pool ${aquariusPoolLabel(pool)}`);
+    }
+  }
+  for (const pos of positions.aquariusConcentrated) {
+    if (pos.tokens.includes(token)) {
+      out.push(`the Aquarius concentrated pool ${concentratedLabel(pos)}`);
+    }
+  }
+  for (const pool of positions.blend) {
+    if ([...pool.collateral, ...pool.supply].some(([a, amount]) => a === token && amount > 0n)) {
+      out.push(`the Blend pool ${shortAddr(pool.poolId)}`);
+    }
+  }
+  return out;
+}
+
+// SAC ids of XLM, every classic asset the account trusts and every one the plan
+// opens a line for; balances an exit pays out in these land on classic balances
+// the batcher already handles
+function classicSacIds(
+  audit: AccountAudit,
+  passphrase: string,
+  plannedLines: Iterable<string>,
+): ReadonlySet<string> {
+  const ids = new Set<string>([Asset.native().contractId(passphrase), ...plannedLines]);
   for (const b of audit.balances) {
     if (b.asset.kind !== "credit") continue;
     ids.add(new Asset(b.asset.code, b.asset.issuer).contractId(passphrase));
@@ -905,6 +1101,10 @@ function withdrawBlendNode(
 
 function aquariusPoolLabel(pool: AquariusPositionSummary): string {
   return `${pool.tokens.map(shortAddr).join("/")} (${pool.poolIndex.slice(0, 8)}...)`;
+}
+
+function concentratedLabel(pos: AquariusConcentratedPositionSummary): string {
+  return `${pos.tokens.map(shortAddr).join("/")} (${shortAddr(pos.poolAddress)})`;
 }
 
 // BLND has 7 decimals

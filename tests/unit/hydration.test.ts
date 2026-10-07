@@ -21,6 +21,8 @@ import {
 import { spendableFromAccount } from "@/lib/adapters/blend/spendable";
 import { NoSoroswapRouteError } from "@/lib/adapters/soroswap/swap";
 import {
+  BackstopEmissionsAlreadyClaimedError,
+  BackstopEmissionsClaimError,
   hydratePlanTransactions,
   PriceImpactRefusedError,
   rebuildSorobanNodeTransaction,
@@ -534,6 +536,7 @@ describe("hydratePlanTransactions, steps behind other steps are deferred", () =>
       priceImpactRefused: false,
       noSoroswapRoute: false,
       backstopClaimUnavailable: false,
+      error: expect.any(Error),
     };
     expect(failures).toEqual([
       { nodeId: "repay", reason: "Error(Contract, #1205)", deferred: false, ...plain },
@@ -962,13 +965,150 @@ describe("hydration, Blend backstop steps take their amounts from the built tran
         priceImpactRefused: false,
         noSoroswapRoute: false,
         backstopClaimUnavailable: false,
+        error: expect.any(Error),
       },
     ]);
     expect(claim.error).not.toMatch(/forfeit/);
   });
+
+  // what undici throws when the rpc can't be reached, and its plain-Error form
+  it.each([
+    ["TypeError", new TypeError("fetch failed")],
+    ["Error", new Error("fetch failed")],
+  ])("never reads an unreachable rpc (%s fetch failed) as a forfeit", async (_name, thrown) => {
+    const buildBackstopClaimTx = vi.fn(async () => {
+      throw thrown;
+    });
+    const claim = claimNode();
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([claim]),
+      USER,
+      baseDeps({ adapters: { buildBackstopClaimTx } }),
+    );
+    expect(failures).toEqual([
+      expect.objectContaining({
+        nodeId: "claim",
+        reason: "fetch failed",
+        backstopClaimUnavailable: false,
+        error: thrown,
+      }),
+    ]);
+    const rebuilt = rebuildSorobanNodeTransaction(
+      claimNode(),
+      USER,
+      baseDeps({ adapters: { buildBackstopClaimTx } }),
+    );
+    await expect(rebuilt).rejects.toBe(thrown);
+    await expect(rebuilt).rejects.not.toBeInstanceOf(BackstopEmissionsClaimError);
+  });
+
+  // the accrual was claimed elsewhere between discovery and this build: there is
+  // nothing to forfeit, and the plan is stale, so the review is run again
+  it("fails a claim with nothing left to claim as a stale plan, not a forfeit", async () => {
+    const buildBackstopClaimTx = vi.fn(async () => {
+      throw new Error("no accrued backstop emissions to claim for Blend pool CPOOL");
+    });
+    const before: PlanNode = {
+      id: "before",
+      kind: "BackstopWithdraw",
+      dependencies: [],
+      description: "already built",
+      status: "pending",
+      metadata: {
+        kind: "BackstopWithdraw",
+        poolId: "CPOOL",
+        amount: 1n,
+        lpToken: "CCOMET",
+        transaction: { fake: "tx" } as never,
+      },
+    };
+    const claim = claimNode(["before"]);
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([before, claim]),
+      USER,
+      baseDeps({ adapters: { buildBackstopClaimTx } }),
+    );
+    expect(failures).toEqual([
+      expect.objectContaining({
+        nodeId: "claim",
+        deferred: false,
+        backstopClaimUnavailable: false,
+        error: expect.any(BackstopEmissionsAlreadyClaimedError),
+      }),
+    ]);
+    expect(claim.status).toBe("failed");
+    expect(claim.error).toMatch(/claimed since the account was read/);
+    expect(claim.error).not.toMatch(/forfeit/);
+    await expect(
+      rebuildSorobanNodeTransaction(
+        claimNode(),
+        USER,
+        baseDeps({ adapters: { buildBackstopClaimTx } }),
+      ),
+    ).rejects.toMatchObject({ name: "BackstopEmissionsAlreadyClaimedError", poolId: "CPOOL" });
+  });
 });
 
 describe("hydration, failures say which user answer they wait on", () => {
+  it("carries the refusal kind and the thrown error of a refused conversion", async () => {
+    const thinPool = (x: bigint): bigint => (x * 1_000_000n) / (1_000_000n + x);
+    const market = swapMarket(thinPool);
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([convertNode()]),
+      USER,
+      baseDeps({
+        rpc: market.rpc,
+        adapters: {
+          buildSwapToXLM: market.buildSwapToXLM,
+          quoteRouteToXLM: market.quoteRouteToXLM,
+          readTokenBalance: async () => 1_000_000n,
+        },
+      }),
+    );
+    expect(failures).toHaveLength(1);
+    expect(failures[0]!.refusal).toBe("price_impact");
+    expect(failures[0]!.error).toBeInstanceOf(PriceImpactRefusedError);
+
+    const noRoute = new NoSoroswapRouteError(HELD_TOKEN, []);
+    const routeless = await hydratePlanTransactions(
+      buildPlanTree([convertNode()]),
+      USER,
+      baseDeps({
+        adapters: {
+          quoteRouteToXLM: async () => {
+            throw noRoute;
+          },
+          readTokenBalance: async () => 1_000_000n,
+        },
+      }),
+    );
+    expect(routeless.failures).toEqual([
+      expect.objectContaining({ refusal: "no_route", error: noRoute }),
+    ]);
+  });
+
+  it("sets no refusal kind on a failure that is not a refused conversion", async () => {
+    const buildBackstopClaimTx = vi.fn(async () => {
+      throw new Error("timeout");
+    });
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([
+        {
+          id: "claim",
+          kind: "ClaimBackstopEmissions",
+          dependencies: [],
+          description: "claim",
+          status: "pending",
+          metadata: { kind: "ClaimBackstopEmissions", poolId: "CPOOL", accruedEmissions: 7n },
+        },
+      ]),
+      USER,
+      baseDeps({ adapters: { buildBackstopClaimTx } }),
+    );
+    expect(failures).toHaveLength(1);
+    expect("refusal" in failures[0]!).toBe(false);
+  });
+
   it("flags a conversion refused for its price", async () => {
     const thinPool = (x: bigint): bigint => (x * 1_000_000n) / (1_000_000n + x);
     const market = swapMarket(thinPool);
@@ -1106,9 +1246,117 @@ describe("hydration, the BLND trustline and the emissions claim behind it", () =
         priceImpactRefused: false,
         noSoroswapRoute: false,
         backstopClaimUnavailable: false,
+        error: expect.any(Error),
       },
     ]);
     expect(claim.status).toBe("pending");
+  });
+});
+
+describe("hydration, the trustline a pool exit pays into", () => {
+  const ISSUER = Keypair.random().publicKey();
+  const lineNode = (code: string, over: { contractId?: string } = {}): PlanNode => ({
+    id: `line-${code}`,
+    kind: "AddExitTrustline",
+    dependencies: [],
+    description: `trust ${code}`,
+    status: "pending",
+    metadata: {
+      kind: "AddExitTrustline",
+      code,
+      issuer: ISSUER,
+      contractId: over.contractId ?? new Asset(code, ISSUER).contractId(TESTNET.passphrase),
+    },
+  });
+  const txOf = (node: PlanNode): Transaction | undefined =>
+    (node.metadata as { transaction?: Transaction }).transaction;
+
+  it("builds one change_trust for the asset at the default limit, at seq + 1", async () => {
+    const node = lineNode("YBX");
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([node]),
+      USER,
+      baseDeps({
+        network: TESTNET,
+        fetchSourceAccount: vi.fn(async () =>
+          withNative(accountAt(700n), "10.0000000", "0.0000000"),
+        ),
+      }),
+    );
+    expect(failures).toEqual([]);
+    const tx = txOf(node)!;
+    expect(tx.source).toBe(USER);
+    expect(tx.sequence).toBe("701");
+    expect(tx.operations).toHaveLength(1);
+    const op = tx.operations[0]!;
+    if (op.type !== "changeTrust") throw new Error("expected changeTrust");
+    expect(op.line).toEqual(new Asset("YBX", ISSUER));
+    expect(op.limit).toBe("922337203685.4775807");
+  });
+
+  it("refuses a node whose asset is not the token the exit pays", async () => {
+    const node = lineNode("YBX", {
+      contractId: new Asset("GQX", ISSUER).contractId(TESTNET.passphrase),
+    });
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([node]),
+      USER,
+      baseDeps({
+        network: TESTNET,
+        fetchSourceAccount: vi.fn(async () =>
+          withNative(accountAt(700n), "10.0000000", "0.0000000"),
+        ),
+      }),
+    );
+    expect(failures).toEqual([expect.objectContaining({ nodeId: "line-YBX" })]);
+    expect(node.error).toMatch(/YBX:G\w+ is not the asset of token C\w+/);
+    expect(txOf(node)).toBeUndefined();
+  });
+
+  it("refuses the change_trust when the account can't fund the line's reserve", async () => {
+    // 1.5 XLM on a bare account leaves 0.5 free: not the reserve plus the fee
+    const node = lineNode("YBX");
+    await hydratePlanTransactions(
+      buildPlanTree([node]),
+      USER,
+      baseDeps({
+        network: TESTNET,
+        fetchSourceAccount: vi.fn(async () => withNative(accountAt(700n), "1.5000000", "0")),
+      }),
+    );
+    expect(node.status).toBe("failed");
+    expect(node.error).toMatch(/opening the YBX trustline needs 0\.5100000 XLM free/);
+  });
+
+  // every line built in one pass is checked against the same account read, so
+  // each one counts the reserves of the lines built before it
+  it("counts the reserves of every line the pass opens", async () => {
+    const lines = [lineNode("YBX"), lineNode("GQX")];
+    // 1.6 XLM on a bare account: 0.6 free fits one line's 0.51, not two
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree(lines),
+      USER,
+      baseDeps({
+        network: TESTNET,
+        fetchSourceAccount: vi.fn(async () => withNative(accountAt(700n), "1.6000000", "0")),
+      }),
+    );
+    expect(txOf(lines[0]!)).toBeDefined();
+    expect(failures).toEqual([expect.objectContaining({ nodeId: "line-GQX" })]);
+    expect(lines[1]!.error).toMatch(/needs 1\.0200000 XLM free/);
+  });
+
+  it("rebuilds against the fresh account alone, whose reserves already count landed lines", async () => {
+    const node = lineNode("GQX");
+    await rebuildSorobanNodeTransaction(
+      node,
+      USER,
+      baseDeps({
+        network: TESTNET,
+        fetchSourceAccount: vi.fn(async () => withNative(accountAt(700n), "1.6000000", "0")),
+      }),
+    );
+    expect(txOf(node)).toBeDefined();
   });
 });
 

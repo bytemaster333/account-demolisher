@@ -1,7 +1,16 @@
 // walks the plan tree and attaches an unsigned transaction to every node that
-// carries its own (the soroban steps and the BLND trustline)
+// carries its own (the soroban steps and the trustlines they pay into)
 
-import { Asset, Horizon, scValToNative, type Transaction, type rpc } from "@stellar/stellar-sdk";
+import {
+  Account,
+  Asset,
+  Horizon,
+  Operation,
+  scValToNative,
+  TransactionBuilder,
+  type Transaction,
+  type rpc,
+} from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { blndTokenForNetwork } from "@/lib/adapters/blend/constants";
@@ -61,6 +70,12 @@ export interface HydrationFailure {
   readonly priceImpactRefused: boolean;
   readonly noSoroswapRoute: boolean;
   readonly backstopClaimUnavailable: boolean;
+  // which answer a refused conversion waits on, set with the two flags above
+  // (unset only for a price refusal thrown without its detail)
+  readonly refusal?: ConversionRefusal | "no_route";
+  // the thrown value itself, so a caller can read what the error carries (the
+  // accrued BLND of a BackstopEmissionsClaimError, the quote of a refusal)
+  readonly error: unknown;
 }
 
 export interface HydrationDeps {
@@ -115,16 +130,19 @@ export async function hydratePlanTransactions(
 
   // one account read for the whole pass; every build gets its own copy of it
   const getSourceAccount = sourceAccountCopies(() => deps.fetchSourceAccount(userPublicKey));
+  // trustlines built earlier in this pass, whose reserves that one read can't show
+  const opened: OpenedLines = { count: 0 };
 
   for (const node of topologicalOrder(tree)) {
     if (!carriesTransaction(node) || nodeHasTransaction(node)) continue;
 
     try {
-      await hydrateNode(node, userPublicKey, deps, getSourceAccount, false);
+      await hydrateNode(node, userPublicKey, deps, getSourceAccount, opened, false);
       delete node.deferred;
     } catch (err) {
       const reason = errorMessage(err);
       const deferred = node.dependencies.length > 0 && !needsUserAnswer(err);
+      const refusal = conversionRefusalOf(err);
       failures.push({
         nodeId: node.id,
         reason,
@@ -132,6 +150,8 @@ export async function hydratePlanTransactions(
         priceImpactRefused: err instanceof PriceImpactRefusedError,
         noSoroswapRoute: err instanceof NoSoroswapRouteError,
         backstopClaimUnavailable: err instanceof BackstopEmissionsClaimError,
+        ...(refusal !== undefined ? { refusal } : {}),
+        error: err,
       });
       if (deferred) {
         node.deferred = { after: node.dependencies, reason };
@@ -161,11 +181,13 @@ export async function rebuildSorobanNodeTransaction(
 ): Promise<void> {
   if (!carriesTransaction(node)) return;
   clearTransaction(node);
+  // a fresh read: the lines earlier steps opened already hold their reserves
   await hydrateNode(
     node,
     userPublicKey,
     deps,
     sourceAccountCopies(() => deps.fetchSourceAccount(userPublicKey)),
+    { count: 0 },
     true,
   );
   delete node.deferred;
@@ -195,11 +217,16 @@ function sourceAccountCopies(
   };
 }
 
+interface OpenedLines {
+  count: number;
+}
+
 async function hydrateNode(
   node: PlanNode,
   userPublicKey: string,
   deps: HydrationDeps,
   getSourceAccount: () => Promise<Horizon.AccountResponse>,
+  opened: OpenedLines,
   rebuild: boolean,
 ): Promise<void> {
   const a = deps.adapters ?? {};
@@ -279,8 +306,26 @@ async function hydrateNode(
         );
       }
       const account = await getSourceAccount();
-      assertTrustlineReserve(account, deps.network);
+      assertTrustlineReserve(node, account, deps.network, opened, "to claim the Blend emissions");
       setTransaction(node, buildBlndTrustlineTx(deps.network, account));
+      opened.count += 1;
+      return;
+    }
+
+    case "AddExitTrustline": {
+      const md = node.metadata;
+      // the Asset constructor validates the code and the issuer key
+      const asset = new Asset(md.code, md.issuer);
+      if (asset.contractId(deps.network.passphrase) !== md.contractId) {
+        throw new Error(
+          `AddExitTrustline: ${md.code}:${md.issuer} is not the asset of token ${md.contractId} ` +
+            `on ${deps.network.id}`,
+        );
+      }
+      const account = await getSourceAccount();
+      assertTrustlineReserve(node, account, deps.network, opened, "to exit the pool");
+      setTransaction(node, buildTrustlineTx(deps.network, account, asset));
+      opened.count += 1;
       return;
     }
 
@@ -327,6 +372,9 @@ async function hydrateNode(
         // a failed account read or rpc call is an ordinary failure
         if (err instanceof BackstopClaimUnavailableError) {
           throw new BackstopEmissionsClaimError(err);
+        }
+        if (err instanceof Error && NOTHING_ACCRUED.test(err.message)) {
+          throw new BackstopEmissionsAlreadyClaimedError(node.metadata.poolId, err);
         }
         throw err;
       }
@@ -722,19 +770,49 @@ function pinBackstop(
 // a new trustline locks one base reserve, and the change_trust pays its fee bid
 // out of the same free XLM. checked when the step is built (at review and again
 // right before signing), so a short account learns how much to add instead of
-// failing the step on chain with op_low_reserve.
-function assertTrustlineReserve(account: Horizon.AccountResponse, network: NetworkConfig): void {
+// failing the step on chain with op_low_reserve. the lines built earlier in the
+// same pass were read off the same account, so their reserves are counted too.
+function assertTrustlineReserve(
+  node: Extract<PlanNode, { kind: "AddBlndTrustline" | "AddExitTrustline" }>,
+  account: Horizon.AccountResponse,
+  network: NetworkConfig,
+  opened: OpenedLines,
+  purpose: string,
+): void {
   const native = Asset.native().contractId(network.passphrase);
   const free = spendableFromAccount(account, native, network)?.spendable ?? 0n;
-  const needed = BASE_RESERVE_STROOPS + BigInt(SOROBAN_INCLUSION_FEE);
+  const lines = BigInt(opened.count + 1);
+  const needed = lines * (BASE_RESERVE_STROOPS + BigInt(SOROBAN_INCLUSION_FEE));
   if (free < needed) {
+    const each =
+      lines === 1n ? "" : ` for each of the ${lines.toString()} trustlines this close opens`;
     throw new Error(
-      `AddBlndTrustline: opening the BLND trustline needs ${stroopsToDecimal(needed)} XLM free ` +
-        `(0.5 XLM reserve plus the fee), and the account has ${stroopsToDecimal(free)}; add XLM ` +
-        `to claim the Blend emissions`,
+      `${node.kind}: opening the ${node.metadata.code} trustline needs ` +
+        `${stroopsToDecimal(needed)} XLM free (0.5 XLM reserve plus the fee${each}), and the ` +
+        `account has ${stroopsToDecimal(free)}; add XLM ${purpose}`,
     );
   }
 }
+
+// change_trust at the default (maximum) limit, so any payout fits. it bids the
+// same per-op fee as the soroban steps and gets the same five-minute timeout.
+// built off a copy of the account so the caller's sequence never moves.
+function buildTrustlineTx(
+  network: NetworkConfig,
+  sourceAccount: Horizon.AccountResponse,
+  asset: Asset,
+): Transaction {
+  const source = new Account(sourceAccount.accountId(), sourceAccount.sequenceNumber());
+  return new TransactionBuilder(source, {
+    fee: SOROBAN_INCLUSION_FEE,
+    networkPassphrase: network.passphrase,
+  })
+    .addOperation(Operation.changeTrust({ asset }))
+    .setTimeout(TRUSTLINE_TIMEOUT_SECONDS)
+    .build();
+}
+
+const TRUSTLINE_TIMEOUT_SECONDS = 300;
 
 export function resolveContractIdForAsset(asset: AssetIdentifier, network: NetworkConfig): string {
   switch (asset.kind) {
@@ -829,12 +907,39 @@ export class BackstopEmissionsClaimError extends Error {
   }
 }
 
+// buildBackstopClaimTx (adapters/blend/exit.ts) throws a plain Error with this
+// message when the on-chain accrual it reads is zero
+const NOTHING_ACCRUED = /^no accrued backstop emissions to claim\b/;
+
+// the plan has a backstop claim because discovery saw accrued BLND, and the
+// build finds none: it was claimed elsewhere in between. nothing is forfeited,
+// but the plan no longer matches the chain, so the review has to run again.
+export class BackstopEmissionsAlreadyClaimedError extends Error {
+  readonly poolId: string;
+  constructor(poolId: string, cause: Error) {
+    super(
+      `ClaimBackstopEmissions: the backstop emissions for pool ${poolId} were claimed since ` +
+        `the account was read, so there is nothing left to claim; review the close again`,
+      { cause },
+    );
+    this.name = "BackstopEmissionsAlreadyClaimedError";
+    this.poolId = poolId;
+  }
+}
+
+function conversionRefusalOf(err: unknown): ConversionRefusal | "no_route" | undefined {
+  if (err instanceof NoSoroswapRouteError) return "no_route";
+  if (err instanceof PriceImpactRefusedError) return err.reason;
+  return undefined;
+}
+
 // failures no earlier step can resolve: they wait on the user
 function needsUserAnswer(err: unknown): boolean {
   return (
     err instanceof PriceImpactRefusedError ||
     err instanceof NoSoroswapRouteError ||
     err instanceof BackstopEmissionsClaimError ||
+    err instanceof BackstopEmissionsAlreadyClaimedError ||
     // a BLND line the issuer has not authorized: no step in the plan fixes it
     (err instanceof BlndTrustlineMissingError && err.reason === "unauthorized")
   );

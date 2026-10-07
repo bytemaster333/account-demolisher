@@ -1,5 +1,13 @@
 import { describe, it, expect, vi } from "vitest";
-import { Account, TransactionBuilder, type rpc, type Horizon } from "@stellar/stellar-sdk";
+import {
+  Account,
+  Asset,
+  Keypair,
+  Operation,
+  TransactionBuilder,
+  type rpc,
+  type Horizon,
+} from "@stellar/stellar-sdk";
 import { buildBlndTrustlineTx } from "@/lib/adapters/blend/emissions-check";
 import { FORWARD_OPERATION_COUNT, MAX_FORWARD_FEE } from "@/lib/mediator/forward-terms";
 
@@ -291,5 +299,39 @@ describe("simulator: classic nodes outside the final batch", () => {
     if (out.kind !== "classic") throw new Error("expected classic");
     expect(out.operationCount).toBe(1);
     expect(out.estimatedFee).toBe(tx.fee);
+  });
+
+  it("validates a pool payout's change_trust in memory too", async () => {
+    const simulateFn = vi.fn();
+    const issuer = Keypair.random().publicKey();
+    const asset = new Asset("YBX", issuer);
+    const tx = new TransactionBuilder(new Account(USER, "41"), {
+      fee: "100000",
+      networkPassphrase: TESTNET.passphrase,
+    })
+      .addOperation(Operation.changeTrust({ asset }))
+      .setTimeout(300)
+      .build();
+    const out = await simulateNode(
+      {
+        id: "line",
+        kind: "AddExitTrustline",
+        dependencies: [],
+        status: "pending",
+        description: "trust YBX",
+        metadata: {
+          kind: "AddExitTrustline",
+          code: "YBX",
+          issuer,
+          contractId: asset.contractId(TESTNET.passphrase),
+          transaction: tx,
+        },
+      },
+      baseDeps({ simulateFn }),
+    );
+    expect(simulateFn).not.toHaveBeenCalled();
+    if (out.kind !== "classic") throw new Error("expected classic");
+    expect(out.operationCount).toBe(1);
+    expect(out.xdr).toBe(tx.toEnvelope().toXdr("base64"));
   });
 });

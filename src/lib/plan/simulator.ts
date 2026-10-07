@@ -46,7 +46,7 @@ async function simulateSorobanNode(
   if (!tx) {
     throw new NodeNotBuiltError(node);
   }
-  if (node.kind === "AddBlndTrustline") {
+  if (node.kind === "AddBlndTrustline" || node.kind === "AddExitTrustline") {
     // a classic change_trust: soroban rpc has nothing to simulate, so the built
     // envelope itself is the check
     return {

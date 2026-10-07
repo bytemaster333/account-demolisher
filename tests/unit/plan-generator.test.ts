@@ -1,8 +1,18 @@
 import { describe, it, expect } from "vitest";
 import { Asset, Keypair, StrKey } from "@stellar/stellar-sdk";
 import { TESTNET } from "@/lib/config/networks";
-import { finalBatchOptions, generatePlan, preparePlanFor } from "@/lib/plan/generator";
-import { planExitPayoutTokens, topologicalOrder, type PlanTree } from "@/lib/plan/tree";
+import {
+  assertExchangeCloseCanRun,
+  finalBatchOptions,
+  generatePlan,
+  preparePlanFor,
+} from "@/lib/plan/generator";
+import {
+  planExitPayoutTokens,
+  preparedUnlocksAt,
+  topologicalOrder,
+  type PlanTree,
+} from "@/lib/plan/tree";
 import type { AccountAudit } from "@/lib/types/account";
 import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
 
@@ -1047,6 +1057,17 @@ describe("M-25: an exchange close can't take exit payouts it can't forward", () 
     );
   });
 
+  // the preview asks before it mints a mediator flow the refused plan never uses
+  it("gives callers the same refusal before a mediator is minted", () => {
+    expect(() =>
+      assertExchangeCloseCanRun(makeAudit(), unlocked(500n), { network: TESTNET }),
+    ).toThrow(/exchange close can only forward XLM.*BLND-USDC LP token/);
+    expect(() => assertExchangeCloseCanRun(makeAudit(), emptyPositions())).not.toThrow();
+    expect(() => assertExchangeCloseCanRun(makeAudit(), unlocked(500n))).toThrow(
+      /opts\.network is required/,
+    );
+  });
+
   it("refuses a pool exit that pays out a token the account holds no classic line for", () => {
     const token = StrKey.encodeContract(Buffer.alloc(32, 31));
     const positions = emptyPositions({
@@ -1078,10 +1099,6 @@ describe("PLCL-30: callers can tell a prepare-only plan before minting a mediato
     backstop: [{ poolId: POOL_ID, shares: 5n, queuedForWithdrawal: 0n }],
   });
 
-  it("says the date is the latest the queue unlocks", () => {
-    expect(preparePlanFor(locked, NOW)?.reason).toMatch(/at the latest/);
-  });
-
   it("reports the unlock date for positions that keep a locked queue, and nothing otherwise", () => {
     expect(preparePlanFor(locked, NOW)?.unlocksAt.getTime()).toBe(NOW + 17 * 24 * 60 * 60 * 1000);
     expect(preparePlanFor(emptyPositions(), NOW)).toBeUndefined();
@@ -1092,5 +1109,321 @@ describe("PLCL-30: callers can tell a prepare-only plan before minting a mediato
     expect(tree.prepareOnly).toBeDefined();
     expect(tree.allNodes.has("mediator-forward")).toBe(false);
     expect(tree.allNodes.has(id("backstop-queue", POOL_ID))).toBe(true);
+  });
+});
+
+describe("M-25: the prepare-only unlock date is honest", () => {
+  const NOW = 1_700_000_000_000;
+  const DAY = 24 * 60 * 60 * 1000;
+  const newQueue = emptyPositions({
+    backstop: [{ poolId: POOL_ID, shares: 5n, queuedForWithdrawal: 0n }],
+  });
+
+  // the queue lands when the run executes, after the review
+  it("does not call a new queue's review-time date the latest it unlocks", () => {
+    const prepare = preparePlanFor(newQueue, NOW);
+    expect(prepare?.unlocksAt.getTime()).toBe(NOW + 17 * DAY);
+    expect(prepare?.queuedUnlocksAt).toBeUndefined();
+    expect(prepare?.reason).not.toMatch(/the latest it can unlock/);
+    expect(prepare?.reason).toMatch(/from the moment it lands on chain/);
+  });
+
+  it("dates an already locked queue from the unlock discovery read", () => {
+    const readUnlock = new Date(NOW + 3 * DAY);
+    // discovery reads the latest exp of the locked queue entries
+    const deposit = {
+      poolId: POOL_ID,
+      shares: 0n,
+      queuedForWithdrawal: 800n,
+      unlockedQueuedForWithdrawal: 300n,
+      latestQueueUnlocksAt: readUnlock,
+    };
+    const prepare = preparePlanFor(emptyPositions({ backstop: [deposit] }), NOW);
+    expect(prepare?.unlocksAt).toEqual(readUnlock);
+    expect(prepare?.queuedUnlocksAt).toEqual(readUnlock);
+    expect(prepare?.reason).not.toMatch(/the latest it can unlock/);
+  });
+
+  it("dates a locked queue with no read unlock a full queue period out, as the latest", () => {
+    const prepare = preparePlanFor(
+      emptyPositions({
+        backstop: [
+          {
+            poolId: POOL_ID,
+            shares: 0n,
+            queuedForWithdrawal: 800n,
+            unlockedQueuedForWithdrawal: 300n,
+          },
+        ],
+      }),
+      NOW,
+    );
+    expect(prepare?.unlocksAt.getTime()).toBe(NOW + 17 * DAY);
+    expect(prepare?.queuedUnlocksAt?.getTime()).toBe(NOW + 17 * DAY);
+    expect(prepare?.reason).toMatch(/the latest it can unlock/);
+  });
+
+  it("takes the later of a new queue and an existing one", () => {
+    const deposit = {
+      poolId: POOL_ID,
+      shares: 5n,
+      queuedForWithdrawal: 10n,
+      unlockedQueuedForWithdrawal: 0n,
+      latestQueueUnlocksAt: new Date(NOW + 2 * DAY),
+    };
+    const prepare = preparePlanFor(emptyPositions({ backstop: [deposit] }), NOW);
+    expect(prepare?.unlocksAt.getTime()).toBe(NOW + 17 * DAY);
+    expect(prepare?.queuedUnlocksAt?.getTime()).toBe(NOW + 2 * DAY);
+  });
+
+  it("re-dates a new queue from the transaction built at execute", () => {
+    const tree = generatePlan(makeAudit(), newQueue, [], DEST, { now: NOW });
+    expect(preparedUnlocksAt(tree)?.getTime()).toBe(NOW + 17 * DAY);
+    const queue = tree.allNodes.get(id("backstop-queue", POOL_ID));
+    if (queue?.kind !== "BackstopQueue") throw new Error("expected the queue node");
+    // what hydration records when it builds the queue right before signing
+    const built = new Date(NOW + 17 * DAY + 40 * 60 * 1000);
+    (queue.metadata as { queueEndsAt: Date }).queueEndsAt = built;
+    expect(preparedUnlocksAt(tree)).toEqual(built);
+  });
+
+  it("keeps an existing queue's later unlock when the new queue unlocks first", () => {
+    const later = new Date(NOW + 20 * DAY);
+    const deposit = {
+      poolId: POOL_ID,
+      shares: 5n,
+      queuedForWithdrawal: 10n,
+      unlockedQueuedForWithdrawal: 0n,
+      latestQueueUnlocksAt: later,
+    };
+    const tree = generatePlan(makeAudit(), emptyPositions({ backstop: [deposit] }), [], DEST, {
+      now: NOW,
+    });
+    expect(preparedUnlocksAt(tree)).toEqual(later);
+  });
+
+  it("has no unlock date for a plan that merges", () => {
+    expect(preparedUnlocksAt(generatePlan(makeAudit(), emptyPositions(), [], DEST))).toBe(
+      undefined,
+    );
+  });
+});
+
+// a pool exit pays a SAC credit asset into the account's trustline, and with no
+// line the whole exit traps with Error(Contract, #13) (read-only mainnet
+// simulation of soroswap remove_liquidity and an aquarius withdraw)
+describe("exit payouts need a trustline: the plan opens it first", () => {
+  const ISSUER = Keypair.random().publicKey();
+  const sac = (code: string): string => new Asset(code, ISSUER).contractId(TESTNET.passphrase);
+  const YBX = sac("YBX");
+  const AQUA = sac("AQUA");
+  const XLM = Asset.native().contractId(TESTNET.passphrase);
+  const OTHER_TOKEN = StrKey.encodeContract(Buffer.alloc(32, 41));
+  const missing = (code: string) =>
+    ({ contractId: sac(code), code, issuer: ISSUER, reason: "missing" }) as const;
+  const lineId = (code: string) => id("exit-trustline", sac(code));
+  const soroswapYbx = emptyPositions({
+    soroswap: [{ pair: { tokenA: YBX, tokenB: XLM }, shareBalance: 5n }],
+  });
+
+  it("adds the line ahead of the exit that pays the asset", () => {
+    const tree = generatePlan(makeAudit(), soroswapYbx, [], DEST, {
+      network: TESTNET,
+      exitTrustlineGaps: [missing("YBX")],
+    });
+    const line = tree.allNodes.get(lineId("YBX"));
+    if (line?.kind !== "AddExitTrustline") throw new Error("expected AddExitTrustline");
+    expect(line.metadata).toEqual({
+      kind: "AddExitTrustline",
+      code: "YBX",
+      issuer: ISSUER,
+      contractId: YBX,
+    });
+    expect(line.dependencies).toEqual([]);
+    expect(line.description).toBe(
+      "Add a YBX trustline so the pool can pay it out (0.5 XLM reserve, released when the " +
+        "close removes the line)",
+    );
+    expect(dependsOn(tree, id("soroswap-withdraw", YBX, XLM), lineId("YBX"))).toBe(true);
+    expect(dependsOn(tree, "final-classic-tx", lineId("YBX"))).toBe(true);
+    // the payout lands on the new classic line, which the final batch disposes
+    // of, so it is not swept as a contract token
+    expect(tree.allNodes.has(id("drain-token", YBX))).toBe(false);
+  });
+
+  it("lets an exchange close exit a pool whose payout gets a line", () => {
+    const opts = {
+      network: TESTNET,
+      useMediator: true,
+      mediatorPublicKey: MED,
+      flowToken: "flow",
+    } as const;
+    expect(() => generatePlan(makeAudit(), soroswapYbx, [], DEST, opts)).toThrow(
+      /exchange close can only forward XLM/,
+    );
+    const tree = generatePlan(makeAudit(), soroswapYbx, [], DEST, {
+      ...opts,
+      exitTrustlineGaps: [missing("YBX")],
+    });
+    expect(tree.allNodes.has(lineId("YBX"))).toBe(true);
+  });
+
+  it("opens one line per asset however many exits pay it", () => {
+    const tree = generatePlan(
+      makeAudit(),
+      emptyPositions({
+        soroswap: [{ pair: { tokenA: YBX, tokenB: XLM }, shareBalance: 5n }],
+        aquarius: [{ poolIndex: "ab".repeat(32), shareBalance: 3n, tokens: [XLM, YBX] }],
+        aquariusConcentrated: [
+          {
+            poolAddress: OTHER_TOKEN,
+            poolIndex: "cd".repeat(32),
+            tokens: [XLM, YBX],
+            ranges: [{ tickLower: -10, tickUpper: 10, liquidity: 7n }],
+            pendingFees: [1n, 1n],
+            pendingReward: 0n,
+          },
+        ],
+      }),
+      [],
+      DEST,
+      { network: TESTNET, exitTrustlineGaps: [missing("YBX"), missing("YBX")] },
+    );
+    const lines = [...tree.allNodes.values()].filter((n) => n.kind === "AddExitTrustline");
+    expect(lines.map((n) => n.id)).toEqual([lineId("YBX")]);
+    for (const n of tree.allNodes.values()) {
+      if (
+        n.kind === "WithdrawSoroswapLp" ||
+        n.kind === "WithdrawAquarius" ||
+        n.kind === "WithdrawAquariusConcentrated" ||
+        n.kind === "ClaimAquariusConcentratedFees"
+      ) {
+        expect(n.dependencies).toContain(lineId("YBX"));
+      }
+    }
+  });
+
+  // a concentrated position kept only for its reward: its pool tokens are not
+  // paid out, the router's reward token is
+  const rewardOnly = emptyPositions({
+    aquariusConcentrated: [
+      {
+        poolAddress: OTHER_TOKEN,
+        poolIndex: "cd".repeat(32),
+        tokens: [XLM, YBX],
+        ranges: [],
+        pendingFees: [0n, 0n],
+        pendingReward: 9n,
+      },
+    ],
+  });
+
+  it("puts the reward token's line ahead of the aquarius reward claims", () => {
+    const tree = generatePlan(makeAudit(), rewardOnly, [], DEST, {
+      network: TESTNET,
+      exitTrustlineGaps: [missing("AQUA")],
+      aquariusRewardToken: AQUA,
+    });
+    const claim = tree.allNodes.get(id("aquarius-cl-claim", OTHER_TOKEN));
+    expect(claim?.dependencies).toEqual([lineId("AQUA")]);
+    expect(tree.allNodes.get(lineId("AQUA"))?.metadata).toMatchObject({ contractId: AQUA });
+  });
+
+  it("does not take a pool token nothing pays out for the reward token", () => {
+    const opts = { network: TESTNET, aquariusRewardToken: AQUA } as const;
+    const tree = generatePlan(makeAudit(), rewardOnly, [], DEST, {
+      ...opts,
+      exitTrustlineGaps: [missing("YBX")],
+    });
+    expect(tree.allNodes.has(lineId("YBX"))).toBe(false);
+    expect(tree.allNodes.get(id("aquarius-cl-claim", OTHER_TOKEN))?.dependencies).toEqual([]);
+    // and an unauthorized line on it blocks nothing
+    expect(() =>
+      generatePlan(makeAudit(), rewardOnly, [], DEST, {
+        ...opts,
+        exitTrustlineGaps: [{ ...missing("YBX"), reason: "unauthorized" }],
+      }),
+    ).not.toThrow();
+  });
+
+  it("puts one line ahead of both a withdraw and the reward claim when both pay it", () => {
+    const pool = { poolIndex: "ab".repeat(32), shareBalance: 3n, tokens: [XLM, AQUA] };
+    const tree = generatePlan(makeAudit(), emptyPositions({ aquarius: [pool] }), [], DEST, {
+      network: TESTNET,
+      exitTrustlineGaps: [missing("AQUA")],
+      aquariusRewardToken: AQUA,
+    });
+    const withdraw = id("aquarius-withdraw", XLM, AQUA, pool.poolIndex);
+    expect(tree.allNodes.get(withdraw)?.dependencies).toEqual([lineId("AQUA")]);
+    expect(
+      tree.allNodes.get(id("aquarius-claim", XLM, AQUA, pool.poolIndex))?.dependencies,
+    ).toEqual([withdraw, lineId("AQUA")]);
+    expect(() =>
+      generatePlan(makeAudit(), emptyPositions({ aquarius: [pool] }), [], DEST, {
+        network: TESTNET,
+        exitTrustlineGaps: [{ ...missing("AQUA"), reason: "unauthorized" }],
+        aquariusRewardToken: AQUA,
+      }),
+    ).toThrow(/Aquarius pool .* and the Aquarius reward claims\./);
+  });
+
+  it("opens no reward line when no reward claim is planned", () => {
+    const tree = generatePlan(makeAudit(), soroswapYbx, [], DEST, {
+      network: TESTNET,
+      exitTrustlineGaps: [missing("YBX"), missing("AQUA")],
+      aquariusRewardToken: AQUA,
+    });
+    expect(tree.allNodes.has(lineId("AQUA"))).toBe(false);
+  });
+
+  it("refuses a reward claim into a line the issuer has not authorized", () => {
+    expect(() =>
+      generatePlan(makeAudit(), rewardOnly, [], DEST, {
+        network: TESTNET,
+        exitTrustlineGaps: [{ ...missing("AQUA"), reason: "unauthorized" }],
+        aquariusRewardToken: AQUA,
+      }),
+    ).toThrow(/AQUA:G\w+ .*not authorized.*Aquarius reward claims/);
+  });
+
+  it("opens no line nothing in the plan pays out", () => {
+    const tree = generatePlan(makeAudit(), soroswapYbx, [], DEST, {
+      network: TESTNET,
+      exitTrustlineGaps: [missing("YBX"), missing("AQUA")],
+    });
+    expect(tree.allNodes.has(lineId("AQUA"))).toBe(false);
+  });
+
+  it("refuses a close whose exit pays an asset into a line the issuer has not authorized", () => {
+    expect(() =>
+      generatePlan(makeAudit(), soroswapYbx, [], DEST, {
+        network: TESTNET,
+        exitTrustlineGaps: [{ ...missing("YBX"), reason: "unauthorized" }],
+      }),
+    ).toThrow(/YBX:G\w+ .*not authorized.*Soroswap pool/);
+  });
+
+  it("ignores an unauthorized line nothing in the plan pays into", () => {
+    expect(() =>
+      generatePlan(makeAudit(), soroswapYbx, [], DEST, {
+        network: TESTNET,
+        exitTrustlineGaps: [{ ...missing("AQUA"), reason: "unauthorized" }],
+      }),
+    ).not.toThrow();
+  });
+
+  it("refuses a gap whose asset does not derive to its token", () => {
+    expect(() =>
+      generatePlan(makeAudit(), soroswapYbx, [], DEST, {
+        network: TESTNET,
+        exitTrustlineGaps: [{ ...missing("YBX"), code: "XBY" }],
+      }),
+    ).toThrow(/XBY.*is not the asset of token/);
+  });
+
+  it("needs the network to plan a payout trustline", () => {
+    expect(() =>
+      generatePlan(makeAudit(), soroswapYbx, [], DEST, { exitTrustlineGaps: [missing("YBX")] }),
+    ).toThrow(/opts\.network is required/);
   });
 });
