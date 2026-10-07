@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -16,18 +16,19 @@ const TOKEN = "unit-test-admin-token-000";
 const HASH = "a".repeat(64);
 let ipCounter = 0;
 
-beforeAll(() => {
-  process.env.METRICS_ADMIN_TOKEN = TOKEN;
-});
-
 let dir: string;
 beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), "metrics-route-"));
-  process.env.METRICS_DB_DIR = dir;
+  vi.stubEnv("METRICS_ADMIN_TOKEN", TOKEN);
+  vi.stubEnv("METRICS_DB_DIR", dir);
+  // the limiter keys on the proxy's X-Forwarded-For entry; set the hop count
+  // here so the result doesn't depend on the shell running the tests
+  vi.stubEnv("TRUSTED_PROXY_HOPS", "1");
   __resetMetricsStoreForTests();
   vi.mocked(verifyCloseTx).mockReset();
 });
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await fs.rm(dir, { recursive: true, force: true });
 });
 
@@ -189,7 +190,7 @@ describe("GET /api/metrics (admin)", () => {
     // a data dir under a regular file can't be created, like a read-only volume
     const blocker = path.join(dir, "not-a-dir");
     await fs.writeFile(blocker, "x");
-    process.env.METRICS_DB_DIR = path.join(blocker, "data");
+    vi.stubEnv("METRICS_DB_DIR", path.join(blocker, "data"));
     __resetMetricsStoreForTests();
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
     const res = await GET(
