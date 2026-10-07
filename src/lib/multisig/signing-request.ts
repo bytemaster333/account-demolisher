@@ -44,10 +44,10 @@ export interface CloseDisposal {
   // pathKey()s of credit assets to return to their issuer
   readonly returnToIssuerAssetKeys?: readonly string[];
   readonly memo?: ClassicMemo;
-  // the claimable balances the reviewed plan claims. an empty list claims
-  // none; leaving it out claims every balance claimable now, which is only
-  // right when nothing was reviewed.
-  readonly claimableBalanceIds?: readonly string[];
+  // the claimable balances the reviewed plan claims; an empty list claims none.
+  // required, because the batcher reads a missing list as "claim every balance
+  // claimable now", which would claim balances nobody reviewed
+  readonly claimableBalanceIds: readonly string[];
 }
 
 export interface BundleabilityResult {
@@ -144,13 +144,19 @@ export function buildCloseTransaction(params: {
   readonly destination: string;
   readonly network: NetworkConfig;
   readonly sourceAccount: Horizon.AccountResponse;
-  readonly disposal?: CloseDisposal;
+  readonly disposal: CloseDisposal;
   readonly timeoutSeconds?: number;
   // close time (unix seconds) of the latest ledger; anchors maxTime to the
   // network clock instead of this device's
   readonly ledgerCloseTime?: number;
 }): Transaction {
   const { audit, destination, network, sourceAccount, disposal } = params;
+  // the type requires it, but an untyped caller must not fall into claim-all
+  if (!Array.isArray(disposal?.claimableBalanceIds)) {
+    throw new Error(
+      "buildCloseTransaction: the reviewed claimable balance selection is missing; pass [] to claim none.",
+    );
+  }
 
   const batchOptions: BatchOptions = {
     destination,
@@ -158,16 +164,14 @@ export function buildCloseTransaction(params: {
     // the batcher's reserve checks (the close marker, a trustline a claim opens)
     // take fees off the spendable XLM, so they must use the fee this bundle bids
     feePerOpStroops: BUNDLE_FEE_PER_OP,
-    ...(disposal?.returnToIssuerAssetKeys
+    claimableBalanceIds: disposal.claimableBalanceIds,
+    ...(disposal.returnToIssuerAssetKeys
       ? { returnToIssuerAssetKeys: disposal.returnToIssuerAssetKeys }
       : {}),
-    ...(disposal?.sendToDestinationAssetKeys
+    ...(disposal.sendToDestinationAssetKeys
       ? { sendToDestinationAssetKeys: disposal.sendToDestinationAssetKeys }
       : {}),
-    ...(disposal?.memo ? { memo: disposal.memo } : {}),
-    ...(disposal?.claimableBalanceIds !== undefined
-      ? { claimableBalanceIds: disposal.claimableBalanceIds }
-      : {}),
+    ...(disposal.memo ? { memo: disposal.memo } : {}),
   };
 
   const batches = batchClassicDemolition(audit, batchOptions, undefined);

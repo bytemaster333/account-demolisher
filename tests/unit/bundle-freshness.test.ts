@@ -119,7 +119,7 @@ const bundle: Transaction = buildCloseTransaction({
   destination: dest,
   network: TESTNET,
   sourceAccount: live(),
-  disposal: { returnToIssuerAssetKeys: [`USD:${issuer}`] },
+  disposal: { claimableBalanceIds: [], returnToIssuerAssetKeys: [`USD:${issuer}`] },
 });
 const XDR = bundle.toXdr();
 const snapshot = {
