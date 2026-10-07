@@ -185,7 +185,7 @@ export const BLEND_MAINNET_INFRASTRUCTURE: readonly BlendInfrastructureEntry[] =
 ]);
 
 // blend testnet infrastructure contracts, sourced from
-// blend-utils@main/testnet.contracts.json (re-fetched 2026-05-18). Shared by the
+// blend-utils@main/testnet.contracts.json (re-fetched 2026-05-18). shared by the
 // contract allow-list (config/contracts.ts) and backstop resolution
 // (blend/constants.ts) so the testnet backstop id lives in exactly one place.
 const BLEND_TESTNET_INFRA_SOURCE =
