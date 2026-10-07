@@ -174,7 +174,7 @@ export const HANDLES: ReadonlyArray<Handle> = [
     num: "09",
     tag: "SOROBAN",
     label: "Blend backstop",
-    desc: "Backstop deposits are queued for withdrawal (17 days on the v2 backstop, 21 on v1) and withdrawn once unlocked.",
+    desc: "Backstop deposits are queued for withdrawal (17 days on the v2 backstop, 21 on v1). The account stays open until the queue unlocks; run the close again then to withdraw and finish it.",
   },
   {
     num: "10",
