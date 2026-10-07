@@ -138,11 +138,45 @@ describe("pending forward records", () => {
     expect(window.localStorage.getItem(KEY)).not.toBeNull();
   });
 
-  it("ignores malformed stored data", () => {
+  function unreadableCopies(): string[] {
+    const out: string[] = [];
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const k = window.localStorage.key(i);
+      if (k?.startsWith(`${KEY}:unreadable:`)) out.push(window.localStorage.getItem(k)!);
+    }
+    return out;
+  }
+
+  it("keeps a copy of stored data it can't parse and says so before the next save replaces it", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     window.localStorage.setItem(KEY, "{not json");
     expect(loadPendingForwards("GUSER")).toEqual([]);
-    window.localStorage.setItem(KEY, JSON.stringify({ a: { foo: 1 } }));
+    savePendingForward(record());
+    expect(loadPendingForwards("GUSER")).toEqual([record()]);
+    expect(unreadableCopies()).toEqual(["{not json"]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain(`${KEY}:unreadable:`);
+  });
+
+  it("keeps a copy of entries that are not recovery records instead of dropping them", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const stored = JSON.stringify({ a: { foo: 1 }, b: record() });
+    window.localStorage.setItem(KEY, stored);
+    expect(loadPendingForwards("GUSER")).toEqual([record()]);
+    expect(unreadableCopies()).toEqual([stored]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    // the readable record stays where it was, and the next read is quiet
+    expect(loadPendingForwards("GUSER")).toEqual([record()]);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a copy of an unreadable record from the old single-slot layout", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    window.localStorage.setItem(LEGACY_KEY, "{broken");
     expect(loadPendingForwards("GUSER")).toEqual([]);
+    expect(window.localStorage.getItem(LEGACY_KEY)).toBeNull();
+    expect(unreadableCopies()).toEqual(["{broken"]);
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 
   it("round-trips the deposit memo", () => {

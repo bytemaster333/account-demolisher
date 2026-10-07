@@ -93,19 +93,36 @@ export function pendingForwardNetwork(pending: {
   return isMediatorNetworkId(pending.networkId) ? parseNetworkId(pending.networkId) : null;
 }
 
-function parseMap(raw: string | null): { map: RecordMap; dropped: boolean } {
-  if (raw === null) return { map: {}, dropped: false };
-  let parsed: unknown;
+interface ParsedMap {
+  readonly map: RecordMap;
+  // a record was left out on purpose (a network this build does not serve)
+  readonly dropped: boolean;
+  // some of the stored text could not be read as records
+  readonly unreadable: boolean;
+}
+
+function parseJson(raw: string): { ok: true; value: unknown } | { ok: false } {
   try {
-    parsed = JSON.parse(raw);
+    return { ok: true, value: JSON.parse(raw) };
   } catch {
-    return { map: {}, dropped: false };
+    return { ok: false };
   }
-  if (typeof parsed !== "object" || parsed === null) return { map: {}, dropped: false };
+}
+
+function parseMap(raw: string | null): ParsedMap {
+  if (raw === null) return { map: {}, dropped: false, unreadable: false };
+  const parsed = parseJson(raw);
+  if (!parsed.ok || typeof parsed.value !== "object" || parsed.value === null) {
+    return { map: {}, dropped: false, unreadable: true };
+  }
   const map: RecordMap = {};
   let dropped = false;
-  for (const value of Object.values(parsed as Record<string, unknown>)) {
-    if (!isPendingForward(value)) continue;
+  let unreadable = false;
+  for (const value of Object.values(parsed.value as Record<string, unknown>)) {
+    if (!isPendingForward(value)) {
+      unreadable = true;
+      continue;
+    }
     if (pendingForwardNetwork(value) === null) {
       // futurenet is no longer served and its mediators only ever held test
       // lumens; any other name is corrupt. neither can be resumed here.
@@ -118,7 +135,23 @@ function parseMap(raw: string | null): { map: RecordMap; dropped: boolean } {
     }
     map[keyOf(value)] = value;
   }
-  return { map, dropped };
+  return { map, dropped, unreadable };
+}
+
+// stored text that can't be read as records may still name a mediator holding
+// someone's balance, so it is set aside under its own key, never just dropped
+// by the next write
+function keepUnreadable(raw: string, source: "map" | "single-slot"): void {
+  const key = `${STORAGE_KEY}:unreadable:${source}:${String(Date.now())}`;
+  try {
+    window.localStorage.setItem(key, raw);
+  } catch (err) {
+    throw new PendingForwardStorageError("set aside unreadable data in", err);
+  }
+  console.warn(
+    `Some exchange-forward recovery data in browser storage could not be read. ` +
+      `It was kept unchanged under "${key}".`,
+  );
 }
 
 // read every record, folding in a record from the single-slot layout earlier
@@ -133,20 +166,20 @@ function readAll(): RecordMap {
   } catch (err) {
     throw new PendingForwardStorageError("read", err);
   }
-  const { map, dropped } = parseMap(raw);
-  if (legacyRaw === null && !dropped) return map;
+  const { map, dropped, unreadable } = parseMap(raw);
+  if (legacyRaw === null && !dropped && !unreadable) return map;
+  if (unreadable && raw !== null) keepUnreadable(raw, "map");
   if (legacyRaw !== null) {
-    let legacy: unknown = null;
-    try {
-      legacy = JSON.parse(legacyRaw);
-    } catch {
-      legacy = null;
-    }
-    if (
-      isPendingForward(legacy) &&
-      pendingForwardNetwork(legacy) !== null &&
-      map[keyOf(legacy)] === undefined
-    ) {
+    const parsed = parseJson(legacyRaw);
+    const legacy = parsed.ok ? parsed.value : null;
+    if (!isPendingForward(legacy)) {
+      keepUnreadable(legacyRaw, "single-slot");
+    } else if (pendingForwardNetwork(legacy) === null) {
+      console.warn(
+        `Dropping an exchange-forward recovery record for mediator ${legacy.mediatorPublicKey}: ` +
+          `network "${legacy.networkId}" is not one the mediator serves.`,
+      );
+    } else if (map[keyOf(legacy)] === undefined) {
       map[keyOf(legacy)] = legacy;
     }
   }
@@ -182,7 +215,7 @@ function writeAll(map: RecordMap): void {
   window.dispatchEvent(new Event(PENDING_FORWARDS_CHANGED_EVENT));
 }
 
-// add or update this flow's record. Throws PendingForwardStorageError when it
+// add or update this flow's record. throws PendingForwardStorageError when it
 // can't be stored: a mediator close must not start without its recovery record.
 export function savePendingForward(forward: PendingMediatorForward): void {
   if (pendingForwardNetwork(forward) === null) {
@@ -221,7 +254,7 @@ export function removePendingForward(target: PendingForwardKey): void {
   writeAll(map);
 }
 
-// removes exactly the named flow's record. Without a target it removes nothing:
+// removes exactly the named flow's record. without a target it removes nothing:
 // a close that ran no forward has no business touching another close's record.
 export function clearPendingForward(target?: PendingForwardKey): void {
   if (target !== undefined) removePendingForward(target);
@@ -250,7 +283,7 @@ export type PendingForwardStatus =
   // may still hold funding from a multi-batch close that stopped early.
   | { readonly kind: "not-merged"; readonly mediatorBalance: string | null };
 
-// decide from horizon what a record stands for. Throws when horizon can't be read.
+// decide from horizon what a record stands for. throws when horizon can't be read.
 export async function inspectPendingForward(
   pending: PendingMediatorForward,
 ): Promise<PendingForwardStatus> {
@@ -273,8 +306,8 @@ export async function inspectPendingForward(
   };
 }
 
-// finish a persisted forward. The forward itself waits for the merge to show,
-// renews an expired token and recognises a forward that already landed. The
+// finish a persisted forward. the forward itself waits for the merge to show,
+// renews an expired token and recognises a forward that already landed. the
 // record is dropped once delivered, and updated when the token was renewed.
 export async function resumePendingForward(
   pending: PendingMediatorForward,
@@ -318,8 +351,8 @@ export async function resumePendingForward(
   return result;
 }
 
-// A close holds this lock for its account while it runs, so other tabs can tell
-// a record that belongs to a running close from an abandoned one. Web Locks are
+// a close holds this lock for its account while it runs, so other tabs can tell
+// a record that belongs to a running close from an abandoned one. web locks are
 // in every current browser; where they are missing the close runs unlocked and
 // other tabs simply can't see that it is running.
 function closeLockName(publicKey: string): string {
@@ -331,10 +364,34 @@ function lockManager(): LockManager | null {
   return (navigator as { readonly locks?: LockManager | null }).locks ?? null;
 }
 
+// waits for the lock when another close holds it. a close should use
+// tryRunWithCloseLock instead, since a lock wait can't be stopped.
 export async function runWithCloseLock<T>(publicKey: string, run: () => Promise<T>): Promise<T> {
   const locks = lockManager();
   if (locks === null) return run();
   return locks.request(closeLockName(publicKey), { mode: "exclusive" }, run);
+}
+
+export type CloseLockAttempt<T> =
+  | { readonly ran: true; readonly value: T }
+  // another close for this account holds the lock; run was not called
+  | { readonly ran: false };
+
+// takes the lock only if it is free right now, in the same step as the check,
+// so a close another tab starts after an isCloseInFlight check can't leave this
+// one waiting on the lock with no word to the user
+export async function tryRunWithCloseLock<T>(
+  publicKey: string,
+  run: () => Promise<T>,
+): Promise<CloseLockAttempt<T>> {
+  const locks = lockManager();
+  if (locks === null) return { ran: true, value: await run() };
+  return locks.request(
+    closeLockName(publicKey),
+    { mode: "exclusive", ifAvailable: true },
+    async (lock): Promise<CloseLockAttempt<T>> =>
+      lock === null ? { ran: false } : { ran: true, value: await run() },
+  );
 }
 
 export async function isCloseInFlight(publicKey: string): Promise<boolean> {
