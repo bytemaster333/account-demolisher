@@ -104,6 +104,10 @@ describe("soroban fee cap", () => {
     expect(() =>
       assertSorobanFeeWithinCap(prepared(11_763_314n, 2_556, 9), "defi-exit"),
     ).not.toThrow();
+    // the largest archived YieldBloxV2 withdraw_collateral (mainnet 2026-10-07)
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(1_060_719n, 1_336, 5), "defi-exit"),
+    ).not.toThrow();
   });
 
   // aquarius standard, stable and concentrated pools are permissionless, so their

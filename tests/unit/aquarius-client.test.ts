@@ -14,6 +14,7 @@ import {
 import {
   claim,
   getAquariusRouterId,
+  readAquariusRewardToken,
   type AquariusClientDeps,
 } from "@/lib/adapters/aquarius/client";
 import { MAINNET, TESTNET } from "@/lib/config/networks";
@@ -98,5 +99,78 @@ describe("aquarius claim", () => {
         deps,
       ),
     ).rejects.toThrow(/token set/);
+  });
+});
+
+describe("readAquariusRewardToken", () => {
+  const AQUA_SAC = "CAUIKL3IYGMERDRUN6YSCLWVAKIFG5Q4YJHUKM4S4NJZQIA3BAS6OJPK";
+
+  function storageItem(name: string, val: xdr.ScVal): xdr.ScMapEntry {
+    return new xdr.ScMapEntry({ key: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(name)]), val });
+  }
+
+  // the router's instance entry as getLedgerEntries returns it
+  function routerServer(storage: xdr.ScMapEntry[] | null, present = true) {
+    const routerId = getAquariusRouterId(MAINNET);
+    const calls: xdr.LedgerKey[][] = [];
+    const server = {
+      getLedgerEntries: async (...keys: xdr.LedgerKey[]) => {
+        calls.push(keys);
+        if (!present) return { latestLedger: 1, entries: [] };
+        const val = xdr.LedgerEntryData.contractData(
+          new xdr.ContractDataEntry({
+            ext: xdr.ExtensionPoint.v0(),
+            contract: new Address(routerId).toScAddress(),
+            key: xdr.ScVal.scvLedgerKeyContractInstance(),
+            durability: xdr.ContractDataDurability.persistent,
+            val: xdr.ScVal.scvContractInstance(
+              new xdr.ScContractInstance({
+                executable: xdr.ContractExecutable.contractExecutableWasm(
+                  new Uint8Array(32).fill(1),
+                ),
+                storage,
+              }),
+            ),
+          }),
+        );
+        return { latestLedger: 1, entries: [{ key: keys[0]!, val, lastModifiedLedgerSeq: 1 }] };
+      },
+    } as unknown as rpc.Server;
+    return { server, calls, routerId };
+  }
+
+  // mainnet router CBQDHNBF... instance storage read 2026-10-07: RewardToken is
+  // the AQUA SAC, next to InitPoolPaymentToken and RewardBoostToken
+  it("reads the reward token from the router's instance storage", async () => {
+    const { server, calls, routerId } = routerServer([
+      storageItem("InitPoolPaymentToken", new Address(TOKEN_A).toScVal()),
+      storageItem("RewardBoostToken", new Address(TOKEN_B).toScVal()),
+      storageItem("RewardToken", new Address(AQUA_SAC).toScVal()),
+    ]);
+    await expect(readAquariusRewardToken(server, MAINNET)).resolves.toBe(AQUA_SAC);
+    const cd = xdr.expectUnionVariant(calls[0]![0]!, "contractData").contractData;
+    expect(Address.fromScAddress(cd.contract).toString()).toBe(routerId);
+    expect(cd.key.type).toBe("scvLedgerKeyContractInstance");
+  });
+
+  it("refuses to guess when the router has no reward token or the rpc drops it", async () => {
+    await expect(
+      readAquariusRewardToken(
+        routerServer([storageItem("RewardBoostToken", new Address(TOKEN_B).toScVal())]).server,
+        MAINNET,
+      ),
+    ).rejects.toThrow(/RewardToken/);
+    await expect(readAquariusRewardToken(routerServer(null).server, MAINNET)).rejects.toThrow(
+      /RewardToken/,
+    );
+    await expect(
+      readAquariusRewardToken(
+        routerServer([storageItem("RewardToken", new Address(USER).toScVal())]).server,
+        MAINNET,
+      ),
+    ).rejects.toThrow(/RewardToken/);
+    await expect(readAquariusRewardToken(routerServer([], false).server, MAINNET)).rejects.toThrow(
+      /not returned/,
+    );
   });
 });

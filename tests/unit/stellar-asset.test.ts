@@ -6,6 +6,7 @@ import { EMPTY_POSITIONS, type ProtocolPositions } from "@/lib/adapters/position
 import {
   exitPayoutTokens,
   exitTrustlineGaps,
+  readExitPayoutTokens,
   readWrappedAssets,
 } from "@/lib/soroban/stellar-asset";
 import type { AuditBalance } from "@/lib/types/account";
@@ -166,27 +167,163 @@ describe("exitTrustlineGaps", () => {
   });
 });
 
+// a token the tests use as the router's reward token, so a reward payout is
+// told apart from the pool tokens
+const REWARD = new Asset("RWD", AQUA_ISSUER).contractId(MAINNET.passphrase);
+const USDC = new Asset("USDC", YBX_ISSUER).contractId(MAINNET.passphrase);
+const POOL = "CAPIOQNULTKVYOJT6X2W2XKGNIVUWZDY72Y42YG6HQKJ7DU7YTHIDQYX";
+const INDEX = "24f9c991c44acf33fff5f44031c40385d235dc212d7379e824ba3db1c35371f3";
+
+function concentrated(
+  over: Partial<ProtocolPositions["aquariusConcentrated"][number]> = {},
+): ProtocolPositions["aquariusConcentrated"][number] {
+  return {
+    poolAddress: POOL,
+    poolIndex: INDEX,
+    tokens: [XLM, YBX],
+    ranges: [],
+    pendingFees: [0n, 0n],
+    pendingReward: 0n,
+    ...over,
+  };
+}
+
 describe("exitPayoutTokens", () => {
-  it("lists every token an lp exit pays out, once each", () => {
+  it("lists the tokens of every exit the plan runs, once each", () => {
     const positions: ProtocolPositions = {
       ...EMPTY_POSITIONS,
       soroswap: [{ pair: { tokenA: AQUA, tokenB: YBX }, shareBalance: 5n }],
       aquarius: [{ poolIndex: "00", shareBalance: 1n, tokens: [XLM, AQUA] }],
       aquariusConcentrated: [
+        concentrated({ ranges: [{ tickLower: -10, tickUpper: 10, liquidity: 3n }] }),
+      ],
+      blend: [
         {
-          poolAddress: WASM_TOKEN,
-          poolIndex: "01",
-          tokens: [XLM, YBX],
-          ranges: [],
-          pendingFees: [0n, 0n],
-          pendingReward: 0n,
+          poolId: WASM_TOKEN,
+          liabilities: new Map(),
+          collateral: new Map([[USDC, 7n]]),
+          supply: new Map([[XLM, 0n]]),
+          emissionReserveTokenIds: [],
         },
       ],
     };
-    expect([...exitPayoutTokens(positions)].sort()).toEqual([AQUA, XLM, YBX].sort());
+    expect([...exitPayoutTokens(positions)].sort()).toEqual([AQUA, XLM, YBX, USDC].sort());
   });
 
-  it("needs nothing when no lp position is open", () => {
+  // the generator plans no withdraw for these, so nothing pays their tokens out
+  it("leaves out pools whose exit pays none of their tokens", () => {
+    const positions: ProtocolPositions = {
+      ...EMPTY_POSITIONS,
+      soroswap: [{ pair: { tokenA: AQUA, tokenB: YBX }, shareBalance: 0n }],
+      aquarius: [{ poolIndex: "00", shareBalance: 0n, tokens: [XLM, AQUA] }],
+      // kept by discovery only for its reward, which the router pays in its own token
+      aquariusConcentrated: [
+        concentrated({
+          tokens: [USDC, YBX],
+          ranges: [{ tickLower: -10, tickUpper: 10, liquidity: 0n }],
+          pendingReward: 9n,
+        }),
+      ],
+    };
+    expect(exitPayoutTokens(positions)).toEqual([]);
+  });
+
+  it("counts a concentrated pool whose only payout is its unpaid fees", () => {
+    const positions: ProtocolPositions = {
+      ...EMPTY_POSITIONS,
+      aquariusConcentrated: [concentrated({ tokens: [USDC, YBX], pendingFees: [0n, 4n] })],
+    };
+    expect([...exitPayoutTokens(positions)].sort()).toEqual([USDC, YBX].sort());
+  });
+
+  it("needs nothing when no position is open", () => {
     expect(exitPayoutTokens(EMPTY_POSITIONS)).toEqual([]);
+  });
+});
+
+describe("readExitPayoutTokens", () => {
+  const s = {} as rpc.Server;
+
+  function deps(rewards: Record<string, bigint>) {
+    const readRewardToken = vi.fn(async () => REWARD);
+    const readUserReward = vi.fn(
+      async (_s: rpc.Server, args: { readonly tokens: readonly string[] }) => {
+        const key = args.tokens.join(",");
+        if (!(key in rewards)) throw new Error(`no reward stub for ${key}`);
+        return rewards[key]!;
+      },
+    );
+    return { readRewardToken, readUserReward };
+  }
+
+  // mainnet 2026-10-07, read only: GAPU4W... (no AQUA line) had 768,599,147
+  // AQUA pending in concentrated pool CAPIOQ... and its router claim trapped with
+  // Error(Contract, #13); its claim on CA4HTZ..., with nothing pending, ran and
+  // paid 0
+  it("adds the router's reward token when a concentrated position has a reward", async () => {
+    const d = deps({});
+    const positions: ProtocolPositions = {
+      ...EMPTY_POSITIONS,
+      aquariusConcentrated: [concentrated({ pendingReward: 768_599_147n })],
+    };
+    expect(await readExitPayoutTokens(s, MAINNET, USER, positions, d)).toEqual([REWARD]);
+    expect(d.readRewardToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("adds it for a standard pool only when the router says a reward is pending", async () => {
+    const pending = deps({ [`${XLM},${AQUA}`]: 5n, [`${AQUA},${YBX}`]: 0n });
+    const positions: ProtocolPositions = {
+      ...EMPTY_POSITIONS,
+      aquarius: [
+        { poolIndex: INDEX, shareBalance: 1n, tokens: [XLM, AQUA] },
+        { poolIndex: INDEX, shareBalance: 1n, tokens: [AQUA, YBX] },
+      ],
+    };
+    expect([...(await readExitPayoutTokens(s, MAINNET, USER, positions, pending))].sort()).toEqual(
+      [XLM, AQUA, YBX, REWARD].sort(),
+    );
+    const first = pending.readUserReward.mock.calls[0]![1] as unknown as {
+      user: string;
+      poolIndex: Uint8Array;
+      network: unknown;
+    };
+    expect(first.user).toBe(USER);
+    expect(first.poolIndex).toHaveLength(32);
+    expect(first.network).toBe(MAINNET);
+
+    const none = deps({ [`${XLM},${AQUA}`]: 0n, [`${AQUA},${YBX}`]: 0n });
+    expect([...(await readExitPayoutTokens(s, MAINNET, USER, positions, none))].sort()).toEqual(
+      [XLM, AQUA, YBX].sort(),
+    );
+    expect(none.readRewardToken).not.toHaveBeenCalled();
+  });
+
+  it("skips the reward read for a pool the plan does not withdraw", async () => {
+    const d = deps({});
+    const positions: ProtocolPositions = {
+      ...EMPTY_POSITIONS,
+      aquarius: [{ poolIndex: INDEX, shareBalance: 0n, tokens: [XLM, AQUA] }],
+    };
+    expect(await readExitPayoutTokens(s, MAINNET, USER, positions, d)).toEqual([]);
+    expect(d.readUserReward).not.toHaveBeenCalled();
+  });
+
+  it("fails rather than leave out a reward it could not read", async () => {
+    const positions: ProtocolPositions = {
+      ...EMPTY_POSITIONS,
+      aquarius: [{ poolIndex: INDEX, shareBalance: 1n, tokens: [XLM, AQUA] }],
+    };
+    await expect(readExitPayoutTokens(s, MAINNET, USER, positions, deps({}))).rejects.toThrow(
+      /no reward stub/,
+    );
+    const broken = {
+      readRewardToken: vi.fn(async (): Promise<string> => {
+        throw new Error("router instance missing");
+      }),
+      readUserReward: vi.fn(async () => 1n),
+    };
+    await expect(readExitPayoutTokens(s, MAINNET, USER, positions, broken)).rejects.toThrow(
+      /router instance missing/,
+    );
   });
 });

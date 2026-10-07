@@ -6,7 +6,8 @@
 // classic trustline, and with no trustline the whole exit traps with
 // Error(Contract, #13) "trustline entry is missing for account". seen read-only
 // on mainnet 2026-10-07 for soroswap pairs CBKG7Y3L... (YBX), CAFRE2UJ... (LIBRE)
-// and CCBCJUEV... (GQX).
+// and CCBCJUEV... (GQX), and for an aquarius reward claim paying AQUA. a blend
+// withdraw pays its reserve asset through the asset's SAC the same way.
 //
 // a contract is taken as a SAC only when its instance runs the built-in asset
 // executable (no wasm, so no token code runs to answer this) and its name()
@@ -15,9 +16,12 @@
 
 import { Address, Asset, xdr, type rpc } from "@stellar/stellar-sdk";
 
+import { getUserReward, readAquariusRewardToken } from "@/lib/adapters/aquarius/client";
+import { poolIndexHexToBytes } from "@/lib/adapters/aquarius/pools";
 import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
 import type { NetworkConfig } from "@/lib/config/networks";
 import type { AuditBalance } from "@/lib/types/account";
+import { mapConcurrent } from "@/lib/soroban/concurrency";
 import { fromScValString } from "@/lib/soroban/scval";
 import { simulateRead } from "@/lib/soroban/simulate";
 
@@ -107,19 +111,77 @@ function parseSacName(name: string): WrappedAsset {
   return { kind: "credit", code, issuer };
 }
 
-// every token an lp exit of these positions pays out: both sides of each
-// soroswap pair, and each aquarius pool's token set (a concentrated withdraw and
-// its fee claim pay the pool's own tokens). the aquarius reward claim pays the
-// router's reward token, which is not listed here.
+// the pool and reserve tokens the planned exits pay out, with the same rules the
+// plan generator uses to plan them: a soroswap or aquarius withdraw needs shares,
+// a concentrated pool pays its own tokens only through a range with liquidity or
+// unpaid fees, and a blend withdraw pays each collateral or supply asset. a
+// position kept only for its reward pays none of its pool tokens.
+//
+// it does not include the aquarius reward token, which needs rpc reads; a
+// trustline check must use readExitPayoutTokens.
 export function exitPayoutTokens(positions: ProtocolPositions): readonly string[] {
   const out = new Set<string>();
   for (const p of positions.soroswap) {
+    if (p.shareBalance <= 0n) continue;
     out.add(p.pair.tokenA);
     out.add(p.pair.tokenB);
   }
-  for (const p of positions.aquarius) for (const t of p.tokens) out.add(t);
-  for (const p of positions.aquariusConcentrated) for (const t of p.tokens) out.add(t);
+  for (const p of positions.aquarius) {
+    if (p.shareBalance > 0n) for (const t of p.tokens) out.add(t);
+  }
+  for (const p of positions.aquariusConcentrated) {
+    if (p.ranges.some((r) => r.liquidity > 0n) || p.pendingFees.some((f) => f > 0n)) {
+      for (const t of p.tokens) out.add(t);
+    }
+  }
+  for (const pool of positions.blend) {
+    for (const [asset, amount] of [...pool.collateral, ...pool.supply]) {
+      if (amount > 0n) out.add(asset);
+    }
+  }
   return [...out];
+}
+
+export interface ExitPayoutDeps {
+  readonly readRewardToken?: typeof readAquariusRewardToken;
+  readonly readUserReward?: typeof getUserReward;
+}
+
+const REWARD_READ_CONCURRENCY = 4;
+
+// exitPayoutTokens plus the aquarius router's reward token when a planned claim
+// will pay some. a claim of a pending reward into a missing trustline traps
+// with Error(Contract, #13) like a withdraw; a claim with nothing pending runs
+// and pays 0 (both seen read-only on mainnet 2026-10-07), so the reward token
+// only counts when a reward is pending. the generator claims every standard
+// pool it withdraws, so each of those is asked through get_user_reward; a
+// concentrated position carries its own pendingReward. any failed read throws:
+// an unknown reward must not read as "no payout".
+export async function readExitPayoutTokens(
+  server: rpc.Server,
+  network: NetworkConfig,
+  userAddress: string,
+  positions: ProtocolPositions,
+  deps: ExitPayoutDeps = {},
+): Promise<readonly string[]> {
+  const tokens = exitPayoutTokens(positions);
+  let rewardPending = positions.aquariusConcentrated.some((p) => p.pendingReward > 0n);
+  if (!rewardPending) {
+    const readUserReward = deps.readUserReward ?? getUserReward;
+    const withdrawn = positions.aquarius.filter((p) => p.shareBalance > 0n);
+    const rewards = await mapConcurrent(withdrawn, REWARD_READ_CONCURRENCY, (p) =>
+      readUserReward(server, {
+        user: userAddress,
+        tokens: p.tokens,
+        poolIndex: poolIndexHexToBytes(p.poolIndex),
+        network,
+      }),
+    );
+    rewardPending = rewards.some((r) => r > 0n);
+  }
+  if (!rewardPending) return tokens;
+  const reward = await (deps.readRewardToken ?? readAquariusRewardToken)(server, network);
+  return tokens.includes(reward) ? tokens : [...tokens, reward];
 }
 
 export interface ExitTrustlineGap {

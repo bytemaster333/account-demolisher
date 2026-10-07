@@ -31,16 +31,22 @@
 //   aquarius claim_all_position_fees                   -     6,317,225
 //   blend submit withdraw_collateral, live             -        35,811
 //   blend submit withdraw, archived Positions          -    11,763,314
+//   blend YieldBloxV2 withdraw_collateral, archived    -     1,060,719
 //   blend backstop queue_withdrawal, archived          -     2,524,898
 // the rows come from sweeps on 2026-10-06 and 2026-10-07: lp holders of every
 // archived mainnet soroswap pair (16) and of 70 archived testnet pairs, every
 // aquarius standard and stable pool (318) for a holder whose share balance is
-// archived, two position holders in each of the 37 pinned concentrated pools
-// (no archived entry among them), and archived blend Positions and backstop
-// balances in every pinned pool except YieldBloxV2, whose archived withdraws
-// failed simulation. the aquarius worst
-// cases restore the pool's reward pages (one RewardInvData page is 3,316 bytes),
-// the blend ones up to 8 entries.
+// archived, position holders of the 37 pinned concentrated pools (none of the
+// 1,017 User entries the sweep listed through stellar.expert was archived, so no
+// archived concentrated position could be measured), and archived blend
+// Positions and backstop balances in every pinned pool. the YieldBloxV2 row is
+// the largest of 8
+// archived holders (2 entries restored, at most 1,336 write bytes and 5
+// read-write entries); those withdraws trapped before 2026-10-07 because the
+// builder asked for i128::MAX of a reserve whose b_rate is below 1e12, which
+// overflowed the pool's bToken conversion (fixed in blend/exit.ts
+// v2WithdrawRequest). the aquarius worst cases restore the pool's reward pages
+// (one RewardInvData page is 3,316 bytes), the blend ones up to 8 entries.
 //
 // 17 of the 70 testnet remove_liquidity runs cost 36,812,907 to 174,084,607 and
 // declared 14,700 to 53,204 write bytes: those checked restore an archived
@@ -56,8 +62,7 @@
 // pool-exit (aquarius standard, stable and concentrated pools; the protocol code
 // is pinned but the pools are permissionless, so a pool token can be anything):
 // the archived router claim. defi-exit (blend steps against the pinned pools and
-// backstops): the archived blend withdraw, with headroom left for the unmeasured
-// YieldBloxV2 case.
+// backstops): the archived blend withdraw.
 // declared write bytes and read-write entries are bounded for the first three
 // (largest measured without a code restore: 3,128 bytes and 10 entries for the
 // archived one-hop convert; 15,984 bytes for a concentrated withdraw and 22

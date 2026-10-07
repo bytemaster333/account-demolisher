@@ -1,6 +1,7 @@
 // aquarius client: router calls (withdraw, claim) and direct calls on pinned
 // concentrated pools (withdraw_position, claim_all_position_fees)
 import {
+  Address,
   Contract,
   TransactionBuilder,
   rpc,
@@ -130,6 +131,46 @@ export async function getUserReward(
     args.network,
   );
   return fromScValU128(retval);
+}
+
+// the token a router claim pays (AQUA on mainnet). the router exports a setter
+// but no getter, so it is read from the router's instance storage, key
+// ["RewardToken"], with no contract code run. read live rather than pinned
+// because the router admin can change it.
+export async function readAquariusRewardToken(
+  server: rpc.Server,
+  network: NetworkConfig,
+): Promise<string> {
+  const routerId = getAquariusRouterId(network);
+  const resp = await server.getLedgerEntries(
+    xdr.LedgerKey.contractData(
+      new xdr.LedgerKeyContractData({
+        contract: new Address(routerId).toScAddress(),
+        key: xdr.ScVal.scvLedgerKeyContractInstance(),
+        durability: xdr.ContractDataDurability.persistent,
+      }),
+    ),
+  );
+  const entry = resp.entries[0];
+  if (entry === undefined) {
+    throw new Error(`AquariusAmmRouter ${routerId} instance was not returned by the rpc`);
+  }
+  const instance = xdr.expectUnionVariant(
+    xdr.expectUnionVariant(entry.val, "contractData").contractData.val,
+    "scvContractInstance",
+  ).instance;
+  for (const item of instance.storage ?? []) {
+    const key = item.key.type === "scvVec" ? item.key.vec : null;
+    const name = key?.length === 1 && key[0]!.type === "scvSymbol" ? key[0]!.sym.toString() : null;
+    if (name !== "RewardToken") continue;
+    if (item.val.type !== "scvAddress") break;
+    const token = Address.fromScVal(item.val).toString();
+    if (!token.startsWith("C")) break;
+    return token;
+  }
+  throw new Error(
+    `AquariusAmmRouter ${routerId} has no contract address under RewardToken, so the token a reward claim pays is unknown`,
+  );
 }
 
 export interface WithdrawConcentratedArgs {

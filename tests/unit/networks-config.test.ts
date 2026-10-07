@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { MAINNET, NETWORKS, TESTNET, parseNetworkId, requireNetwork } from "@/lib/config/networks";
+import {
+  MAINNET,
+  NETWORKS,
+  TESTNET,
+  parseNetworkId,
+  requireNetwork,
+  resolveNetwork,
+} from "@/lib/config/networks";
 
 describe("network id parsing", () => {
   it("maps the known ids", () => {
@@ -25,5 +32,15 @@ describe("supported networks", () => {
     expect(Object.keys(NETWORKS).sort()).toEqual(["mainnet", "testnet"]);
     expect(parseNetworkId("futurenet")).toBeNull();
     expect(() => requireNetwork("futurenet")).toThrow(/unknown Stellar network id "futurenet"/);
+  });
+});
+
+// kept only for the test helpers that still call it; it must not guess either
+describe("resolveNetwork", () => {
+  it("maps the known ids and refuses anything else", () => {
+    expect(resolveNetwork("mainnet")).toBe(MAINNET);
+    expect(resolveNetwork("testnet")).toBe(TESTNET);
+    expect(() => resolveNetwork("futurenet")).toThrow(/unknown Stellar network id "futurenet"/);
+    expect(() => resolveNetwork(undefined)).toThrow(/unknown Stellar network id/);
   });
 });
