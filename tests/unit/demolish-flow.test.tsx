@@ -15,6 +15,7 @@ import type { AccountAudit } from "@/lib/types/account";
 import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
 import type { HeldToken } from "@/lib/soroban/held-tokens";
 import type { EmissionForfeit, RefusedConversion } from "@/lib/orchestrator/page-flow-machine";
+import type { SignerSnapshot } from "@/lib/multisig/bundle-freshness";
 
 import {
   ACC,
@@ -166,17 +167,31 @@ vi.mock("@/components/multisig/CollectSignatures", () => ({
   CollectSignatures: ({
     planId,
     onClose,
+    onRebuildRequest,
   }: {
     planId: string;
-    onClose: (signedXdr: string, typed: string) => void;
+    onClose: (signedXdr: string, typed: string, snapshot: SignerSnapshot) => void;
+    onRebuildRequest?: () => void;
   }) => (
     <div>
       <div data-testid="collect-stub">{planId}</div>
       <button
         type="button"
         data-testid="collect-close"
-        onClick={() => onClose(ctl.relayXdr ?? "", ctl.typedTail)}
+        // the collector hands up the relay's signer set it checked the bundle with
+        onClick={() =>
+          onClose(ctl.relayXdr ?? "", ctl.typedTail, {
+            signers: [
+              { key: ACC, weight: 1 },
+              { key: DEST, weight: 3 },
+            ],
+            thresholds: { low: 2, med: 2, high: 2 },
+          })
+        }
       />
+      {onRebuildRequest ? (
+        <button type="button" data-testid="collect-rebuild" onClick={onRebuildRequest} />
+      ) : null}
     </div>
   ),
 }));
@@ -628,12 +643,95 @@ describe("the collected bundle is submitted bound to the reviewed close (M-41, M
     expect(seen).toHaveLength(1);
     const bundle = seen[0]!["bundle"] as { signedXdr: string; snapshot: { signers: unknown[] } };
     expect(bundle.signedXdr).toBe(ctl.relayXdr);
-    expect(bundle.snapshot.signers).toHaveLength(2);
+    // the signer set the collector checked the bundle against, with no second relay read
+    expect(bundle.snapshot.signers).toEqual([
+      { key: ACC, weight: 1 },
+      { key: DEST, weight: 3 },
+    ]);
     expect(planId).toBe(
       Buffer.from(
         (TransactionBuilder.fromXdr(ctl.relayXdr, TESTNET.passphrase) as Transaction).hash(),
       ).toString("hex"),
     );
+  });
+});
+
+describe("a wallet that doesn't disconnect cleanly is said on the page", () => {
+  it("shows the teardown error after Start over", async () => {
+    ctl.execute = async (tree) => ({
+      result: { ok: false, errors: ["WithdrawBlend failed on-chain: contract reverted"] },
+      tree,
+    });
+    setActiveConnector({
+      ...connector,
+      disconnect: async () => {
+        throw new Error("end the session in your wallet app");
+      },
+    });
+    useWalletStore.getState().setConnected(ACC, "secret");
+    render(<DemolishFlow />);
+    await configureAndStart();
+    await confirmTyped();
+    fireEvent.click(await screen.findByTestId("demolish-failed-reset"));
+    expect(
+      await screen.findByText(
+        /could not be fully disconnected: .*end the session in your wallet app/,
+      ),
+    ).toBeTruthy();
+  }, 20_000);
+});
+
+describe("a request the account outgrew is rebuilt from the current account (M-48)", () => {
+  it("drops the stale request and builds a fresh plan to publish again", async () => {
+    setUpSharedAccount();
+    connect();
+    render(<DemolishFlow />);
+    await configureAndStart();
+    fireEvent.click(await screen.findByTestId("review-create-request"));
+    await screen.findByTestId("collect-stub");
+    expect(window.localStorage.length).toBeGreaterThan(0);
+    const before = ctl.previewInputs.length;
+
+    fireEvent.click(screen.getByTestId("collect-rebuild"));
+    await waitFor(() => expect(ctl.previewInputs.length).toBe(before + 1));
+    // the new plan is reviewed again, and nothing points at the old request
+    expect(await screen.findByTestId("review-create-request")).toBeTruthy();
+    expect(screen.queryByTestId("collect-stub")).toBeNull();
+    expect(ctl.previewInputs.at(-1)!["deterministicDisposal"]).toBe(true);
+  });
+});
+
+describe("the memo is on the final confirmation (M-40)", () => {
+  it("shows the reviewed memo and that the mediator applies it", async () => {
+    ctl.destinationData = { "config.memo_required": "MQ==" };
+    connect();
+    render(<DemolishFlow />);
+    const input = await screen.findByTestId("destination-input");
+    fireEvent.change(input, { target: { value: DEST } });
+    await waitFor(
+      () =>
+        expect(screen.getByTestId("demolish-start-hint").textContent).toMatch(/requires a memo/i),
+      { timeout: 3000 },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Memo type" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Text" }));
+    fireEvent.change(screen.getByTestId("memo-value-input"), { target: { value: "deposit-42" } });
+    const start = screen.getByTestId("demolish-start") as HTMLButtonElement;
+    await waitFor(() => expect(start.disabled).toBe(false));
+    fireEvent.click(start);
+
+    fireEvent.click(await screen.findByTestId("demolish-confirm"));
+    const memo = (await screen.findByTestId("typed-confirmation-memo")).textContent ?? "";
+    expect(memo).toMatch(/Memo \(TEXT\): deposit-42/);
+    expect(memo).toMatch(/mediator/);
+  });
+
+  it("says no memo when the close has none", async () => {
+    connect();
+    render(<DemolishFlow />);
+    await configureAndStart();
+    fireEvent.click(await screen.findByTestId("demolish-confirm"));
+    expect((await screen.findByTestId("typed-confirmation-memo")).textContent).toMatch(/No memo/);
   });
 });
 

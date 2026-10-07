@@ -27,7 +27,7 @@ import {
   type RefusedConversion,
 } from "@/lib/orchestrator/page-flow-machine";
 import { getPublicEnv } from "@/lib/config/env";
-import { fetchPlan } from "@/lib/multisig/plan-client";
+import type { SignerSnapshot } from "@/lib/multisig/bundle-freshness";
 import { SIGNING_WINDOW_SECONDS, assessBundleability } from "@/lib/multisig/signing-request";
 import {
   destinationRequiresMediator,
@@ -156,6 +156,12 @@ export function DemolishFlow(): React.JSX.Element {
   // choice, so the first plan claims every balance it can collect
   const [claimSelection, setClaimSelection] = useState<readonly string[] | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  // a wallet session that didn't close cleanly (a WalletConnect pairing can stay
+  // live on the phone); said on the page, not only in the console
+  const [teardownError, setTeardownError] = useState<string | null>(null);
+  const onTeardownError = useCallback((err: unknown) => {
+    setTeardownError(errorMessage(err));
+  }, []);
 
   // whether the connected account is shared, read before the plan is built so a
   // shared account is planned without market sells from the start
@@ -575,11 +581,11 @@ export function DemolishFlow(): React.JSX.Element {
       if (ctx.signedBundle !== null) finishSigning();
       // full teardown (connector + kit + store): the account was merged and no
       // longer exists, so leave nothing authorized to it at the wallet level
-      void disconnectSession(disconnectWallet);
+      void disconnectSession(disconnectWallet, onTeardownError);
     } else if (!isSucceeded && closedRef.current) {
       closedRef.current = false;
     }
-  }, [isSucceeded, disconnectWallet, ctx.signedBundle, finishSigning]);
+  }, [isSucceeded, disconnectWallet, ctx.signedBundle, finishSigning, onTeardownError]);
 
   // guard against navigating away / closing the tab mid-execution, a partial
   // run leaves the account half-dismantled; while signatures are being
@@ -818,9 +824,10 @@ export function DemolishFlow(): React.JSX.Element {
     // account still selected. disconnectSession tears down the connector + kit +
     // store.
     setConnector(null);
-    void disconnectSession(disconnectWallet);
+    setTeardownError(null);
+    void disconnectSession(disconnectWallet, onTeardownError);
     send({ type: "RESET" });
-  }, [send, setConnector, disconnectWallet, signing, clearChoices]);
+  }, [send, setConnector, disconnectWallet, signing, clearChoices, onTeardownError]);
 
   // a prepared close leaves the account open: back to Configure with the same
   // connection, so the close can be finished once the withdrawal unlocks
@@ -996,29 +1003,18 @@ export function DemolishFlow(): React.JSX.Element {
     if (actorRef.getSnapshot().value !== "executing") setFormError(refusedReason());
   };
 
-  const submitBundle = async (signedXdr: string, typed: string): Promise<void> => {
+  // the collector hands up the relay's signer set it checked and trimmed the
+  // bundle against, so the submit is bound to exactly that snapshot
+  const submitBundle = (signedXdr: string, typed: string, snapshot: SignerSnapshot): void => {
     if (runMismatched || activeRequest === null || runInput === null) return;
     setFormError(null);
-    let plan;
-    try {
-      plan = await fetchPlan(activeRequest.planId);
-    } catch (err) {
-      setFormError(
-        `Couldn't read the signing request's signer set from the relay (${errorMessage(err)}). Try again.`,
-      );
-      return;
-    }
-    if (plan.network !== runInput.network.id || plan.account !== runInput.publicKey) {
-      setFormError("The relay returned a signing request for a different account or network.");
-      return;
-    }
     send({
       type: "SUBMIT_BUNDLE",
       signedXdr,
       planId: activeRequest.planId,
       typed,
       expected,
-      snapshot: { signers: plan.signers, thresholds: plan.thresholds },
+      snapshot,
     });
     if (actorRef.getSnapshot().value !== "executing") {
       setFormError(
@@ -1027,6 +1023,15 @@ export function DemolishFlow(): React.JSX.Element {
       );
     }
   };
+
+  // the account changed under a published request, so the network would refuse
+  // it as signed: drop it and plan the close again from the account as it is
+  // now, for a new request
+  const onRebuildRequest = useCallback(() => {
+    signing.discardStored();
+    signing.reset();
+    buildAndStart();
+  }, [signing, buildAndStart]);
 
   // rebuild without the claims the bundle can't make within the signing window
   const onLeaveOutRisky = useCallback(() => {
@@ -1044,6 +1049,24 @@ export function DemolishFlow(): React.JSX.Element {
           A run that failed inside the helper account shows its own resume in the
           status widget, so this one steps aside to avoid two resume buttons. */}
       {!failedInMediator ? <PendingForwardBanner publicKey={publicKey} /> : null}
+
+      {teardownError !== null ? (
+        <div style={{ marginBottom: 14 }}>
+          <Notice tone="warning" title="The wallet wasn't fully disconnected" role="status">
+            {`The wallet could not be fully disconnected: ${teardownError}`}
+            <div style={{ marginTop: 10 }}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setTeardownError(null)}
+                data-testid="teardown-error-dismiss"
+              >
+                Dismiss
+              </Button>
+            </div>
+          </Notice>
+        </div>
+      ) : null}
 
       {/* IDLE, connect. Keyed by network so a switch starts it fresh. */}
       {isIdle ? (
@@ -1216,7 +1239,8 @@ export function DemolishFlow(): React.JSX.Element {
                     initialXdr={activeRequest.xdr}
                     destination={runDestination}
                     connectedKey={publicKey}
-                    onClose={(finalXdr, typed) => void submitBundle(finalXdr, typed)}
+                    onClose={submitBundle}
+                    onRebuildRequest={onRebuildRequest}
                   />
                 </>
               ) : (
@@ -1433,6 +1457,8 @@ export function DemolishFlow(): React.JSX.Element {
             <TypedConfirmation
               destination={runInput.destination}
               explorerUrl={explorerAccountUrl(runNetwork, runInput.destination)}
+              memo={runInput.memo ?? null}
+              memoViaMediator={runInput.useMediator}
               onCancel={() => setShowConfirmDialog(false)}
               onConfirm={confirmClose}
             />
