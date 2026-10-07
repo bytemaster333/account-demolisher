@@ -373,6 +373,24 @@ describe("/sign wallet signing", () => {
     expect(notice).toMatch(/Your signature was recorded/);
     expect(notice).toMatch(/refused to disconnect/);
   });
+
+  // the kit throws an AggregateError when several closes fail; its summary
+  // names no wallet and no reason
+  it("lists each reason when more than one part of the teardown failed", async () => {
+    wallet.keypair = a;
+    wallet.teardownError = new AggregateError(
+      [new Error("relay down"), new Error("Freighter refused")],
+      "the wallet could not be disconnected",
+    );
+    relay.submitSignature.mockResolvedValue({ ...relay.plan!, xdr: signedBy(owner, a) });
+    await openPage();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("sign-wallet"));
+    });
+    await settle();
+    const notice = screen.getByTestId("sign-teardown-notice").textContent ?? "";
+    expect(notice).toContain("relay down. Freighter refused.");
+  });
 });
 
 describe("/sign after the account is gone", () => {

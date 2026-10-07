@@ -13,6 +13,7 @@ import {
 } from "react";
 import { Select } from "@/components/ui";
 import { describeConnectError } from "@/components/wallet/connect-error";
+import { walletTeardownNotice } from "@/components/wallet/teardown-message";
 import { hasMainnetAck, recordMainnetAck, subscribeMainnetAck } from "./mainnet-ack";
 import { MainnetConfirm } from "./MainnetConfirm";
 import { useTheme } from "./ThemeProvider";
@@ -98,8 +99,16 @@ function Navbar() {
   // and shares the connector app-wide; once connected it shows the address
   const [connecting, setConnecting] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
+  // a disconnect or network switch lets go of the app's session first and then
+  // closes the wallet's side; when that close fails the pairing or extension
+  // grant may still be live, which the user can only end in the wallet
+  const [teardownNotice, setTeardownNotice] = useState<string | null>(null);
+  const onTeardownError = useCallback((e: unknown) => {
+    setTeardownNotice(walletTeardownNotice(e));
+  }, []);
   const onConnect = useCallback(async () => {
     setConnectError(null);
+    setTeardownNotice(null);
     setConnecting(true);
     try {
       const connector = new WalletKitConnector(network);
@@ -236,7 +245,7 @@ function Navbar() {
         <div style={{ flex: 1 }} />
 
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <NetworkSwitcher />
+          <NetworkSwitcher onTeardownError={onTeardownError} />
           <a
             className="resp-nav-hide"
             href="https://github.com/bytemaster333/account-demolisher"
@@ -282,6 +291,7 @@ function Navbar() {
               publicKey={publicKey}
               network={network}
               onDisconnect={disconnect}
+              onTeardownError={onTeardownError}
               lockReason={lock}
             />
           ) : (
@@ -337,6 +347,61 @@ function Navbar() {
                 >
                   {connectError}
                 </span>
+              ) : teardownNotice ? (
+                <span
+                  role="alert"
+                  data-testid="wallet-teardown-notice"
+                  style={{
+                    position: "absolute",
+                    top: "calc(100% + 8px)",
+                    right: 0,
+                    width: 260,
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 8,
+                    fontSize: 11.5,
+                    lineHeight: 1.45,
+                    color: "var(--fg-2)",
+                    background: "var(--surface)",
+                    border: "1px solid var(--warning)",
+                    borderRadius: 9,
+                    padding: "8px 11px",
+                    boxShadow: "var(--shadow)",
+                    zIndex: 50,
+                    whiteSpace: "normal",
+                  }}
+                >
+                  <span style={{ flex: 1 }}>{teardownNotice}</span>
+                  <button
+                    type="button"
+                    onClick={() => setTeardownNotice(null)}
+                    aria-label="Dismiss"
+                    data-testid="wallet-teardown-dismiss"
+                    style={{
+                      flexShrink: 0,
+                      border: 0,
+                      padding: 0,
+                      background: "transparent",
+                      color: "var(--fg-3)",
+                      cursor: "pointer",
+                      display: "grid",
+                      placeItems: "center",
+                    }}
+                  >
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth={2.2}
+                      strokeLinecap="round"
+                      aria-hidden
+                    >
+                      <path d="M18 6L6 18M6 6l12 12" />
+                    </svg>
+                  </button>
+                </span>
               ) : null}
             </div>
           )}
@@ -383,11 +448,13 @@ function WalletMenu({
   publicKey,
   network,
   onDisconnect,
+  onTeardownError,
   lockReason,
 }: {
   readonly publicKey: string;
   readonly network: NetworkConfig;
   readonly onDisconnect: () => void;
+  readonly onTeardownError: (error: unknown) => void;
   // set while a close or a signature collection depends on this wallet
   readonly lockReason: string | null;
 }): React.JSX.Element {
@@ -430,8 +497,8 @@ function WalletMenu({
     // re-read the store: the run may have taken the lock since this rendered
     if (useNetworkStore.getState().lockReason !== null || useCloseBusy.getState().busy) return;
     setOpen(false);
-    void disconnectSession(onDisconnect);
-  }, [onDisconnect]);
+    void disconnectSession(onDisconnect, onTeardownError);
+  }, [onDisconnect, onTeardownError]);
 
   return (
     <div ref={ref} style={{ position: "relative" }}>
@@ -631,7 +698,11 @@ function readStoredNetwork(): StellarNetwork | null {
   }
 }
 
-function NetworkSwitcher() {
+function NetworkSwitcher({
+  onTeardownError,
+}: {
+  readonly onTeardownError: (error: unknown) => void;
+}) {
   const networkId = useNetworkStore((s) => s.networkId);
   const setNetwork = useNetworkStore((s) => s.setNetwork);
   const disconnect = useWalletStore((s) => s.disconnect);
@@ -681,9 +752,9 @@ function NetworkSwitcher() {
       // a connected account is network-scoped; changing network invalidates it.
       // Full teardown (connector + kit + store), not just the store, so the wallet
       // extension doesn't stay authorized to the old network's session.
-      void disconnectSession(disconnect);
+      void disconnectSession(disconnect, onTeardownError);
     },
-    [setNetwork, disconnect],
+    [setNetwork, disconnect, onTeardownError],
   );
 
   const onChange = (id: StellarNetwork): void => {

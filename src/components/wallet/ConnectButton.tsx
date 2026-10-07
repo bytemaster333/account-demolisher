@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { describeConnectError } from "@/components/wallet/connect-error";
+import { walletTeardownNotice } from "@/components/wallet/teardown-message";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { WalletKitConnector } from "@/lib/wallet/connector";
 import { disconnectSession, setActiveConnector } from "@/lib/wallet/active-connector";
@@ -55,12 +56,14 @@ export function ConnectButton({ network, onConnector }: ConnectButtonProps): Rea
   }, [network, setConnected]);
 
   // every disconnect goes through disconnectSession so the connector, the store
-  // and the kit's persisted selection are torn down together
+  // and the kit's persisted selection are torn down together. the app lets go
+  // either way; a failed wallet teardown (a walletconnect pairing left live on
+  // the phone) is said here instead of only in the console
   const onDisconnect = useCallback(async () => {
     setError(null);
     setPending(true);
     try {
-      await disconnectSession(disconnectStore);
+      await disconnectSession(disconnectStore, (e) => setError(walletTeardownNotice(e)));
     } finally {
       setConnectorLocal(null);
       setPending(false);

@@ -17,9 +17,18 @@ vi.mock("@/lib/wallet/connector", () => ({
 
 import { describeConnectError } from "@/components/wallet/connect-error";
 import { ConnectButton } from "@/components/wallet/ConnectButton";
-import { resolveNetwork } from "@/lib/config/networks";
+import { TESTNET } from "@/lib/config/networks";
+import { setActiveConnector } from "@/lib/wallet/active-connector";
+import type { Connector } from "@/lib/wallet/connector";
+import { useWalletStore } from "@/stores/wallet";
 
-afterEach(cleanup);
+const G = "GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3";
+
+afterEach(() => {
+  cleanup();
+  setActiveConnector(null);
+  useWalletStore.setState({ publicKey: null, connectorKind: null });
+});
 
 describe("describeConnectError", () => {
   it("treats closing the wallet picker as a silent cancel", () => {
@@ -44,7 +53,7 @@ describe("describeConnectError", () => {
 describe("ConnectButton", () => {
   it("shows nothing when the user closes the picker", async () => {
     connectResult.reject = { code: -1, message: "The user closed the modal." };
-    render(<ConnectButton network={resolveNetwork("testnet")} />);
+    render(<ConnectButton network={TESTNET} />);
     await act(async () => {
       fireEvent.click(screen.getByTestId("connect-button"));
     });
@@ -53,10 +62,54 @@ describe("ConnectButton", () => {
 
   it("shows the wallet's reason when connecting fails", async () => {
     connectResult.reject = { code: -3, message: "User declined access" };
-    render(<ConnectButton network={resolveNetwork("testnet")} />);
+    render(<ConnectButton network={TESTNET} />);
     await act(async () => {
       fireEvent.click(screen.getByTestId("connect-button"));
     });
     expect(screen.getByRole("alert").textContent).toMatch(/User declined access/);
+  });
+});
+
+describe("ConnectButton disconnect", () => {
+  // a kit connector whose teardown fails, the way an unreachable walletconnect
+  // relay does; disconnectSession then reports it instead of the console
+  function failingKit(error: unknown): Connector {
+    return {
+      kind: "kit",
+      connect: async () => ({ publicKey: G }),
+      disconnect: async () => {
+        throw error;
+      },
+      getPublicKey: async () => G,
+      signTransaction: async () => {
+        throw new Error("not used");
+      },
+    };
+  }
+
+  it("disconnects the app and says the wallet may still be connected when the teardown fails", async () => {
+    setActiveConnector(
+      failingKit(new Error("WalletConnect could not reach its relay. Check your connection")),
+    );
+    useWalletStore.setState({ publicKey: G, connectorKind: "kit" });
+    render(<ConnectButton network={TESTNET} />);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("connect-button"));
+    });
+    expect(useWalletStore.getState().publicKey).toBeNull();
+    const alert = screen.getByRole("alert").textContent ?? "";
+    expect(alert).toMatch(/could not be fully disconnected/);
+    expect(alert).toMatch(/could not reach its relay\. Check your connection\./);
+  });
+
+  it("shows nothing when the teardown works", async () => {
+    setActiveConnector({ ...failingKit(null), disconnect: async () => {} });
+    useWalletStore.setState({ publicKey: G, connectorKind: "kit" });
+    render(<ConnectButton network={TESTNET} />);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("connect-button"));
+    });
+    expect(useWalletStore.getState().publicKey).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

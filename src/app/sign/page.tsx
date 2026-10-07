@@ -34,6 +34,7 @@ import {
   Spinner,
 } from "@/components/ui";
 import { SEED_INPUT_ATTRS } from "@/components/wallet/seed-input";
+import { teardownFailureDetail } from "@/components/wallet/teardown-message";
 import { NETWORKS, type NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import { explorerAccountUrl, explorerTxUrl } from "@/lib/explorer";
@@ -343,8 +344,7 @@ export default function SignPage(): React.JSX.Element {
           await connector.connect();
           return connector.signTransaction(tx, network.passphrase);
         },
-        (e) =>
-          setTeardownNotice(errorMessage(e, "Couldn't disconnect the wallet you signed with.")),
+        (e) => setTeardownNotice(teardownFailureDetail(e)),
       ),
     );
   }, [signWith, network]);
