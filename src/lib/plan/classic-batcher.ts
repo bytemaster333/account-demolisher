@@ -412,6 +412,23 @@ export function planClaimableBalances(
   for (const [key, b] of lines) {
     if (b.limit !== undefined) room.set(key, toStroops(b.limit) - toStroops(b.amount));
   }
+  // the pool withdraws of the leading phase run ahead of the claims (in the same
+  // transaction), so what they credit to a line is no longer room for a claim.
+  // core sizes each reserve's payout as reserve * shares / total, rounded down.
+  for (const pool of audit.poolShares) {
+    const shares = toStroops(pool.shareBalance);
+    const total = toStroops(pool.totalShares);
+    // the same pools batchClassicDemolition withdraws
+    if (shares <= 0n || total <= 0n || !pool.reserves[0] || !pool.reserves[1]) continue;
+    for (const reserve of pool.reserves) {
+      if (reserve.asset.kind !== "credit") continue;
+      const key = pathKey(reserve.asset);
+      const left = room.get(key);
+      if (left === undefined) continue;
+      const paid = (toStroops(reserve.amount) * shares) / total;
+      room.set(key, left > paid ? left - paid : 0n);
+    }
+  }
   // XLM free for new trustline reserves: the balance above the account's
   // current minimum and selling liabilities, less the fee of the ops that run
   // with the claims in the leading phase
