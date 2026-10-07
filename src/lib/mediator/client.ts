@@ -29,7 +29,7 @@ export interface MediatorEndpointOptions {
   readonly signal?: AbortSignal;
 }
 
-// what the forward out of the new mediator will have to look like. Both are
+// what the forward out of the new mediator will have to look like. both are
 // committed into the flow token, so they must be the exact values the forward
 // is later built with.
 export interface MediatorFlowTerms {
@@ -137,8 +137,8 @@ function tokenCommitsTo(
 }
 
 // GET the endpoint to start a flow: returns a flow token plus the ephemeral
-// mediator public key the plan should fund and merge into. Each call mints a
-// fresh, independent flow bound to `destination` and `terms`. An exchange
+// mediator public key the plan should fund and merge into. each call mints a
+// fresh, independent flow bound to `destination` and `terms`. an exchange
 // credits by memo, so the terms are required: a caller has to state the memo
 // (or null for none) and the network.
 export async function startMediatorFlow(
@@ -183,7 +183,7 @@ export async function startMediatorFlow(
 }
 
 // renew a flow token that expired (or is about to) for the same mediator,
-// destination, network and memo. The server only renews tokens it issued, and
+// destination, network and memo. the server only renews tokens it issued, and
 // only while the mediator account exists.
 export async function reissueMediatorFlow(
   flowToken: string,
@@ -208,7 +208,7 @@ export async function reissueMediatorFlow(
 export async function requestMediatorSignature(
   envelopeXdr: string,
   flowToken: string,
-  // the network the envelope was built on. The token is bound to one network
+  // the network the envelope was built on. the token is bound to one network
   // and the route refuses to sign when this disagrees with it.
   network: string,
   options: MediatorEndpointOptions = {},

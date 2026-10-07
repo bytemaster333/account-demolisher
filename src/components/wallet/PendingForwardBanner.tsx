@@ -8,7 +8,7 @@ import { explorerTxUrl } from "@/lib/explorer";
 import {
   inspectPendingForward,
   isCloseInFlight,
-  legacyFlowId,
+  isLegacyFlowToken,
   loadPendingForwards,
   pendingForwardNetwork,
   removePendingForward,
@@ -49,10 +49,10 @@ export interface PendingForwardBannerProps {
   readonly onResolved?: () => void;
 }
 
-// Recovery for exchange closes that were interrupted between the merge into the
-// mediator and the forward out of it. Every stored record for the connected
+// recovery for exchange closes that were interrupted between the merge into the
+// mediator and the forward out of it. every stored record for the connected
 // account is checked against the chain before anything is shown, so the banner
-// only asks for action when the balance really sits in a mediator. It re-reads
+// only asks for action when the balance really sits in a mediator. it re-reads
 // the records whenever they change (in this tab or another), rechecks rows that
 // had nothing to show yet, and stays hidden while a close for this account is
 // running somewhere.
@@ -186,7 +186,7 @@ export function PendingForwardBanner({
   );
 }
 
-// a record is written when a close starts, well before its merge. Until it is
+// a record is written when a close starts, well before its merge. until it is
 // this old, "no merge yet" may just mean the close is still on its way there;
 // nothing has moved, so there is no reason to speak up early.
 const NOT_MERGED_QUIET_MS = 15 * 60 * 1000;
@@ -246,7 +246,7 @@ function PendingForwardRow({
 
   const network = pendingForwardNetwork(record);
   const networkName = network?.id ?? record.networkId;
-  const legacyId = legacyFlowId(record.flowToken);
+  const legacy = isLegacyFlowToken(record.flowToken);
 
   const onResume = async (): Promise<void> => {
     setResuming(true);
@@ -299,18 +299,32 @@ function PendingForwardRow({
           {subject} merged your account&apos;s balance into the temporary account{" "}
           {shorten(record.mediatorPublicKey)} on {networkName}, but the forward to{" "}
           {shorten(record.ultimateDestination)} has not gone out.{" "}
-          {legacyId !== null ? (
+          {legacy ? (
             <>
               The record was saved by an earlier version of the app, whose flow token can no longer
-              be renewed, so the app can&apos;t send the forward. Contact the operator with the
-              temporary account {record.mediatorPublicKey} and flow id {legacyId}; the balance stays
-              in that account until then.
+              be renewed, so the app can&apos;t send the forward. Send the operator the temporary
+              account {record.mediatorPublicKey}, your deposit memo
+              {record.memo !== undefined
+                ? ` (memo saved with this close: ${record.memo.type} ${record.memo.value})`
+                : ""}{" "}
+              and the recovery token below. The balance stays in that account until then.
+              <div
+                data-testid="legacy-recovery-token"
+                style={{
+                  marginTop: 8,
+                  font: "500 12px 'Geist Mono', monospace",
+                  overflowWrap: "anywhere",
+                  userSelect: "all",
+                }}
+              >
+                {record.flowToken}
+              </div>
             </>
           ) : (
             <>Resume it to deliver the balance with your deposit memo.</>
           )}
           {errorLine}
-          {legacyId === null ? (
+          {!legacy ? (
             <div style={{ marginTop: 12 }}>
               <Button
                 variant="primary"

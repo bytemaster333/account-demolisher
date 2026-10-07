@@ -294,7 +294,7 @@ async function waitForAccountView(
 // submitters bid, which sits at the cap under any load. fee_charged also counts
 // soroban transactions, whose resource fees push its upper percentiles far above
 // any classic surge price (testnet on 2026-10-06: capacity 0.1, mode 100, p90
-// 100791). While recent ledgers had room the classic price is the mode; p90 is
+// 100791). while recent ledgers had room the classic price is the mode; p90 is
 // only used once they run near full. an underbid is raised on the rebuild, and
 // whatever the bid leaves unused travels in the uncredited merge leg.
 async function startingFeePerOp(server: Horizon.Server): Promise<number> {

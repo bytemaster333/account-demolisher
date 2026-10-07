@@ -301,10 +301,13 @@ describe("PendingForwardBanner", () => {
     fake.createAccount(record.mediatorPublicKey, 2n * XLM);
     fake.mergeInto(user, record.mediatorPublicKey);
     const nonce = "e".repeat(32);
-    savePendingForward({ ...record, flowToken: `${nonce}.1700000000000.${cex}.${"f".repeat(64)}` });
+    // the operator needs the whole token: its mac is what proves the destination
+    const legacyToken = `${nonce}.1700000000000.${cex}.${"f".repeat(64)}`;
+    savePendingForward({ ...record, flowToken: legacyToken });
     render(<PendingForwardBanner publicKey={user} />);
     expect(await screen.findByText("An exchange forward was interrupted")).toBeTruthy();
-    expect(screen.getByText(new RegExp(`flow id ${nonce}`, "u"))).toBeTruthy();
+    expect(screen.getByTestId("legacy-recovery-token").textContent).toBe(legacyToken);
+    expect(screen.getByText(/memo saved with this close: id 31337/u)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Resume the forward" })).toBeNull();
   });
 

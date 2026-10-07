@@ -60,9 +60,9 @@ async function readFlowToken(
   return { ok: true, flowToken: rec.flowToken };
 }
 
-// body: { flowToken }. An authentic token (expired or not) is renewed for the
+// body: { flowToken }. an authentic token (expired or not) is renewed for the
 // same nonce, so the same mediator, with the same destination, network and
-// memo. Renewal never widens what the token allows; the mediator must exist so
+// memo. renewal never widens what the token allows; the mediator must exist so
 // tokens for flows that never got funded are not kept alive for nothing.
 export async function POST(request: Request): Promise<Response> {
   const cors = buildCorsHeaders(request.headers.get("origin"));

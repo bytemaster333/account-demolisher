@@ -1,4 +1,4 @@
-// a small in-memory horizon for the mediator tests. It speaks the real horizon
+// a small in-memory horizon for the mediator tests. it speaks the real horizon
 // json shapes over a stubbed global fetch, so the sdk's own client, parsing and
 // error wrapping run unchanged, and it routes /api/mediator/* to the real route
 // handlers so the forward is validated and co-signed by the production code.

@@ -1,4 +1,4 @@
-// what horizon says happened to a mediator account. Both the in-session forward
+// what horizon says happened to a mediator account. both the in-session forward
 // and the recovery banner decide from this, never from local state alone.
 
 import { Horizon, NotFoundError } from "@stellar/stellar-sdk";

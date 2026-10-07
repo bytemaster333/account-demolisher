@@ -109,7 +109,7 @@ export async function POST(request: Request): Promise<Response> {
 
   // resolve THIS flow's ephemeral keypair and terms from the token. A thrown
   // error means the master seed is unset or malformed: logged for the operator,
-  // scrubbed for the client. No token can be authenticated then, so the request
+  // scrubbed for the client. no token can be authenticated then, so the request
   // is charged to its address first and junk can't flood the log.
   let resolution: ReturnType<typeof resolveMediatorFlow>;
   try {
@@ -178,8 +178,8 @@ export async function POST(request: Request): Promise<Response> {
 
 // starts a fresh mediator flow: a flow token bound to the destination, network
 // and deposit memo, and the ephemeral public key the close funds and merges
-// into. The token is echoed back at POST time to unlock signing for this flow's
-// key only, and only for a forward that meets those terms. It can be used more
+// into. the token is echoed back at POST time to unlock signing for this flow's
+// key only, and only for a forward that meets those terms. it can be used more
 // than once (a failed forward is retried with it) until it expires.
 export function GET(request: Request): Response {
   const cors = buildCorsHeaders(request.headers.get("origin"));
@@ -217,7 +217,7 @@ export function GET(request: Request): Response {
       cors,
     );
   }
-  // the deposit memo, as base64 xdr of one Stellar memo (MemoNone for none). It
+  // the deposit memo, as base64 xdr of one Stellar memo (MemoNone for none). it
   // is required so a client can never start a flow that silently commits to no
   // memo for a destination that needs one.
   const memoXdr = params.get("memo");
