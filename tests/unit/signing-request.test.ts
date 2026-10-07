@@ -911,6 +911,48 @@ describe("buildCloseTransaction carries the reviewed choices (H-11, H-29, L-25)"
     expect(message).not.toMatch(/claimable balance/i);
   });
 
+  it("checks room for the close marker at the bundle's own fee bid", () => {
+    // 1.6 XLM leaves 0.6 above the bare account's reserve: enough for the marker
+    // at 100 stroops per op, not at the executor's 0.1 XLM ceiling
+    const a = audit();
+    const lean = {
+      ...a,
+      balances: [{ ...a.balances[0]!, amount: "1.6000000" }],
+    } as AccountAudit;
+    const tx = buildCloseTransaction({
+      audit: lean,
+      destination: Keypair.random().publicKey(),
+      network: TESTNET,
+      sourceAccount: source(),
+    });
+    const marker = tx.operations.filter(
+      (o) => o.type === "manageData" && o.name === "account-demolisher.close",
+    );
+    expect(marker).toHaveLength(2);
+    expect(Number(tx.fee)).toBe(Number(BASE_FEE) * tx.operations.length);
+  });
+
+  it("names the missing trustline when a reviewed claim needs one opened first", () => {
+    // the account doesn't trust USD; the issuer needs no authorization, so the
+    // batcher opens the line in a leading transaction before the claim
+    const a = audit({ claimableBalances: [{ ...cb(ID1, usd), issuerAuthRequired: false }] });
+    let message = "";
+    try {
+      buildCloseTransaction({
+        audit: a,
+        destination: Keypair.random().publicKey(),
+        network: TESTNET,
+        sourceAccount: source(),
+        disposal: { claimableBalanceIds: [ID1], returnToIssuerAssetKeys: [pathKey(usd)] },
+      });
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toMatch(/doesn't trust/);
+    expect(message).toMatch(/USD/);
+    expect(message).not.toMatch(/needs \d+ operations/);
+  });
+
   it("reports the operation count when the claimed credit asset has a disposal", () => {
     const a = audit({
       data: manyEntries,
