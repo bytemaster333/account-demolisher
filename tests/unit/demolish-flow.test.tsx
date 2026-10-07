@@ -15,6 +15,7 @@ import type { AccountAudit } from "@/lib/types/account";
 import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
 import type { HeldToken } from "@/lib/soroban/held-tokens";
 import type { EmissionForfeit, RefusedConversion } from "@/lib/orchestrator/page-flow-machine";
+import type { SignerSnapshot } from "@/lib/multisig/bundle-freshness";
 
 import {
   ACC,
@@ -65,6 +66,14 @@ const ctl = vi.hoisted(() => ({
   typedTail: "",
   // the symbol a standalone token contract reports
   tokenSymbol: "TKN",
+  // close time of the network's latest ledger, ms; null reads the local clock
+  ledgerCloseMs: null as number | null,
+  // the page's own credit quote lookup (Horizon path finding); null leaves it real
+  resolvePaths: null as
+    null | ((audit: unknown, network: unknown, opts: unknown) => Promise<unknown>),
+  resolvePathCalls: [] as unknown[],
+  // the look-alike check over standalone tokens fails with this, when set
+  heldScamError: null as string | null,
 }));
 
 vi.mock("@/components/wallet/ConnectButton", () => ({
@@ -100,7 +109,15 @@ vi.mock("@/lib/stellar/horizon-client", async () => {
         ledgers: () => ({
           order: () => ({
             limit: () => ({
-              call: async () => ({ records: [{ base_reserve_in_stroops: 5_000_000 }] }),
+              call: async () => ({
+                records: [
+                  {
+                    base_reserve_in_stroops: 5_000_000,
+                    sequence: 4242,
+                    closed_at: new Date(ctl.ledgerCloseMs ?? Date.now()).toISOString(),
+                  },
+                ],
+              }),
             }),
           }),
         }),
@@ -141,6 +158,18 @@ vi.mock("@/lib/multisig/plan-client", async () => {
     },
   };
 });
+vi.mock("@/lib/stellar/path-finder", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("@/lib/stellar/path-finder")>();
+  return {
+    ...orig,
+    resolveCreditPaths: (...args: Parameters<typeof orig.resolveCreditPaths>) => {
+      ctl.resolvePathCalls.push(args[2]);
+      return ctl.resolvePaths === null
+        ? orig.resolveCreditPaths(...args)
+        : (ctl.resolvePaths(...args) as ReturnType<typeof orig.resolveCreditPaths>);
+    },
+  };
+});
 // a standalone token's symbol and name come from its own contract
 vi.mock("@/lib/soroban/sep41", async (importOriginal) => {
   const orig = await importOriginal<typeof import("@/lib/soroban/sep41")>();
@@ -148,6 +177,16 @@ vi.mock("@/lib/soroban/sep41", async (importOriginal) => {
     ...orig,
     symbol: async () => ctl.tokenSymbol,
     name: async () => "Some token",
+  };
+});
+vi.mock("@/lib/safety/scam-heuristics", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("@/lib/safety/scam-heuristics")>();
+  return {
+    ...orig,
+    runHeldTokenScamHeuristics: (...args: Parameters<typeof orig.runHeldTokenScamHeuristics>) => {
+      if (ctl.heldScamError !== null) throw new Error(ctl.heldScamError);
+      return orig.runHeldTokenScamHeuristics(...args);
+    },
   };
 });
 vi.mock("@/lib/adapters/positions/direct", async () => {
@@ -166,17 +205,31 @@ vi.mock("@/components/multisig/CollectSignatures", () => ({
   CollectSignatures: ({
     planId,
     onClose,
+    onRebuildRequest,
   }: {
     planId: string;
-    onClose: (signedXdr: string, typed: string) => void;
+    onClose: (signedXdr: string, typed: string, snapshot: SignerSnapshot) => void;
+    onRebuildRequest?: () => void;
   }) => (
     <div>
       <div data-testid="collect-stub">{planId}</div>
       <button
         type="button"
         data-testid="collect-close"
-        onClick={() => onClose(ctl.relayXdr ?? "", ctl.typedTail)}
+        // the collector hands up the relay's signer set it checked the bundle with
+        onClick={() =>
+          onClose(ctl.relayXdr ?? "", ctl.typedTail, {
+            signers: [
+              { key: ACC, weight: 1 },
+              { key: DEST, weight: 3 },
+            ],
+            thresholds: { low: 2, med: 2, high: 2 },
+          })
+        }
       />
+      {onRebuildRequest ? (
+        <button type="button" data-testid="collect-rebuild" onClick={onRebuildRequest} />
+      ) : null}
     </div>
   ),
 }));
@@ -280,6 +333,10 @@ beforeEach(() => {
   ctl.destinationData = {};
   ctl.typedTail = "";
   ctl.tokenSymbol = "TKN";
+  ctl.ledgerCloseMs = null;
+  ctl.resolvePaths = null;
+  ctl.resolvePathCalls = [];
+  ctl.heldScamError = null;
 });
 
 afterEach(() => {
@@ -599,6 +656,147 @@ describe("the position re-probe runs before a signing request is published (C-08
   });
 });
 
+describe("a claimed credit is priced for what the close really moves (M-22)", () => {
+  const CB = `00000000${"d5".repeat(32)}`;
+  const KEY = `USDC:${DEST}`;
+
+  // 10 USDC held and 5 more claimed; the reviewed quote covers the 10 only
+  function creditWithClaim(): void {
+    const audit = makeAudit({
+      subentryCount: 1,
+      balances: [
+        ...makeAudit().balances,
+        {
+          asset: { kind: "credit", code: "USDC", issuer: DEST },
+          amount: "10.0000000",
+          limit: "1000.0000000",
+          buyingLiabilities: "0",
+          sellingLiabilities: "0",
+          isAuthorized: true,
+        },
+      ],
+      claimableBalances: [
+        {
+          id: CB,
+          asset: { kind: "credit", code: "USDC", issuer: DEST },
+          amount: "5.0000000",
+          sponsor: DEST,
+          predicate: [{ destination: ACC, predicate: { unconditional: true } }],
+          claimants: [ACC],
+          claimableNow: true,
+        },
+      ],
+    });
+    const reviewed = new Map([
+      [
+        KEY,
+        {
+          sourceAmount: "10.0000000",
+          destinationAmount: "2.0000000",
+          path: [],
+          reference: { sourceAmount: "0.1000000", destinationAmount: "0.0200000" },
+        },
+      ],
+    ]);
+    ctl.discover = async () => ({ audit, positions: emptyPositions(), heldTokens: [] });
+    ctl.preview = async () => ({
+      tree: makeTree({ audit, opts: { paths: reviewed } }),
+      unroutableCredits: [],
+    });
+  }
+
+  it("uses a quote sized to the balance plus the claim", async () => {
+    creditWithClaim();
+    ctl.resolvePaths = async () =>
+      new Map([[KEY, { sourceAmount: "15.0000000", destinationAmount: "3.0000000", path: [] }]]);
+    connect();
+    render(<DemolishFlow />);
+    await configureAndStart();
+    await waitFor(() => expect(ctl.resolvePathCalls).toHaveLength(1));
+    expect(ctl.resolvePathCalls[0]).toEqual({ claimedBalanceIds: [CB] });
+    await screen.findByTestId("ack-autohandled");
+    await waitFor(() => expect(screen.queryByTestId("high-value-notice")).toBeNull());
+  });
+
+  it("counts the claim as unpriced, and says why, when the quote can't be read", async () => {
+    creditWithClaim();
+    ctl.resolvePaths = async () => {
+      throw new Error("horizon path search failed");
+    };
+    connect();
+    render(<DemolishFlow />);
+    await configureAndStart();
+    expect((await screen.findByTestId("high-value-pricing-error")).textContent).toMatch(
+      /horizon path search failed/,
+    );
+  });
+});
+
+describe("the claim window is checked on the ledger clock when publishing (L-25)", () => {
+  const WINDOW_MS = 72 * 3_600_000;
+  const CB = `00000000${"c4".repeat(32)}`;
+
+  // a shared account with one pending XLM payment that stops being claimable at
+  // `expiresAtMs`
+  function sharedWithExpiringClaim(expiresAtMs: number): void {
+    const audit = makeAudit({
+      ...sharedAudit(),
+      claimableBalances: [
+        {
+          id: CB,
+          asset: { kind: "native" },
+          amount: "5.0000000",
+          sponsor: DEST,
+          predicate: [
+            {
+              destination: ACC,
+              predicate: { abs_before: new Date(expiresAtMs).toISOString() },
+            },
+          ],
+          claimants: [ACC],
+          claimableNow: true,
+        },
+      ],
+    });
+    ctl.preflightAudit = audit;
+    ctl.discover = async () => ({ audit, positions: emptyPositions(), heldTokens: [] });
+    ctl.preview = async () => ({ tree: makeTree({ audit }), unroutableCredits: [] });
+  }
+
+  it("refuses a claim that expires inside the window counted from publish time", async () => {
+    const mounted = Date.now();
+    // the network's clock reads two hours past the page's mount time: the claim
+    // is safe for a window counted from the mount, not for one from now
+    ctl.ledgerCloseMs = mounted + 2 * 3_600_000;
+    sharedWithExpiringClaim(mounted + WINDOW_MS + 3_600_000);
+    connect();
+    render(<DemolishFlow />);
+    await configureAndStart();
+    // collecting the payment is listed on the Warnings step first
+    fireEvent.click(await screen.findByTestId("ack-autohandled"));
+    fireEvent.click(screen.getByTestId("acknowledge-continue"));
+    const create = await screen.findByTestId("review-create-request");
+    // the Review's own check, from the mount time, sees nothing at risk
+    expect(screen.queryByTestId("review-claim-risks")).toBeNull();
+    fireEvent.click(create);
+    expect((await screen.findByRole("alert")).textContent).toMatch(/signing window/);
+    expect(ctl.published).toHaveLength(0);
+  });
+
+  it("anchors the published request's expiry to the ledger clock", async () => {
+    const ledger = Date.now() + 5 * 60_000;
+    ctl.ledgerCloseMs = ledger;
+    setUpSharedAccount();
+    connect();
+    render(<DemolishFlow />);
+    await configureAndStart();
+    fireEvent.click(await screen.findByTestId("review-create-request"));
+    await screen.findByTestId("collect-stub");
+    const tx = TransactionBuilder.fromXdr(ctl.published[0]!.xdr, TESTNET.passphrase) as Transaction;
+    expect(Number(tx.timeBounds?.maxTime)).toBe(Math.floor(ledger / 1000) + WINDOW_MS / 1000);
+  });
+});
+
 describe("the collected bundle is submitted bound to the reviewed close (M-41, M-63)", () => {
   it("sends the typed tail, the request id and the relay's signer set", async () => {
     setUpSharedAccount();
@@ -628,12 +826,95 @@ describe("the collected bundle is submitted bound to the reviewed close (M-41, M
     expect(seen).toHaveLength(1);
     const bundle = seen[0]!["bundle"] as { signedXdr: string; snapshot: { signers: unknown[] } };
     expect(bundle.signedXdr).toBe(ctl.relayXdr);
-    expect(bundle.snapshot.signers).toHaveLength(2);
+    // the signer set the collector checked the bundle against, with no second relay read
+    expect(bundle.snapshot.signers).toEqual([
+      { key: ACC, weight: 1 },
+      { key: DEST, weight: 3 },
+    ]);
     expect(planId).toBe(
       Buffer.from(
         (TransactionBuilder.fromXdr(ctl.relayXdr, TESTNET.passphrase) as Transaction).hash(),
       ).toString("hex"),
     );
+  });
+});
+
+describe("a wallet that doesn't disconnect cleanly is said on the page", () => {
+  it("shows the teardown error after Start over", async () => {
+    ctl.execute = async (tree) => ({
+      result: { ok: false, errors: ["WithdrawBlend failed on-chain: contract reverted"] },
+      tree,
+    });
+    setActiveConnector({
+      ...connector,
+      disconnect: async () => {
+        throw new Error("end the session in your wallet app");
+      },
+    });
+    useWalletStore.getState().setConnected(ACC, "secret");
+    render(<DemolishFlow />);
+    await configureAndStart();
+    await confirmTyped();
+    fireEvent.click(await screen.findByTestId("demolish-failed-reset"));
+    expect(
+      await screen.findByText(
+        /could not be fully disconnected: .*end the session in your wallet app/,
+      ),
+    ).toBeTruthy();
+  }, 20_000);
+});
+
+describe("a request the account outgrew is rebuilt from the current account (M-48)", () => {
+  it("drops the stale request and builds a fresh plan to publish again", async () => {
+    setUpSharedAccount();
+    connect();
+    render(<DemolishFlow />);
+    await configureAndStart();
+    fireEvent.click(await screen.findByTestId("review-create-request"));
+    await screen.findByTestId("collect-stub");
+    expect(window.localStorage.length).toBeGreaterThan(0);
+    const before = ctl.previewInputs.length;
+
+    fireEvent.click(screen.getByTestId("collect-rebuild"));
+    await waitFor(() => expect(ctl.previewInputs.length).toBe(before + 1));
+    // the new plan is reviewed again, and nothing points at the old request
+    expect(await screen.findByTestId("review-create-request")).toBeTruthy();
+    expect(screen.queryByTestId("collect-stub")).toBeNull();
+    expect(ctl.previewInputs.at(-1)!["deterministicDisposal"]).toBe(true);
+  });
+});
+
+describe("the memo is on the final confirmation (M-40)", () => {
+  it("shows the reviewed memo and that the mediator applies it", async () => {
+    ctl.destinationData = { "config.memo_required": "MQ==" };
+    connect();
+    render(<DemolishFlow />);
+    const input = await screen.findByTestId("destination-input");
+    fireEvent.change(input, { target: { value: DEST } });
+    await waitFor(
+      () =>
+        expect(screen.getByTestId("demolish-start-hint").textContent).toMatch(/requires a memo/i),
+      { timeout: 3000 },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Memo type" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Text" }));
+    fireEvent.change(screen.getByTestId("memo-value-input"), { target: { value: "deposit-42" } });
+    const start = screen.getByTestId("demolish-start") as HTMLButtonElement;
+    await waitFor(() => expect(start.disabled).toBe(false));
+    fireEvent.click(start);
+
+    fireEvent.click(await screen.findByTestId("demolish-confirm"));
+    const memo = (await screen.findByTestId("typed-confirmation-memo")).textContent ?? "";
+    expect(memo).toMatch(/Memo \(TEXT\): deposit-42/);
+    expect(memo).toMatch(/mediator/);
+  });
+
+  it("says no memo when the close has none", async () => {
+    connect();
+    render(<DemolishFlow />);
+    await configureAndStart();
+    fireEvent.click(await screen.findByTestId("demolish-confirm"));
+    expect((await screen.findByTestId("typed-confirmation-memo")).textContent).toMatch(/No memo/);
   });
 });
 
@@ -721,7 +1002,7 @@ describe("refused conversions are decided per asset (decision 3, M-18, M-19)", (
     expect(ctl.previewInputs[1]!["acceptedPriceImpactAssetKeys"]).toEqual([key]);
   });
 
-  it("drops a held token the user leaves out of a refused swap", async () => {
+  async function refuse(refusal: RefusedConversion["refusal"]): Promise<void> {
     const token: HeldToken = { contractId: TOKEN_C, balance: 50n };
     ctl.discover = async () => ({
       audit: makeAudit(),
@@ -736,14 +1017,68 @@ describe("refused conversions are decided per asset (decision 3, M-18, M-19)", (
       tree: makeTree(),
       unroutableCredits: [],
       refusedConversions: [
-        { key: `contract:${TOKEN_C}`, contractId: TOKEN_C, reason: "price impact 9.00% over cap" },
+        {
+          key: `contract:${TOKEN_C}`,
+          contractId: TOKEN_C,
+          refusal,
+          reason: refusal === "no_route" ? "no route to XLM" : "price impact 9.00% over cap",
+        },
       ],
     });
     fireEvent.click(screen.getByTestId("acknowledge-rebuild"));
-    fireEvent.click(await screen.findByTestId(`refused-leave-${TOKEN_C}`));
+    await screen.findByTestId(`refused-${TOKEN_C}`);
+  }
+
+  it("leaves a held token on the account when the user picks that (decision 3)", async () => {
+    await refuse("price_impact");
+    fireEvent.click(screen.getByTestId(`refused-leave-${TOKEN_C}`));
     fireEvent.click(screen.getByTestId("resolve-rebuild"));
     await waitFor(() => expect(ctl.previewInputs).toHaveLength(3));
-    expect(ctl.previewInputs[2]!["selectedHeldTokens"]).toEqual([]);
+    const input = ctl.previewInputs[2]!;
+    expect(input["leaveHeldTokens"]).toEqual([TOKEN_C]);
+    expect(input["sendHeldTokensAsIs"]).toBeUndefined();
+    expect(input["acceptedPriceImpactAssetKeys"]).toBeUndefined();
+  });
+
+  it("sends a held token as-is when the user picks that (decision 3)", async () => {
+    await refuse("requote_worse");
+    fireEvent.click(screen.getByTestId(`refused-asis-${TOKEN_C}`));
+    fireEvent.click(screen.getByTestId("resolve-rebuild"));
+    await waitFor(() => expect(ctl.previewInputs).toHaveLength(3));
+    const input = ctl.previewInputs[2]!;
+    expect(input["sendHeldTokensAsIs"]).toEqual([TOKEN_C]);
+    expect(input["leaveHeldTokens"]).toBeUndefined();
+    expect((input["selectedHeldTokens"] as readonly HeldToken[]).map((t) => t.contractId)).toEqual([
+      TOKEN_C,
+    ]);
+  });
+
+  it("accepts the new rate for a held token", async () => {
+    await refuse("price_impact");
+    fireEvent.click(screen.getByTestId(`refused-accept-${TOKEN_C}`));
+    fireEvent.click(screen.getByTestId("resolve-rebuild"));
+    await waitFor(() => expect(ctl.previewInputs).toHaveLength(3));
+    expect(ctl.previewInputs[2]!["acceptedPriceImpactAssetKeys"]).toEqual([`contract:${TOKEN_C}`]);
+  });
+
+  it("offers no new rate for a token with no route", async () => {
+    await refuse("no_route");
+    expect(screen.queryByTestId(`refused-accept-${TOKEN_C}`)).toBeNull();
+    expect(screen.getByTestId(`refused-asis-${TOKEN_C}`)).toBeTruthy();
+    expect(screen.getByTestId(`refused-leave-${TOKEN_C}`)).toBeTruthy();
+  });
+
+  it("forgets an accepted rate when the user goes back to Configure", async () => {
+    await refuse("price_impact");
+    fireEvent.click(screen.getByTestId(`refused-accept-${TOKEN_C}`));
+    fireEvent.click(screen.getByTestId("resolve-back"));
+    await waitFor(() => expect(state()).toBe("idle"));
+    ctl.preview = async () => ({ tree: makeTree(), unroutableCredits: [] });
+    const start = screen.getByTestId("demolish-start") as HTMLButtonElement;
+    await waitFor(() => expect(start.disabled).toBe(false));
+    fireEvent.click(start);
+    await waitFor(() => expect(ctl.previewInputs).toHaveLength(3));
+    expect(ctl.previewInputs[2]!["acceptedPriceImpactAssetKeys"]).toBeUndefined();
   });
 });
 
@@ -853,7 +1188,19 @@ describe("a run that only prepares the close (M-25)", () => {
       prepareOnly: { unlocksAt, reason: "A Blend backstop withdrawal stays locked." },
     });
     ctl.preview = async () => ({ tree: prepared(), unroutableCredits: [] });
-    ctl.execute = async (tree) => ({ result: { ok: true, errors: [] }, tree });
+    // the execute actor reports a prepare-only run with its unlock date, and
+    // the machine ends in its own "prepared" state
+    const preparedClose = {
+      unlocksAt: new Date(Date.now() + 18 * 86_400_000),
+      reason: "The queued backstop withdrawal unlocks later.",
+    };
+    ctl.execute = async (tree) => ({
+      result: { ok: true, errors: [] },
+      tree,
+      notes: [],
+      landedPhases: [],
+      prepared: preparedClose,
+    });
     connect();
     render(<DemolishFlow />);
     await configureAndStart();
@@ -861,8 +1208,18 @@ describe("a run that only prepares the close (M-25)", () => {
       /doesn't delete the account/,
     );
     await confirmTyped();
-    await waitFor(() => expect(state()).toBe("succeeded"));
-    expect((await screen.findByTestId("prepared-note")).textContent).toMatch(/still open/);
+    await waitFor(() => expect(state()).toBe("prepared"));
+    const widget = await screen.findByTestId("demolish-status-widget");
+    expect(widget.getAttribute("data-state")).toBe("prepared");
+    const note = (await screen.findByTestId("prepared-note")).textContent ?? "";
+    expect(note).toMatch(/still open/);
+    expect(note).toMatch(/unlocks later/);
+    expect(widget.textContent).not.toMatch(/Account closed|permanently closed/);
+    expect(useWalletStore.getState().publicKey).toBe(ACC);
+
+    // the only way on is back to Configure, with the account still connected
+    fireEvent.click(screen.getByTestId("demolish-prepared-done"));
+    await waitFor(() => expect(state()).toBe("idle"));
     expect(useWalletStore.getState().publicKey).toBe(ACC);
   }, 20_000);
 });
@@ -881,5 +1238,25 @@ describe("standalone tokens get the scam checks too (L-22)", () => {
     await configureAndStart();
     await screen.findByTestId("ack-scam");
     expect(screen.getByTestId("scam-token-notice").textContent).toMatch(/Hidden characters/);
+  });
+
+  it("says the check failed and keeps Continue locked until a rebuild checks again", async () => {
+    ctl.heldScamError = "bad token metadata";
+    ctl.discover = async () => ({
+      audit: makeAudit(),
+      positions: emptyPositions(),
+      heldTokens: [{ contractId: TOKEN_C, balance: 9n }],
+    });
+    connect();
+    render(<DemolishFlow />);
+    await configureAndStart();
+    const notice = await screen.findByTestId("acknowledge-rebuild-needed");
+    expect(notice.textContent).toMatch(/bad token metadata/);
+    expect((screen.getByTestId("acknowledge-continue") as HTMLButtonElement).disabled).toBe(true);
+
+    ctl.heldScamError = null;
+    fireEvent.click(screen.getByTestId("acknowledge-rebuild"));
+    await waitFor(() => expect(screen.queryByTestId("acknowledge-rebuild-needed")).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/Checking the standalone tokens/)).toBeNull());
   });
 });

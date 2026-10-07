@@ -105,6 +105,9 @@ export function buildReviewedBundle(args: {
   };
   readonly sourceAccount: Horizon.AccountResponse;
   readonly network: NetworkConfig;
+  // close time (unix seconds) of the latest ledger: the request's expiry is
+  // counted from the network's clock, the same one the claim window check uses
+  readonly ledgerCloseTime?: number;
 }): Transaction {
   const { tree, input } = args;
   const final = tree.allNodes.get("final-classic-tx");
@@ -144,6 +147,7 @@ export function buildReviewedBundle(args: {
     args.network,
     undefined,
     SIGNING_WINDOW_SECONDS,
+    args.ledgerCloseTime,
   );
   return built.transaction as Transaction;
 }
@@ -235,6 +239,13 @@ export function claimsAtRiskInWindow(args: {
     }
   }
   return out;
+}
+
+// the claims that would sink the signed bundle: one whose window closes before
+// the request expires, or one the account can't take without a trustline. A
+// claim the sender can take back first is a warning, not a refusal.
+export function sinkingClaims(risks: readonly ClaimAtRisk[]): readonly ClaimAtRisk[] {
+  return risks.filter((r) => r.reason !== "reclaimable");
 }
 
 // re-run DeFi discovery right before the request is published, the same check

@@ -48,7 +48,7 @@ const ARROW_RIGHT = (
   </svg>
 );
 
-// The Acknowledge step, INFORMATION only. Warnings and info that don't block
+// the Acknowledge step, information only. Warnings and info that don't block
 // the close-out but must be read and understood. "Continue to review" is gated
 // until every card is acknowledged.
 function assetLabel(asset: AssetIdentifier): string {
@@ -126,9 +126,14 @@ export function AcknowledgePanel({
   readonly sponsorshipCount: number;
   // the network's base reserve; null when it couldn't be read
   readonly baseReserveStroops: number | null;
-  // set when the close moves a large value: the XLM it can price, and how many
-  // holdings it moves whose value it can't estimate
-  readonly highValue: { readonly estimatedXlm: string; readonly unpricedHoldings: number } | null;
+  // set when the close moves a large value: the XLM it can price, how many
+  // holdings it moves whose value it can't estimate, and why a price lookup
+  // failed when one did
+  readonly highValue: {
+    readonly estimatedXlm: string;
+    readonly unpricedHoldings: number;
+    readonly pricingError?: string | null;
+  } | null;
   // the claimable balances the user may tick in or out of the close; a change
   // reaches the plan only through a rebuild
   readonly claimChoices?: ClaimChoices;
@@ -300,6 +305,12 @@ export function AcknowledgePanel({
           . Over {HIGH_VALUE_THRESHOLD_XLM} XLM, or any value that can&apos;t be priced, counts as
           large. Closing moves it to your destination and permanently deletes this account.
           Double-check the destination before you continue. This can&apos;t be undone.
+          {highValue.pricingError ? (
+            <span data-testid="high-value-pricing-error" style={{ display: "block", marginTop: 7 }}>
+              The pending payments this close collects couldn&apos;t be priced (
+              {highValue.pricingError}), so they count as holdings of unknown value.
+            </span>
+          ) : null}
         </Notice>
       ) : null}
 

@@ -17,6 +17,10 @@ describe("flow phase for the step indicator (L-62)", () => {
     expect(flowPhaseFor({ ...base, state: "failed", hasTree: true })).toBe("execute");
   });
 
+  it("keeps a run that only prepared the close on the Close step (M-25)", () => {
+    expect(flowPhaseFor({ ...base, state: "prepared" })).toBe("execute");
+  });
+
   it("maps the confirmation stages", () => {
     expect(
       flowPhaseFor({ ...base, state: "awaiting_confirmation", confirmStage: "acknowledge" }),
