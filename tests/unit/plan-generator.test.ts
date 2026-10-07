@@ -1303,26 +1303,87 @@ describe("exit payouts need a trustline: the plan opens it first", () => {
     }
   });
 
-  it("puts a line no withdraw explains ahead of the aquarius reward claims", () => {
-    const positions = emptyPositions({
-      aquariusConcentrated: [
-        {
-          poolAddress: OTHER_TOKEN,
-          poolIndex: "cd".repeat(32),
-          tokens: [XLM, YBX],
-          ranges: [],
-          pendingFees: [0n, 0n],
-          pendingReward: 9n,
-        },
-      ],
-    });
-    const tree = generatePlan(makeAudit(), positions, [], DEST, {
+  // a concentrated position kept only for its reward: its pool tokens are not
+  // paid out, the router's reward token is
+  const rewardOnly = emptyPositions({
+    aquariusConcentrated: [
+      {
+        poolAddress: OTHER_TOKEN,
+        poolIndex: "cd".repeat(32),
+        tokens: [XLM, YBX],
+        ranges: [],
+        pendingFees: [0n, 0n],
+        pendingReward: 9n,
+      },
+    ],
+  });
+
+  it("puts the reward token's line ahead of the aquarius reward claims", () => {
+    const tree = generatePlan(makeAudit(), rewardOnly, [], DEST, {
       network: TESTNET,
       exitTrustlineGaps: [missing("AQUA")],
+      aquariusRewardToken: AQUA,
     });
     const claim = tree.allNodes.get(id("aquarius-cl-claim", OTHER_TOKEN));
     expect(claim?.dependencies).toEqual([lineId("AQUA")]);
     expect(tree.allNodes.get(lineId("AQUA"))?.metadata).toMatchObject({ contractId: AQUA });
+  });
+
+  it("does not take a pool token nothing pays out for the reward token", () => {
+    const opts = { network: TESTNET, aquariusRewardToken: AQUA } as const;
+    const tree = generatePlan(makeAudit(), rewardOnly, [], DEST, {
+      ...opts,
+      exitTrustlineGaps: [missing("YBX")],
+    });
+    expect(tree.allNodes.has(lineId("YBX"))).toBe(false);
+    expect(tree.allNodes.get(id("aquarius-cl-claim", OTHER_TOKEN))?.dependencies).toEqual([]);
+    // and an unauthorized line on it blocks nothing
+    expect(() =>
+      generatePlan(makeAudit(), rewardOnly, [], DEST, {
+        ...opts,
+        exitTrustlineGaps: [{ ...missing("YBX"), reason: "unauthorized" }],
+      }),
+    ).not.toThrow();
+  });
+
+  it("puts one line ahead of both a withdraw and the reward claim when both pay it", () => {
+    const pool = { poolIndex: "ab".repeat(32), shareBalance: 3n, tokens: [XLM, AQUA] };
+    const tree = generatePlan(makeAudit(), emptyPositions({ aquarius: [pool] }), [], DEST, {
+      network: TESTNET,
+      exitTrustlineGaps: [missing("AQUA")],
+      aquariusRewardToken: AQUA,
+    });
+    const withdraw = id("aquarius-withdraw", XLM, AQUA, pool.poolIndex);
+    expect(tree.allNodes.get(withdraw)?.dependencies).toEqual([lineId("AQUA")]);
+    expect(
+      tree.allNodes.get(id("aquarius-claim", XLM, AQUA, pool.poolIndex))?.dependencies,
+    ).toEqual([withdraw, lineId("AQUA")]);
+    expect(() =>
+      generatePlan(makeAudit(), emptyPositions({ aquarius: [pool] }), [], DEST, {
+        network: TESTNET,
+        exitTrustlineGaps: [{ ...missing("AQUA"), reason: "unauthorized" }],
+        aquariusRewardToken: AQUA,
+      }),
+    ).toThrow(/Aquarius pool .* and the Aquarius reward claims\./);
+  });
+
+  it("opens no reward line when no reward claim is planned", () => {
+    const tree = generatePlan(makeAudit(), soroswapYbx, [], DEST, {
+      network: TESTNET,
+      exitTrustlineGaps: [missing("YBX"), missing("AQUA")],
+      aquariusRewardToken: AQUA,
+    });
+    expect(tree.allNodes.has(lineId("AQUA"))).toBe(false);
+  });
+
+  it("refuses a reward claim into a line the issuer has not authorized", () => {
+    expect(() =>
+      generatePlan(makeAudit(), rewardOnly, [], DEST, {
+        network: TESTNET,
+        exitTrustlineGaps: [{ ...missing("AQUA"), reason: "unauthorized" }],
+        aquariusRewardToken: AQUA,
+      }),
+    ).toThrow(/AQUA:G\w+ .*not authorized.*Aquarius reward claims/);
   });
 
   it("opens no line nothing in the plan pays out", () => {

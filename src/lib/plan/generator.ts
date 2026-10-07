@@ -101,6 +101,10 @@ export interface GeneratePlanOptions {
   // line is opened ahead of the exits paying into it; a line the issuer has not
   // authorized refuses the plan, since no step can fix it.
   readonly exitTrustlineGaps?: readonly ExitTrustlineGap[];
+  // the token the aquarius reward claims pay out (the router's RewardToken). a
+  // gap for it opens a line ahead of those claims; without it, a gap only counts
+  // for the tokens the planned withdraws and fee claims pay.
+  readonly aquariusRewardToken?: string;
   // pools whose accrued backstop emissions the user agreed to forfeit because
   // the claim can't run; their queue is planned without a claim ahead of it
   readonly forfeitBackstopEmissionsPoolIds?: readonly string[];
@@ -176,6 +180,7 @@ export function generatePlan(
     (opts.exitTrustlineGaps ?? []).length > 0
       ? requireNetwork("the payout trustlines of the DeFi exits")
       : undefined,
+    opts.aquariusRewardToken,
   );
   nodes.push(...exitLines.nodes);
   const linesFor = (tokens: readonly string[]): string[] => [
@@ -491,6 +496,9 @@ export function generatePlan(
       ...(opts.exitTrustlineGaps !== undefined
         ? { exitTrustlineGaps: opts.exitTrustlineGaps }
         : {}),
+      ...(opts.aquariusRewardToken !== undefined
+        ? { aquariusRewardToken: opts.aquariusRewardToken }
+        : {}),
     });
   }
 
@@ -685,6 +693,7 @@ export function assertExchangeCloseCanRun(
   opts: {
     readonly network?: NetworkConfig;
     readonly exitTrustlineGaps?: readonly ExitTrustlineGap[];
+    readonly aquariusRewardToken?: string;
   } = {},
 ): void {
   const unlockedQueues = positions.backstop.some(
@@ -701,8 +710,8 @@ export function assertExchangeCloseCanRun(
   }
   const comet = unlockedQueues ? blendCometId(network) : undefined;
   const payouts = [...exitTokens, ...(comet !== undefined ? [comet] : [])];
-  const lines = exitTrustlineNodes(positions, gaps, network).byToken.keys();
-  const classic = classicSacIds(audit, network.passphrase, lines);
+  const lines = exitTrustlineNodes(positions, gaps, network, opts.aquariusRewardToken);
+  const classic = classicSacIds(audit, network.passphrase, lines.byToken.keys());
   const stuck = [...new Set(payouts)].filter((t) => !classic.has(t));
   if (stuck.length === 0) return;
   const names = stuck.map((t) =>
@@ -912,18 +921,20 @@ function exitPayoutTokens(positions: ProtocolPositions): readonly string[] {
 }
 
 // the payout trustlines the plan opens, one per asset, and which of them the
-// exits need. a gap no planned withdraw or fee claim pays is the aquarius
-// router's reward token (the only other payout the gaps list), so the reward
-// claims wait on it; with no reward claim nothing pays it and no line opens.
+// exits need. a gap counts only for a token a planned step pays: a withdraw or
+// fee claim's pool token, or the reward token when a reward claim is planned.
+// any other gap (say a pool token of a position kept only for its reward) needs
+// no line and blocks nothing.
 function exitTrustlineNodes(
   positions: ProtocolPositions,
   gaps: readonly ExitTrustlineGap[],
   network: NetworkConfig | undefined,
+  rewardToken: string | undefined,
 ): {
   readonly nodes: readonly PlanNode[];
   // payout token contract id -> the node that opens its line
   readonly byToken: ReadonlyMap<string, string>;
-  // the lines only the reward claims pay into
+  // the line the reward claims pay into, if the plan opens one
   readonly reward: readonly string[];
 } {
   const byToken = new Map<string, string>();
@@ -945,15 +956,17 @@ function exitTrustlineNodes(
       );
     }
     const byExit = paidByExit.has(gap.contractId);
-    if (!byExit && !rewardClaims) continue;
+    const byReward = rewardClaims && gap.contractId === rewardToken;
+    if (!byExit && !byReward) continue;
     if (gap.reason === "unauthorized") {
-      const payers = byExit
-        ? exitsPaying(positions, gap.contractId)
-        : ["the Aquarius reward claims"];
+      const payers = [
+        ...(byExit ? exitsPaying(positions, gap.contractId) : []),
+        ...(byReward ? ["the Aquarius reward claims"] : []),
+      ];
       throw new Error(
         `The ${gap.code}:${gap.issuer} trustline of this account is not authorized by its ` +
-          `issuer, so it can't receive what ${payers.join(", ")} pays out. Ask the issuer to ` +
-          `authorize the line, or exit that position outside this app, before closing.`,
+          `issuer, so it can't receive the payout of ${payers.join(" and ")}. Ask the issuer ` +
+          `to authorize the line, or exit that position outside this app, before closing.`,
       );
     }
     if (byToken.has(gap.contractId)) continue;
@@ -974,7 +987,7 @@ function exitTrustlineNodes(
       },
     });
     byToken.set(gap.contractId, id);
-    if (!byExit) reward.push(id);
+    if (byReward) reward.push(id);
   }
   return { nodes, byToken, reward };
 }
