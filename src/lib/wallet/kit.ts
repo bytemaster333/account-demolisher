@@ -27,6 +27,7 @@ import {
 
 import { getPublicEnv } from "@/lib/config/env";
 import type { NetworkConfig } from "@/lib/config/networks";
+import { teardownFailures } from "@/lib/wallet/teardown-report";
 
 // exported as the class type. `new StellarWalletsKit()` isn't supported
 export type KitHandle = typeof StellarWalletsKit;
@@ -281,9 +282,9 @@ export function getKit(network: NetworkConfig): KitHandle {
 // fully disconnect the kit: close the selected wallet and every walletconnect
 // session, and reset the kit's state, so the extension no longer treats the site
 // as connected and a later connect opens the picker again. the state is reset
-// even when a wallet refuses; the refusal is thrown afterwards so the caller can
-// tell the user. does nothing when the kit was never initialized, and is safe to
-// repeat.
+// before any wallet is asked, so a refusal cannot keep it; the refusal is thrown
+// afterwards so the caller can tell the user. does nothing when the kit was
+// never initialized, and is safe to repeat or overlap.
 export async function disconnectKit(): Promise<void> {
   if (initializedPassphrase === null) return;
   await returnKitTo(NO_SESSION, true);
@@ -356,69 +357,87 @@ export async function restoreKitSessionSnapshot(snapshot: KitSessionSnapshot): P
   await returnKitTo(target, false);
 }
 
-// the kit's own disconnect() is never used here. it calls the selected module's
-// disconnect() without awaiting it, so a failure would be an unhandled rejection,
-// and the WalletConnect module's closeSession() calls it once the last session
-// path is gone, which with WalletConnect still selected closes every relay
-// session a second time while the first close is in flight. so the selection is
-// cleared before anything is closed, and the target is written back afterwards
-// whether or not the closing worked. every close is attempted; failures are
-// thrown together at the end.
+// sign client topics a teardown is closing right now, so an overlapping one (a
+// second disconnect while the first still waits on the relay) leaves them alone
+// instead of closing them twice
+const closingTopics = new Set<string>();
+
+// the kit's own disconnect() is never used here: it calls the selected module's
+// disconnect() without awaiting it, so a failure would be an unhandled
+// rejection. walletconnect sessions are ended through the sign client, not the
+// module's closeSession(), because that runs the kit's disconnect() once the
+// last session path is gone, which would reset whatever is selected by then.
 //
-// allWalletConnect also closes sign client sessions the kit no longer lists, such
-// as a co-signer pairing whose earlier close failed on the relay.
+// the target is written before anything is awaited, as the kit's own disconnect
+// does. the app lets go of the wallet first and leaves this running in the
+// background, so the user can be connecting again while an extension or the
+// relay is still slow to answer, and that new connection has to survive it.
+// what gets closed is fixed up front for the same reason: the module selected
+// before, the topics the kit listed and, with allWalletConnect, every other
+// sign client session open right now (such as a co-signer pairing whose earlier
+// close failed on the relay). every close is attempted; failures are thrown
+// together at the end.
 async function returnKitTo(target: KitSessionSnapshot, allWalletConnect: boolean): Promise<void> {
   const between = activeModules.value.find((m) => m.productId === selectedModuleId.value);
   const keptTopics = new Set(target.wcSessionPaths.map((p) => p.topic));
-  const listedTopics = wcSessionPaths.value.map((p) => p.topic).filter((t) => !keptTopics.has(t));
-  const failures: unknown[] = [];
-  selectedModuleId.value = undefined;
-  try {
-    if (listedTopics.length > 0 || (allWalletConnect && wcModule !== null)) {
-      try {
-        const wc = await walletConnectForTeardown();
-        const topics = new Set(listedTopics);
-        if (allWalletConnect) {
-          for (const session of await wc.getSessions()) {
-            if (!keptTopics.has(session.topic)) topics.add(session.topic);
-          }
-        }
-        for (const topic of topics) {
-          try {
-            await wc.closeSession(topic);
-          } catch (e) {
-            failures.push(e);
-          }
-        }
-      } catch (e) {
-        failures.push(e);
-      }
-    }
-    if (
-      between !== undefined &&
-      between.productId !== target.selectedModuleId &&
-      between.productId !== WALLET_CONNECT_ID
-    ) {
-      try {
-        await between.disconnect?.();
-      } catch (e) {
-        failures.push(e);
-      }
-    }
-  } finally {
-    hardwareWalletPaths.value = target.hardwareWalletPaths;
-    wcSessionPaths.value = target.wcSessionPaths;
-    selectedModuleId.value = target.selectedModuleId;
-    activeAddress.value = target.activeAddress;
-    if (target === NO_SESSION) {
-      // what the kit's own disconnect does last, for anything listening to it
-      routerHistory.value = [];
-      disconnectEvent.next();
-      closeEvent.next();
-    }
+  const listed = wcSessionPaths.value.map((p) => p.topic);
+  // only a sign client that is already up is swept. one that never reached its
+  // relay holds nothing the kit lost track of in this page, and waiting for it
+  // would hold every later disconnect for the whole relay timeout.
+  const running: WalletConnectModule["signClient"] | undefined = wcModule?.signClient;
+  const unlisted = allWalletConnect && running ? running.session.keys : [];
+  const topics = [...new Set([...listed, ...unlisted])].filter(
+    (t) => !keptTopics.has(t) && !closingTopics.has(t),
+  );
+
+  hardwareWalletPaths.value = target.hardwareWalletPaths;
+  wcSessionPaths.value = target.wcSessionPaths;
+  selectedModuleId.value = target.selectedModuleId;
+  activeAddress.value = target.activeAddress;
+  if (target === NO_SESSION) {
+    // what the kit's own disconnect does last, for anything listening to it
+    routerHistory.value = [];
+    disconnectEvent.next();
+    closeEvent.next();
   }
+
+  const failures: unknown[] = [];
+  const closes: Promise<void>[] = [];
+  if (
+    between !== undefined &&
+    between.productId !== target.selectedModuleId &&
+    between.productId !== WALLET_CONNECT_ID
+  ) {
+    closes.push(
+      (async () => {
+        try {
+          await between.disconnect?.();
+        } catch (e) {
+          failures.push(e);
+        }
+      })(),
+    );
+  }
+  if (topics.length > 0) closes.push(closeWalletConnectTopics(topics, failures));
+  await Promise.all(closes);
   if (failures.length === 1) throw failures[0];
-  if (failures.length > 1) {
-    throw new AggregateError(failures, "the wallet could not be disconnected");
+  if (failures.length > 1) throw teardownFailures(failures);
+}
+
+async function closeWalletConnectTopics(topics: string[], failures: unknown[]): Promise<void> {
+  for (const topic of topics) closingTopics.add(topic);
+  try {
+    const { signClient } = await walletConnectForTeardown();
+    for (const topic of topics) {
+      try {
+        await signClient.disconnect({ topic, reason: { message: "Session closed", code: -1 } });
+      } catch (e) {
+        failures.push(e);
+      }
+    }
+  } catch (e) {
+    failures.push(e);
+  } finally {
+    for (const topic of topics) closingTopics.delete(topic);
   }
 }
