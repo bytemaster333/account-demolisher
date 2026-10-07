@@ -1253,6 +1253,113 @@ describe("hydration, the BLND trustline and the emissions claim behind it", () =
   });
 });
 
+describe("hydration, the trustline a pool exit pays into", () => {
+  const ISSUER = Keypair.random().publicKey();
+  const lineNode = (code: string, over: { contractId?: string } = {}): PlanNode => ({
+    id: `line-${code}`,
+    kind: "AddExitTrustline",
+    dependencies: [],
+    description: `trust ${code}`,
+    status: "pending",
+    metadata: {
+      kind: "AddExitTrustline",
+      code,
+      issuer: ISSUER,
+      contractId: over.contractId ?? new Asset(code, ISSUER).contractId(TESTNET.passphrase),
+    },
+  });
+  const txOf = (node: PlanNode): Transaction | undefined =>
+    (node.metadata as { transaction?: Transaction }).transaction;
+
+  it("builds one change_trust for the asset at the default limit, at seq + 1", async () => {
+    const node = lineNode("YBX");
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([node]),
+      USER,
+      baseDeps({
+        network: TESTNET,
+        fetchSourceAccount: vi.fn(async () =>
+          withNative(accountAt(700n), "10.0000000", "0.0000000"),
+        ),
+      }),
+    );
+    expect(failures).toEqual([]);
+    const tx = txOf(node)!;
+    expect(tx.source).toBe(USER);
+    expect(tx.sequence).toBe("701");
+    expect(tx.operations).toHaveLength(1);
+    const op = tx.operations[0]!;
+    if (op.type !== "changeTrust") throw new Error("expected changeTrust");
+    expect(op.line).toEqual(new Asset("YBX", ISSUER));
+    expect(op.limit).toBe("922337203685.4775807");
+  });
+
+  it("refuses a node whose asset is not the token the exit pays", async () => {
+    const node = lineNode("YBX", {
+      contractId: new Asset("GQX", ISSUER).contractId(TESTNET.passphrase),
+    });
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([node]),
+      USER,
+      baseDeps({
+        network: TESTNET,
+        fetchSourceAccount: vi.fn(async () =>
+          withNative(accountAt(700n), "10.0000000", "0.0000000"),
+        ),
+      }),
+    );
+    expect(failures).toEqual([expect.objectContaining({ nodeId: "line-YBX" })]);
+    expect(node.error).toMatch(/YBX:G\w+ is not the asset of token C\w+/);
+    expect(txOf(node)).toBeUndefined();
+  });
+
+  it("refuses the change_trust when the account can't fund the line's reserve", async () => {
+    // 1.5 XLM on a bare account leaves 0.5 free: not the reserve plus the fee
+    const node = lineNode("YBX");
+    await hydratePlanTransactions(
+      buildPlanTree([node]),
+      USER,
+      baseDeps({
+        network: TESTNET,
+        fetchSourceAccount: vi.fn(async () => withNative(accountAt(700n), "1.5000000", "0")),
+      }),
+    );
+    expect(node.status).toBe("failed");
+    expect(node.error).toMatch(/opening the YBX trustline needs 0\.5100000 XLM free/);
+  });
+
+  // every line built in one pass is checked against the same account read, so
+  // each one counts the reserves of the lines built before it
+  it("counts the reserves of every line the pass opens", async () => {
+    const lines = [lineNode("YBX"), lineNode("GQX")];
+    // 1.6 XLM on a bare account: 0.6 free fits one line's 0.51, not two
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree(lines),
+      USER,
+      baseDeps({
+        network: TESTNET,
+        fetchSourceAccount: vi.fn(async () => withNative(accountAt(700n), "1.6000000", "0")),
+      }),
+    );
+    expect(txOf(lines[0]!)).toBeDefined();
+    expect(failures).toEqual([expect.objectContaining({ nodeId: "line-GQX" })]);
+    expect(lines[1]!.error).toMatch(/needs 1\.0200000 XLM free/);
+  });
+
+  it("rebuilds against the fresh account alone, whose reserves already count landed lines", async () => {
+    const node = lineNode("GQX");
+    await rebuildSorobanNodeTransaction(
+      node,
+      USER,
+      baseDeps({
+        network: TESTNET,
+        fetchSourceAccount: vi.fn(async () => withNative(accountAt(700n), "1.6000000", "0")),
+      }),
+    );
+    expect(txOf(node)).toBeDefined();
+  });
+});
+
 describe("hydration, Aquarius concentrated exits", () => {
   const POOL = StrKey.encodeContract(new Uint8Array(32).fill(5));
 

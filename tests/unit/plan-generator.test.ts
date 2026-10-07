@@ -1192,3 +1192,161 @@ describe("M-25: the prepare-only unlock date is honest", () => {
     );
   });
 });
+
+// a pool exit pays a SAC credit asset into the account's trustline, and with no
+// line the whole exit traps with Error(Contract, #13) (read-only mainnet
+// simulation of soroswap remove_liquidity and an aquarius withdraw)
+describe("exit payouts need a trustline: the plan opens it first", () => {
+  const ISSUER = Keypair.random().publicKey();
+  const sac = (code: string): string => new Asset(code, ISSUER).contractId(TESTNET.passphrase);
+  const YBX = sac("YBX");
+  const AQUA = sac("AQUA");
+  const XLM = Asset.native().contractId(TESTNET.passphrase);
+  const OTHER_TOKEN = StrKey.encodeContract(Buffer.alloc(32, 41));
+  const missing = (code: string) =>
+    ({ contractId: sac(code), code, issuer: ISSUER, reason: "missing" }) as const;
+  const lineId = (code: string) => id("exit-trustline", sac(code));
+  const soroswapYbx = emptyPositions({
+    soroswap: [{ pair: { tokenA: YBX, tokenB: XLM }, shareBalance: 5n }],
+  });
+
+  it("adds the line ahead of the exit that pays the asset", () => {
+    const tree = generatePlan(makeAudit(), soroswapYbx, [], DEST, {
+      network: TESTNET,
+      exitTrustlineGaps: [missing("YBX")],
+    });
+    const line = tree.allNodes.get(lineId("YBX"));
+    if (line?.kind !== "AddExitTrustline") throw new Error("expected AddExitTrustline");
+    expect(line.metadata).toEqual({
+      kind: "AddExitTrustline",
+      code: "YBX",
+      issuer: ISSUER,
+      contractId: YBX,
+    });
+    expect(line.dependencies).toEqual([]);
+    expect(line.description).toBe(
+      "Add a YBX trustline so the pool can pay it out (0.5 XLM reserve, released when the " +
+        "close removes the line)",
+    );
+    expect(dependsOn(tree, id("soroswap-withdraw", YBX, XLM), lineId("YBX"))).toBe(true);
+    expect(dependsOn(tree, "final-classic-tx", lineId("YBX"))).toBe(true);
+    // the payout lands on the new classic line, which the final batch disposes
+    // of, so it is not swept as a contract token
+    expect(tree.allNodes.has(id("drain-token", YBX))).toBe(false);
+  });
+
+  it("lets an exchange close exit a pool whose payout gets a line", () => {
+    const opts = {
+      network: TESTNET,
+      useMediator: true,
+      mediatorPublicKey: MED,
+      flowToken: "flow",
+    } as const;
+    expect(() => generatePlan(makeAudit(), soroswapYbx, [], DEST, opts)).toThrow(
+      /exchange close can only forward XLM/,
+    );
+    const tree = generatePlan(makeAudit(), soroswapYbx, [], DEST, {
+      ...opts,
+      exitTrustlineGaps: [missing("YBX")],
+    });
+    expect(tree.allNodes.has(lineId("YBX"))).toBe(true);
+  });
+
+  it("opens one line per asset however many exits pay it", () => {
+    const tree = generatePlan(
+      makeAudit(),
+      emptyPositions({
+        soroswap: [{ pair: { tokenA: YBX, tokenB: XLM }, shareBalance: 5n }],
+        aquarius: [{ poolIndex: "ab".repeat(32), shareBalance: 3n, tokens: [XLM, YBX] }],
+        aquariusConcentrated: [
+          {
+            poolAddress: OTHER_TOKEN,
+            poolIndex: "cd".repeat(32),
+            tokens: [XLM, YBX],
+            ranges: [{ tickLower: -10, tickUpper: 10, liquidity: 7n }],
+            pendingFees: [1n, 1n],
+            pendingReward: 0n,
+          },
+        ],
+      }),
+      [],
+      DEST,
+      { network: TESTNET, exitTrustlineGaps: [missing("YBX"), missing("YBX")] },
+    );
+    const lines = [...tree.allNodes.values()].filter((n) => n.kind === "AddExitTrustline");
+    expect(lines.map((n) => n.id)).toEqual([lineId("YBX")]);
+    for (const n of tree.allNodes.values()) {
+      if (
+        n.kind === "WithdrawSoroswapLp" ||
+        n.kind === "WithdrawAquarius" ||
+        n.kind === "WithdrawAquariusConcentrated" ||
+        n.kind === "ClaimAquariusConcentratedFees"
+      ) {
+        expect(n.dependencies).toContain(lineId("YBX"));
+      }
+    }
+  });
+
+  it("puts a line no withdraw explains ahead of the aquarius reward claims", () => {
+    const positions = emptyPositions({
+      aquariusConcentrated: [
+        {
+          poolAddress: OTHER_TOKEN,
+          poolIndex: "cd".repeat(32),
+          tokens: [XLM, YBX],
+          ranges: [],
+          pendingFees: [0n, 0n],
+          pendingReward: 9n,
+        },
+      ],
+    });
+    const tree = generatePlan(makeAudit(), positions, [], DEST, {
+      network: TESTNET,
+      exitTrustlineGaps: [missing("AQUA")],
+    });
+    const claim = tree.allNodes.get(id("aquarius-cl-claim", OTHER_TOKEN));
+    expect(claim?.dependencies).toEqual([lineId("AQUA")]);
+    expect(tree.allNodes.get(lineId("AQUA"))?.metadata).toMatchObject({ contractId: AQUA });
+  });
+
+  it("opens no line nothing in the plan pays out", () => {
+    const tree = generatePlan(makeAudit(), soroswapYbx, [], DEST, {
+      network: TESTNET,
+      exitTrustlineGaps: [missing("YBX"), missing("AQUA")],
+    });
+    expect(tree.allNodes.has(lineId("AQUA"))).toBe(false);
+  });
+
+  it("refuses a close whose exit pays an asset into a line the issuer has not authorized", () => {
+    expect(() =>
+      generatePlan(makeAudit(), soroswapYbx, [], DEST, {
+        network: TESTNET,
+        exitTrustlineGaps: [{ ...missing("YBX"), reason: "unauthorized" }],
+      }),
+    ).toThrow(/YBX:G\w+ .*not authorized.*Soroswap pool/);
+  });
+
+  it("ignores an unauthorized line nothing in the plan pays into", () => {
+    expect(() =>
+      generatePlan(makeAudit(), soroswapYbx, [], DEST, {
+        network: TESTNET,
+        exitTrustlineGaps: [{ ...missing("AQUA"), reason: "unauthorized" }],
+      }),
+    ).not.toThrow();
+  });
+
+  it("refuses a gap whose asset does not derive to its token", () => {
+    expect(() =>
+      generatePlan(makeAudit(), soroswapYbx, [], DEST, {
+        network: TESTNET,
+        exitTrustlineGaps: [{ ...missing("YBX"), code: "XBY" }],
+      }),
+    ).toThrow(/XBY.*is not the asset of token/);
+  });
+
+  it("needs the network to plan a payout trustline", () => {
+    expect(() =>
+      generatePlan(makeAudit(), soroswapYbx, [], DEST, { exitTrustlineGaps: [missing("YBX")] }),
+    ).toThrow(/opts\.network is required/);
+  });
+});

@@ -12,6 +12,7 @@ import type {
 } from "@/lib/types/plan";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import type { HeldToken } from "@/lib/soroban/held-tokens";
+import type { ExitTrustlineGap } from "@/lib/soroban/stellar-asset";
 import type {
   AquariusConcentratedPositionSummary,
   AquariusPositionSummary,
@@ -95,6 +96,11 @@ export interface GeneratePlanOptions {
   readonly networkPassphrase?: string;
   // per-op fee the classic batches are bid at, for their reserve checks
   readonly classicFeePerOp?: number;
+  // the credit assets a pool exit pays out through their SACs that the account
+  // can't receive yet (exitTrustlineGaps in soroban/stellar-asset). a missing
+  // line is opened ahead of the exits paying into it; a line the issuer has not
+  // authorized refuses the plan, since no step can fix it.
+  readonly exitTrustlineGaps?: readonly ExitTrustlineGap[];
   // pools whose accrued backstop emissions the user agreed to forfeit because
   // the claim can't run; their queue is planned without a claim ahead of it
   readonly forfeitBackstopEmissionsPoolIds?: readonly string[];
@@ -163,6 +169,19 @@ export function generatePlan(
     }
   }
 
+  // trustlines the pool exits pay into, opened ahead of every exit that needs one
+  const exitLines = exitTrustlineNodes(
+    positions,
+    opts.exitTrustlineGaps ?? [],
+    (opts.exitTrustlineGaps ?? []).length > 0
+      ? requireNetwork("the payout trustlines of the DeFi exits")
+      : undefined,
+  );
+  nodes.push(...exitLines.nodes);
+  const linesFor = (tokens: readonly string[]): string[] => [
+    ...new Set(tokens.flatMap((t) => exitLines.byToken.get(t) ?? [])),
+  ];
+
   // allowance revocations
   for (const allowance of allowances) {
     const key = `${allowance.contractId}|${allowance.spender}`;
@@ -196,7 +215,7 @@ export function generatePlan(
     nodes.push({
       id,
       kind: "WithdrawAquarius",
-      dependencies: [],
+      dependencies: linesFor(pool.tokens),
       status: "pending",
       description: `Withdraw ${pool.shareBalance.toString()} shares from Aquarius pool ${aquariusPoolLabel(pool)}`,
       metadata: {
@@ -213,7 +232,7 @@ export function generatePlan(
   // aquarius concentrated positions: the reward and the swap fees are claimed
   // first, then each tick range is withdrawn on the pool itself
   for (const pos of positions.aquariusConcentrated) {
-    fundingExitIds.push(...concentratedNodes(pos, nodes));
+    fundingExitIds.push(...concentratedNodes(pos, nodes, linesFor(pos.tokens), exitLines.reward));
   }
 
   // soroswap LPs
@@ -223,7 +242,7 @@ export function generatePlan(
     nodes.push({
       id,
       kind: "WithdrawSoroswapLp",
-      dependencies: [],
+      dependencies: linesFor([pos.pair.tokenA, pos.pair.tokenB]),
       status: "pending",
       description: `Withdraw Soroswap LP ${shortAddr(pos.pair.tokenA)}/${shortAddr(pos.pair.tokenB)}`,
       metadata: {
@@ -247,13 +266,17 @@ export function generatePlan(
     for (const [asset, amount] of pool.collateral) {
       if (amount <= 0n) continue;
       const id = makeId("blend-withdraw-collateral", pool.poolId, asset);
-      nodes.push(withdrawBlendNode(id, pool.poolId, asset, "collateral", deps));
+      nodes.push(
+        withdrawBlendNode(id, pool.poolId, asset, "collateral", [...deps, ...linesFor([asset])]),
+      );
       ids.push(id);
     }
     for (const [asset, amount] of pool.supply) {
       if (amount <= 0n) continue;
       const id = makeId("blend-withdraw-supply", pool.poolId, asset);
-      nodes.push(withdrawBlendNode(id, pool.poolId, asset, "supply", deps));
+      nodes.push(
+        withdrawBlendNode(id, pool.poolId, asset, "supply", [...deps, ...linesFor([asset])]),
+      );
       ids.push(id);
     }
     if (ids.length > 0) blendWithdrawIdsByPool.set(pool.poolId, ids);
@@ -367,7 +390,7 @@ export function generatePlan(
     nodes.push({
       id,
       kind: "ClaimAquariusRewards",
-      dependencies: [withdrawId],
+      dependencies: [withdrawId, ...exitLines.reward],
       status: "pending",
       description: `Claim Aquarius rewards for pool ${aquariusPoolLabel(pool)}`,
       metadata: {
@@ -471,7 +494,7 @@ export function generatePlan(
     const payouts = [...exitPayoutTokens(positions), ...backstopPayoutTokens];
     if (payouts.length > 0) {
       const net = requireNetwork("the DeFi exits of an exchange close");
-      const classic = classicSacIds(audit, net.passphrase);
+      const classic = classicSacIds(audit, net.passphrase, exitLines.byToken.keys());
       const stuck = [...new Set(payouts)].filter((t) => !classic.has(t));
       if (stuck.length > 0) {
         const comet = backstopPayoutTokens[0];
@@ -556,9 +579,10 @@ export function generatePlan(
       sweep(token.contractId, token.balance, false);
     }
     // contract tokens an exit pays out. Classic assets (the native SAC and the
-    // SACs of assets the account trusts) are handled by the classic batches.
+    // SACs of assets the account trusts, or will once the plan opens the line)
+    // are handled by the classic batches.
     if (passphrase !== undefined) {
-      const classic = classicSacIds(audit, passphrase);
+      const classic = classicSacIds(audit, passphrase, exitLines.byToken.keys());
       for (const token of [...exitPayoutTokens(positions), ...backstopPayoutTokens]) {
         if (swept.has(token) || classic.has(token)) continue;
         // the payout isn't known until the exit lands; hydration reads it
@@ -759,19 +783,22 @@ export function finalBatchOptions(
 }
 
 // claim the reward and the fees, then withdraw every range; returns the node
-// ids, all of which pay tokens into the account
+// ids, all of which pay tokens into the account. tokenLines and rewardLines are
+// the payout trustlines the pool's own tokens and the reward token need first.
 function concentratedNodes(
   pos: AquariusConcentratedPositionSummary,
   nodes: PlanNode[],
+  tokenLines: readonly string[],
+  rewardLines: readonly string[],
 ): readonly string[] {
   const claims: string[] = [];
-  const label = `${pos.tokens.map(shortAddr).join("/")} (${shortAddr(pos.poolAddress)})`;
+  const label = concentratedLabel(pos);
   if (pos.pendingReward > 0n) {
     const id = makeId("aquarius-cl-claim", pos.poolAddress);
     nodes.push({
       id,
       kind: "ClaimAquariusRewards",
-      dependencies: [],
+      dependencies: rewardLines,
       status: "pending",
       description: `Claim Aquarius rewards for concentrated pool ${label}`,
       metadata: {
@@ -788,7 +815,7 @@ function concentratedNodes(
     nodes.push({
       id,
       kind: "ClaimAquariusConcentratedFees",
-      dependencies: [],
+      dependencies: tokenLines,
       status: "pending",
       description: `Collect the swap fees of concentrated pool ${label}`,
       metadata: {
@@ -811,7 +838,7 @@ function concentratedNodes(
     nodes.push({
       id,
       kind: "WithdrawAquariusConcentrated",
-      dependencies: claims,
+      dependencies: [...claims, ...tokenLines],
       status: "pending",
       description:
         `Withdraw the ${range.tickLower} to ${range.tickUpper} tick range from concentrated ` +
@@ -857,10 +884,109 @@ function exitPayoutTokens(positions: ProtocolPositions): readonly string[] {
   return out;
 }
 
-// SAC ids of XLM and every classic asset the account trusts; balances an exit
-// pays out in these land on classic balances the batcher already handles
-function classicSacIds(audit: AccountAudit, passphrase: string): ReadonlySet<string> {
-  const ids = new Set<string>([Asset.native().contractId(passphrase)]);
+// the payout trustlines the plan opens, one per asset, and which of them the
+// exits need. a gap no planned withdraw or fee claim pays is the aquarius
+// router's reward token (the only other payout the gaps list), so the reward
+// claims wait on it; with no reward claim nothing pays it and no line opens.
+function exitTrustlineNodes(
+  positions: ProtocolPositions,
+  gaps: readonly ExitTrustlineGap[],
+  network: NetworkConfig | undefined,
+): {
+  readonly nodes: readonly PlanNode[];
+  // payout token contract id -> the node that opens its line
+  readonly byToken: ReadonlyMap<string, string>;
+  // the lines only the reward claims pay into
+  readonly reward: readonly string[];
+} {
+  const byToken = new Map<string, string>();
+  const reward: string[] = [];
+  const nodes: PlanNode[] = [];
+  if (gaps.length === 0 || network === undefined) return { nodes, byToken, reward };
+  const paidByExit = new Set(exitPayoutTokens(positions));
+  const rewardClaims =
+    positions.aquarius.some((p) => p.shareBalance > 0n) ||
+    positions.aquariusConcentrated.some((p) => p.pendingReward > 0n);
+  for (const gap of gaps) {
+    // the line must be the asset the token wraps, or the exit still traps and
+    // the account opens a line nothing pays into
+    const derived = new Asset(gap.code, gap.issuer).contractId(network.passphrase);
+    if (derived !== gap.contractId) {
+      throw new Error(
+        `generatePlan: the payout trustline ${gap.code}:${gap.issuer} is not the asset of ` +
+          `token ${gap.contractId}`,
+      );
+    }
+    const byExit = paidByExit.has(gap.contractId);
+    if (!byExit && !rewardClaims) continue;
+    if (gap.reason === "unauthorized") {
+      const payers = byExit
+        ? exitsPaying(positions, gap.contractId)
+        : ["the Aquarius reward claims"];
+      throw new Error(
+        `The ${gap.code}:${gap.issuer} trustline of this account is not authorized by its ` +
+          `issuer, so it can't receive what ${payers.join(", ")} pays out. Ask the issuer to ` +
+          `authorize the line, or exit that position outside this app, before closing.`,
+      );
+    }
+    if (byToken.has(gap.contractId)) continue;
+    const id = makeId("exit-trustline", gap.contractId);
+    nodes.push({
+      id,
+      kind: "AddExitTrustline",
+      dependencies: [],
+      status: "pending",
+      description:
+        `Add a ${gap.code} trustline so the pool can pay it out ` +
+        "(0.5 XLM reserve, released when the close removes the line)",
+      metadata: {
+        kind: "AddExitTrustline",
+        code: gap.code,
+        issuer: gap.issuer,
+        contractId: gap.contractId,
+      },
+    });
+    byToken.set(gap.contractId, id);
+    if (!byExit) reward.push(id);
+  }
+  return { nodes, byToken, reward };
+}
+
+// the planned exits that pay out a token, named for the user
+function exitsPaying(positions: ProtocolPositions, token: string): string[] {
+  const out: string[] = [];
+  for (const pos of positions.soroswap) {
+    if (pos.shareBalance > 0n && (pos.pair.tokenA === token || pos.pair.tokenB === token)) {
+      out.push(`the Soroswap pool ${shortAddr(pos.pair.tokenA)}/${shortAddr(pos.pair.tokenB)}`);
+    }
+  }
+  for (const pool of positions.aquarius) {
+    if (pool.shareBalance > 0n && pool.tokens.includes(token)) {
+      out.push(`the Aquarius pool ${aquariusPoolLabel(pool)}`);
+    }
+  }
+  for (const pos of positions.aquariusConcentrated) {
+    if (pos.tokens.includes(token)) {
+      out.push(`the Aquarius concentrated pool ${concentratedLabel(pos)}`);
+    }
+  }
+  for (const pool of positions.blend) {
+    if ([...pool.collateral, ...pool.supply].some(([a, amount]) => a === token && amount > 0n)) {
+      out.push(`the Blend pool ${shortAddr(pool.poolId)}`);
+    }
+  }
+  return out;
+}
+
+// SAC ids of XLM, every classic asset the account trusts and every one the plan
+// opens a line for; balances an exit pays out in these land on classic balances
+// the batcher already handles
+function classicSacIds(
+  audit: AccountAudit,
+  passphrase: string,
+  plannedLines: Iterable<string>,
+): ReadonlySet<string> {
+  const ids = new Set<string>([Asset.native().contractId(passphrase), ...plannedLines]);
   for (const b of audit.balances) {
     if (b.asset.kind !== "credit") continue;
     ids.add(new Asset(b.asset.code, b.asset.issuer).contractId(passphrase));
@@ -935,6 +1061,10 @@ function withdrawBlendNode(
 
 function aquariusPoolLabel(pool: AquariusPositionSummary): string {
   return `${pool.tokens.map(shortAddr).join("/")} (${pool.poolIndex.slice(0, 8)}...)`;
+}
+
+function concentratedLabel(pos: AquariusConcentratedPositionSummary): string {
+  return `${pos.tokens.map(shortAddr).join("/")} (${shortAddr(pos.poolAddress)})`;
 }
 
 // BLND has 7 decimals

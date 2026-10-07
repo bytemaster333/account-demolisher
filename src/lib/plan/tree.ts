@@ -41,6 +41,7 @@ export type PlanNodeKind =
   | "WithdrawAquariusConcentrated"
   | "WithdrawSoroswapLp"
   | "AddBlndTrustline"
+  | "AddExitTrustline"
   | "ClaimBlendEmissions"
   | "ClaimAquariusRewards"
   | "ClaimAquariusConcentratedFees"
@@ -146,6 +147,20 @@ export interface AddBlndTrustlineMetadata {
   readonly kind: "AddBlndTrustline";
   readonly code: "BLND";
   readonly issuer: string;
+  readonly transaction?: Transaction;
+}
+
+// change_trust for a classic credit asset a pool exit pays out through its
+// stellar asset contract. the SAC writes the payout into the account's
+// trustline, and with none the exit traps with Error(Contract, #13). built and
+// submitted like the BLND line; the final batch disposes of the asset and
+// removes the line again.
+export interface AddExitTrustlineMetadata {
+  readonly kind: "AddExitTrustline";
+  readonly code: string;
+  readonly issuer: string;
+  // the asset's SAC, the token the exits pay out
+  readonly contractId: string;
   readonly transaction?: Transaction;
 }
 
@@ -321,6 +336,10 @@ export interface AddBlndTrustlineNode extends PlanNodeBase {
   readonly kind: "AddBlndTrustline";
   readonly metadata: AddBlndTrustlineMetadata;
 }
+export interface AddExitTrustlineNode extends PlanNodeBase {
+  readonly kind: "AddExitTrustline";
+  readonly metadata: AddExitTrustlineMetadata;
+}
 export interface ClaimBlendEmissionsNode extends PlanNodeBase {
   readonly kind: "ClaimBlendEmissions";
   readonly metadata: ClaimBlendEmissionsMetadata;
@@ -371,6 +390,7 @@ export type PlanNode =
   | WithdrawAquariusConcentratedNode
   | WithdrawSoroswapLpNode
   | AddBlndTrustlineNode
+  | AddExitTrustlineNode
   | ClaimBlendEmissionsNode
   | ClaimAquariusRewardsNode
   | ClaimAquariusConcentratedFeesNode
@@ -590,9 +610,9 @@ export function planExitPayoutTokens(tree: PlanTree): readonly string[] {
 
 // true for the kinds that carry their own prebuilt transaction, signed and
 // submitted one by one and rebuilt from fresh state before signing: every
-// soroban call, plus the BLND change_trust that has to land before the claims.
-// false for the classic batches the executor builds itself (ClassicUnwind,
-// FinalClassicTx) and the mediator forward.
+// soroban call, plus the change_trusts that have to land before the claims and
+// exits paying into them. false for the classic batches the executor builds
+// itself (ClassicUnwind, FinalClassicTx) and the mediator forward.
 export function isSorobanNode(node: PlanNode): boolean {
   switch (node.kind) {
     case "RevokeAllowance":
@@ -602,6 +622,7 @@ export function isSorobanNode(node: PlanNode): boolean {
     case "WithdrawAquariusConcentrated":
     case "WithdrawSoroswapLp":
     case "AddBlndTrustline":
+    case "AddExitTrustline":
     case "ClaimBlendEmissions":
     case "ClaimAquariusRewards":
     case "ClaimAquariusConcentratedFees":
