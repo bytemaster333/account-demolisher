@@ -100,9 +100,10 @@ export function computeReviewMoney(args: {
       case "BackstopWithdraw":
         defiProceeds += 1;
         break;
-      // the trustline's reserve comes back when the close removes it, and the
+      // a trustline's reserve comes back when the close removes it, and the
       // backstop claim pays into backstop shares, not into this account
       case "AddBlndTrustline":
+      case "AddExitTrustline":
       case "ClaimBackstopEmissions":
       case "RevokeAllowance":
       case "BackstopQueue":
