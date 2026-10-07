@@ -9,7 +9,9 @@ import type { EmissionForfeit, RefusedConversion } from "@/lib/orchestrator/page
 import { stroopsToXlm } from "../_lib/fees";
 
 export type CreditChoice = "none" | "issuer" | "destination" | "accept";
-export type HeldTokenChoice = "none" | "accept" | "leave";
+// a refused held-token conversion: take the new rate, send the token unchanged
+// to the destination, or leave it on the account
+export type HeldTokenChoice = "none" | "accept" | "asis" | "leave";
 
 // the Resolve step: everything that keeps the close from starting. Balances
 // with no market, conversions refused for their price and backstop emissions
@@ -160,11 +162,12 @@ export function ResolvePanel({
         <Notice
           tone="warning"
           role="note"
-          title="Some token swaps were refused for their price"
+          title="Some token swaps need your decision"
           data-testid="refused-conversions"
         >
-          Converting these tokens to XLM would sell below the reviewed price or past the 2% cap.
-          Pick what happens to each one.
+          Converting these tokens to XLM would sell below the reviewed price, past the 2% cap, at a
+          price that can&apos;t be checked, or has no route at all. Nothing is swapped unless you
+          agree. Pick what happens to each one.
           <ul style={{ listStyle: "none", margin: "12px 0 0", padding: 0 }}>
             {refused.map((r) => {
               const choice = heldChoices.get(r.contractId) ?? "none";
@@ -185,11 +188,19 @@ export function ResolvePanel({
                     aria-label={`What to do with token ${r.contractId}`}
                     style={groupStyle}
                   >
+                    {r.refusal !== "no_route" ? (
+                      <ChoiceButton
+                        selected={choice === "accept"}
+                        onClick={() => pick("accept")}
+                        testId={`refused-accept-${r.contractId}`}
+                        label="Swap anyway at this price"
+                      />
+                    ) : null}
                     <ChoiceButton
-                      selected={choice === "accept"}
-                      onClick={() => pick("accept")}
-                      testId={`refused-accept-${r.contractId}`}
-                      label="Swap anyway at this price"
+                      selected={choice === "asis"}
+                      onClick={() => pick("asis")}
+                      testId={`refused-asis-${r.contractId}`}
+                      label="Send it as-is to your destination"
                     />
                     <ChoiceButton
                       selected={choice === "leave"}

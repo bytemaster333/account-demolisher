@@ -147,9 +147,10 @@ export function DemolishFlow(): React.JSX.Element {
   // assets the user agreed to sell over the price-impact cap or unpriced
   // ("CODE:ISSUER", or "contract:C..." for a held token)
   const [acceptedPriceKeys, setAcceptedPriceKeys] = useState<readonly string[]>([]);
-  // held tokens whose refused conversion the user chose to leave on the account,
-  // kept so the choice can be undone
-  const [leftTokens, setLeftTokens] = useState<ReadonlyMap<string, HeldToken>>(new Map());
+  // answers to refused held-token conversions, by contract id: send the token
+  // as-is, or leave it on the account. accepting the new rate is an accepted
+  // price key instead.
+  const [heldAnswers, setHeldAnswers] = useState<ReadonlyMap<string, "asis" | "leave">>(new Map());
   // backstop pools whose unclaimable emissions the user agreed to leave behind
   const [forfeitPools, setForfeitPools] = useState<readonly string[]>([]);
   // the claimable balances the user picked; null until they change the planner's
@@ -704,6 +705,8 @@ export function DemolishFlow(): React.JSX.Element {
       // once the user picked, the plan claims exactly their pick ([] claims none);
       // until then the planner claims every balance it can collect
       const claims = claimsOverride ?? claimSelection ?? runInput?.selectedClaimableBalanceIds;
+      const asIs = [...heldAnswers].flatMap(([id, a]) => (a === "asis" ? [id] : []));
+      const leave = [...heldAnswers].flatMap(([id, a]) => (a === "leave" ? [id] : []));
       startRun({
         publicKey,
         network,
@@ -720,6 +723,8 @@ export function DemolishFlow(): React.JSX.Element {
           ? { acceptedPriceImpactAssetKeys: acceptedPriceKeys }
           : {}),
         ...(forfeitPools.length > 0 ? { forfeitBackstopEmissionPoolIds: forfeitPools } : {}),
+        ...(asIs.length > 0 ? { sendHeldTokensAsIs: asIs } : {}),
+        ...(leave.length > 0 ? { leaveHeldTokens: leave } : {}),
         ...(selectedHeldTokens.length > 0 ? { selectedHeldTokens } : {}),
         ...(convertHeldTokensToXLM && selectedHeldTokens.length > 0
           ? { convertHeldTokensToXLM: true }
@@ -746,6 +751,7 @@ export function DemolishFlow(): React.JSX.Element {
       runInput,
       acceptedPriceKeys,
       forfeitPools,
+      heldAnswers,
       selectedHeldTokens,
       convertHeldTokensToXLM,
       startRun,
@@ -794,7 +800,7 @@ export function DemolishFlow(): React.JSX.Element {
 
   const clearChoices = useCallback(() => {
     setAcceptedPriceKeys([]);
-    setLeftTokens(new Map());
+    setHeldAnswers(new Map());
     setForfeitPools([]);
     setClaimSelection(null);
   }, []);
@@ -802,14 +808,16 @@ export function DemolishFlow(): React.JSX.Element {
   // Back from the first confirmation stage returns to Configure with the form
   // as it was: the plan is discarded (cancel), then the run is reset to idle.
   // Nothing else cancels a run by hand, so a cancelled run on screen always
-  // came from the run guard (wallet or network changed).
+  // came from the run guard (wallet or network changed). The answers given for
+  // that plan go with it: a price accepted once must be asked for again.
   const onBackToConfigure = useCallback(() => {
     setShowConfirmDialog(false);
     setFormError(null);
+    clearChoices();
     signing.reset();
     send({ type: "CANCEL" });
     send({ type: "RESET" });
-  }, [send, signing]);
+  }, [send, signing, clearChoices]);
 
   const onReset = useCallback(() => {
     setShowConfirmDialog(false);
@@ -872,44 +880,29 @@ export function DemolishFlow(): React.JSX.Element {
     });
   }, []);
 
-  const onHeldChoice = useCallback(
-    (r: RefusedConversion, choice: HeldTokenChoice) => {
-      setAcceptedPriceKeys((keys) => {
-        const next = keys.filter((k) => k !== r.key);
-        return choice === "accept" ? [...next, r.key] : next;
-      });
-      const left = leftTokens.get(r.contractId);
-      if (choice === "leave") {
-        const token = selectedHeldTokens.find((t) => t.contractId === r.contractId);
-        if (token !== undefined) {
-          setLeftTokens((m) => new Map(m).set(r.contractId, token));
-          setSelectedHeldTokens((ts) => ts.filter((t) => t.contractId !== r.contractId));
-        }
-      } else if (left !== undefined) {
-        setLeftTokens((m) => {
-          const next = new Map(m);
-          next.delete(r.contractId);
-          return next;
-        });
-        setSelectedHeldTokens((ts) => [...ts, left]);
-      }
-    },
-    [leftTokens, selectedHeldTokens],
-  );
+  // one answer per refused token: the new rate, as-is, or left on the account
+  const onHeldChoice = useCallback((r: RefusedConversion, choice: HeldTokenChoice) => {
+    setAcceptedPriceKeys((keys) => {
+      const next = keys.filter((k) => k !== r.key);
+      return choice === "accept" && r.refusal !== "no_route" ? [...next, r.key] : next;
+    });
+    setHeldAnswers((m) => {
+      const next = new Map(m);
+      if (choice === "asis" || choice === "leave") next.set(r.contractId, choice);
+      else next.delete(r.contractId);
+      return next;
+    });
+  }, []);
   const heldChoices = useMemo(() => {
     const out = new Map<string, HeldTokenChoice>();
     for (const r of ctx.refusedConversions) {
       out.set(
         r.contractId,
-        leftTokens.has(r.contractId)
-          ? "leave"
-          : acceptedPriceKeys.includes(r.key)
-            ? "accept"
-            : "none",
+        heldAnswers.get(r.contractId) ?? (acceptedPriceKeys.includes(r.key) ? "accept" : "none"),
       );
     }
     return out;
-  }, [ctx.refusedConversions, leftTokens, acceptedPriceKeys]);
+  }, [ctx.refusedConversions, heldAnswers, acceptedPriceKeys]);
 
   const onForfeit = useCallback((poolId: string, agreed: boolean) => {
     setForfeitPools((pools) => {

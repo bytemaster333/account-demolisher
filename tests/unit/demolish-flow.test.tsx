@@ -819,7 +819,7 @@ describe("refused conversions are decided per asset (decision 3, M-18, M-19)", (
     expect(ctl.previewInputs[1]!["acceptedPriceImpactAssetKeys"]).toEqual([key]);
   });
 
-  it("drops a held token the user leaves out of a refused swap", async () => {
+  async function refuse(refusal: RefusedConversion["refusal"]): Promise<void> {
     const token: HeldToken = { contractId: TOKEN_C, balance: 50n };
     ctl.discover = async () => ({
       audit: makeAudit(),
@@ -834,14 +834,68 @@ describe("refused conversions are decided per asset (decision 3, M-18, M-19)", (
       tree: makeTree(),
       unroutableCredits: [],
       refusedConversions: [
-        { key: `contract:${TOKEN_C}`, contractId: TOKEN_C, reason: "price impact 9.00% over cap" },
+        {
+          key: `contract:${TOKEN_C}`,
+          contractId: TOKEN_C,
+          refusal,
+          reason: refusal === "no_route" ? "no route to XLM" : "price impact 9.00% over cap",
+        },
       ],
     });
     fireEvent.click(screen.getByTestId("acknowledge-rebuild"));
-    fireEvent.click(await screen.findByTestId(`refused-leave-${TOKEN_C}`));
+    await screen.findByTestId(`refused-${TOKEN_C}`);
+  }
+
+  it("leaves a held token on the account when the user picks that (decision 3)", async () => {
+    await refuse("price_impact");
+    fireEvent.click(screen.getByTestId(`refused-leave-${TOKEN_C}`));
     fireEvent.click(screen.getByTestId("resolve-rebuild"));
     await waitFor(() => expect(ctl.previewInputs).toHaveLength(3));
-    expect(ctl.previewInputs[2]!["selectedHeldTokens"]).toEqual([]);
+    const input = ctl.previewInputs[2]!;
+    expect(input["leaveHeldTokens"]).toEqual([TOKEN_C]);
+    expect(input["sendHeldTokensAsIs"]).toBeUndefined();
+    expect(input["acceptedPriceImpactAssetKeys"]).toBeUndefined();
+  });
+
+  it("sends a held token as-is when the user picks that (decision 3)", async () => {
+    await refuse("requote_worse");
+    fireEvent.click(screen.getByTestId(`refused-asis-${TOKEN_C}`));
+    fireEvent.click(screen.getByTestId("resolve-rebuild"));
+    await waitFor(() => expect(ctl.previewInputs).toHaveLength(3));
+    const input = ctl.previewInputs[2]!;
+    expect(input["sendHeldTokensAsIs"]).toEqual([TOKEN_C]);
+    expect(input["leaveHeldTokens"]).toBeUndefined();
+    expect((input["selectedHeldTokens"] as readonly HeldToken[]).map((t) => t.contractId)).toEqual([
+      TOKEN_C,
+    ]);
+  });
+
+  it("accepts the new rate for a held token", async () => {
+    await refuse("price_impact");
+    fireEvent.click(screen.getByTestId(`refused-accept-${TOKEN_C}`));
+    fireEvent.click(screen.getByTestId("resolve-rebuild"));
+    await waitFor(() => expect(ctl.previewInputs).toHaveLength(3));
+    expect(ctl.previewInputs[2]!["acceptedPriceImpactAssetKeys"]).toEqual([`contract:${TOKEN_C}`]);
+  });
+
+  it("offers no new rate for a token with no route", async () => {
+    await refuse("no_route");
+    expect(screen.queryByTestId(`refused-accept-${TOKEN_C}`)).toBeNull();
+    expect(screen.getByTestId(`refused-asis-${TOKEN_C}`)).toBeTruthy();
+    expect(screen.getByTestId(`refused-leave-${TOKEN_C}`)).toBeTruthy();
+  });
+
+  it("forgets an accepted rate when the user goes back to Configure", async () => {
+    await refuse("price_impact");
+    fireEvent.click(screen.getByTestId(`refused-accept-${TOKEN_C}`));
+    fireEvent.click(screen.getByTestId("resolve-back"));
+    await waitFor(() => expect(state()).toBe("idle"));
+    ctl.preview = async () => ({ tree: makeTree(), unroutableCredits: [] });
+    const start = screen.getByTestId("demolish-start") as HTMLButtonElement;
+    await waitFor(() => expect(start.disabled).toBe(false));
+    fireEvent.click(start);
+    await waitFor(() => expect(ctl.previewInputs).toHaveLength(3));
+    expect(ctl.previewInputs[2]!["acceptedPriceImpactAssetKeys"]).toBeUndefined();
   });
 });
 
