@@ -13,8 +13,10 @@ import {
 import type { NetworkConfig } from "@/lib/config/networks";
 import { explorerAccountUrl } from "@/lib/explorer";
 import type { BundleabilityResult } from "@/lib/multisig/signing-request";
-import type { AccountAudit } from "@/lib/types/account";
-import type { ClassicMemo } from "@/lib/types/plan";
+import type { PlanNode, PreparePlan } from "@/lib/plan/tree";
+import { EVENT_RETENTION_WINDOW_LEDGERS } from "@/lib/soroban/event-retention";
+import type { AccountAudit, AssetIdentifier } from "@/lib/types/account";
+import { pathKey, type ClassicMemo } from "@/lib/types/plan";
 
 import { stroopsToXlm } from "../_lib/fees";
 import {
@@ -41,6 +43,9 @@ export interface SharedReview {
   readonly gate: BundleabilityResult;
   // claimable balances whose claim may fail before co-signers finish
   readonly claimRisks: readonly ClaimAtRisk[];
+  // rebuilds the plan without the at-risk claims, so the bundle only claims
+  // balances that stay claimable for the whole signing window
+  readonly onLeaveOutRisky?: () => void;
   readonly onCreate: () => void;
   readonly creating: boolean;
   readonly error: string | null;
@@ -61,6 +66,8 @@ export function ReviewPanel({
   useMediator,
   deterministic,
   network,
+  blockers = [],
+  prepareOnly,
   onBack,
   onDemolish,
   shared,
@@ -74,6 +81,11 @@ export function ReviewPanel({
   readonly useMediator: boolean;
   readonly deterministic: boolean;
   readonly network: NetworkConfig;
+  // what keeps the close from starting; while any is listed nothing can be
+  // confirmed or published
+  readonly blockers?: readonly string[];
+  // set when the plan can't merge yet: it only runs the steps that prepare it
+  readonly prepareOnly?: PreparePlan;
   readonly onBack: () => void;
   readonly onDemolish: () => void;
   // present for a shared account: the close is published as a signing request
@@ -89,6 +101,14 @@ export function ReviewPanel({
   const money = computeReviewMoney({ audit, ordered });
   const reserve = reserveReleasedStroops(audit, baseReserveStroops);
   const atLeast = `at least ${stroopsToXlm(money.atLeastStroops)} XLM`;
+  const labels = new Map(ordered.map((n) => [n.id, nodePlainLabel(n)]));
+  const conversions = conversionsOf(ordered);
+  const blocked = blockers.length > 0;
+  const unlockDate = prepareOnly?.unlocksAt.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
 
   return (
     <Card padding={24} style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -99,14 +119,38 @@ export function ReviewPanel({
           </Badge>
         </div>
         <h2 style={{ margin: 0, fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em" }}>
-          Review before closing
+          {prepareOnly ? "Review the preparation" : "Review before closing"}
         </h2>
         <p style={{ margin: "8px 0 0", fontSize: 14, lineHeight: 1.55, color: "var(--fg-2)" }}>
           {runnable} {runnable === 1 ? "step runs" : "steps run"} in order, numbered as they run.
-          Each step is final once it lands on Stellar; the account stays open until the last one
-          deletes it. Nothing happens until you confirm below.
+          {prepareOnly
+            ? " Each step is final once it lands on Stellar. This run does not close the account."
+            : " Each step is final once it lands on Stellar; the account stays open until the last one deletes it."}{" "}
+          Nothing happens until you confirm below.
         </p>
       </div>
+
+      {prepareOnly ? (
+        <div role="note" data-testid="review-prepare-only" style={noteStyle("warning")}>
+          <strong style={{ color: "var(--fg)", fontWeight: 600 }}>
+            This run prepares the close; it doesn&apos;t delete the account.
+          </strong>{" "}
+          {prepareOnly.reason} Come back on or after {unlockDate} to finish.
+        </div>
+      ) : null}
+
+      {blocked ? (
+        <div role="alert" data-testid="review-blockers" style={noteStyle("danger")}>
+          <strong style={{ color: "var(--fg)", fontWeight: 600 }}>
+            This close can&apos;t start yet.
+          </strong>
+          <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+            {blockers.map((b) => (
+              <li key={b}>{b}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       <StatGrid
         stats={[
@@ -215,6 +259,11 @@ export function ReviewPanel({
                     mode="plan"
                     index={numbers.get(n.id) ?? 0}
                     deterministic={deterministic}
+                    {...(n.deferred
+                      ? {
+                          deferredAfter: n.deferred.after.map((id) => labels.get(id) ?? id),
+                        }
+                      : {})}
                   />
                 ))}
               </div>
@@ -222,6 +271,27 @@ export function ReviewPanel({
           );
         })}
       </div>
+
+      {conversions.length > 0 ? (
+        <div data-testid="review-conversions" style={noteStyle("neutral")}>
+          <strong style={{ color: "var(--fg)", fontWeight: 600 }}>Conversions to XLM</strong>
+          <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+            {conversions.map((c) => (
+              <li key={c.key}>
+                Sells {c.sendAmount} {c.code} for about{" "}
+                {c.expected === null ? "an unknown amount of" : c.expected} XLM; the signed
+                transaction refuses less than {c.destMin} XLM.
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: "var(--fg-3)" }}>
+        Token spending permissions are found from the network&apos;s recent approve events, about
+        the last 7 days ({EVENT_RETENTION_WINDOW_LEDGERS.toLocaleString("en-US")} ledgers). A
+        permission granted before that isn&apos;t seen, so it isn&apos;t revoked here.
+      </p>
 
       {/* destination + memo + amount + account snapshot */}
       <div
@@ -274,14 +344,31 @@ export function ReviewPanel({
               "No memo"
             )}
           </div>
-          <div style={{ marginTop: 9, fontSize: 13, color: "var(--fg-2)" }}>
-            Your balance is sent to this address and the account is permanently closed. The
-            destination receives{" "}
-            <span style={{ font: "600 13px 'Geist Mono', monospace", color: "var(--fg)" }}>
-              {atLeast}
-            </span>
-            {money.spendsBalance ? " before loan repayments" : ""} after network fees.
-          </div>
+          {prepareOnly ? (
+            <div style={{ marginTop: 9, fontSize: 13, color: "var(--fg-2)" }}>
+              Nothing is sent to this address in this run. The close that finishes later sends the
+              balance here.
+            </div>
+          ) : (
+            <div style={{ marginTop: 9, fontSize: 13, color: "var(--fg-2)" }}>
+              Your balance is sent to this address and the account is permanently closed. The
+              destination receives{" "}
+              <span style={{ font: "600 13px 'Geist Mono', monospace", color: "var(--fg)" }}>
+                {atLeast}
+              </span>
+              {money.spendsBalance ? " before loan repayments" : ""} after network fees.
+            </div>
+          )}
+          {useMediator && !prepareOnly ? (
+            <div
+              data-testid="review-merge-leg"
+              style={{ marginTop: 9, fontSize: 12.5, color: "var(--fg-2)", lineHeight: 1.5 }}
+            >
+              About 1 XLM (the temporary account&apos;s minimum balance, plus any unused part of the
+              forward fee) reaches the exchange as an account merge, which most exchanges do not
+              credit. The rest arrives as a payment with your deposit memo.
+            </div>
+          ) : null}
         </div>
         <div
           style={{
@@ -341,7 +428,7 @@ export function ReviewPanel({
       </div>
 
       {shared ? (
-        <SharedFooter shared={shared} onBack={onBack} />
+        <SharedFooter shared={shared} onBack={onBack} blocked={blocked} />
       ) : (
         <>
           <div
@@ -386,6 +473,8 @@ export function ReviewPanel({
             <Button
               variant="danger"
               onClick={onDemolish}
+              disabled={blocked}
+              disabledReason={blocked ? "Resolve what's listed above first" : undefined}
               data-testid="demolish-confirm"
               style={{ flex: 1 }}
               iconRight={
@@ -404,7 +493,9 @@ export function ReviewPanel({
                 </svg>
               }
             >
-              Continue to final confirmation
+              {prepareOnly
+                ? "Continue to confirm the preparation"
+                : "Continue to final confirmation"}
             </Button>
           </div>
         </>
@@ -416,10 +507,15 @@ export function ReviewPanel({
 function SharedFooter({
   shared,
   onBack,
+  blocked,
 }: {
   readonly shared: SharedReview;
   readonly onBack: () => void;
+  readonly blocked: boolean;
 }): React.JSX.Element {
+  // a claim that expires inside the signing window, or one the bundle can't make
+  // without a trustline, sinks the whole signed bundle on submit
+  const sinking = shared.claimRisks.filter((r) => r.reason !== "reclaimable");
   if (!shared.gate.ok) {
     // a shared close that can't be one signing request can't be run here either:
     // this browser holds a single key, below the account's threshold
@@ -527,6 +623,18 @@ function SharedFooter({
               </li>
             ))}
           </ul>
+          {shared.onLeaveOutRisky ? (
+            <div style={{ marginTop: 8 }}>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={shared.onLeaveOutRisky}
+                data-testid="review-leave-out-risky"
+              >
+                Leave these out and rebuild
+              </Button>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -543,7 +651,14 @@ function SharedFooter({
         <Button
           onClick={shared.onCreate}
           loading={shared.creating}
-          disabled={shared.creating}
+          disabled={shared.creating || blocked || sinking.length > 0}
+          disabledReason={
+            blocked
+              ? "Resolve what's listed above first"
+              : sinking.length > 0
+                ? "Leave out the payments that can't be collected within the signing window first"
+                : undefined
+          }
           data-testid="review-create-request"
           style={{ flex: 1 }}
         >
@@ -584,4 +699,51 @@ function SnapStat({
       </span>
     </div>
   );
+}
+
+function noteStyle(tone: "warning" | "danger" | "neutral"): React.CSSProperties {
+  return {
+    padding: "12px 14px",
+    borderRadius: 12,
+    border:
+      tone === "neutral"
+        ? "1px solid var(--border)"
+        : `1px solid color-mix(in srgb, var(--${tone}) 45%, transparent)`,
+    fontSize: 12.5,
+    lineHeight: 1.5,
+    color: "var(--fg-2)",
+  };
+}
+
+interface Conversion {
+  readonly key: string;
+  readonly code: string;
+  readonly sendAmount: string;
+  // the full-size quote shown at review, null when the plan carries none
+  readonly expected: string | null;
+  // the floor the signed path payment enforces
+  readonly destMin: string;
+}
+
+// the classic path payments the close signs, with the quote each was reviewed at
+function conversionsOf(ordered: readonly PlanNode[]): readonly Conversion[] {
+  const out: Conversion[] = [];
+  for (const node of ordered) {
+    if (node.kind !== "FinalClassicTx") continue;
+    const quotes = node.metadata.reviewedConversionQuotes ?? {};
+    for (const op of node.metadata.batches.flatMap((b) => b.operations)) {
+      if (op.kind !== "path_payment_strict_send") continue;
+      const asset = op.metadata["sendAsset"] as AssetIdentifier | undefined;
+      if (asset?.kind !== "credit") continue;
+      const key = pathKey(asset);
+      out.push({
+        key,
+        code: asset.code,
+        sendAmount: String(op.metadata["sendAmount"]),
+        expected: quotes[key]?.destinationAmount ?? null,
+        destMin: String(op.metadata["destMin"]),
+      });
+    }
+  }
+  return out;
 }

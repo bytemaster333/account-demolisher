@@ -16,6 +16,7 @@ export function PlanRow({
   mode = "live",
   index,
   deterministic = false,
+  deferredAfter,
 }: {
   readonly node: PlanNode;
   readonly network: NetworkConfig;
@@ -25,11 +26,16 @@ export function PlanRow({
   readonly index?: number;
   // shared-account plan: nothing is sold on the market (changes the explainer)
   readonly deterministic?: boolean;
+  // plain labels of the steps a deferred step is built after
+  readonly deferredAfter?: readonly string[];
 }): React.JSX.Element {
-  const isDone = node.status === "confirmed";
-  const isRunning = node.status === "signed" || node.status === "submitted";
-  const isSkipped = node.status === "skipped";
-  const isFailed = node.status === "failed";
+  // a landed receipt is the truth: a later failure event may overwrite a step's
+  // status, but never undo what reached the chain
+  const landed = node.executed !== undefined;
+  const isDone = node.status === "confirmed" || landed;
+  const isRunning = !landed && (node.status === "signed" || node.status === "submitted");
+  const isSkipped = !landed && node.status === "skipped";
+  const isFailed = !landed && node.status === "failed";
   // a step whose preview check passed, distinct from a step not yet checked. In the plan/review this is the central output of the dry run, so
   // it must read differently from a plain "pending" step. But during LIVE
   // execution a not-yet-run step is still "simulated", and its accent-check badge
@@ -43,6 +49,11 @@ export function PlanRow({
   // link is what matters). "auth" (Soroban auth-entry count) is dev-only noise
   // and is no longer shown anywhere.
   const feeStroops = nodeFeeStroops(node);
+  // a swap shows what it expects and the floor it signs (XLM has 7 decimals)
+  const quote =
+    mode === "plan" && node.kind === "ConvertSorobanToXLM"
+      ? (node.metadata.reviewedQuote ?? node.metadata.quote ?? null)
+      : null;
   const showFee = mode === "plan" && feeStroops > 0;
   // live mode highlights the step that's currently signing/submitting
   const highlight = mode === "live" && isRunning;
@@ -345,7 +356,8 @@ export function PlanRow({
                   whiteSpace: "nowrap",
                 }}
               >
-                fee <span style={{ color: "var(--fg-2)" }}>{stroopsToXlm(feeStroops)} XLM</span>
+                fee up to{" "}
+                <span style={{ color: "var(--fg-2)" }}>{stroopsToXlm(feeStroops)} XLM</span>
               </span>
             ) : null}
           </div>
@@ -405,7 +417,32 @@ export function PlanRow({
               </a>
             ) : null}
           </div>
-          {node.error ? (
+          {quote !== null ? (
+            <div
+              data-testid="swap-quote"
+              style={{ marginTop: 4, fontSize: 11.5, color: "var(--fg-3)" }}
+            >
+              Expects about {stroopsToXlm(quote.expectedOut)} XLM, signs for at least{" "}
+              {stroopsToXlm(quote.minOut)} XLM
+              {quote.priceImpactBps !== null
+                ? `, price impact ${(quote.priceImpactBps / 100).toFixed(2)}%`
+                : ", price impact unknown"}
+            </div>
+          ) : null}
+          {node.deferred !== undefined && node.status === "pending" ? (
+            <div
+              data-testid="deferred-note"
+              style={{ marginTop: 5, fontSize: 11.5, color: "var(--fg-3)", lineHeight: 1.45 }}
+            >
+              Built after{" "}
+              {deferredAfter !== undefined && deferredAfter.length > 0
+                ? deferredAfter.join(", ")
+                : "the steps before it"}{" "}
+              confirm{deferredAfter !== undefined && deferredAfter.length === 1 ? "s" : ""}, since
+              it depends on what they leave behind. Its fee is shown when it is built.
+            </div>
+          ) : null}
+          {node.error && !landed ? (
             <div
               style={{
                 marginTop: 5,

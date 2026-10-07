@@ -11,25 +11,34 @@ import { StandaloneTokensCard } from "@/components/wallet/StandaloneTokensCard";
 import type { HeldToken } from "@/lib/soroban/held-tokens";
 import { SponsoringBlock } from "@/components/warnings/SponsoringBlock";
 import { CollectSignatures } from "@/components/multisig/CollectSignatures";
+import { openPositionCount } from "@/lib/adapters/positions/interface";
 import { explorerAccountUrl } from "@/lib/explorer";
+import { errorMessage } from "@/lib/errors";
 import { useNetworkStore } from "@/stores/network";
-import { resolveNetwork, type NetworkConfig } from "@/lib/config/networks";
+import { useCloseBusy } from "@/stores/close-busy";
+import { NETWORKS, type NetworkConfig } from "@/lib/config/networks";
 import {
+  confirmBlockers,
+  discoveryWarningFor,
   isRetryableFailure,
   pageFlowMachine,
+  previewBlockers,
   type PageFlowInput,
+  type RefusedConversion,
 } from "@/lib/orchestrator/page-flow-machine";
 import { getPublicEnv } from "@/lib/config/env";
+import { fetchPlan } from "@/lib/multisig/plan-client";
 import { SIGNING_WINDOW_SECONDS, assessBundleability } from "@/lib/multisig/signing-request";
 import {
+  destinationRequiresMediator,
   lookupCex,
   requireMemoEnforcement,
   validateMemoFormat,
   type CexInfo,
 } from "@/lib/safety/cex-registry";
+import { assessCloseValue } from "@/lib/safety/high-value";
 import { runScamHeuristics } from "@/lib/safety/scam-heuristics";
-import { isHighValueTotalXlm } from "@/lib/safety/high-value";
-import { topologicalOrder } from "@/lib/plan/tree";
+import { topologicalOrder, type PlanNode, type PlanTree } from "@/lib/plan/tree";
 import type { Connector } from "@/lib/wallet/connector";
 import { WalletKitConnector } from "@/lib/wallet/connector";
 import { disconnectSession, getActiveConnector } from "@/lib/wallet/active-connector";
@@ -38,29 +47,46 @@ import { useWalletStore } from "@/stores/wallet";
 import { useBaseReserve, useDeliveredAmount } from "../_hooks/use-chain-figures";
 import { useDemolishMetrics } from "../_hooks/use-demolish-metrics";
 import { useDestinationChecks } from "../_hooks/use-destination-checks";
+import { useHeldTokenScam } from "../_hooks/use-held-token-scam";
 import { useMultisigPreflight } from "../_hooks/use-multisig-preflight";
 import { useRunGuard } from "../_hooks/use-run-guard";
 import { useSigningRequest } from "../_hooks/use-signing-request";
 import { SR_ONLY } from "../_lib/a11y";
 import { claimableSplit } from "../_lib/claimables";
+import { stroopsToXlm } from "../_lib/fees";
 import { failureNoteFor } from "../_lib/failure-note";
 import { buildFlowSteps, flowPhaseFor, type ConfirmStage } from "../_lib/flow-steps";
 import { FORM_SCHEMA, INITIAL_FORM, parseMemo, type FormState } from "../_lib/form";
 import { heldSelectionDirty } from "../_lib/held-selection";
-import { groupPlanNodes, sumNativeBalance } from "../_lib/plan-copy";
-import { assessSigningRequest, claimsAtRiskInWindow } from "../_lib/signing-bundle";
+import { groupPlanNodes } from "../_lib/plan-copy";
+import {
+  assessSigningRequest,
+  claimsAtRiskInWindow,
+  hasClassicPoolShares,
+} from "../_lib/signing-bundle";
 import type { StoredSigningRequest } from "../_lib/signing-request-store";
-import { AcknowledgePanel } from "./AcknowledgePanel";
+import { AcknowledgePanel, type ClaimChoices } from "./AcknowledgePanel";
 import { CancelledPanel } from "./CancelledPanel";
 import { ConfigurePanel, type PreflightView } from "./ConfigurePanel";
 import { IdleConnect } from "./IdleConnect";
 import { LeftLoadingCard } from "./LoadingCard";
 import { MultisigContextBar } from "./MultisigContextBar";
-import { ResolvePanel } from "./ResolvePanel";
+import { ResolvePanel, type CreditChoice, type HeldTokenChoice } from "./ResolvePanel";
 import { ReviewPanel } from "./ReviewPanel";
 import { SponsorshipAutoRevokeNotice } from "./SponsorshipAutoRevokeNotice";
 import { DemolishStatusWidget, type SigningMode } from "./StatusWidget";
 import { StepIndicator } from "./StepIndicator";
+
+function finalNodeOf(tree: PlanTree | null): Extract<PlanNode, { kind: "FinalClassicTx" }> | null {
+  const node = tree?.allNodes.get("final-classic-tx");
+  return node !== undefined && node.kind === "FinalClassicTx" ? node : null;
+}
+
+function sameSet(a: readonly string[], b: readonly string[]): boolean {
+  const sa = new Set(a);
+  const sb = new Set(b);
+  return sa.size === sb.size && [...sa].every((x) => sb.has(x));
+}
 
 export function DemolishFlow(): React.JSX.Element {
   const connectorRef = useRef<Connector | null>(null);
@@ -72,7 +98,8 @@ export function DemolishFlow(): React.JSX.Element {
   // the navbar's network. A run keeps its own (ctx.input.network, below), and
   // every run-specific view, link and metric uses that one instead.
   const networkId = useNetworkStore((s) => s.networkId);
-  const network = useMemo<NetworkConfig>(() => resolveNetwork(networkId), [networkId]);
+  const setLockReason = useNetworkStore((s) => s.setLockReason);
+  const network = useMemo<NetworkConfig>(() => NETWORKS[networkId], [networkId]);
 
   // Do we have a live connector that can actually SIGN here? Derived (not stored)
   // so it stays in sync with the app-wide wallet session across client-side
@@ -117,17 +144,25 @@ export function DemolishFlow(): React.JSX.Element {
   // of transferring them as-is. Default off: transfer-as-is preserves the exact
   // token and can't be defeated by an illiquid/unroutable one.
   const [convertHeldTokensToXLM, setConvertHeldTokensToXLM] = useState(false);
+  // assets the user agreed to sell over the price-impact cap or unpriced
+  // ("CODE:ISSUER", or "contract:C..." for a held token)
+  const [acceptedPriceKeys, setAcceptedPriceKeys] = useState<readonly string[]>([]);
+  // held tokens whose refused conversion the user chose to leave on the account,
+  // kept so the choice can be undone
+  const [leftTokens, setLeftTokens] = useState<ReadonlyMap<string, HeldToken>>(new Map());
+  // backstop pools whose unclaimable emissions the user agreed to leave behind
+  const [forfeitPools, setForfeitPools] = useState<readonly string[]>([]);
+  // the claimable balances the user picked; null until they change the planner's
+  // choice, so the first plan claims every balance it can collect
+  const [claimSelection, setClaimSelection] = useState<readonly string[] | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
-  // pre-select the claimable balances by default so the demo flow "just works"
-  // (see the render-time prefill below)
-  const [prefilledAuditId, setPrefilledAuditId] = useState<string | null>(null);
 
   // whether the connected account is shared, read before the plan is built so a
   // shared account is planned without market sells from the start
   const { preflight, retry: retryPreflight } = useMultisigPreflight(publicKey, network);
 
   // the awaiting_confirmation phase has three stages:
-  //  "resolve"    , take an action on a blocker (return-to-issuer) + rebuild
+  //  "resolve"    , act on what blocks the close + rebuild
   //  "acknowledge", read-and-understand every warning / info card
   //  "review"     , the clean "here is what will happen" review + demolish
   // the stage is initialised per built plan (below), skipping any empty step.
@@ -135,7 +170,7 @@ export function DemolishFlow(): React.JSX.Element {
   // the final typed-confirmation dialog, opened from the review step
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
 
-  const [snapshot, send] = useMachine(pageFlowMachine);
+  const [snapshot, send, actorRef] = useMachine(pageFlowMachine);
   const state = snapshot.value;
   const ctx = snapshot.context;
 
@@ -143,6 +178,7 @@ export function DemolishFlow(): React.JSX.Element {
   const tree = ctx.tree;
   const runInput = ctx.input;
   const runNetwork = runInput?.network ?? network;
+  const finalNode = finalNodeOf(tree);
 
   // prefer the AUTHORITATIVE discovery audit once it's available. ctx.audit is
   // the audit the plan is actually built from.
@@ -152,6 +188,7 @@ export function DemolishFlow(): React.JSX.Element {
         required: audit.requiresMultisig,
         threshold: audit.thresholds.high,
         signers: audit.signers,
+        hasClassicPoolShares: hasClassicPoolShares(audit),
       };
     }
     return preflight.status === "ready" ? preflight.info : null;
@@ -164,11 +201,13 @@ export function DemolishFlow(): React.JSX.Element {
   }, [effectiveMultisig, publicKey]);
   const multisigRequired = publicKey !== null && effectiveMultisig?.required === true;
 
-  // scam heuristics over the account's held credit balances (look-alike symbols,
-  // homoglyphs, off-allowlist contracts), surfaced as an informational notice.
+  // scam heuristics over the classic credit balances and over the standalone
+  // tokens, whose symbol and name their own contract sets
+  const heldScam = useHeldTokenScam(ctx.heldTokens, runNetwork, audit?.accountId ?? null);
   const scamFindings = useMemo(
-    () => (audit ? runScamHeuristics(audit.balances, runNetwork.id) : []),
-    [audit, runNetwork.id],
+    () =>
+      audit ? [...runScamHeuristics(audit.balances, runNetwork.id), ...heldScam.findings] : [],
+    [audit, runNetwork.id, heldScam.findings],
   );
 
   const isMachineIdle = state === "idle";
@@ -181,7 +220,8 @@ export function DemolishFlow(): React.JSX.Element {
   const isCancelled = state === "cancelled";
 
   // a plan is bound to the account and network it was built for: once either
-  // changes it is discarded, and it can't be confirmed or retried here
+  // changes it is discarded, and it can't be confirmed or retried here. A close
+  // already executing is stopped at its next step boundary.
   const runMismatched = useRunGuard({
     state: String(state),
     input: runInput,
@@ -190,6 +230,7 @@ export function DemolishFlow(): React.JSX.Element {
     send,
   });
 
+  const prepared = tree?.prepareOnly !== undefined;
   useDemolishMetrics({
     networkId: network.id,
     runNetworkId: runNetwork.id,
@@ -202,38 +243,133 @@ export function DemolishFlow(): React.JSX.Element {
   const isIdle = isMachineIdle && publicKey === null;
   const authImmutable = audit?.flags.authImmutable === true;
   const numSponsoring = audit?.sponsorship.numSponsoring ?? 0;
-  // self-sponsored entries the demolition releases on its own (trustlines,
-  // offers, signers + claimable CBs), computed once in the audit.
+  // self-sponsored claimable balances the close can release when it claims them
+  // all; the plan-specific check (what this plan really claims) is a preview
+  // blocker, shown before anything can be confirmed
   const numCoverable = audit?.sponsorship.coverable ?? 0;
-  // hard-block only when at least one sponsorship is foreign (sponsoring entries
+  // sponsorships no plan can release take over the page
   const isSponsorBlock = !authImmutable && numSponsoring > numCoverable;
   const isImmutableBlock = authImmutable;
   const blocked = isImmutableBlock || isSponsorBlock;
-
-  // total native balance + high-value flag, needed by the Resolve step and the
-  // review summary; computed early so the flow phase / stepper can read them.
-  const totalXlm = audit ? sumNativeBalance(audit) : "0";
-  const isHighValue = useMemo<boolean>(() => {
-    if (!audit) return false;
-    return isHighValueTotalXlm(totalXlm);
-  }, [audit, totalXlm]);
 
   // what the reviewed close collects, and the claimable balances it leaves
   const claimables = useMemo(
     () =>
       audit
         ? claimableSplit({ audit, tree, publicKey: audit.accountId, nowMs: mountedAt })
-        : { collectCount: 0, leftBehind: [] },
+        : { collectCount: 0, leftBehind: [], trustlineChanges: [] },
     [audit, tree, mountedAt],
   );
 
+  // the claim list the built plan used, and the user's pick where they changed it
+  const builtClaimList = useMemo<readonly string[]>(
+    () => runInput?.selectedClaimableBalanceIds ?? finalNode?.metadata.claimableBalanceIds ?? [],
+    [runInput, finalNode],
+  );
+  const claimChoices = useMemo<ClaimChoices | undefined>(() => {
+    if (audit === null || multisigRequired) return undefined;
+    const selected = new Set(claimSelection ?? builtClaimList);
+    return {
+      balances: audit.claimableBalances
+        .filter((cb) => cb.claimableNow !== false)
+        .map((cb) => ({
+          id: cb.id,
+          asset: cb.asset,
+          amount: cb.amount,
+          locked: cb.sponsor === audit.accountId,
+        })),
+      selected,
+      onToggle: (id, checked) =>
+        setClaimSelection((prev) => {
+          const base = new Set(prev ?? builtClaimList);
+          if (checked) base.add(id);
+          else base.delete(id);
+          return [...base];
+        }),
+    };
+  }, [audit, multisigRequired, claimSelection, builtClaimList]);
+
+  // what the close is expected to move, priced at the reviewed quotes
+  const closeValue = useMemo(() => {
+    if (audit === null || finalNode === null) return null;
+    const quotes = new Map(Object.entries(finalNode.metadata.reviewedConversionQuotes ?? {}));
+    const claimed = finalNode.metadata.batches
+      .flatMap((b) => b.operations)
+      .filter((o) => o.kind === "claim_claimable_balance")
+      .map((o) => String(o.metadata["balanceId"]));
+    const movedTokens = [...(tree?.allNodes.values() ?? [])].filter(
+      (n) => n.kind === "TransferAsIs" || n.kind === "ConvertSorobanToXLM",
+    ).length;
+    return assessCloseValue({
+      audit,
+      creditQuotes: quotes,
+      claimedBalanceIds: claimed,
+      unpricedPositions: openPositionCount(ctx.positions) + movedTokens,
+    });
+  }, [audit, finalNode, tree, ctx.positions]);
+  const isHighValue = closeValue?.highValue === true;
+
+  // everything that keeps the close from starting; the machine refuses CONFIRM
+  // and SUBMIT_BUNDLE while any of it is open, so the page says why
+  const blockers = useMemo(() => {
+    const list = [...confirmBlockers(ctx)];
+    if (isAwaitingConfirmation && ctx.connector === null) {
+      list.push("No wallet is connected to this run. Connect your wallet, then rebuild the plan.");
+    }
+    return list;
+  }, [ctx, isAwaitingConfirmation]);
+  // the blockers the Resolve step can't offer a choice for
+  const otherBlockers = useMemo(() => {
+    const refusedTokens = new Set(ctx.refusedConversions.map((r) => r.contractId));
+    const forfeitable = new Set(ctx.emissionForfeits.map((f) => f.poolId));
+    const preview = previewBlockers(tree)
+      .filter((b) => {
+        const node = tree?.allNodes.get(b.nodeId);
+        if (node?.kind === "ConvertSorobanToXLM" && node.metadata.asset.kind === "contract") {
+          return !refusedTokens.has(node.metadata.asset.contractId);
+        }
+        if (node?.kind === "ClaimBackstopEmissions") return !forfeitable.has(node.metadata.poolId);
+        return true;
+      })
+      .map((b) => `${b.description}: ${b.error}`);
+    return [
+      ...preview,
+      ...ctx.reviewBlockers,
+      ...ctx.positions.errors.map((e) => discoveryWarningFor(e)),
+      ...(isAwaitingConfirmation && ctx.connector === null
+        ? ["No wallet is connected to this run. Connect your wallet, then rebuild the plan."]
+        : []),
+    ];
+  }, [ctx, tree, isAwaitingConfirmation]);
+
+  // facts about the built plan worth knowing before the review
+  const planNotes = useMemo<readonly string[]>(() => {
+    const notes: string[] = [];
+    for (const f of tree?.forfeitedBackstopEmissions ?? []) {
+      notes.push(
+        `Leaves ${stroopsToXlm(f.accruedEmissions)} BLND of Blend backstop rewards for pool ${f.poolId} unclaimed, as you chose.`,
+      );
+    }
+    if (finalNode?.metadata.closeMarker === false) {
+      notes.push(
+        "This close won't carry the on-chain Account Demolisher marker (the account can't spare the reserve it needs at the merge), so it won't be counted in the app's public close numbers. The close itself is not affected.",
+      );
+    }
+    return notes;
+  }, [tree, finalNode]);
+
   // two distinct concerns, kept as separate steps:
-  //  - a BLOCKER (un-routable balance) needs an ACTION + rebuild  → "resolve"
-  //  - warnings / info need only READ-AND-UNDERSTAND               → "acknowledge"
-  const hasBlocker = ctx.unroutableCredits.length > 0;
+  //  - a BLOCKER needs an ACTION + rebuild          → "resolve"
+  //  - warnings / info need only READ-AND-UNDERSTAND → "acknowledge"
+  const hasBlocker = blockers.length > 0;
   const hasScam = scamFindings.length > 0;
-  const hasDiscovery = ctx.discoveryWarnings.length > 0;
-  const hasAutoHandled = claimables.collectCount > 0 || numCoverable > 0;
+  const discoveryWarnings = useMemo(
+    () => [...ctx.discoveryWarnings, ...heldScam.unreadable],
+    [ctx.discoveryWarnings, heldScam.unreadable],
+  );
+  const hasDiscovery = discoveryWarnings.length > 0;
+  const hasAutoHandled =
+    claimables.collectCount > 0 || numCoverable > 0 || claimables.trustlineChanges.length > 0;
   const hasLeftBehind = claimables.leftBehind.length > 0;
   // the standalone-token section belongs with the warnings (it's about funds that
   // could be left behind). Show it whenever there's a real reason to look: tokens
@@ -241,11 +377,20 @@ export function DemolishFlow(): React.JSX.Element {
   // manual add-a-token is still reachable). A clean, complete scan doesn't nag.
   const showTokenSection =
     ctx.heldTokens.length > 0 || ctx.unreadableHeldTokens.length > 0 || ctx.heldTokenScanFailed;
+  const hasClaimChoices = claimChoices !== undefined && claimChoices.balances.length > 0;
   const hasAckItems =
-    hasScam || hasDiscovery || hasAutoHandled || hasLeftBehind || isHighValue || showTokenSection;
+    hasScam ||
+    hasDiscovery ||
+    hasAutoHandled ||
+    hasLeftBehind ||
+    isHighValue ||
+    showTokenSection ||
+    hasClaimChoices ||
+    planNotes.length > 0;
 
   // initialise the confirm stage per built plan: resolve blockers first, then
   // acknowledge warnings/info, then the clean review, skipping any empty step.
+  // A refusal shown for the previous plan doesn't belong to the new one.
   const initedTreeRef = useRef<unknown>(null);
   useEffect(() => {
     if (tree !== null && isAwaitingConfirmation) {
@@ -253,11 +398,17 @@ export function DemolishFlow(): React.JSX.Element {
         initedTreeRef.current = tree;
         setConfirmStage(hasBlocker ? "resolve" : hasAckItems ? "acknowledge" : "review");
         setShowConfirmDialog(false);
+        setFormError(null);
       }
     } else if (tree === null) {
       initedTreeRef.current = null;
     }
   }, [tree, isAwaitingConfirmation, hasBlocker, hasAckItems]);
+
+  const goToStage = useCallback((stage: ConfirmStage) => {
+    setFormError(null);
+    setConfirmStage(stage);
+  }, []);
 
   // configure = no run in progress for this account
   const isConfiguring = !blocked && publicKey !== null && isMachineIdle;
@@ -268,21 +419,36 @@ export function DemolishFlow(): React.JSX.Element {
   const isReview = inConfirmation && confirmStage === "review";
   const showFlow = !isIdle && !blocked;
 
-  // cex / mediator
+  // inline gates on the destination and memo, so Continue only enables for a
+  // close onStart will accept
+  const { destinationGate, destExistsGate, memoGate, sep29MemoRequired } = useDestinationChecks(
+    form,
+    publicKey,
+    network,
+  );
+
+  // cex / mediator: every memo-required destination, a registry exchange or a
+  // SEP-29 flagged account, goes through the mediator
   const cex: CexInfo | null = useMemo(() => {
     const trimmed = form.destination.trim();
     if (trimmed.length === 0) return null;
     return lookupCex(trimmed);
   }, [form.destination]);
-  const useMediator = cex !== null;
+  const useMediator = destinationRequiresMediator(
+    form.destination.trim(),
+    sep29MemoRequired === true,
+  );
 
   // ── shared-account signing request ────────────────────────────────────────
-  // Configure only knows the destination kind; the full gate (positions, held
-  // tokens, the built tree, deterministic disposal) applies once a plan exists
+  // Configure only knows the destination kind, the pool shares and the token
+  // pick; the full gate (positions, the built tree, deterministic disposal)
+  // applies once a plan exists
   const configureGate = assessBundleability({
     hasSorobanPositions: false,
     hasSelectedAllowances: false,
     useMediator,
+    hasClassicPoolShares: effectiveMultisig?.hasClassicPoolShares === true,
+    hasSelectedHeldTokens: selectedHeldTokens.length > 0,
   });
   const signingGate = assessSigningRequest({
     positions: ctx.positions,
@@ -292,6 +458,7 @@ export function DemolishFlow(): React.JSX.Element {
       selectedHeldTokens.length,
       runInput?.selectedHeldTokens?.length ?? 0,
     ),
+    hasClassicPoolShares: audit !== null && hasClassicPoolShares(audit),
     tree,
     deterministic: runInput?.deterministicDisposal === true,
   });
@@ -311,6 +478,7 @@ export function DemolishFlow(): React.JSX.Element {
 
   const signing = useSigningRequest({
     runInput,
+    connector: ctx.connector,
     audit,
     tree,
     network: runNetwork,
@@ -325,6 +493,29 @@ export function DemolishFlow(): React.JSX.Element {
   // the Signatures step is shown only while still gathering signatures for the
   // current, matching run; a cancel or a wallet/network change takes it down
   const collecting = activeRequest !== null && isAwaitingConfirmation && !runMismatched;
+
+  // while a close runs, or signatures are being gathered for one, switching the
+  // network or the wallet would tear down the session it signs with
+  const gatheringSignatures = collecting || signing.creating;
+  useEffect(() => {
+    setLockReason(
+      isExecuting
+        ? "A close is running on this network. Switch after it finishes."
+        : gatheringSignatures
+          ? "Signatures are being collected for this close."
+          : null,
+    );
+  }, [isExecuting, gatheringSignatures, setLockReason]);
+  useEffect(() => {
+    useCloseBusy.getState().setBusy(isExecuting);
+  }, [isExecuting]);
+  useEffect(
+    () => () => {
+      useNetworkStore.getState().setLockReason(null);
+      useCloseBusy.getState().setBusy(false);
+    },
+    [],
+  );
 
   const planBuilt = tree !== null;
   const flowSteps = useMemo(
@@ -355,14 +546,6 @@ export function DemolishFlow(): React.JSX.Element {
     ],
   );
 
-  // inline gates on the destination and memo, so Continue only enables for a
-  // close onStart will accept
-  const { destinationGate, destExistsGate, memoGate } = useDestinationChecks(
-    form,
-    publicKey,
-    network,
-  );
-
   const setConnector = useCallback((c: Connector | null) => {
     connectorRef.current = c;
     // ConnectButton re-notifies every render, so nothing here may create a new
@@ -375,23 +558,25 @@ export function DemolishFlow(): React.JSX.Element {
   // later navigation back to /demolish starts at Connect, not Configure with a
   // dead account. A shared close also ends in the machine "succeeded" state (the
   // collected bundle is submitted via SUBMIT_BUNDLE), so this one guard covers
-  // both flows. Cleared directly (not via setConnector) so the success view,
-  // which keys off the machine/tree, stays visible. Guarded to fire once.
+  // both flows. A run that only prepared the close leaves the account open, so
+  // the wallet stays connected for the run that finishes it. Cleared directly
+  // (not via setConnector) so the success view stays visible. Fires once.
   const closedRef = useRef(false);
   const finishSigning = signing.finished;
   useEffect(() => {
     if (isSucceeded && !closedRef.current) {
       closedRef.current = true;
+      if (prepared) return;
       connectorRef.current = null;
       // a submitted signing request has nothing left to resume
-      if (ctx.signedBundleXdr !== null) finishSigning();
+      if (ctx.signedBundle !== null) finishSigning();
       // full teardown (connector + kit + store): the account was merged and no
       // longer exists, so leave nothing authorized to it at the wallet level
       void disconnectSession(disconnectWallet);
     } else if (!isSucceeded && closedRef.current) {
       closedRef.current = false;
     }
-  }, [isSucceeded, disconnectWallet, ctx.signedBundleXdr, finishSigning]);
+  }, [isSucceeded, prepared, disconnectWallet, ctx.signedBundle, finishSigning]);
 
   // guard against navigating away / closing the tab mid-execution, a partial
   // run leaves the account half-dismantled; while signatures are being
@@ -414,119 +599,150 @@ export function DemolishFlow(): React.JSX.Element {
     [send],
   );
 
-  const onStart = useCallback(() => {
-    setFormError(null);
+  // claimsOverride: a claim list to build with right away, before the state
+  // that records it has re-rendered
+  const buildAndStart = useCallback(
+    (claimsOverride?: readonly string[]) => {
+      setFormError(null);
 
-    const parsed = FORM_SCHEMA.safeParse(form);
-    if (!parsed.success) {
-      setFormError(parsed.error.issues.map((i) => i.message).join("; "));
-      return;
-    }
-    if (!publicKey || !connectorRef.current) {
-      setFormError("Connect a wallet first.");
-      return;
-    }
-    if (parsed.data.destination === publicKey) {
-      setFormError(
-        "Destination can't be your own account, Stellar rejects a self-merge (ACCOUNT_MERGE_MALFORMED).",
-      );
-      return;
-    }
-
-    const memo = parseMemo(form);
-
-    // validate the memo VALUE shape for ANY destination, so a malformed id/hash
-    // memo can't slip past a non-CEX close and throw inside Memo.id()/hash() only
-    // at execute time (mid-close, after earlier steps may have submitted).
-    if (memo !== undefined) {
-      const memoFormatError = validateMemoFormat(memo.type, memo.value);
-      if (memoFormatError !== null) {
-        setFormError(memoFormatError);
+      const parsed = FORM_SCHEMA.safeParse(form);
+      if (!parsed.success) {
+        setFormError(parsed.error.issues.map((i) => i.message).join("; "));
         return;
       }
-    }
-
-    // hard refusal when the destination is a CEX and the memo is missing, the
-    // wrong type, or malformed (strict value validation, not just presence)
-    const memoCheck = requireMemoEnforcement(parsed.data.destination, memo);
-    if (!memoCheck.ok) {
-      setFormError(memoCheck.reason);
-      return;
-    }
-
-    // a self-hosted deployment doesn't run the exchange mediator, so it can't
-    // safely route a close to a memo-required exchange: refuse up front rather
-    // than fail late at the mediator step (this is the documented self-hosted
-    // safety guarantee).
-    if (useMediator && getPublicEnv().NEXT_PUBLIC_DEPLOYMENT_MODE === "self-hosted") {
-      setFormError(
-        "This self-hosted deployment doesn't run the exchange mediator, so it can't route a close " +
-          "to a memo-required exchange. Withdraw to a self-custody address instead.",
-      );
-      return;
-    }
-
-    // A shared account is always closed the same way: the initiator signs with
-    // their own key, the reviewed close is built as ONE deterministic bundled
-    // transaction (no market sell that could sink the signed bundle) and, after
-    // Review, published as a signing request the other signers add signatures
-    // to. When what's already known rules that out, refuse rather than start.
-    if (multisigRequired) {
-      const known =
-        audit !== null && audit.accountId === publicKey
-          ? assessSigningRequest({
-              positions: ctx.positions,
-              allowanceCount: ctx.allowances.length,
-              useMediator,
-              heldTokensSelected: selectedHeldTokens.length,
-              tree: null,
-              deterministic: true,
-            })
-          : configureGate;
-      if (!known.ok) {
+      if (!publicKey || !connectorRef.current) {
+        setFormError("Connect a wallet first.");
+        return;
+      }
+      if (parsed.data.destination === publicKey) {
         setFormError(
-          known.reason ??
-            "This shared account's close can't be bundled into a single signing request.",
+          "Destination can't be your own account, Stellar rejects a self-merge (ACCOUNT_MERGE_MALFORMED).",
         );
         return;
       }
-    }
+      // the destination's SEP-29 flag decides the memo and the route, so the close
+      // can't be planned before it has been read
+      if (sep29MemoRequired === null) {
+        setFormError(
+          destExistsGate.hint ?? "The destination account hasn't been checked yet. Try again.",
+        );
+        return;
+      }
 
-    startRun({
+      const memo = parseMemo(form);
+
+      // validate the memo VALUE shape for ANY destination, so a malformed id/hash
+      // memo can't slip past a non-CEX close and throw inside Memo.id()/hash() only
+      // at execute time (mid-close, after earlier steps may have submitted).
+      if (memo !== undefined) {
+        const memoFormatError = validateMemoFormat(memo.type, memo.value);
+        if (memoFormatError !== null) {
+          setFormError(memoFormatError);
+          return;
+        }
+      }
+
+      // hard refusal when the destination needs a memo (registry exchange or SEP-29
+      // flag) and it is missing, the wrong type or malformed, and for an exchange
+      // internal wallet whatever the memo
+      const memoCheck = requireMemoEnforcement(parsed.data.destination, memo, {
+        sep29MemoRequired,
+      });
+      if (!memoCheck.ok) {
+        setFormError(memoCheck.reason);
+        return;
+      }
+
+      // a self-hosted deployment doesn't run the exchange mediator, so it can't
+      // safely route a close to a memo-required exchange: refuse up front rather
+      // than fail late at the mediator step (this is the documented self-hosted
+      // safety guarantee).
+      if (useMediator && getPublicEnv().NEXT_PUBLIC_DEPLOYMENT_MODE === "self-hosted") {
+        setFormError(
+          "This self-hosted deployment doesn't run the exchange mediator, so it can't route a close " +
+            "to a memo-required exchange. Withdraw to a self-custody address instead.",
+        );
+        return;
+      }
+
+      // A shared account is always closed the same way: the initiator signs with
+      // their own key, the reviewed close is built as ONE deterministic bundled
+      // transaction (no market sell that could sink the signed bundle) and, after
+      // Review, published as a signing request the other signers add signatures
+      // to. When what's already known rules that out, refuse rather than start.
+      if (multisigRequired) {
+        const known =
+          audit !== null && audit.accountId === publicKey
+            ? assessSigningRequest({
+                positions: ctx.positions,
+                allowanceCount: ctx.allowances.length,
+                useMediator,
+                heldTokensSelected: selectedHeldTokens.length,
+                hasClassicPoolShares: hasClassicPoolShares(audit),
+                tree: null,
+                deterministic: true,
+              })
+            : configureGate;
+        if (!known.ok) {
+          setFormError(
+            known.reason ??
+              "This shared account's close can't be bundled into a single signing request.",
+          );
+          return;
+        }
+      }
+
+      // once the user picked, the plan claims exactly their pick ([] claims none);
+      // until then the planner claims every balance it can collect
+      const claims = claimsOverride ?? claimSelection ?? runInput?.selectedClaimableBalanceIds;
+      startRun({
+        publicKey,
+        network,
+        connector: connectorRef.current,
+        destination: parsed.data.destination,
+        useMediator,
+        ...(memo ? { memo } : {}),
+        ...(claims !== undefined ? { selectedClaimableBalanceIds: claims } : {}),
+        ...(form.returnToIssuer.length > 0 ? { returnToIssuerAssetKeys: form.returnToIssuer } : {}),
+        ...(form.sendToDestination.length > 0
+          ? { sendToDestinationAssetKeys: form.sendToDestination }
+          : {}),
+        ...(acceptedPriceKeys.length > 0
+          ? { acceptedPriceImpactAssetKeys: acceptedPriceKeys }
+          : {}),
+        ...(forfeitPools.length > 0 ? { forfeitBackstopEmissionPoolIds: forfeitPools } : {}),
+        ...(selectedHeldTokens.length > 0 ? { selectedHeldTokens } : {}),
+        ...(convertHeldTokensToXLM && selectedHeldTokens.length > 0
+          ? { convertHeldTokensToXLM: true }
+          : {}),
+        // the signing-request path signs ONE bundled transaction, so it can't rely
+        // on a market sell: force deterministic disposal so the reviewed plan is
+        // exactly the transaction every signer signs
+        ...(multisigRequired ? { deterministicDisposal: true } : {}),
+      });
+    },
+    [
+      form,
       publicKey,
       network,
-      connector: connectorRef.current,
-      destination: parsed.data.destination,
+      sep29MemoRequired,
+      destExistsGate.hint,
       useMediator,
-      ...(memo ? { memo } : {}),
-      ...(form.selectedCbIds.length > 0 ? { selectedClaimableBalanceIds: form.selectedCbIds } : {}),
-      ...(form.returnToIssuer.length > 0 ? { returnToIssuerAssetKeys: form.returnToIssuer } : {}),
-      ...(form.sendToDestination.length > 0
-        ? { sendToDestinationAssetKeys: form.sendToDestination }
-        : {}),
-      ...(selectedHeldTokens.length > 0 ? { selectedHeldTokens } : {}),
-      ...(convertHeldTokensToXLM && selectedHeldTokens.length > 0
-        ? { convertHeldTokensToXLM: true }
-        : {}),
-      // the signing-request path signs ONE bundled transaction, so it can't rely
-      // on a market sell: force deterministic disposal so the reviewed plan is
-      // exactly the transaction every signer signs
-      ...(multisigRequired ? { deterministicDisposal: true } : {}),
-    });
-  }, [
-    form,
-    publicKey,
-    network,
-    useMediator,
-    multisigRequired,
-    audit,
-    ctx.positions,
-    ctx.allowances,
-    configureGate,
-    selectedHeldTokens,
-    convertHeldTokensToXLM,
-    startRun,
-  ]);
+      multisigRequired,
+      audit,
+      ctx.positions,
+      ctx.allowances,
+      configureGate,
+      claimSelection,
+      runInput,
+      acceptedPriceKeys,
+      forfeitPools,
+      selectedHeldTokens,
+      convertHeldTokensToXLM,
+      startRun,
+    ],
+  );
+  const onStart = useCallback(() => buildAndStart(), [buildAndStart]);
 
   // resume a stored signing request: rebuild the close from the inputs it was
   // built with; the request is only reused if the rebuilt plan matches it
@@ -543,10 +759,10 @@ export function DemolishFlow(): React.JSX.Element {
           destination: r.destination,
           memoType: r.memo?.type ?? "none",
           memoValue: r.memo?.value ?? "",
-          selectedCbIds: [...r.selectedCbIds],
           returnToIssuer: [...r.returnToIssuer],
           sendToDestination: [...r.sendToDestination],
         });
+        setClaimSelection([...r.selectedCbIds]);
         startRun({
           publicKey,
           network,
@@ -554,7 +770,8 @@ export function DemolishFlow(): React.JSX.Element {
           destination: r.destination,
           useMediator: false,
           ...(r.memo ? { memo: r.memo } : {}),
-          ...(r.selectedCbIds.length > 0 ? { selectedClaimableBalanceIds: r.selectedCbIds } : {}),
+          // the reviewed claim list, exactly; [] claims none
+          selectedClaimableBalanceIds: r.selectedCbIds,
           ...(r.returnToIssuer.length > 0 ? { returnToIssuerAssetKeys: r.returnToIssuer } : {}),
           ...(r.sendToDestination.length > 0
             ? { sendToDestinationAssetKeys: r.sendToDestination }
@@ -566,12 +783,20 @@ export function DemolishFlow(): React.JSX.Element {
     [publicKey, network, signing, startRun],
   );
 
+  const clearChoices = useCallback(() => {
+    setAcceptedPriceKeys([]);
+    setLeftTokens(new Map());
+    setForfeitPools([]);
+    setClaimSelection(null);
+  }, []);
+
   // Back from the first confirmation stage returns to Configure with the form
   // as it was: the plan is discarded (cancel), then the run is reset to idle.
   // Nothing else cancels a run by hand, so a cancelled run on screen always
   // came from the run guard (wallet or network changed).
   const onBackToConfigure = useCallback(() => {
     setShowConfirmDialog(false);
+    setFormError(null);
     signing.reset();
     send({ type: "CANCEL" });
     send({ type: "RESET" });
@@ -582,7 +807,7 @@ export function DemolishFlow(): React.JSX.Element {
     setForm(INITIAL_FORM);
     setSelectedHeldTokens([]);
     setConvertHeldTokensToXLM(false);
-    setPrefilledAuditId(null);
+    clearChoices();
     setFormError(null);
     signing.reset();
     // the account we operated on is gone (merged) or abandoned, fully drop the
@@ -592,7 +817,7 @@ export function DemolishFlow(): React.JSX.Element {
     setConnector(null);
     void disconnectSession(disconnectWallet);
     send({ type: "RESET" });
-  }, [send, setConnector, disconnectWallet, signing]);
+  }, [send, setConnector, disconnectWallet, signing, clearChoices]);
 
   // start over after a cancel: back to Configure for the same connection
   const onStartOverAfterCancel = useCallback(() => {
@@ -600,26 +825,75 @@ export function DemolishFlow(): React.JSX.Element {
     send({ type: "RESET" });
   }, [send, signing]);
 
+  // a retry signs with the wallet connected now; without one the machine can
+  // only rebuild the plan from fresh discovery
   const onRetry = useCallback(() => {
     if (runMismatched) return;
-    send({ type: "RETRY" });
+    send({ type: "RETRY", connector: connectorRef.current });
   }, [send, runMismatched]);
 
-  const onSetResidueDisposal = useCallback(
-    (key: string, mode: "none" | "issuer" | "destination") => {
-      setForm((f) => {
-        const issuer = new Set(f.returnToIssuer);
-        const dest = new Set(f.sendToDestination);
-        // a balance goes to at most one place; clear both, then set the choice
-        issuer.delete(key);
-        dest.delete(key);
-        if (mode === "issuer") issuer.add(key);
-        else if (mode === "destination") dest.add(key);
-        return { ...f, returnToIssuer: [...issuer], sendToDestination: [...dest] };
+  const onSetDisposal = useCallback((key: string, choice: CreditChoice) => {
+    // a balance goes to at most one place, or is sold at the reviewed price
+    setForm((f) => {
+      const issuer = new Set(f.returnToIssuer);
+      const dest = new Set(f.sendToDestination);
+      issuer.delete(key);
+      dest.delete(key);
+      if (choice === "issuer") issuer.add(key);
+      else if (choice === "destination") dest.add(key);
+      return { ...f, returnToIssuer: [...issuer], sendToDestination: [...dest] };
+    });
+    setAcceptedPriceKeys((keys) => {
+      const next = keys.filter((k) => k !== key);
+      return choice === "accept" ? [...next, key] : next;
+    });
+  }, []);
+
+  const onHeldChoice = useCallback(
+    (r: RefusedConversion, choice: HeldTokenChoice) => {
+      setAcceptedPriceKeys((keys) => {
+        const next = keys.filter((k) => k !== r.key);
+        return choice === "accept" ? [...next, r.key] : next;
       });
+      const left = leftTokens.get(r.contractId);
+      if (choice === "leave") {
+        const token = selectedHeldTokens.find((t) => t.contractId === r.contractId);
+        if (token !== undefined) {
+          setLeftTokens((m) => new Map(m).set(r.contractId, token));
+          setSelectedHeldTokens((ts) => ts.filter((t) => t.contractId !== r.contractId));
+        }
+      } else if (left !== undefined) {
+        setLeftTokens((m) => {
+          const next = new Map(m);
+          next.delete(r.contractId);
+          return next;
+        });
+        setSelectedHeldTokens((ts) => [...ts, left]);
+      }
     },
-    [],
+    [leftTokens, selectedHeldTokens],
   );
+  const heldChoices = useMemo(() => {
+    const out = new Map<string, HeldTokenChoice>();
+    for (const r of ctx.refusedConversions) {
+      out.set(
+        r.contractId,
+        leftTokens.has(r.contractId)
+          ? "leave"
+          : acceptedPriceKeys.includes(r.key)
+            ? "accept"
+            : "none",
+      );
+    }
+    return out;
+  }, [ctx.refusedConversions, leftTokens, acceptedPriceKeys]);
+
+  const onForfeit = useCallback((poolId: string, agreed: boolean) => {
+    setForfeitPools((pools) => {
+      const next = pools.filter((p) => p !== poolId);
+      return agreed ? [...next, poolId] : next;
+    });
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -627,30 +901,15 @@ export function DemolishFlow(): React.JSX.Element {
     };
   }, []);
 
-  // only balances claimable NOW are pre-checked, an unclaimable one would fail
-  // on-chain, so the user must consciously leave it out (or wait).
-  if (
-    audit &&
-    audit.claimableBalances.length > 0 &&
-    prefilledAuditId !== audit.accountId &&
-    form.selectedCbIds.length === 0
-  ) {
-    const claimableIds = audit.claimableBalances
-      .filter((cb) => cb.claimableNow !== false)
-      .map((cb) => cb.id);
-    setForm((f) => ({ ...f, selectedCbIds: claimableIds }));
-    setPrefilledAuditId(audit.accountId);
-  }
-
   // plan in execution order; groups are consecutive runs of one phase
   const orderedNodes = useMemo(() => (tree ? topologicalOrder(tree) : []), [tree]);
   const planGroups = useMemo(() => groupPlanNodes(orderedNodes), [orderedNodes]);
   const activeCount = orderedNodes.length;
+  // a landed receipt counts as done whatever status a later failure wrote
   const doneCount = orderedNodes.filter(
-    (n) => n.status === "confirmed" || n.status === "skipped",
+    (n) => n.executed !== undefined || n.status === "confirmed" || n.status === "skipped",
   ).length;
   const failedInMediator = isFailed && failureNoteFor(tree).kind === "in-mediator";
-  const finalNode = tree?.allNodes.get("final-classic-tx");
   const mergeHash = finalNode?.executed?.txHash;
 
   // the destination and memo the run was built with; the form can drift from it
@@ -667,24 +926,23 @@ export function DemolishFlow(): React.JSX.Element {
     (runInput?.useMediator ? ctx.result?.forwardTxHash : ctx.result?.mergedTxHash) ?? null;
   const delivered = useDeliveredAmount(
     runNetwork,
-    isSucceeded ? deliveryHash : null,
+    isSucceeded && !prepared ? deliveryHash : null,
     runDestination,
   );
 
   const signingMode: SigningMode =
-    ctx.signedBundleXdr !== null
-      ? "bundle"
-      : runInput?.connector.kind === "secret"
-        ? "secret"
-        : "wallet";
+    ctx.signedBundle !== null ? "bundle" : runInput?.signerKind === "secret" ? "secret" : "wallet";
 
-  // token choices made on the Warnings step only reach the plan by a rebuild
+  // choices made on the Warnings step only reach the plan by a rebuild
+  const claimSelectionDirty = claimSelection !== null && !sameSet(claimSelection, builtClaimList);
   const rebuildRequired =
     runInput !== null &&
     !multisigRequired &&
     heldSelectionDirty(selectedHeldTokens, convertHeldTokensToXLM, runInput)
       ? "Your token choices aren't in the plan yet. Rebuild the plan to apply them before continuing."
-      : null;
+      : runInput !== null && claimSelectionDirty
+        ? "Your choice of pending payments isn't in the plan yet. Rebuild the plan to apply it before continuing."
+        : null;
 
   const preflightView: PreflightView =
     preflight.status === "error"
@@ -700,7 +958,6 @@ export function DemolishFlow(): React.JSX.Element {
     hasMemo,
     formError,
     onGeneratePlan: onStart,
-    audit,
     isDemo,
     preflight: preflightView,
     destinationInvalid: destinationGate.hint !== null,
@@ -709,19 +966,63 @@ export function DemolishFlow(): React.JSX.Element {
   // the confirm-dialog and Collect actions refuse a plan whose account or
   // network no longer match (the guard also cancels it). Each event also names
   // the account and network on screen, so the machine can refuse one that
-  // doesn't match the run it holds.
+  // doesn't match the run it holds. A refused event leaves the machine where it
+  // was, and the page says so instead of doing nothing.
   const expected = { publicKey: publicKey ?? "", networkId: network.id };
+  const refusedReason = (): string =>
+    blockers[0] ??
+    "The close didn't start: the confirmation didn't match the plan on screen. Review it and try again.";
   const confirmClose = (typed: string): void => {
     setShowConfirmDialog(false);
     if (runMismatched) return;
-    const event = { type: "CONFIRM" as const, typed, expected };
-    send(event);
+    send({ type: "CONFIRM", typed, expected });
+    if (actorRef.getSnapshot().value !== "executing") setFormError(refusedReason());
   };
+
+  const submitBundle = async (signedXdr: string, typed: string): Promise<void> => {
+    if (runMismatched || activeRequest === null || runInput === null) return;
+    setFormError(null);
+    let plan;
+    try {
+      plan = await fetchPlan(activeRequest.planId);
+    } catch (err) {
+      setFormError(
+        `Couldn't read the signing request's signer set from the relay (${errorMessage(err)}). Try again.`,
+      );
+      return;
+    }
+    if (plan.network !== runInput.network.id || plan.account !== runInput.publicKey) {
+      setFormError("The relay returned a signing request for a different account or network.");
+      return;
+    }
+    send({
+      type: "SUBMIT_BUNDLE",
+      signedXdr,
+      planId: activeRequest.planId,
+      typed,
+      expected,
+      snapshot: { signers: plan.signers, thresholds: plan.thresholds },
+    });
+    if (actorRef.getSnapshot().value !== "executing") {
+      setFormError(
+        blockers[0] ??
+          "The collected transaction doesn't match the reviewed close, so it was not submitted.",
+      );
+    }
+  };
+
+  // rebuild without the claims the bundle can't make within the signing window
+  const onLeaveOutRisky = useCallback(() => {
+    const risky = new Set(claimRisks.map((r) => r.id));
+    const kept = builtClaimList.filter((id) => !risky.has(id));
+    setClaimSelection(kept);
+    buildAndStart(kept);
+  }, [claimRisks, builtClaimList, buildAndStart]);
 
   // ────────────────────────────────────────────────────────────────────────────
 
   return (
-    <main style={{ maxWidth: 1080, margin: "0 auto", padding: "40px 24px 96px" }}>
+    <div style={{ maxWidth: 1080, margin: "0 auto", padding: "40px 24px 96px" }}>
       {/* SEC-01 part B: offer to resume an interrupted exchange forward, if any.
           A run that failed inside the helper account shows its own resume in the
           status widget, so this one steps aside to avoid two resume buttons. */}
@@ -742,14 +1043,11 @@ export function DemolishFlow(): React.JSX.Element {
       {/* BLOCKED, full takeover */}
       {!isIdle && isImmutableBlock ? <AuthImmutableBlock onDismiss={onReset} /> : null}
       {!isIdle && !isImmutableBlock && isSponsorBlock ? (
-        // hard mode only, foreign sponsorships the batcher can't auto-revoke
+        // foreign sponsorships the close can't release on its own
         <SponsoringBlock
           numSponsoring={numSponsoring}
           coverable={numCoverable}
           onDismiss={onReset}
-          // onProceed never fires in hard mode (button isn't rendered) but the
-          // component still requires the prop; pass a no-op
-          onProceed={onReset}
         />
       ) : null}
 
@@ -802,6 +1100,10 @@ export function DemolishFlow(): React.JSX.Element {
                     ? "Reconnect the account and network this close was running on to retry."
                     : null
                 }
+                failureKind={ctx.failureKind}
+                executionNotes={ctx.executionNotes}
+                landedPhases={ctx.landedPhases}
+                discoveryDiagnostics={ctx.discoveryDiagnostics}
                 onRetry={onRetry}
                 onReset={onReset}
               />
@@ -843,8 +1145,8 @@ export function DemolishFlow(): React.JSX.Element {
           {/* single-column flow content, configure / review / sign-off / cancelled. */}
           {!(isDiscovering || isPreviewing) && !isExecuting && !isSucceeded && !isFailed ? (
             <div style={{ maxWidth: 1080, margin: "0 auto" }}>
-              {/* refusals from a rebuild (Resolve, the token card, Warnings)
-                  land here; Configure shows its own */}
+              {/* refusals from a rebuild (Resolve, the token card, Warnings) or a
+                  refused confirmation land here; Configure shows its own */}
               {formError !== null && !isConfiguring ? (
                 <p
                   role="alert"
@@ -883,15 +1185,7 @@ export function DemolishFlow(): React.JSX.Element {
                     initialXdr={activeRequest.xdr}
                     destination={runDestination}
                     connectedKey={publicKey}
-                    onClose={(finalXdr) => {
-                      if (runMismatched) return;
-                      const event = {
-                        type: "SUBMIT_BUNDLE" as const,
-                        signedXdr: finalXdr,
-                        expected,
-                      };
-                      send(event);
-                    }}
+                    onClose={(finalXdr, typed) => void submitBundle(finalXdr, typed)}
                   />
                 </>
               ) : (
@@ -971,15 +1265,23 @@ export function DemolishFlow(): React.JSX.Element {
                     </Notice>
                   ) : null}
 
-                  {/* RESOLVE, actions only: blockers that need a return-to-issuer
-                      choice + rebuild. Rebuild is gated until every one is resolved. */}
+                  {/* RESOLVE, actions: what keeps the close from starting, each with
+                      its choices, then a rebuild with them */}
                   {isResolve ? (
                     <ResolvePanel
                       credits={ctx.unroutableCredits}
                       network={runNetwork}
                       returnToIssuer={form.returnToIssuer}
                       sendToDestination={form.sendToDestination}
-                      onSetDisposal={onSetResidueDisposal}
+                      acceptedPriceKeys={acceptedPriceKeys}
+                      onSetDisposal={onSetDisposal}
+                      refused={ctx.refusedConversions}
+                      heldChoices={heldChoices}
+                      onHeldChoice={onHeldChoice}
+                      forfeits={ctx.emissionForfeits}
+                      forfeitPools={new Set(forfeitPools)}
+                      onForfeit={onForfeit}
+                      otherBlockers={otherBlockers}
                       onRebuild={onStart}
                       onBack={onBackToConfigure}
                     />
@@ -991,11 +1293,20 @@ export function DemolishFlow(): React.JSX.Element {
                     <AcknowledgePanel
                       network={runNetwork}
                       scamFindings={scamFindings}
-                      discoveryWarnings={ctx.discoveryWarnings}
+                      discoveryWarnings={discoveryWarnings}
                       claimables={claimables}
                       sponsorshipCount={numCoverable}
                       baseReserveStroops={baseReserveStroops}
-                      highValue={isHighValue ? { totalXlm } : null}
+                      highValue={
+                        closeValue !== null && closeValue.highValue
+                          ? {
+                              estimatedXlm: closeValue.estimatedXlm,
+                              unpricedHoldings: closeValue.unpricedHoldings,
+                            }
+                          : null
+                      }
+                      {...(claimChoices !== undefined ? { claimChoices } : {})}
+                      planNotes={planNotes}
                       tokensSlot={
                         !showTokenSection ? undefined : multisigRequired ? (
                           <SharedTokensNotice
@@ -1018,9 +1329,12 @@ export function DemolishFlow(): React.JSX.Element {
                         )
                       }
                       rebuildRequired={rebuildRequired}
+                      waitReason={
+                        heldScam.pending ? "Checking the standalone tokens' names…" : null
+                      }
                       onRebuild={onStart}
-                      onBack={hasBlocker ? () => setConfirmStage("resolve") : onBackToConfigure}
-                      onContinue={() => setConfirmStage("review")}
+                      onBack={hasBlocker ? () => goToStage("resolve") : onBackToConfigure}
+                      onContinue={() => goToStage("review")}
                     />
                   ) : null}
 
@@ -1036,11 +1350,13 @@ export function DemolishFlow(): React.JSX.Element {
                       useMediator={runInput.useMediator}
                       deterministic={runInput.deterministicDisposal === true}
                       network={runNetwork}
+                      blockers={blockers}
+                      {...(tree?.prepareOnly ? { prepareOnly: tree.prepareOnly } : {})}
                       onBack={
                         hasAckItems
-                          ? () => setConfirmStage("acknowledge")
+                          ? () => goToStage("acknowledge")
                           : hasBlocker
-                            ? () => setConfirmStage("resolve")
+                            ? () => goToStage("resolve")
                             : onBackToConfigure
                       }
                       onDemolish={() => setShowConfirmDialog(true)}
@@ -1049,6 +1365,7 @@ export function DemolishFlow(): React.JSX.Element {
                             shared: {
                               gate: signingGate,
                               claimRisks,
+                              ...(claimRisks.length > 0 ? { onLeaveOutRisky } : {}),
                               onCreate: () => void signing.create(),
                               creating: signing.creating,
                               error: signing.error,
@@ -1102,7 +1419,7 @@ export function DemolishFlow(): React.JSX.Element {
       <input type="hidden" data-testid="machine-state" value={String(state)} readOnly />
       <input type="hidden" data-testid="dest-head" value={destHead} readOnly />
       <input type="hidden" data-testid="dest-tail" value={destTail} readOnly />
-    </main>
+    </div>
   );
 }
 

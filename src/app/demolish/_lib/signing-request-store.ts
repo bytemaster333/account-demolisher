@@ -117,7 +117,7 @@ function hashHex(tx: Transaction): string {
 // request id we published and close this account to the reviewed destination
 export function verifyRelayEnvelope(args: {
   readonly planId: string;
-  readonly relay: RelayPlan;
+  readonly relay: Pick<RelayPlan, "network" | "xdr">;
   readonly expected: {
     readonly networkId: string;
     readonly publicKey: string;

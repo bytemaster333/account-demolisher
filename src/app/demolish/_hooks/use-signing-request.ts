@@ -8,10 +8,11 @@ import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import { fetchPlan, publishPlan } from "@/lib/multisig/plan-client";
 import type { BundleabilityResult } from "@/lib/multisig/signing-request";
-import type { PageFlowInput } from "@/lib/orchestrator/page-flow-machine";
+import type { PageFlowRunInput } from "@/lib/orchestrator/page-flow-machine";
 import type { PlanTree } from "@/lib/plan/tree";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import type { AccountAudit } from "@/lib/types/account";
+import type { Connector } from "@/lib/wallet/connector";
 
 import { buildReviewedBundle, reprobeBeforePublish } from "../_lib/signing-bundle";
 import {
@@ -38,11 +39,33 @@ function hashHex(tx: Transaction): string {
   return Buffer.from(tx.hash()).toString("hex");
 }
 
+// the claim selection a plan was built with: the run's explicit list, or the
+// list the generator recorded on the close when the run left it to the planner
+export function reviewedClaimList(
+  tree: PlanTree,
+  runInput: Pick<PageFlowRunInput, "selectedClaimableBalanceIds">,
+): readonly string[] {
+  if (runInput.selectedClaimableBalanceIds !== undefined) {
+    return runInput.selectedClaimableBalanceIds;
+  }
+  const final = tree.allNodes.get("final-classic-tx");
+  if (
+    !final ||
+    final.kind !== "FinalClassicTx" ||
+    final.metadata.claimableBalanceIds === undefined
+  ) {
+    throw new Error("The reviewed plan doesn't record which pending payments it collects.");
+  }
+  return final.metadata.claimableBalanceIds;
+}
+
 // everything about the shared-account signing request on the initiator's side:
 // publishing the reviewed close, keeping it across a reload, and picking it up
 // again only once the rebuilt plan is shown to be the same transaction
 export function useSigningRequest(args: {
-  readonly runInput: PageFlowInput | null;
+  readonly runInput: PageFlowRunInput | null;
+  // the wallet the run holds (the machine's connector); it signs the request
+  readonly connector: Connector | null;
   readonly audit: AccountAudit | null;
   readonly tree: PlanTree | null;
   // the network the run is on
@@ -119,8 +142,12 @@ export function useSigningRequest(args: {
     published ?? (resuming !== null && resumeCheck?.ok === true ? resuming : null);
 
   const create = useCallback(async (): Promise<void> => {
-    const { runInput, audit, tree, network } = args;
+    const { runInput, audit, tree, network, connector } = args;
     if (runInput === null || audit === null || tree === null) return;
+    if (connector === null) {
+      setError("Connect a wallet first.");
+      return;
+    }
     if (args.runMismatched) {
       setError("Your wallet or network changed since this plan was built. Start over.");
       return;
@@ -143,7 +170,7 @@ export function useSigningRequest(args: {
       }
       const sourceAccount = await getHorizon(network).loadAccount(audit.accountId);
       const tx = buildReviewedBundle({ tree, input: runInput, sourceAccount, network });
-      const { signedXdr } = await runInput.connector.signTransaction(tx, network.passphrase);
+      const { signedXdr } = await connector.signTransaction(tx, network.passphrase);
       const id = await publishPlan(network.id, signedXdr);
       if (id.toLowerCase() !== hashHex(tx)) {
         throw new Error("The relay returned an id that doesn't match the signed transaction.");
@@ -158,7 +185,9 @@ export function useSigningRequest(args: {
         ...(runInput.memo ? { memo: runInput.memo } : {}),
         returnToIssuer: runInput.returnToIssuerAssetKeys ?? [],
         sendToDestination: runInput.sendToDestinationAssetKeys ?? [],
-        selectedCbIds: runInput.selectedClaimableBalanceIds ?? [],
+        // the claim list the reviewed plan was built with, so a resume rebuilds
+        // exactly this close ([] would claim none)
+        selectedCbIds: reviewedClaimList(tree, runInput),
         validUntil: validUntil?.getTime() ?? null,
         createdAt: Date.now(),
       });

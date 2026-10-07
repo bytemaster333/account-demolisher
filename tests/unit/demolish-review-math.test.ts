@@ -32,16 +32,26 @@ function auditWithUsdc() {
 
 function usdcPath(): ReadonlyMap<string, PathResultRef> {
   return new Map([
-    [`USDC:${ISSUER}`, { destinationAmount: "40000.0000000", sourceAmount: "10000", path: [] }],
+    [
+      `USDC:${ISSUER}`,
+      {
+        destinationAmount: "40000.0000000",
+        sourceAmount: "10000",
+        path: [],
+        // the 1/1000 reference trade at the same rate: no price impact
+        reference: { sourceAmount: "10.0000000", destinationAmount: "40.0000000" },
+      },
+    ],
   ]);
 }
 
-function simulateSoroban(node: PlanNode, minResourceFee: string): void {
+function simulateSoroban(node: PlanNode, minResourceFee: string, maxFee: string): void {
   node.status = "simulated";
   node.simulated = {
     kind: "soroban",
     retval: null,
     minResourceFee,
+    maxFee,
     transactionData: undefined as never,
     latestLedger: 1,
     auth: [],
@@ -84,17 +94,19 @@ describe("computeReviewMoney (M-33)", () => {
     );
   });
 
-  it("counts each Soroban step at its resource fee plus the 100000 inclusion bid", () => {
+  it("counts each Soroban step at the fee its built transaction authorizes", () => {
     const audit = makeAudit();
     const tree = makeTree({ audit, positions: blendPositions() });
     const ordered = topologicalOrder(tree);
-    for (const n of ordered) if (n.kind !== "FinalClassicTx") simulateSoroban(n, "5000");
+    // a measured archived-state exit authorizes millions of stroops, far above a
+    // flat inclusion-plus-resource guess
+    for (const n of ordered) if (n.kind !== "FinalClassicTx") simulateSoroban(n, "5000", "2524898");
     const sorobanCount = ordered.filter((n) => n.kind !== "FinalClassicTx").length;
     const money = computeReviewMoney({ audit, ordered });
     const final = tree.allNodes.get("final-classic-tx")!;
     if (final.kind !== "FinalClassicTx") throw new Error("expected the final node");
     const ops = final.metadata.batches.reduce((n, b) => n + b.operations.length, 0);
-    expect(money.maxFeeStroops).toBe(BigInt(sorobanCount) * 105_000n + BigInt(ops) * 1_000_000n);
+    expect(money.maxFeeStroops).toBe(BigInt(sorobanCount) * 2_524_898n + BigInt(ops) * 1_000_000n);
   });
 
   it("flags DeFi steps it cannot express in XLM instead of folding them in", () => {

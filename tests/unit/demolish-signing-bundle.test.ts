@@ -17,6 +17,7 @@ import {
   assessSigningRequest,
   buildReviewedBundle,
   claimsAtRiskInWindow,
+  hasClassicPoolShares,
   reprobeBeforePublish,
 } from "@/app/demolish/_lib/signing-bundle";
 
@@ -47,6 +48,7 @@ function gate(over: Partial<Parameters<typeof assessSigningRequest>[0]> = {}) {
     allowanceCount: 0,
     useMediator: false,
     heldTokensSelected: 0,
+    hasClassicPoolShares: false,
     tree: makeTree(),
     deterministic: true,
     ...over,
@@ -87,6 +89,28 @@ describe("signing-request gate covers what discovery found (C-08)", () => {
 
   it("refuses when standalone tokens are selected to be swept", () => {
     expect(gate({ heldTokensSelected: 1 }).ok).toBe(false);
+  });
+
+  it("refuses an account holding a classic pool share, withdrawn in its own transaction (L-94)", () => {
+    const result = gate({ hasClassicPoolShares: true });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/liquidity pool share/i);
+  });
+
+  it("refuses an open Aquarius concentrated position (H-26)", () => {
+    const positions = emptyPositions({
+      aquariusConcentrated: [
+        {
+          poolAddress: POOL_ID,
+          poolIndex: "ab".repeat(32),
+          tokens: ["CA", "CB"],
+          ranges: [{ tickLower: -10, tickUpper: 10, liquidity: 5n }],
+          pendingFees: [0n, 0n],
+          pendingReward: 0n,
+        },
+      ],
+    });
+    expect(gate({ positions }).ok).toBe(false);
   });
 
   it("refuses a tree with any step besides the classic close, even a skipped one", () => {
@@ -220,19 +244,41 @@ describe("claims that may fail inside the 72h signing window (H-29)", () => {
     expect(risky.map((r) => r.reason)).toEqual(["reclaimable"]);
   });
 
-  it("flags a balance in an asset the account holds no trustline for", () => {
+  it("flags a claim of an asset the account holds no trustline for and the bundle doesn't open", () => {
     const issuer = Keypair.random().publicKey();
     const usdc = { kind: "credit" as const, code: "USDC", issuer };
     const audit = makeAudit({
-      claimableBalances: [cb("cb-untrusted", { asset: usdc })],
+      claimableBalances: [cb("cb-untrusted", { asset: usdc, issuerAuthRequired: false })],
     });
-    const risky = claimsAtRiskInWindow({
-      audit,
-      tree: makeTree({ audit }),
-      publicKey: ACC,
-      nowMs: Date.now(),
-      windowSeconds: 72 * 3600,
-    });
+    // the plan opens the trustline right before the claim, so nothing is at risk
+    const tree = makeTree({ audit });
+    const final = tree.allNodes.get("final-classic-tx")!;
+    if (final.kind !== "FinalClassicTx") throw new Error("expected the final node");
+    const ops = final.metadata.batches.flatMap((b) => b.operations);
+    expect(ops.some((o) => o.kind === "change_trust_add")).toBe(true);
+    const args = { audit, publicKey: ACC, nowMs: Date.now(), windowSeconds: 72 * 3600 };
+    expect(claimsAtRiskInWindow({ ...args, tree })).toEqual([]);
+
+    // a bundle that claims without opening the line is rejected on chain
+    const withoutLine: PlanTree = {
+      ...tree,
+      allNodes: new Map([
+        [
+          "final-classic-tx",
+          {
+            ...final,
+            metadata: {
+              ...final.metadata,
+              batches: final.metadata.batches.map((b) => ({
+                ...b,
+                operations: b.operations.filter((o) => o.kind !== "change_trust_add"),
+              })),
+            },
+          },
+        ],
+      ]),
+    };
+    const risky = claimsAtRiskInWindow({ ...args, tree: withoutLine });
     expect(risky.map((r) => r.reason)).toEqual(["untrusted"]);
 
     // the same balance is fine once the account trusts the asset
@@ -255,6 +301,28 @@ describe("claims that may fail inside the 72h signing window (H-29)", () => {
   });
 });
 
+describe("hasClassicPoolShares", () => {
+  it("is true only for a pool share line with a positive balance", () => {
+    const share = (shareBalance: string) =>
+      makeAudit({
+        poolShares: [
+          {
+            poolId: "ab".repeat(32),
+            poolType: "constant_product",
+            shareBalance,
+            totalShares: "100.0000000",
+            shareLimit: "922337203685.4775807",
+            fee: 30,
+            reserves: [],
+          },
+        ],
+      });
+    expect(hasClassicPoolShares(share("0.0000000"))).toBe(false);
+    expect(hasClassicPoolShares(share("1.5000000"))).toBe(true);
+    expect(hasClassicPoolShares(makeAudit())).toBe(false);
+  });
+});
+
 describe("re-probe before publishing (C-08)", () => {
   it("refuses when a backstop is still queued", async () => {
     const result = await reprobeBeforePublish(ACC, TESTNET, async () =>
@@ -265,7 +333,7 @@ describe("re-probe before publishing (C-08)", () => {
 
   it("refuses when the probe records an error or throws", async () => {
     const withError = await reprobeBeforePublish(ACC, TESTNET, async () =>
-      emptyPositions({ errors: [{ protocol: "FxDAO", message: "rpc down" }] }),
+      emptyPositions({ errors: [{ protocol: "Aquarius", message: "rpc down" }] }),
     );
     expect(withError.ok).toBe(false);
     const thrown = await reprobeBeforePublish(ACC, TESTNET, async () => {

@@ -76,8 +76,14 @@ export function computeReviewMoney(args: {
           }
         }
         break;
+      case "ClassicUnwind":
+        // cancelled offers hand back what they sold, and a withdrawn pool share
+        // pays out the pool's assets; neither is an XLM floor
+        for (const op of node.metadata.batches.flatMap((b) => b.operations)) {
+          if (op.kind === "liquidity_pool_withdraw") poolWithdraws += 1;
+        }
+        break;
       case "RepayBlend":
-      case "PayFxDAODebt":
         repays += 1;
         break;
       case "TransferAsIs":
@@ -85,12 +91,19 @@ export function computeReviewMoney(args: {
         break;
       case "WithdrawBlend":
       case "WithdrawAquarius":
+      case "WithdrawAquariusConcentrated":
       case "WithdrawSoroswapLp":
       case "ClaimBlendEmissions":
       case "ClaimAquariusRewards":
+      case "ClaimAquariusConcentratedFees":
       case "ConvertSorobanToXLM":
+      case "BackstopWithdraw":
         defiProceeds += 1;
         break;
+      // the trustline's reserve comes back when the close removes it, and the
+      // backstop claim pays into backstop shares, not into this account
+      case "AddBlndTrustline":
+      case "ClaimBackstopEmissions":
       case "RevokeAllowance":
       case "BackstopQueue":
       case "MediatorForward":

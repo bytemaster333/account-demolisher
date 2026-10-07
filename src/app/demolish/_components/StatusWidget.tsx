@@ -7,8 +7,11 @@ import { AddressActions } from "@/components/ui";
 import { PendingForwardBanner } from "@/components/wallet/PendingForwardBanner";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { explorerAccountUrl, explorerTxUrl } from "@/lib/explorer";
-import { loadPendingForward } from "@/lib/mediator/pending-flow";
+import { loadPendingForwards } from "@/lib/mediator/pending-flow";
+import type { FailureKind } from "@/lib/orchestrator/page-flow-machine";
+import type { PhaseReceipt } from "@/lib/orchestrator/journal";
 import type { PlanTree } from "@/lib/plan/tree";
+import { EVENT_RETENTION_WINDOW_LEDGERS } from "@/lib/soroban/event-retention";
 
 import { SR_ONLY } from "../_lib/a11y";
 import { parseDemolishError } from "../_lib/demolish-error";
@@ -44,6 +47,10 @@ export function DemolishStatusWidget({
   signingMode,
   retryResumes,
   retryDisabledReason,
+  failureKind = null,
+  executionNotes = [],
+  landedPhases = [],
+  discoveryDiagnostics = [],
   onRetry,
   onReset,
 }: {
@@ -61,9 +68,20 @@ export function DemolishStatusWidget({
   readonly error: string | null;
   readonly signingMode: SigningMode;
   // whether RETRY re-runs the remaining steps (true) or rebuilds from a fresh
-  // audit (false), so the copy never promises a resume that won't happen
+  // audit (false), so the copy never promises a resume that won't happen. the
+  // retryable kinds (isRetryableFailure) are bad_seq, changed_footprint,
+  // network, signing, ambiguous, forward_pending, interrupted and close_running;
+  // everything else, unknown and conversion_refused included, rebuilds the plan
   readonly retryResumes: boolean;
   readonly retryDisabledReason?: string | null;
+  readonly failureKind?: FailureKind | null;
+  // best-effort steps that did not do what the plan asked
+  readonly executionNotes?: readonly string[];
+  // classic phases of the close that landed, including those of a close that
+  // did not finish
+  readonly landedPhases?: readonly PhaseReceipt[];
+  // technical detail behind the discovery warnings
+  readonly discoveryDiagnostics?: readonly string[];
   readonly onRetry: () => void;
   readonly onReset: () => void;
 }): React.JSX.Element {
@@ -97,6 +115,13 @@ export function DemolishStatusWidget({
     () => (state === "failed" ? failureNoteFor(tree) : null),
     [state, tree],
   );
+  // a plan with no merge only prepares the close; the account stays open
+  const prepared = tree.prepareOnly !== undefined;
+  const unlockDate = tree.prepareOnly?.unlocksAt.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
 
   // a plain-text receipt of an irreversible action. A closed account can't be
   // looked up later, so when the clipboard is missing or blocked the text is
@@ -108,6 +133,7 @@ export function DemolishStatusWidget({
     network,
     mergeHash,
     ordered: planGroups.flatMap((g) => g.nodes),
+    ...(tree.prepareOnly ? { preparedUntil: tree.prepareOnly.unlocksAt } : {}),
   });
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const copyReceipt = async (): Promise<void> => {
@@ -241,7 +267,9 @@ export function DemolishStatusWidget({
                 }}
               >
                 {state === "succeeded"
-                  ? "Account closed"
+                  ? prepared
+                    ? "Preparation done, account still open"
+                    : "Account closed"
                   : state === "failed"
                     ? "Couldn't finish closing the account"
                     : "Closing your account"}
@@ -269,7 +297,12 @@ export function DemolishStatusWidget({
                 color: "var(--fg-2)",
               }}
             >
-              {state === "succeeded" ? (
+              {state === "succeeded" && prepared ? (
+                <span data-testid="prepared-note">
+                  The preparation steps landed and the account is still open.{" "}
+                  {tree.prepareOnly?.reason} Come back on or after {unlockDate} to finish the close.
+                </span>
+              ) : state === "succeeded" ? (
                 <>
                   {delivered.status === "ok" ? (
                     <>
@@ -430,6 +463,42 @@ export function DemolishStatusWidget({
             closedAccount={closedAccount}
             retryResumes={retryResumes}
           />
+        ) : null}
+
+        {state === "failed" ? <LandedPhases phases={landedPhases} network={network} /> : null}
+
+        {state === "failed" && failureKind !== null && FAILURE_KIND_COPY[failureKind] ? (
+          <p
+            data-testid="failure-kind-note"
+            style={{ margin: "10px 0 0", fontSize: 12.5, lineHeight: 1.55, color: "var(--fg-2)" }}
+          >
+            {FAILURE_KIND_COPY[failureKind]}
+          </p>
+        ) : null}
+
+        {(state === "succeeded" || state === "failed") && executionNotes.length > 0 ? (
+          <div
+            role="note"
+            data-testid="execution-notes"
+            style={{ marginTop: 12, fontSize: 12.5, lineHeight: 1.55, color: "var(--fg-2)" }}
+          >
+            <strong style={{ color: "var(--fg)", fontWeight: 600 }}>
+              Not everything went as planned:
+            </strong>
+            <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+              {executionNotes.map((n) => (
+                <li key={n}>{n}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        {state === "succeeded" || state === "failed" ? (
+          <p style={{ margin: "10px 0 0", fontSize: 11.5, lineHeight: 1.5, color: "var(--fg-3)" }}>
+            Token spending permissions were looked for in about the last 7 days of approve events (
+            {EVENT_RETENTION_WINDOW_LEDGERS.toLocaleString("en-US")} ledgers); an older one was not
+            seen.
+          </p>
         ) : null}
 
         {state === "failed" && parsed && parsed.ops.length > 0 ? (
@@ -667,6 +736,27 @@ export function DemolishStatusWidget({
         </div>
       ) : null}
 
+      {discoveryDiagnostics.length > 0 && state !== "executing" ? (
+        <details
+          data-testid="discovery-diagnostics"
+          style={{
+            margin: 0,
+            padding: "10px 16px 14px",
+            background: "var(--surface)",
+            borderTop: "1px solid var(--border)",
+            fontSize: 11.5,
+            color: "var(--fg-3)",
+          }}
+        >
+          <summary style={{ cursor: "pointer", fontWeight: 600 }}>Technical details</summary>
+          <ul style={{ margin: "8px 0 0", paddingLeft: 18, wordBreak: "break-all" }}>
+            {discoveryDiagnostics.map((d) => (
+              <li key={d}>{d}</li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+
       {/* failed-state raw error (collapsed, available but out of the way) */}
       {state === "failed" && error ? (
         <details
@@ -734,8 +824,17 @@ function FailureNoteView({
     ? "Press Retry to run the remaining steps again; steps marked done are not repeated."
     : "Retry re-checks the account and builds a fresh plan before anything else runs.";
   const warn = note.kind === "in-mediator" || note.kind === "partial" || note.kind === "closed";
-  // the resume action needs the forward record saved before the merge
-  const hasRecord = note.kind === "in-mediator" && loadPendingForward(closedAccount) !== null;
+  // the resume action needs this flow's own record, saved before the merge. read
+  // once: a delivered forward removes the record, and the banner must stay put
+  // to show the delivery
+  const [hadRecord] = useState(
+    () =>
+      note.kind === "in-mediator" &&
+      loadPendingForwards(closedAccount).some(
+        (r) => r.mediatorPublicKey === note.mediatorPublicKey && r.networkId === network.id,
+      ),
+  );
+  const [forwardDelivered, setForwardDelivered] = useState(false);
   return (
     <div
       role="note"
@@ -754,7 +853,9 @@ function FailureNoteView({
       {note.kind === "in-mediator" ? (
         <>
           <strong style={{ color: "var(--fg)", fontWeight: 600 }}>
-            Your account was closed and the funds are in a temporary forwarding account.
+            {forwardDelivered
+              ? "Your account was closed and the forward was delivered."
+              : "Your account was closed and the funds are in a temporary forwarding account."}
           </strong>{" "}
           The merge (
           <a
@@ -765,13 +866,22 @@ function FailureNoteView({
           >
             {truncateHash(note.mergeHash)}
           </a>
-          ) moved the whole balance into the helper account {shortKey(note.mediatorPublicKey)}, but
-          the delivery to {shortKey(destination)} didn&apos;t finish.{" "}
-          {hasRecord ? (
+          ) moved the whole balance into the helper account {shortKey(note.mediatorPublicKey)}
+          {forwardDelivered
+            ? `, and the forward has now delivered it to ${shortKey(destination)}.`
+            : `, but the delivery to ${shortKey(destination)} didn't finish.`}{" "}
+          {hadRecord ? (
             <>
-              Resume the forward now: it sends that balance on to your destination with your memo.
+              {forwardDelivered
+                ? null
+                : "Use Resume the forward below: it sends that balance on to your destination with your memo."}
               <div style={{ marginTop: 10 }}>
-                <PendingForwardBanner publicKey={closedAccount} />
+                <PendingForwardBanner
+                  publicKey={closedAccount}
+                  mediatorPublicKey={note.mediatorPublicKey}
+                  current
+                  onResolved={() => setForwardDelivered(true)}
+                />
               </div>
             </>
           ) : (
@@ -781,9 +891,13 @@ function FailureNoteView({
               This browser has no saved record of the forward, so it can&apos;t be resumed from
               here. Keep the merge link above and the helper account address:{" "}
               <code style={{ wordBreak: "break-all" }}>{note.mediatorPublicKey}</code>.
+              {retryResumes ? (
+                <div style={{ marginTop: 8 }}>
+                  Retry runs the forward again from this tab; the merge is not repeated.
+                </div>
+              ) : null}
             </>
           )}
-          <div style={{ marginTop: 8 }}>{retryCopy}</div>
         </>
       ) : note.kind === "closed" ? (
         <>
@@ -826,6 +940,70 @@ function FailureNoteView({
           {retryCopy}
         </>
       )}
+    </div>
+  );
+}
+
+// what Retry does for each failure kind, where the generic copy isn't enough
+const FAILURE_KIND_COPY: Partial<Record<FailureKind, string>> = {
+  forward_pending:
+    "Your balance is in the temporary forwarding account. Retry, or Resume the forward, sends it on to your destination.",
+  bundle_stale:
+    "The signed bundle can no longer land, so its signatures can't be used. Retry starts a new signing request, and every signer has to sign again.",
+  interrupted:
+    "You stopped the close between steps. Retry runs the steps that didn't land; the ones marked done are not repeated.",
+  mediator_expired:
+    "The authorization for the temporary forwarding account ran too low to sign the merge safely, so the merge was not signed. Retry builds a fresh plan.",
+  ambiguous:
+    "An earlier submission's outcome isn't known yet. Retry checks it on the network before anything is signed again.",
+  conversion_refused:
+    "The price moved since you reviewed it, so the conversion was not signed. Retry rebuilds the plan so you can decide again for each token.",
+  close_running:
+    "A close for this account is already running in this tab. Wait for it to finish, then Retry runs only what didn't land.",
+};
+
+// the classic transactions of the close that reached the chain, so the user
+// knows what is already final when a later one failed
+function LandedPhases({
+  phases,
+  network,
+}: {
+  readonly phases: readonly PhaseReceipt[];
+  readonly network: NetworkConfig;
+}): React.JSX.Element {
+  if (phases.length === 0) {
+    return (
+      <p
+        data-testid="landed-phases"
+        data-count={0}
+        style={{ margin: "10px 0 0", fontSize: 12.5, color: "var(--fg-2)" }}
+      >
+        None of the close&apos;s own transactions was applied.
+      </p>
+    );
+  }
+  return (
+    <div
+      data-testid="landed-phases"
+      data-count={phases.length}
+      style={{ marginTop: 10, fontSize: 12.5, lineHeight: 1.55, color: "var(--fg-2)" }}
+    >
+      The close was partially applied. These of its transactions are on chain and are not undone:
+      <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+        {phases.map((p) => (
+          <li key={p.txHash}>
+            <a
+              href={explorerTxUrl(network, p.txHash)}
+              target="_blank"
+              rel="noreferrer noopener"
+              style={{ color: "var(--fg)" }}
+            >
+              {truncateHash(p.txHash)}
+            </a>{" "}
+            in ledger {p.ledger}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

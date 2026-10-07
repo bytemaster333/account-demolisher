@@ -21,7 +21,6 @@ export const FORM_SCHEMA = z.object({
   destination: G_ADDRESS,
   memoType: MEMO_TYPE,
   memoValue: z.string(),
-  selectedCbIds: z.array(z.string()),
   // pathKey()s of un-routable credit assets the user consented to return to
   // their issuer so the account can close
   returnToIssuer: z.array(z.string()),
@@ -34,7 +33,6 @@ export const INITIAL_FORM: FormState = {
   destination: "",
   memoType: "none",
   memoValue: "",
-  selectedCbIds: [],
   returnToIssuer: [],
   sendToDestination: [],
 };

@@ -60,21 +60,28 @@ export function phaseForNode(node: PlanNode): string {
   switch (node.kind) {
     case "RevokeAllowance":
       return "Allowances";
+    case "ClassicUnwind":
+      return "Classic unwind";
     case "RepayBlend":
-    case "PayFxDAODebt":
       return "DeFi debt";
     case "WithdrawBlend":
     case "WithdrawAquarius":
+    case "WithdrawAquariusConcentrated":
     case "WithdrawSoroswapLp":
       return "DeFi withdrawals";
+    case "AddBlndTrustline":
     case "ClaimBlendEmissions":
     case "ClaimAquariusRewards":
+    case "ClaimAquariusConcentratedFees":
       return "Claim rewards";
     case "ConvertSorobanToXLM":
     case "TransferAsIs":
       return "Liquidation";
+    case "ClaimBackstopEmissions":
     case "BackstopQueue":
       return "Queued backstop";
+    case "BackstopWithdraw":
+      return "Backstop payout";
     case "FinalClassicTx":
       return "Merge";
     case "MediatorForward":
@@ -86,26 +93,36 @@ export function nodeLabel(node: PlanNode): string {
   switch (node.kind) {
     case "RevokeAllowance":
       return "Revoke SEP-41 allowance";
+    case "ClassicUnwind":
+      return "Unwind classic offers and pools before repaying";
     case "RepayBlend":
       return "Repay Blend debt";
-    case "PayFxDAODebt":
-      return "Pay FxDAO debt";
     case "WithdrawBlend":
       return "Withdraw Blend position";
     case "WithdrawAquarius":
       return "Withdraw Aquarius LP";
+    case "WithdrawAquariusConcentrated":
+      return "Withdraw Aquarius concentrated range";
     case "WithdrawSoroswapLp":
       return "Withdraw Soroswap LP";
+    case "AddBlndTrustline":
+      return "Add BLND trustline";
     case "ClaimBlendEmissions":
       return "Claim Blend emissions";
     case "ClaimAquariusRewards":
       return "Claim Aquarius rewards";
+    case "ClaimAquariusConcentratedFees":
+      return "Claim Aquarius concentrated fees";
     case "ConvertSorobanToXLM":
       return "Convert SEP-41 → XLM";
     case "TransferAsIs":
       return "Transfer token as-is";
+    case "ClaimBackstopEmissions":
+      return "Claim Blend backstop emissions";
     case "BackstopQueue":
       return "Queue Blend backstop";
+    case "BackstopWithdraw":
+      return "Withdraw Blend backstop";
     case "FinalClassicTx":
       return "Final merge transaction";
     case "MediatorForward":
@@ -119,26 +136,36 @@ export function nodePlainLabel(node: PlanNode): string {
   switch (node.kind) {
     case "RevokeAllowance":
       return "Cancel a token spending permission";
+    case "ClassicUnwind":
+      return "Free up assets held in offers and pools for the repayment";
     case "RepayBlend":
       return "Repay a loan on Blend";
-    case "PayFxDAODebt":
-      return "Repay your FxDAO vault";
     case "WithdrawBlend":
       return "Withdraw from Blend (a lending app)";
     case "WithdrawAquarius":
       return "Withdraw from an Aquarius pool";
+    case "WithdrawAquariusConcentrated":
+      return "Withdraw a price range from an Aquarius pool";
     case "WithdrawSoroswapLp":
       return "Withdraw from a Soroswap pool";
+    case "AddBlndTrustline":
+      return "Let the account hold BLND for the Blend rewards";
     case "ClaimBlendEmissions":
       return "Collect Blend rewards";
     case "ClaimAquariusRewards":
       return "Collect Aquarius rewards";
+    case "ClaimAquariusConcentratedFees":
+      return "Collect Aquarius pool fees";
     case "ConvertSorobanToXLM":
       return "Turn a leftover token into XLM";
     case "TransferAsIs":
       return "Move a leftover token out";
+    case "ClaimBackstopEmissions":
+      return "Collect Blend backstop rewards";
     case "BackstopQueue":
       return "Start a Blend backstop withdrawal";
+    case "BackstopWithdraw":
+      return "Withdraw an unlocked Blend backstop deposit";
     case "FinalClassicTx":
       return "Close the account and send everything";
     case "MediatorForward":
@@ -159,20 +186,30 @@ export function nodeExplainer(
   switch (node.kind) {
     case "RevokeAllowance":
       return "Cancels a permission you once gave an app to spend a token for you. The account doesn't need it to close, and leaving stray permissions around is a security risk, so we clear it.";
+    case "ClassicUnwind":
+      return "Cancels your open offers that sell an asset the loan repayment needs, and withdraws classic pool shares that hold it, so that asset is in your balance when the repayment runs.";
     case "RepayBlend":
       return "Pays back what you borrowed on Blend, using your own balance, so your deposited collateral can be released.";
-    case "PayFxDAODebt":
-      return "Pays off your FxDAO vault so the collateral locked inside it is returned to your account.";
     case "WithdrawBlend":
       return "Pulls your deposit back out of Blend (a lending app) and into your account, so it can be converted and sent with everything else.";
     case "WithdrawAquarius":
       return "Pulls your share of an Aquarius liquidity pool back into your account.";
+    case "WithdrawAquariusConcentrated":
+      return "Pulls the liquidity you placed in one price range of an Aquarius concentrated pool back into your account.";
     case "WithdrawSoroswapLp":
       return "Pulls your share of a Soroswap liquidity pool back into your account.";
+    case "AddBlndTrustline":
+      return "Opens a BLND trustline so the Blend rewards can be paid to this account. It holds a small XLM reserve, which comes back when the close removes the trustline again.";
     case "ClaimBlendEmissions":
       return "Collects the reward tokens Blend owes you before you leave, so you don't leave them behind.";
     case "ClaimAquariusRewards":
       return "Collects the reward tokens Aquarius owes you before you leave, so you don't leave them behind.";
+    case "ClaimAquariusConcentratedFees":
+      return "Collects the trading fees your Aquarius concentrated position earned, so you don't leave them behind.";
+    case "ClaimBackstopEmissions":
+      return "Claims the BLND your Blend backstop deposit earned. The backstop adds it to your deposit as new shares, which the withdrawal queued next then includes.";
+    case "BackstopWithdraw":
+      return "Withdraws a Blend backstop deposit whose waiting period is over. It is paid out as BLND-USDC pool tokens, which the close then handles with your other tokens.";
     case "ConvertSorobanToXLM":
       return "Swaps a leftover token into XLM at the market rate, so your whole account ends up as a single XLM balance.";
     case "TransferAsIs":
@@ -186,12 +223,12 @@ export function nodeExplainer(
               month: "long",
               day: "numeric",
             })
-          : "in about 17 days";
+          : null;
       return (
-        `Starts the required 17-day waiting period before a Blend backstop deposit can be ` +
-        `withdrawn. It unlocks on or around ${dateStr}; come back on or after that date to ` +
-        `withdraw it and finish closing. The account can't be closed until the backstop is ` +
-        `withdrawn, so this close will stop at the merge with that reminder.`
+        `Starts the waiting period before a Blend backstop deposit can be withdrawn. It ` +
+        `unlocks ${dateStr === null ? "when that period ends (17 days on the current backstop, 21 on the older one)" : `on or around ${dateStr}`}. The account must stay open to receive it, so this ` +
+        `run prepares the close without deleting the account; come back on or after that ` +
+        `date to withdraw it and finish closing.`
       );
     }
     case "FinalClassicTx": {
@@ -222,8 +259,12 @@ export function phasePlainLabel(phase: string): string {
       return "Collect rewards";
     case "Liquidation":
       return "Leftover tokens";
+    case "Classic unwind":
+      return "Free up assets for repayment";
     case "Queued backstop":
       return "Backstop withdrawal";
+    case "Backstop payout":
+      return "Backstop payout";
     case "Merge":
       return "Close the account";
     case "Mediator forward":

@@ -14,7 +14,7 @@ import {
 import type { ScamFinding } from "@/lib/safety/scam-heuristics";
 import type { AssetIdentifier } from "@/lib/types/account";
 
-import type { ClaimableSplit, UnlockTime } from "../_lib/claimables";
+import type { ClaimableSplit, LeftBehindClaim, UnlockTime } from "../_lib/claimables";
 import { stroopsToXlm } from "../_lib/fees";
 
 // small acknowledgment control rendered in each resolution card's footer
@@ -64,6 +64,27 @@ function assetLabel(asset: AssetIdentifier): string {
   }
 }
 
+// why a balance stays behind, in the planner's terms where it has one
+function leftBehindText(c: LeftBehindClaim, baseReserveStroops: number | null): string {
+  switch (c.reason) {
+    case "not_claimable_yet":
+      return unlockText(c.unlock);
+    case "no_trustline":
+      return "the account has no trustline for it, and the close can't open one because the issuer requires authorization or couldn't be found";
+    case "not_authorized":
+      return "the issuer hasn't authorized this account's trustline, so the claim would be refused";
+    case "line_full":
+      return "the trustline has no room left for it";
+    case "reserve":
+      return `opening its trustline needs a ${
+        baseReserveStroops === null ? "base" : `${stroopsToXlm(baseReserveStroops)} XLM`
+      } reserve the account can't spare`;
+    case "not_selected":
+    case null:
+      return unlockText(c.unlock);
+  }
+}
+
 function unlockText(unlock: UnlockTime): string {
   switch (unlock.kind) {
     case "now":
@@ -88,8 +109,11 @@ export function AcknowledgePanel({
   sponsorshipCount,
   baseReserveStroops,
   highValue,
+  claimChoices,
+  planNotes = [],
   tokensSlot,
   rebuildRequired,
+  waitReason = null,
   onRebuild,
   onBack,
   onContinue,
@@ -102,13 +126,22 @@ export function AcknowledgePanel({
   readonly sponsorshipCount: number;
   // the network's base reserve; null when it couldn't be read
   readonly baseReserveStroops: number | null;
-  readonly highValue: { readonly totalXlm: string } | null;
+  // set when the close moves a large value: the XLM it can price, and how many
+  // holdings it moves whose value it can't estimate
+  readonly highValue: { readonly estimatedXlm: string; readonly unpricedHoldings: number } | null;
+  // the claimable balances the user may tick in or out of the close; a change
+  // reaches the plan only through a rebuild
+  readonly claimChoices?: ClaimChoices;
+  // facts about the built plan the user should know before the review
+  readonly planNotes?: readonly string[];
   // optional standalone-token section (opt-in sweep + manual-add); not gated by an
   // ack checkbox, it's an action rather than a read
   readonly tokensSlot?: React.ReactNode;
   // set when choices made on this step (token sweep, convert) aren't in the built
   // plan yet: Continue stays off until the plan is rebuilt with them
   readonly rebuildRequired: string | null;
+  // set while a check this step relies on is still running
+  readonly waitReason?: string | null;
   readonly onRebuild: () => void;
   readonly onBack: () => void;
   readonly onContinue: () => void;
@@ -133,9 +166,22 @@ export function AcknowledgePanel({
       `Frees ${n} sponsored reserve${n === 1 ? "" : "s"}${each} this account had locked up for entries it sponsors, back into your balance.`,
     );
   }
-  const hasAutoHandled = autoParts.length > 0;
   const hasHighValue = highValue !== null;
   const hasLeftBehind = claimables.leftBehind.length > 0;
+  const added = claimables.trustlineChanges.filter((t) => t.change === "add");
+  if (added.length > 0) {
+    const each =
+      baseReserveStroops === null ? "a base" : `a ${stroopsToXlm(baseReserveStroops)} XLM`;
+    autoParts.push(
+      `Opens ${added.length === 1 ? "a trustline" : `${added.length} trustlines`} (${added
+        .map((t) => t.asset.code)
+        .join(
+          ", ",
+        )}) so those payments can be collected. Each holds ${each} reserve, which comes back when the close removes the trustline.`,
+    );
+  }
+  const hasAutoHandled = autoParts.length > 0;
+  const hasPlanNotes = planNotes.length > 0;
 
   const requiredAckKeys = [
     ...requiredAcknowledgements({
@@ -145,11 +191,12 @@ export function AcknowledgePanel({
       hasHighValue,
     }),
     ...(hasLeftBehind ? ["lockedClaimables"] : []),
+    ...(hasPlanNotes ? ["planNotes"] : []),
   ];
   const allAcked = allAcknowledged(requiredAckKeys, acks);
-  const canContinue = allAcked && rebuildRequired === null;
+  const canContinue = allAcked && rebuildRequired === null && waitReason === null;
   const blockedReason =
-    rebuildRequired ?? (allAcked ? undefined : "Tick every box above to continue");
+    rebuildRequired ?? waitReason ?? (allAcked ? undefined : "Tick every box above to continue");
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -163,8 +210,8 @@ export function AcknowledgePanel({
           A few things to know
         </h2>
         <p style={{ margin: "8px 0 0", fontSize: 14, lineHeight: 1.55, color: "var(--fg-2)" }}>
-          None of these stop you from closing the account. Please read each one so nothing surprises
-          you, then confirm you understand.
+          Please read each one so nothing surprises you, then confirm you understand. Anything that
+          keeps the close from running is shown in the step before this one, not here.
         </p>
       </div>
 
@@ -244,10 +291,15 @@ export function AcknowledgePanel({
             />
           }
         >
-          This account holds {highValue.totalXlm} XLM, a large balance (over{" "}
-          {HIGH_VALUE_THRESHOLD_XLM} XLM). Closing it moves this XLM to your destination and
-          permanently deletes this account. Double-check the amount and the destination before you
-          continue. This can&apos;t be undone.
+          This close moves about {highValue.estimatedXlm} XLM
+          {highValue.unpricedHoldings > 0
+            ? ` plus ${highValue.unpricedHoldings} holding${
+                highValue.unpricedHoldings === 1 ? "" : "s"
+              } whose value couldn't be estimated`
+            : ""}
+          . Over {HIGH_VALUE_THRESHOLD_XLM} XLM, or any value that can&apos;t be priced, counts as
+          large. Closing moves it to your destination and permanently deletes this account.
+          Double-check the destination before you continue. This can&apos;t be undone.
         </Notice>
       ) : null}
 
@@ -270,7 +322,35 @@ export function AcknowledgePanel({
           <ul style={{ margin: "7px 0 0", paddingLeft: 18 }}>
             {claimables.leftBehind.map((c) => (
               <li key={c.id} style={{ lineHeight: 1.5 }}>
-                {c.amount} {assetLabel(c.asset)}, {unlockText(c.unlock)}
+                {c.amount} {assetLabel(c.asset)}, {leftBehindText(c, baseReserveStroops)}
+              </li>
+            ))}
+          </ul>
+        </Notice>
+      ) : null}
+
+      {claimChoices !== undefined && claimChoices.balances.length > 0 ? (
+        <ClaimChoicesCard choices={claimChoices} />
+      ) : null}
+
+      {hasPlanNotes ? (
+        <Notice
+          tone="neutral"
+          role="status"
+          title="About this plan"
+          data-testid="plan-notes"
+          footer={
+            <AckRow
+              checked={acks.planNotes === true}
+              onChange={(v) => setAck("planNotes", v)}
+              testId="ack-plan-notes"
+            />
+          }
+        >
+          <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+            {planNotes.map((n) => (
+              <li key={n} style={{ lineHeight: 1.5 }}>
+                {n}
               </li>
             ))}
           </ul>
@@ -329,5 +409,53 @@ export function AcknowledgePanel({
         </Button>
       </div>
     </div>
+  );
+}
+
+export interface ClaimChoices {
+  // balances claimable now, with the asset each pays
+  readonly balances: readonly {
+    readonly id: string;
+    readonly asset: AssetIdentifier;
+    readonly amount: string;
+    // a balance this account sponsors is always collected: leaving it would
+    // keep the account a sponsor, which blocks the merge
+    readonly locked: boolean;
+  }[];
+  readonly selected: ReadonlySet<string>;
+  readonly onToggle: (id: string, checked: boolean) => void;
+}
+
+// which pending payments the close collects. Unticking one leaves it on the
+// ledger, where the deleted account can never claim it.
+function ClaimChoicesCard({ choices }: { readonly choices: ClaimChoices }): React.JSX.Element {
+  return (
+    <Notice tone="neutral" title="Pending payments this close collects" data-testid="claim-choices">
+      Each ticked payment is collected into your balance before the account closes. Untick one to
+      leave it behind; once the account is deleted it can&apos;t be collected, and the sender may
+      take it back. A change applies when you rebuild the plan.
+      <ul style={{ listStyle: "none", margin: "10px 0 0", padding: 0 }}>
+        {choices.balances.map((b) => (
+          <li key={b.id} style={{ padding: "6px 0", borderTop: "1px solid var(--border)" }}>
+            {b.locked ? (
+              <span style={{ fontFamily: "'Geist Mono', monospace", fontSize: 13 }}>
+                {b.amount} {assetLabel(b.asset)}, sponsored by this account, so always collected
+              </span>
+            ) : (
+              <Checkbox
+                checked={choices.selected.has(b.id)}
+                onChange={(v) => choices.onToggle(b.id, v)}
+                data-testid={`cb-checkbox-${b.id}`}
+                label={
+                  <span style={{ fontFamily: "'Geist Mono', monospace", fontSize: 13 }}>
+                    {b.amount} {assetLabel(b.asset)}
+                  </span>
+                }
+              />
+            )}
+          </li>
+        ))}
+      </ul>
+    </Notice>
   );
 }

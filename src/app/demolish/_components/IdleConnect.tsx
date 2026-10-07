@@ -7,6 +7,7 @@ import { CreateTestAccountButton } from "@/components/wallet/CreateTestAccountBu
 import { SecretKeyFallback } from "@/components/wallet/SecretKeyFallback";
 import type { NetworkConfig } from "@/lib/config/networks";
 import type { WalletKitConnector } from "@/lib/wallet/connector";
+import { isDemoNetwork } from "@/lib/wallet/demo-account";
 import type { SecretKeyConnector } from "@/lib/wallet/secret-key";
 
 export function IdleConnect({
@@ -22,13 +23,13 @@ export function IdleConnect({
   readonly onKitConnector: (c: WalletKitConnector | null) => void;
   readonly onSecretConnector: (c: SecretKeyConnector) => void;
 }): React.JSX.Element {
-  const isTestnetLike = network.friendbot !== null;
+  const isDemoNet = isDemoNetwork(network);
   const netLabel = network.id === "mainnet" ? "Mainnet" : "Testnet";
-  // once demo setup starts it takes over the screen as a dedicated step. The demo
-  // only exists on a network with a friendbot, so on any other network the
-  // connect options show regardless (the demo card isn't there to take over).
+  // once demo setup starts it takes over the screen as a dedicated step. The
+  // practice account exists only on testnet, so on any other network the connect
+  // options show regardless (the demo card isn't there to take over).
   const [demoActive, setDemoActive] = useState(false);
-  const demoTakesOver = demoActive && isTestnetLike;
+  const demoTakesOver = demoActive && isDemoNet;
   return (
     <div style={{ maxWidth: 1080, margin: "8px auto 0" }}>
       {!demoTakesOver ? (
@@ -84,7 +85,7 @@ export function IdleConnect({
             First we safely undo everything attached to it (trusted assets, open trades, saved data,
             extra signers, and DeFi positions). You review the whole plan first, and nothing is sent
             until you confirm it.
-            {isTestnetLike
+            {isDemoNet
               ? " New here? Create a free practice account below to try the whole thing first."
               : ""}
           </p>
@@ -175,7 +176,7 @@ export function IdleConnect({
           </div>
 
           {/* testnet-only divider before the demo step */}
-          {isTestnetLike ? (
+          {isDemoNet ? (
             <div
               style={{
                 margin: "30px 0 16px",
@@ -198,7 +199,7 @@ export function IdleConnect({
       ) : null}
 
       {/* demo setup, takes over as a dedicated step once it starts */}
-      {isTestnetLike ? (
+      {isDemoNet ? (
         <CreateTestAccountButton
           network={network}
           onConnector={onSecretConnector}

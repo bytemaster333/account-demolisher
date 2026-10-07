@@ -53,8 +53,9 @@ export function emptyPositions(over: Partial<ProtocolPositions> = {}): ProtocolP
     blend: [],
     backstop: [],
     aquarius: [],
+    aquariusConcentrated: [],
     soroswap: [],
-    fxdao: [],
+    backstopUnclaimedEmissions: [],
     errors: [],
     ...over,
   };

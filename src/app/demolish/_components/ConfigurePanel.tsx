@@ -1,11 +1,18 @@
 "use client";
 
-import { Button, Checkbox, InfoTip, Select } from "@/components/ui";
-import type { CexInfo } from "@/lib/safety/cex-registry";
-import type { AccountAudit } from "@/lib/types/account";
+import { Button, InfoTip, Select } from "@/components/ui";
+import { cexMemoTypes, type CexInfo, type CexMemoType } from "@/lib/safety/cex-registry";
 
 import { SR_ONLY } from "../_lib/a11y";
 import type { FormState } from "../_lib/form";
+
+// the names the memo type picker below uses
+const MEMO_TYPE_NAME: Record<CexMemoType, string> = {
+  text: "Text",
+  id: "ID",
+  hash: "Hash",
+  return: "Return",
+};
 
 const DEMO_DESTINATION_ADDRESS = "GCAWLISZMTHWMMHJE7BRYYNNKR4OL2PR4COXKH2MKGVDOH4BP6DMAHPE";
 
@@ -26,7 +33,6 @@ export function ConfigurePanel({
   canStart,
   startHint,
   onGeneratePlan,
-  audit = null,
   isDemo,
   deterministic,
   preflight,
@@ -41,7 +47,6 @@ export function ConfigurePanel({
   // why the Build button is disabled (bad/self destination); null = no note
   readonly startHint: string | null;
   readonly onGeneratePlan: () => void;
-  readonly audit?: AccountAudit | null;
   readonly isDemo: boolean;
   // shared account: nothing is sold on the market
   readonly deterministic: boolean;
@@ -49,7 +54,6 @@ export function ConfigurePanel({
   // the destination itself is malformed or the account's own address
   readonly destinationInvalid?: boolean;
 }): React.JSX.Element {
-  const claimables = audit?.claimableBalances ?? [];
   const hint =
     preflight.status === "loading"
       ? "Checking this account…"
@@ -64,137 +68,6 @@ export function ConfigurePanel({
   ].join(" ");
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      {claimables.length > 0 ? (
-        <div
-          data-testid="claimable-balance-list"
-          style={{
-            border: "1px solid var(--border)",
-            background: "var(--surface)",
-            borderRadius: 14,
-            padding: "18px 20px",
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 10,
-              marginBottom: 12,
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
-              <span
-                style={{
-                  width: 28,
-                  height: 28,
-                  borderRadius: 8,
-                  background: "var(--surface-2)",
-                  display: "grid",
-                  placeItems: "center",
-                  flexShrink: 0,
-                }}
-              >
-                <svg
-                  width="15"
-                  height="15"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="var(--warning)"
-                  strokeWidth={2}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
-                </svg>
-              </span>
-              <span style={{ fontWeight: 600, fontSize: 14.5, color: "var(--fg)" }}>
-                Payments waiting to be collected
-              </span>
-            </div>
-            <span
-              style={{
-                font: "600 9.5px/1 Geist, sans-serif",
-                color: "var(--fg-3)",
-                letterSpacing: "0.07em",
-                padding: "5px 9px",
-                border: "1px solid var(--border)",
-                borderRadius: 6,
-                whiteSpace: "nowrap",
-              }}
-            >
-              AUTO-COLLECTED
-            </span>
-          </div>
-          <p
-            style={{
-              margin: "0 0 6px",
-              fontSize: 13,
-              lineHeight: 1.5,
-              color: "var(--fg-2)",
-            }}
-          >
-            These are payments set aside for this account that you haven&apos;t collected yet. We
-            collect all of them into your balance automatically before closing.{" "}
-            <strong style={{ color: "var(--fg)" }}>You don&apos;t need to do anything.</strong>{" "}
-            Untick any you&apos;d rather leave behind; unticked ones are lost when the account
-            closes.
-          </p>
-          {claimables.map((cb) => {
-            const checked = form.selectedCbIds.includes(cb.id);
-            return (
-              <div
-                key={cb.id}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 10,
-                  padding: "10px 0",
-                  borderTop: "1px solid var(--border)",
-                }}
-              >
-                <Checkbox
-                  checked={checked}
-                  onChange={(c) => {
-                    setForm((f) =>
-                      c
-                        ? { ...f, selectedCbIds: [...f.selectedCbIds, cb.id] }
-                        : {
-                            ...f,
-                            selectedCbIds: f.selectedCbIds.filter((id) => id !== cb.id),
-                          },
-                    );
-                  }}
-                  data-testid={`cb-checkbox-${cb.id}`}
-                  label={
-                    <span
-                      style={{
-                        fontWeight: 600,
-                        fontSize: 13,
-                        fontFamily: "'Geist Mono', monospace",
-                        color: "var(--fg)",
-                      }}
-                    >
-                      {cb.amount}
-                    </span>
-                  }
-                />
-                <span
-                  style={{
-                    fontSize: 11.5,
-                    color: "var(--fg-3)",
-                    fontFamily: "'Geist Mono', monospace",
-                  }}
-                >
-                  {cb.id.slice(0, 16)}…
-                </span>
-              </div>
-            );
-          })}
-        </div>
-      ) : null}
-
       <div
         style={{
           background: "var(--surface)",
@@ -340,7 +213,9 @@ export function ConfigurePanel({
               <strong style={{ color: "var(--fg)" }}>Exchange detected: {cex.name}.</strong>{" "}
               We&apos;ll route the transfer so your deposit memo reaches {cex.name} correctly.{" "}
               {cex.requiresMemo
-                ? `${cex.name} needs a ${cex.memoType ?? "text"} memo/tag, paste yours below, or your deposit could be lost.`
+                ? `${cex.name} needs a memo/tag (${cexMemoTypes(cex)
+                    .map((t) => MEMO_TYPE_NAME[t])
+                    .join(" or ")}), paste yours below, or your deposit could be lost.`
                 : ""}
             </span>
           </div>
