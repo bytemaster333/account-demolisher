@@ -371,20 +371,26 @@ export async function buildBackstopWithdrawTx(
 // the backstop claim fails in simulation against current chain state. on
 // 2026-10-06 every mainnet claim did, on both backstops: the BLND-USDC comet
 // traps (UnreachableCodeReached in dep_tokn_amt_in_get_lp_tokns_out) for any
-// amount. typed so the plan can show the accrued BLND and ask the user to
-// forfeit it before queueing without the claim. an rpc transport failure is
-// never this error, so a flaky endpoint is never read as a forfeit.
+// amount. a v2 claim that simulates but mints no shares is the same case: the
+// BLND would go into the comet for nothing. typed so the plan can show the
+// accrued BLND and ask the user to forfeit it before queueing without the
+// claim. an rpc transport failure is never this error, so a flaky endpoint is
+// never read as a forfeit.
 export class BackstopClaimUnavailableError extends Error {
   readonly poolId: string;
   readonly backstopId: string;
   // BLND, 7 decimals, as read on chain when the claim was probed
   readonly accruedEmissions: bigint;
+  // one line, safe to show: the rpc error's first line or why the mint is unusable
   readonly simulationError: string;
+  // the rpc's whole error text with its diagnostic event log, for logs only
+  readonly simulationLog: string | undefined;
   constructor(
     poolId: string,
     backstopId: string,
     accruedEmissions: bigint,
     simulationError: string,
+    simulationLog?: string,
   ) {
     super(
       `the Blend backstop ${backstopId} cannot claim the ${stroopsToDecimal(accruedEmissions)} ` +
@@ -396,6 +402,7 @@ export class BackstopClaimUnavailableError extends Error {
     this.backstopId = backstopId;
     this.accruedEmissions = accruedEmissions;
     this.simulationError = simulationError;
+    this.simulationLog = simulationLog;
   }
 }
 
@@ -430,13 +437,18 @@ export async function buildBackstopClaimTx(
     backstop.version === "V1" ? v1Args : [from, pools, nativeToScVal(0n, { type: "i128" })],
   );
   const sim = await (deps.simulate ?? simulate)(server, probe);
-  if (!sim.ok) {
-    throw new BackstopClaimUnavailableError(
+  const unavailable = (reason: string, log?: string) =>
+    new BackstopClaimUnavailableError(
       target.poolId,
       backstop.id,
       state.accruedEmissions,
-      sim.error,
+      reason,
+      log,
     );
+  if (!sim.ok) {
+    // the rpc appends the whole diagnostic event log after the first line
+    const firstLine = sim.error.split("\n", 1)[0]!.trim();
+    throw unavailable(firstLine === "" ? "unknown simulation error" : firstLine, sim.error);
   }
   if (backstop.version === "V1") {
     const transaction = await buildCallTx(
@@ -452,11 +464,11 @@ export async function buildBackstopClaimTx(
   }
 
   if (sim.retval === null) {
-    throw new Error("the Blend backstop claim simulation returned no LP amount");
+    throw unavailable("it returned no LP amount");
   }
   const minted = scValToNative(sim.retval) as unknown;
   if (typeof minted !== "bigint" || minted <= 0n) {
-    throw new Error("the Blend backstop claim simulation returned no LP tokens to deposit");
+    throw unavailable("it mints no backstop shares for the accrued BLND");
   }
   const minOut = BigInt(applySlippageMin(minted.toString(), resolveConfiguredSlippageBps()));
   const transaction = await buildCallTx(

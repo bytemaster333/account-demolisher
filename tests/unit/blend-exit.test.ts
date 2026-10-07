@@ -407,12 +407,25 @@ function simulateMint(lpOut: bigint): NonNullable<BuildExitSequenceDeps["simulat
   });
 }
 
-// what mainnet rpc returned on 2026-10-06 for every backstop claim: the
-// BLND-USDC comet traps inside dep_tokn_amt_in_get_lp_tokns_out
+// what mainnet rpc returned for every backstop claim (GBCRDN4B on FixedV2,
+// 2026-10-07, shortened): the BLND-USDC comet traps inside
+// dep_tokn_amt_in_get_lp_tokns_out, and the error carries the whole event log
 const COMET_TRAP = "HostError: Error(WasmVm, InvalidAction)";
+const COMET_TRAP_LOG = [
+  COMET_TRAP,
+  "",
+  "Event log (newest first):",
+  "   0: [Diagnostic Event] contract:CAQQR5SWBXKIGZKPBZDH3KM5GQ5GUTPKB7JAFCINLZBC5WXPJKRG3IM7, " +
+    'topics:[error, Error(WasmVm, InvalidAction)], data:"escalating error to VM trap from ' +
+    'failed host function call: call"',
+  "   1: [Failed Diagnostic Event (not emitted)] " +
+    "contract:CAS3FL6TLZKDGGSISDBWGGPXT3NRR4DYTZD7YOD3HMYO6LTJUVGRVEAM, topics:[error, " +
+    'Error(WasmVm, InvalidAction)], data:["VM call trapped: UnreachableCodeReached", ' +
+    "dep_tokn_amt_in_get_lp_tokns_out]",
+].join("\n");
 const simulateTrap: NonNullable<BuildExitSequenceDeps["simulate"]> = async () => ({
   ok: false,
-  error: COMET_TRAP,
+  error: COMET_TRAP_LOG,
   diagnostic: [],
   latestLedger: 1,
 });
@@ -771,8 +784,44 @@ describe("a backstop claim that cannot run is reported, never swallowed (L-49)",
     expect(e.poolId).toBe(POOL_V2);
     expect(e.backstopId).toBe(BLEND_BACKSTOP_MAINNET_ID);
     expect(e.accruedEmissions).toBe(7_114_578_242n);
+    // the review shows the message, so it carries the trap, not the event log
     expect(e.simulationError).toBe(COMET_TRAP);
+    expect(e.simulationLog).toBe(COMET_TRAP_LOG);
     expect(e.message).toContain("711.4578242 BLND");
+    expect(e.message).toContain(COMET_TRAP);
+    expect(e.message).not.toMatch(/\n|Diagnostic Event/);
+  });
+
+  // decision: accrued emissions never block the close. a claim that simulates
+  // but mints nothing would pay the BLND into the comet for no shares, so it is
+  // offered as a forfeit like the trap, never raised as a hard failure.
+  it.each([
+    ["no return value", null],
+    ["a zero LP mint", xdr.ScVal.scvI128(new xdr.Int128Parts({ hi: 0n, lo: 0n }))],
+  ])("types a v2 claim simulation with %s as unavailable", async (_label, retval) => {
+    const err: unknown = await buildBackstopClaimTx(
+      MAINNET,
+      { poolId: POOL_V2 },
+      USER,
+      account([{ balance: "10.0000000" }]),
+      deps({
+        poolLoader: loaderFor(v2()),
+        backstopLoader: backstopLoader({ shares: 1n, accruedEmissions: 3n }),
+        simulate: async () => ({
+          ok: true,
+          retval,
+          transactionData: undefined as never,
+          minResourceFee: "0",
+          auth: [],
+          latestLedger: 1,
+        }),
+      }),
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BackstopClaimUnavailableError);
+    const e = err as BackstopClaimUnavailableError;
+    expect(e.accruedEmissions).toBe(3n);
+    expect(e.simulationLog).toBeUndefined();
+    expect(e.message).toContain("0.0000003 BLND");
   });
 
   it("probes the v1 claim too, so its trap is typed the same way", async () => {
