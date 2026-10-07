@@ -48,6 +48,7 @@ export const blendBackstopSchema: z.ZodType<BlendBackstopSummary> = z.object({
   unlockedQueuedForWithdrawal: nonNegBigInt.exactOptional(),
   accruedEmissions: nonNegBigInt.exactOptional(),
   queueDurationSeconds: z.number().int().positive().exactOptional(),
+  latestQueueUnlocksAt: z.date().exactOptional(),
 });
 
 export const blendBackstopUnclaimedSchema: z.ZodType<BlendBackstopUnclaimedEmissions> = z.object({

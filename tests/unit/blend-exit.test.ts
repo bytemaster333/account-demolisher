@@ -4,11 +4,12 @@ import {
   Asset,
   FeeBumpTransaction,
   Keypair,
+  SorobanDataBuilder,
   Transaction,
   TransactionBuilder,
+  rpc,
   scValToNative,
   xdr,
-  type rpc,
 } from "@stellar/stellar-sdk";
 
 import {
@@ -792,13 +793,26 @@ describe("a backstop claim that cannot run is reported, never swallowed (L-49)",
     expect(e.message).not.toMatch(/\n|Diagnostic Event/);
   });
 
+  // the probe runs through the real simulate wrapper, fed a successful rpc
+  // answer parsed by the sdk itself, so retval is whatever the sdk makes of it
+  function serverAnswering(results: rpc.Api.RawSimulateTransactionResponse["results"]) {
+    const raw: rpc.Api.RawSimulateTransactionResponse = {
+      id: "1",
+      latestLedger: 1,
+      transactionData: new SorobanDataBuilder().build().toXdr("base64"),
+      minResourceFee: "0",
+      ...(results === undefined ? {} : { results }),
+    };
+    return {
+      simulateTransaction: async () => rpc.parseRawSimulation(raw),
+    } as unknown as rpc.Server;
+  }
+
   // decision: accrued emissions never block the close. a claim that simulates
   // but mints nothing would pay the BLND into the comet for no shares, so it is
   // offered as a forfeit like the trap, never raised as a hard failure.
-  it.each([
-    ["no return value", null],
-    ["a zero LP mint", xdr.ScVal.scvI128(new xdr.Int128Parts({ hi: 0n, lo: 0n }))],
-  ])("types a v2 claim simulation with %s as unavailable", async (_label, retval) => {
+  it("types a v2 claim simulation that mints zero LP as unavailable", async () => {
+    const zero = xdr.ScVal.scvI128(new xdr.Int128Parts({ hi: 0n, lo: 0n })).toXdr("base64");
     const err: unknown = await buildBackstopClaimTx(
       MAINNET,
       { poolId: POOL_V2 },
@@ -807,14 +821,7 @@ describe("a backstop claim that cannot run is reported, never swallowed (L-49)",
       deps({
         poolLoader: loaderFor(v2()),
         backstopLoader: backstopLoader({ shares: 1n, accruedEmissions: 3n }),
-        simulate: async () => ({
-          ok: true,
-          retval,
-          transactionData: undefined as never,
-          minResourceFee: "0",
-          auth: [],
-          latestLedger: 1,
-        }),
+        server: serverAnswering([{ auth: [], xdr: zero }]),
       }),
     ).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(BackstopClaimUnavailableError);
@@ -822,6 +829,29 @@ describe("a backstop claim that cannot run is reported, never swallowed (L-49)",
     expect(e.accruedEmissions).toBe(3n);
     expect(e.simulationLog).toBeUndefined();
     expect(e.message).toContain("0.0000003 BLND");
+  });
+
+  // a successful v2 claim always returns the i128 it minted. an answer without
+  // it is a broken rpc response, not the chain refusing the claim, so it fails
+  // like any rpc fault and is never offered as a forfeit.
+  it.each([
+    ["no result at all", undefined],
+    ["a result with no return value", [{ auth: [], xdr: "" }]],
+  ])("does not offer a forfeit for an rpc answer with %s", async (_label, results) => {
+    const err: unknown = await buildBackstopClaimTx(
+      MAINNET,
+      { poolId: POOL_V2 },
+      USER,
+      account([{ balance: "10.0000000" }]),
+      deps({
+        poolLoader: loaderFor(v2()),
+        backstopLoader: backstopLoader({ shares: 1n, accruedEmissions: 3n }),
+        server: serverAnswering(results),
+      }),
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(BackstopClaimUnavailableError);
+    expect((err as Error).message).toMatch(/no LP amount/);
   });
 
   it("probes the v1 claim too, so its trap is typed the same way", async () => {

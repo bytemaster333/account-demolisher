@@ -10,6 +10,7 @@ import {
   type Pool,
   type PoolUser,
   type PoolUserEmissionData,
+  type Q4W,
   type Reserve,
 } from "@blend-capital/blend-sdk";
 
@@ -225,7 +226,8 @@ export async function loadUserPositions(
 // blend backstop shares live in a separate contract, not the pool, so they don't
 // show up in pool positions and don't block an account merge by themselves.
 // every pool's backstop is read: active shares, queued (Q4W) shares, the part
-// of the queue already unlocked, and BLND emissions accrued to the user.
+// of the queue already unlocked, when the still-locked part unlocks, and BLND
+// emissions accrued to the user.
 
 export interface BackstopUserState {
   readonly shares: bigint;
@@ -233,6 +235,8 @@ export interface BackstopUserState {
   readonly unlockedQ4W: bigint;
   // estimated BLND (7 decimals) a claim would pay into the backstop for the user
   readonly accruedEmissions: bigint;
+  // when the last still-locked queue entry unlocks; unset when none is locked
+  readonly latestQueueUnlocksAt?: Date;
 }
 
 export interface BackstopDeposit {
@@ -244,6 +248,7 @@ export interface BackstopDeposit {
   readonly unlockedQueuedForWithdrawal: bigint;
   readonly accruedEmissions: bigint;
   readonly queueDurationSeconds: number;
+  readonly latestQueueUnlocksAt?: Date;
 }
 
 export interface BackstopDepositLoader {
@@ -268,6 +273,18 @@ export function estimateBackstopEmissions(user: BackstopPoolUser, pool: Backstop
   return stored + (shares * (pool.emissions.index - userIndex)) / scalar;
 }
 
+// the sdk parses the queue at load time and keeps in q4w only the entries that
+// are still locked (exp in unix seconds), so the latest of those is when the
+// whole existing queue can be withdrawn. a queue a close is about to add locks
+// for the full duration from when it lands, which the plan dates on its own.
+export function latestQueueUnlocksAt(balance: { readonly q4w: readonly Q4W[] }): Date | undefined {
+  let latest: bigint | undefined;
+  for (const entry of balance.q4w) {
+    if (latest === undefined || entry.exp > latest) latest = entry.exp;
+  }
+  return latest === undefined ? undefined : new Date(Number(latest) * 1000);
+}
+
 export const defaultBackstopDepositLoader: BackstopDepositLoader = {
   async loadUser(network, backstop, poolId, userId) {
     const user = await BackstopPoolUser.load(network, backstop.id, poolId, userId);
@@ -279,11 +296,13 @@ export const defaultBackstopDepositLoader: BackstopDepositLoader = {
           : await BackstopPoolV2.load(network, backstop.id, poolId);
       accruedEmissions = estimateBackstopEmissions(user, pool);
     }
+    const unlocksAt = latestQueueUnlocksAt(user.balance);
     return {
       shares: user.balance.shares,
       totalQ4W: user.balance.totalQ4W,
       unlockedQ4W: user.balance.unlockedQ4W,
       accruedEmissions,
+      ...(unlocksAt === undefined ? {} : { latestQueueUnlocksAt: unlocksAt }),
     };
   },
 };
@@ -354,6 +373,9 @@ export async function loadBackstopDeposits(
       unlockedQueuedForWithdrawal: state.unlockedQ4W,
       accruedEmissions: state.accruedEmissions,
       queueDurationSeconds: backstop.queueDurationSeconds,
+      ...(state.latestQueueUnlocksAt === undefined
+        ? {}
+        : { latestQueueUnlocksAt: state.latestQueueUnlocksAt }),
     });
   });
   return { deposits, unclaimedEmissions, errors };

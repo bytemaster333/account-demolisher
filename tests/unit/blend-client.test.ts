@@ -10,11 +10,12 @@ import {
   PoolV2,
   UserBalance,
 } from "@blend-capital/blend-sdk";
-import { Asset } from "@stellar/stellar-sdk";
+import { Address, Asset, nativeToScVal, xdr } from "@stellar/stellar-sdk";
 
 import {
   defaultBlendPoolLoader,
   estimateBackstopEmissions,
+  latestQueueUnlocksAt,
   loadBackstopDeposits,
   loadUserPositions,
   loadUserPositionsForPool,
@@ -286,6 +287,26 @@ describe("loadBackstopDeposits", () => {
     expect(res.unclaimedEmissions).toEqual([]);
   });
 
+  it("carries the latest unlock of a locked queue, and leaves it unset otherwise (M-25)", async () => {
+    const unlocksAt = new Date((NOW_SECONDS + 5 * 86_400) * 1000);
+    const res = await loadBackstopDeposits(
+      MAINNET,
+      USER,
+      [
+        { poolId: POOL_A, backstopId: BLEND_BACKSTOP_MAINNET_ID },
+        { poolId: POOL_B, backstopId: BLEND_BACKSTOP_V1_MAINNET_ID },
+      ],
+      stateLoader({
+        [POOL_A]: { totalQ4W: 40n, latestQueueUnlocksAt: unlocksAt },
+        [POOL_B]: { shares: 7n },
+      }),
+    );
+    expect(res.deposits.find((d) => d.poolId === POOL_A)?.latestQueueUnlocksAt).toEqual(unlocksAt);
+    expect(res.deposits.find((d) => d.poolId === POOL_B)).not.toHaveProperty(
+      "latestQueueUnlocksAt",
+    );
+  });
+
   it("refuses a backstop that is not a pinned Blend backstop for the network", async () => {
     const res = await loadBackstopDeposits(
       MAINNET,
@@ -327,6 +348,60 @@ describe("loadBackstopDeposits", () => {
     );
     expect(res.errors[0]).toContain("ledger entry archived");
     expect(res.errors[0]).not.toContain("[object Object]");
+  });
+});
+
+// a backstop UserBalance ledger entry as the chain stores it, parsed by the
+// sdk's own reader at `now`, which keeps only the still-locked entries in q4w
+function parsedUserBalance(
+  now: number,
+  q4w: readonly { readonly amount: bigint; readonly exp: bigint }[],
+): UserBalance {
+  const entry = (amount: bigint, exp: bigint) =>
+    nativeToScVal(
+      { amount, exp },
+      { type: { amount: ["symbol", "i128"], exp: ["symbol", "u64"] } },
+    );
+  const data = xdr.LedgerEntryData.contractData(
+    new xdr.ContractDataEntry({
+      ext: xdr.ExtensionPoint.v0(),
+      contract: new Address(BLEND_BACKSTOP_MAINNET_ID).toScAddress(),
+      key: xdr.ScVal.scvVoid(),
+      durability: xdr.ContractDataDurability.persistent,
+      val: xdr.ScVal.scvMap([
+        new xdr.ScMapEntry({
+          key: xdr.ScVal.scvSymbol("q4w"),
+          val: xdr.ScVal.scvVec(q4w.map((q) => entry(q.amount, q.exp))),
+        }),
+        new xdr.ScMapEntry({
+          key: xdr.ScVal.scvSymbol("shares"),
+          val: nativeToScVal(0n, { type: "i128" }),
+        }),
+      ]),
+    }),
+  );
+  // the blend sdk pins its own stellar-sdk, so the entry crosses as base64
+  return UserBalance.fromLedgerEntryData(data.toXdr("base64"), now);
+}
+
+describe("latestQueueUnlocksAt (M-25)", () => {
+  const now = NOW_SECONDS;
+
+  it("dates an existing queue by its last still-locked entry, not by a fresh lock", () => {
+    const balance = parsedUserBalance(now, [
+      { amount: 1n, exp: BigInt(now - 60) },
+      { amount: 2n, exp: BigInt(now + 9 * 86_400) },
+      { amount: 3n, exp: BigInt(now + 3 * 86_400) },
+    ]);
+    expect(balance.unlockedQ4W).toBe(1n);
+    expect(latestQueueUnlocksAt(balance)).toEqual(new Date((now + 9 * 86_400) * 1000));
+  });
+
+  it("is unset when nothing locked is queued", () => {
+    expect(latestQueueUnlocksAt(parsedUserBalance(now, []))).toBeUndefined();
+    const allUnlocked = parsedUserBalance(now, [{ amount: 5n, exp: BigInt(now - 1) }]);
+    expect(allUnlocked.unlockedQ4W).toBe(5n);
+    expect(latestQueueUnlocksAt(allUnlocked)).toBeUndefined();
   });
 });
 
