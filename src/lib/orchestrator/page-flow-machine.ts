@@ -6,7 +6,7 @@ import { TransactionBuilder, type Operation } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
-import type { PlanTree } from "@/lib/plan/tree";
+import type { PlanTree, PreparePlan } from "@/lib/plan/tree";
 import type { UnroutableCredit } from "@/lib/plan/classic-batcher";
 import type { SignerSnapshot } from "@/lib/multisig/bundle-freshness";
 import { classifyFailure, isRetryableFailure, type FailureKind } from "@/lib/orchestrator/failures";
@@ -34,6 +34,7 @@ export { previewBlockers, type PreviewBlocker } from "@/lib/orchestrator/retry";
 export { discoveryWarningFor, heldTokenDispositionWarnings } from "@/lib/orchestrator/warnings";
 export {
   fetchDestinationUsableKeys,
+  type ConversionRefusalKind,
   type EmissionForfeit,
   type RefusedConversion,
 } from "@/lib/orchestrator/actors/preview";
@@ -57,6 +58,11 @@ export interface PageFlowInput {
   // pools whose accrued backstop emissions the user agreed to leave unclaimed
   // because the claim can't run (see ctx.emissionForfeits)
   readonly forfeitBackstopEmissionPoolIds?: readonly string[];
+  // answers to refused held-token conversions (see ctx.refusedConversions), by
+  // contract id: send the token to the destination as-is, or leave it on the
+  // account. accepting the new price goes in acceptedPriceImpactAssetKeys.
+  readonly sendHeldTokensAsIs?: readonly string[];
+  readonly leaveHeldTokens?: readonly string[];
   // standalone SEP-41 tokens the user opted in to sweep to the destination
   // (discovered tokens they ticked, plus any they added manually); none by default.
   readonly selectedHeldTokens?: readonly HeldToken[];
@@ -129,6 +135,9 @@ export interface PageFlowContext {
   readonly landedPhases: readonly PhaseReceipt[];
   // aborted by CANCEL while executing; the close stops at the next step boundary
   readonly executionAbort: AbortController | null;
+  // set in the "prepared" state: the run did every step it could, the account
+  // stays open, and the close can be finished once the backstop queue unlocks
+  readonly preparedClose: PreparePlan | null;
 }
 
 // the account and network the page showed when the user acted; an event for a
@@ -186,6 +195,7 @@ const initialContext: PageFlowContext = {
   executionNotes: [],
   landedPhases: [],
   executionAbort: null,
+  preparedClose: null,
 };
 
 function storeInput(input: PageFlowInput): StoredInput {
@@ -219,9 +229,10 @@ export function confirmBlockers(
     ...context.unroutableCredits.map(
       (c) => `${c.amount} ${c.code} can't be disposed of as planned (${creditReason(c)}).`,
     ),
-    ...context.refusedConversions.map(
-      (r) =>
-        `Converting token ${r.contractId} was refused for its price (${r.reason}). Accept the price, send it as-is, or leave it out.`,
+    ...context.refusedConversions.map((r) =>
+      r.refusal === "no_route"
+        ? `Token ${r.contractId} can't be converted: it has no route to XLM. Send it as-is or leave it.`
+        : `Converting token ${r.contractId} was refused for its price (${r.reason}). Accept the price, send it as-is, or leave it.`,
     ),
     ...context.emissionForfeits.map(
       (f) =>
@@ -318,6 +329,7 @@ const clearedPlan = {
   result: null,
   executionNotes: [],
   landedPhases: [],
+  preparedClose: null,
 } as const;
 
 export const pageFlowMachine = setup({
@@ -470,6 +482,8 @@ export const pageFlowMachine = setup({
             ...(i.forfeitBackstopEmissionPoolIds
               ? { forfeitBackstopEmissionPoolIds: i.forfeitBackstopEmissionPoolIds }
               : {}),
+            ...(i.sendHeldTokensAsIs ? { sendHeldTokensAsIs: i.sendHeldTokensAsIs } : {}),
+            ...(i.leaveHeldTokens ? { leaveHeldTokens: i.leaveHeldTokens } : {}),
             ...(i.deterministicDisposal ? { deterministicDisposal: true } : {}),
           };
         },
@@ -567,6 +581,22 @@ export const pageFlowMachine = setup({
         },
         onDone: [
           {
+            // nothing merged: the account stays open until the backstop unlocks
+            target: "prepared",
+            guard: ({ event }) => event.output.result.ok && event.output.prepared !== undefined,
+            actions: assign({
+              result: ({ event }) => event.output.result,
+              preparedClose: ({ event }) => event.output.prepared ?? null,
+              tree: ({ event }) => ({ ...event.output.tree }),
+              error: null,
+              failureKind: null,
+              executionNotes: ({ event }) => event.output.notes,
+              landedPhases: ({ event }) => event.output.landedPhases,
+              connector: null,
+              executionAbort: null,
+            }),
+          },
+          {
             target: "succeeded",
             guard: ({ event }) => event.output.result.ok,
             actions: assign({
@@ -627,6 +657,11 @@ export const pageFlowMachine = setup({
       },
     },
     succeeded: {
+      on: {
+        RESET: { target: "idle", actions: assign(() => initialContext) },
+      },
+    },
+    prepared: {
       on: {
         RESET: { target: "idle", actions: assign(() => initialContext) },
       },

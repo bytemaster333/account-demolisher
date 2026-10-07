@@ -6,11 +6,12 @@ import { TransactionBuilder, type Horizon, type Transaction } from "@stellar/ste
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
-import type { PlanTree } from "@/lib/plan/tree";
+import type { PlanTree, PreparePlan } from "@/lib/plan/tree";
 import { rebuildSorobanNodeTransaction } from "@/lib/plan/hydration";
 import { reissueMediatorFlow, startMediatorFlow } from "@/lib/mediator/client";
 import { FINAL_CLASSIC_TX_NODE_ID, MEDIATOR_FORWARD_NODE_ID } from "@/lib/mediator/refresh";
 import {
+  isCloseInFlight,
   latestPendingForward,
   removePendingForward,
   runWithCloseLock,
@@ -23,6 +24,8 @@ import {
 } from "@/lib/multisig/bundle-freshness";
 import { thresholdForClose, trimToThreshold } from "@/lib/multisig/signing-request";
 import {
+  BEST_EFFORT_KINDS,
+  DEPENDENCY_SKIP_PREFIX,
   executePlanTreeOnChain,
   MAX_PER_OP_FEE,
   surgeFeeBase,
@@ -80,6 +83,8 @@ export interface ExecuteOutput {
   readonly failureKind?: FailureKind;
   readonly notes: readonly string[];
   readonly landedPhases: readonly PhaseReceipt[];
+  // set when the run only prepared the close: every step ran, nothing merged
+  readonly prepared?: PreparePlan;
 }
 
 // the re-check of defi positions right before a merge must not hang the close
@@ -313,6 +318,20 @@ export const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ in
   }
   inFlight.add(runKey);
   try {
+    // a close running in another tab holds the lock. waiting for it would hang
+    // this tab with no word, and stopping can't end a lock wait, so say so now
+    if (await isCloseInFlight(input.publicKey)) {
+      const message =
+        "A close for this account is running in another tab. Let it finish there, then retry here.";
+      input.onProgress({ kind: "blocked", message });
+      return {
+        result: { ok: false, errors: [message] },
+        tree: input.tree,
+        failureKind: "close_running",
+        notes: [],
+        landedPhases: [],
+      };
+    }
     // the lock tells other tabs a close for this account is running, so they
     // don't offer to resume or dismiss its recovery record meanwhile
     return await runWithCloseLock(input.publicKey, () => runClose(input, signal));
@@ -390,9 +409,26 @@ async function runClose(input: ExecuteInput, signal: AbortSignal): Promise<Execu
     };
   }
 
-  const mergedTxHash = finalNode?.executed?.txHash;
+  // a plan that only prepares the close has no merge: it is done once every
+  // step ran, and the account stays open until the backstop queue unlocks
+  if (tree.prepareOnly !== undefined) {
+    return prepared(input, tree, tree.prepareOnly, notes);
+  }
+  if (finalNode === undefined) {
+    const reason = "The plan has no merge step, so the account was not closed.";
+    input.onProgress({ kind: "blocked", message: reason });
+    return {
+      result: { ok: false, errors: [reason] },
+      tree,
+      failureKind: "unknown",
+      notes,
+      landedPhases: [],
+    };
+  }
+
+  const mergedTxHash = finalNode.executed?.txHash;
   // the merge did not land: a dependency was not done when the merge's turn came
-  if (finalNode !== undefined && finalNode.status !== "confirmed") {
+  if (finalNode.status !== "confirmed") {
     const reason =
       finalNode.error ??
       "the account merge did not run because a step it depends on did not complete.";
@@ -438,6 +474,51 @@ async function runClose(input: ExecuteInput, signal: AbortSignal): Promise<Execu
     tree,
     notes,
     landedPhases: landed(),
+  };
+}
+
+// the end of a prepare-only run. every step must have run (a best-effort step
+// skipped on purpose counts); anything else is reported as not prepared.
+function prepared(
+  input: ExecuteInput,
+  tree: PlanTree,
+  plan: PreparePlan,
+  notes: readonly string[],
+): ExecuteOutput {
+  const open = [...tree.allNodes.values()].filter(
+    (n) =>
+      n.status !== "confirmed" &&
+      !(
+        n.status === "skipped" &&
+        BEST_EFFORT_KINDS.has(n.kind) &&
+        n.error?.startsWith(DEPENDENCY_SKIP_PREFIX) !== true
+      ),
+  );
+  if (open.length > 0) {
+    const reason =
+      `The close was not prepared: ${open.map((n) => `"${n.description}"`).join(", ")} did not ` +
+      "complete.";
+    input.onProgress({ kind: "blocked", message: reason });
+    return {
+      result: { ok: false, errors: [reason] },
+      tree,
+      failureKind: "unknown",
+      notes,
+      landedPhases: [],
+    };
+  }
+  input.onProgress({
+    kind: "submitted",
+    message:
+      "The close is prepared, and the account stays open. Come back after " +
+      `${plan.unlocksAt.toISOString().slice(0, 10)} to withdraw the backstop and finish closing.`,
+  });
+  return {
+    result: { ok: true, errors: [] },
+    tree,
+    prepared: plan,
+    notes,
+    landedPhases: [],
   };
 }
 

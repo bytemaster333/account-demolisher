@@ -31,7 +31,13 @@ export function discoveryWarningFor(e: {
 //   these notes say what happens if it fails again.
 export function heldTokenDispositionWarnings(
   tree: PlanTree,
-  opts: { readonly useMediator: boolean; readonly selectedCount: number },
+  opts: {
+    readonly useMediator: boolean;
+    readonly selectedCount: number;
+    // held tokens whose conversion was refused: they wait on the user's answer
+    // instead of falling back to a transfer, so no fallback note is written
+    readonly refusedContractIds?: ReadonlySet<string>;
+  },
 ): string[] {
   const out: string[] = [];
   if (opts.useMediator && opts.selectedCount > 0) {
@@ -47,6 +53,13 @@ export function heldTokenDispositionWarnings(
     if (node.kind !== "TransferAsIs" && node.kind !== "ConvertSorobanToXLM") continue;
     if (node.status !== "failed" && node.status !== "skipped") continue;
     const asset = node.metadata.asset;
+    if (
+      node.kind === "ConvertSorobanToXLM" &&
+      asset.kind === "contract" &&
+      opts.refusedContractIds?.has(asset.contractId) === true
+    ) {
+      continue;
+    }
     const label =
       asset.kind === "contract"
         ? `${asset.contractId.slice(0, 4)}…${asset.contractId.slice(-4)}`

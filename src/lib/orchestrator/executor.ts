@@ -26,25 +26,35 @@ import {
   batchClassicDemolition,
   mediatorFundingCheck,
   planClaimableBalances,
+  planClassicUnwind,
   unroutableCredits,
   type UnroutableCredit,
 } from "@/lib/plan/classic-batcher";
+import { finalBatchOptions } from "@/lib/plan/generator";
 import { resolveCreditPaths } from "@/lib/stellar/path-finder";
 import { submitMediatorForward } from "@/lib/mediator/forward";
 import { encodeMemoCommitment, forwardMemoToSdk } from "@/lib/mediator/forward-terms";
 import { applyRefreshedMediatorFlow, MEDIATOR_FORWARD_NODE_ID } from "@/lib/mediator/refresh";
-import { PriceImpactRefusedError, resolveContractIdForAsset } from "@/lib/plan/hydration";
+import {
+  BackstopEmissionsClaimError,
+  PriceImpactRefusedError,
+  resolveContractIdForAsset,
+} from "@/lib/plan/hydration";
+import { NoSoroswapRouteError } from "@/lib/adapters/soroswap/swap";
 import { assertSafeTransferInvocation, UnsafeTransferError } from "@/lib/soroban/transfer-guard";
 import { assertSafeRevokeInvocation, UnsafeRevokeError } from "@/lib/soroban/revoke-guard";
 import { assertDefiAuthTree, UnsafeDefiAuthError } from "@/lib/soroban/defi-auth-guard";
 import {
   assertSorobanFeeWithinCap,
+  formatXlm as formatTokenAmount,
   SorobanFeeCapError,
   type SorobanFeeClass,
 } from "@/lib/soroban/fee-cap";
 import {
+  nodeTransaction,
   planExitPayoutTokens,
   topologicalOrder,
+  type ClassicUnwindNode,
   type ConvertSorobanToXLMNode,
   type FinalClassicTxNode,
   type MediatorForwardNode,
@@ -159,19 +169,6 @@ export interface ExecutionOutput {
   readonly tree: PlanTree;
 }
 
-// reads a node's pre-built transaction; undefined for the merge and the forward,
-// which are built at their turn. every other kind carries the transaction its
-// hydration attached in metadata.transaction.
-export function pickTransaction(node: PlanNode): Transaction | undefined {
-  if (node.kind === "FinalClassicTx" || node.kind === "MediatorForward") return undefined;
-  return (node.metadata as { readonly transaction?: Transaction }).transaction;
-}
-
-// the classic change_trust that opens the BLND line ahead of a pool emissions
-// claim. it is signed and submitted like a soroban step and held to exactly one
-// change_trust by the defi auth guard.
-const BLND_TRUSTLINE_KIND = "AddBlndTrustline";
-
 // steps whose failure leaves something behind by design instead of stopping the
 // close (a token the user asked to sweep, an allowance revoke). a skipped one
 // still lets its dependents run.
@@ -182,9 +179,6 @@ export const BEST_EFFORT_KINDS: ReadonlySet<PlanNode["kind"]> = new Set([
 ]);
 
 export const DEPENDENCY_SKIP_PREFIX = "Skipped: dependency";
-// a step the user agreed at review to leave out (a backstop emissions claim
-// that can't run); its dependents run without it
-export const FORFEIT_PREFIX = "Forfeited:";
 
 // rides out horizon blips (5xx, 429, no response) on the idempotent reads that
 // prepare a classic phase. a 404 or another 4xx is a real answer and is
@@ -528,6 +522,26 @@ export async function executePlanTreeOnChain(
       case "MediatorForward":
         await runForward(node, run);
         continue;
+      case "ClassicUnwind": {
+        // never best-effort: the repays after it need the asset it frees
+        let receipt: ConfirmationReceipt | null;
+        try {
+          receipt = await runClassicUnwind(node, run);
+        } catch (err) {
+          node.status = "failed";
+          node.error = errorMessage(err);
+          run.notify(node);
+          throw err;
+        }
+        if (receipt === null) {
+          // nothing locked a repay asset, so there was nothing to sign
+          node.status = "confirmed";
+          run.notify(node);
+        } else {
+          confirm(node, receipt, run);
+        }
+        continue;
+      }
       case "TransferAsIs":
         await runBestEffortTransfer(node, run);
         continue;
@@ -599,7 +613,6 @@ function dependencySatisfied(node: PlanNode, dep: PlanNode | undefined): boolean
   if (dep.status === "confirmed") return true;
   if (node.kind === "MediatorForward") return false;
   if (dep.status !== "skipped") return false;
-  if (dep.error?.startsWith(FORFEIT_PREFIX) === true) return true;
   return BEST_EFFORT_KINDS.has(dep.kind) && !isDependencySkip(dep);
 }
 
@@ -665,13 +678,18 @@ async function runConvert(node: ConvertSorobanToXLMNode, run: Run): Promise<void
     convertError = err;
   }
   const label = tokenLabel(node.metadata.asset);
-  // a price the user did not agree to is a question for them, not a reason to
-  // send the token somewhere else on their behalf
-  if (convertError instanceof PriceImpactRefusedError) {
+  // a price the user did not agree to, or a token with no route left, is a
+  // question for them, not a reason to send the token somewhere else on their
+  // behalf
+  const refusal = conversionRefusal(convertError);
+  if (refusal !== null) {
+    const contractId = resolveContractIdForAsset(node.metadata.asset, run.deps.network);
     node.status = "failed";
     node.error =
-      `The conversion of token ${label} to XLM was refused before signing: ${convertError.message}. ` +
-      "Rebuild the plan to accept the new price, send the token as-is, or leave it out.";
+      `The conversion of token ${contractId} to XLM was refused before signing: ${refusal}. ` +
+      `Rebuild the plan to ${
+        convertError instanceof NoSoroswapRouteError ? "" : "accept the new price, "
+      }send the token as-is, or leave it out.`;
     run.notify(node);
     throw new CloseFailure("conversion_refused", node.error, { cause: convertError });
   }
@@ -718,6 +736,25 @@ async function runConvert(node: ConvertSorobanToXLMNode, run: Run): Promise<void
     "yourself, then rebuild the plan.";
   run.notify(node);
   throw new CloseFailure("position_open", node.error);
+}
+
+// the reason a conversion needs the user's answer (decision: accept the new
+// rate, send the token as-is, or leave it), or null when the failure is not a
+// refusal
+function conversionRefusal(err: unknown): string | null {
+  if (err instanceof NoSoroswapRouteError) return err.message;
+  if (!(err instanceof PriceImpactRefusedError)) return null;
+  const quoted =
+    err.expectedOut !== undefined
+      ? ` (the whole balance would now get ${formatTokenAmount(err.expectedOut)} XLM)`
+      : "";
+  if (err.reason === "price_impact" && typeof err.priceImpactBps === "number") {
+    return `selling it all would move the price by ${(err.priceImpactBps / 100).toFixed(2)}%${quoted}`;
+  }
+  if (err.reason === "requote_worse") {
+    return `the market now pays less than the quote you reviewed${quoted}`;
+  }
+  return err.message;
 }
 
 // an interruption stops the close; a submission with an unknown outcome must not
@@ -769,9 +806,14 @@ async function signAndSubmitSorobanNode(
     if (deps.rebuildSorobanNode) {
       // fresh sequence and re-simulated footprint; throws the real error rather
       // than signing a stale or doomed tx
-      await deps.rebuildSorobanNode(node, run.publicKey);
+      try {
+        await deps.rebuildSorobanNode(node, run.publicKey);
+      } catch (err) {
+        if (err instanceof BackstopEmissionsClaimError) throw claimUnavailable(err);
+        throw err;
+      }
     }
-    const tx = pickTransaction(node);
+    const tx = nodeTransaction(node);
     if (!tx) {
       throw new Error(`executing: node "${node.id}" (${node.kind}) has no transaction attached`);
     }
@@ -780,19 +822,11 @@ async function signAndSubmitSorobanNode(
     let totalFee: bigint;
     try {
       opts.guard?.(tx);
-      if (opts.allowlist) {
-        assertTransactionAllowed(tx, deps.network);
-        assertDefiAuthTree(node, tx, { user: run.publicKey, network: deps.network });
-      }
-      totalFee = stepFee(node, tx);
+      totalFee = opts.allowlist
+        ? checkRequiredSorobanStep(node, tx, run.publicKey, deps.network)
+        : stepFee(node, tx);
     } catch (err) {
-      const unsafe =
-        err instanceof UnsafeDefiAuthError ||
-        err instanceof UnsafeTransferError ||
-        err instanceof UnsafeRevokeError ||
-        err instanceof AllowlistViolation ||
-        err instanceof SorobanFeeCapError;
-      if (!unsafe) throw err;
+      if (!isUnsafeStepError(err)) throw err;
       throw new CloseFailure(
         "unsafe",
         `Refused to sign "${node.description}": ${errorMessage(err)}`,
@@ -827,7 +861,7 @@ async function signAndSubmitSorobanNode(
 // carries no soroban resources; one change_trust may bid at most the classic
 // per-op ceiling.
 function stepFee(node: PlanNode, tx: Transaction): bigint {
-  if ((node.kind as string) === BLND_TRUSTLINE_KIND) {
+  if (node.kind === "AddBlndTrustline") {
     const fee = BigInt(tx.fee);
     if (fee > BigInt(MAX_PER_OP_FEE)) {
       throw new SorobanFeeCapError(
@@ -839,6 +873,48 @@ function stepFee(node: PlanNode, tx: Transaction): bigint {
     return fee;
   }
   return assertSorobanFeeWithinCap(tx, feeClassOf(node)).totalFee;
+}
+
+// what every required step (a defi exit, the BLND trustline, a held-token
+// conversion) must pass before it is signed: an allow-listed contract, exactly
+// the auth tree its call needs, and a fee within its class's cap. returns the
+// fee the signature authorizes. the preview runs it on each built step too, so
+// a refused required step blocks the confirmation instead of stopping the close
+// after the independent exits already ran.
+export function checkRequiredSorobanStep(
+  node: PlanNode,
+  tx: Transaction,
+  user: string,
+  network: NetworkConfig,
+): bigint {
+  assertTransactionAllowed(tx, network);
+  assertDefiAuthTree(node, tx, { user, network });
+  return stepFee(node, tx);
+}
+
+// the refusals that mean the step asks for more than it needs, as opposed to a
+// failure to check it
+export function isUnsafeStepError(err: unknown): boolean {
+  return (
+    err instanceof UnsafeDefiAuthError ||
+    err instanceof UnsafeTransferError ||
+    err instanceof UnsafeRevokeError ||
+    err instanceof AllowlistViolation ||
+    err instanceof SorobanFeeCapError
+  );
+}
+
+// a backstop emissions claim that simulated at review but no longer can. it is
+// not skipped on the user's behalf: the close stops before anything else is
+// signed and the rebuilt review asks them to forfeit the BLND
+function claimUnavailable(err: BackstopEmissionsClaimError): CloseFailure {
+  return new CloseFailure(
+    "claim_unavailable",
+    `The Blend backstop emissions claim for pool ${short(err.poolId)} can no longer run, so ` +
+      `nothing further was signed. Rebuild the plan to review the ` +
+      `${formatTokenAmount(err.accruedEmissions)} BLND it would leave unclaimed.`,
+    { cause: err },
+  );
 }
 
 // resolves a submission left with an unknown outcome. returns its receipt when it
@@ -1092,6 +1168,10 @@ async function runFinalClassic(node: FinalClassicTxNode, run: Run): Promise<Conf
           ...(md.reviewedReferenceQuotes
             ? { reviewedReferenceQuotes: md.reviewedReferenceQuotes }
             : {}),
+          ...(md.reviewedConversionQuotes
+            ? { reviewedConversionQuotes: md.reviewedConversionQuotes }
+            : {}),
+          feePerOpStroops: feeBase,
         },
       );
       if (stuck.length > 0) throw creditsBlocked(stuck);
@@ -1104,34 +1184,18 @@ async function runFinalClassic(node: FinalClassicTxNode, run: Run): Promise<Conf
       const auditNow = clock === null ? freshAudit : withClaimWindow(freshAudit, publicKey, clock);
 
       const mediatorFunded = mediator ? await mediator.probe() : false;
+      // the options the plan was reviewed with, plus what only execute time
+      // knows: the mediator in use, whether it is funded, and the fee bid the
+      // batcher's reserve checks (close marker, new trustlines) must cover
       const rebatch = () => {
         const mediatorPublicKey = mediator?.mediatorPublicKey();
         return batchClassicDemolition(
           auditNow,
-          {
-            destination: md.destination,
-            useMediator: md.useMediator,
-            ...(mediatorFunded ? { mediatorAlreadyFunded: true } : {}),
-            ...(md.claimableBalanceIds !== undefined
-              ? { claimableBalanceIds: md.claimableBalanceIds }
-              : {}),
-            ...(md.returnToIssuerAssetKeys
-              ? { returnToIssuerAssetKeys: md.returnToIssuerAssetKeys }
-              : {}),
-            ...(md.sendToDestinationAssetKeys
-              ? { sendToDestinationAssetKeys: md.sendToDestinationAssetKeys }
-              : {}),
-            ...(md.acceptedPriceImpactAssetKeys
-              ? { acceptedPriceImpactAssetKeys: md.acceptedPriceImpactAssetKeys }
-              : {}),
-            ...(md.reviewedReferenceQuotes
-              ? { reviewedReferenceQuotes: md.reviewedReferenceQuotes }
-              : {}),
+          finalBatchOptions(md, {
             ...(mediatorPublicKey ? { mediatorPublicKey } : {}),
-            // the batcher puts the deposit memo only on a direct final merge; a
-            // mediator close carries it on the forward instead
-            ...(md.memo ? { memo: md.memo } : {}),
-          },
+            mediatorAlreadyFunded: mediatorFunded,
+            feePerOpStroops: feeBase,
+          }),
           freshPaths,
         );
       };
@@ -1176,7 +1240,7 @@ async function runFinalClassic(node: FinalClassicTxNode, run: Run): Promise<Conf
 
       // tokens the defi exits paid out that are not classic balances are swept
       // before the merge; one still held here would be deleted with the account
-      if (isFinal) await assertExitPayoutsSwept(run, auditNow);
+      if (isFinal) await assertExitPayoutsSwept(run, auditNow, node);
 
       if (
         mediator !== null &&
@@ -1278,6 +1342,93 @@ async function runFinalClassic(node: FinalClassicTxNode, run: Run): Promise<Conf
       }
     }
   }
+}
+
+// the classic phase ahead of the repays: cancels the offers selling a repay
+// asset and withdraws the classic pool shares holding one, so the repay's SAC
+// transfer can spend it. each batch is planned from a fresh audit and the
+// account is re-audited after it lands; a batch that landed is never resent.
+// returns the last landed batch, or null when nothing was left to unwind.
+async function runClassicUnwind(
+  node: ClassicUnwindNode,
+  run: Run,
+): Promise<ConfirmationReceipt | null> {
+  const { deps, publicKey } = run;
+  const journal = journalFor(node);
+  const landed = await settlePending(journal, deps.lookupClassicTransaction, node.description);
+  if (landed !== null) journal.landedPhases.push(landed);
+
+  // the batches only label their destination; the unwind ops pay nothing out
+  const destination = node.metadata.batches[0]?.destination;
+  if (destination === undefined) {
+    throw new Error(`executing: node "${node.id}" was planned without a batch`);
+  }
+  const baseReserve = await readBaseReserve(deps.horizon);
+  let feeBase = await surgeFeeBase(deps.horizon);
+  let rejections = 0;
+  for (let phase = 0; phase < MAX_CLOSE_PHASES; phase++) {
+    throwIfInterrupted(deps.signal);
+    let audit: AccountAuditResult;
+    try {
+      audit = await withHorizonRetry(() => auditAccount(publicKey, deps.network));
+    } catch (err) {
+      if (err instanceof AccountNotFoundError) {
+        throw new CloseFailure(
+          "not_mergeable",
+          "The account no longer exists on the network, so its offers and pools can't be unwound.",
+          { cause: err },
+        );
+      }
+      throw err;
+    }
+    const batch = planClassicUnwind(
+      audit,
+      node.metadata.repayAssets,
+      deps.network.passphrase,
+      destination,
+    ).batches[0];
+    if (batch === undefined) return journal.landedPhases.at(-1) ?? null;
+
+    const clock = await readLedgerClock(deps.horizon);
+    const sourceAccount = await withHorizonRetry(() => deps.horizon.loadAccount(publicKey));
+    const fee = capFeeToBalance(feeBase, batch.operations.length, audit, baseReserve);
+    const built = buildClassicTransaction(
+      batch,
+      sourceAccount,
+      deps.network,
+      fee,
+      DEFAULT_TX_VALIDITY_SECONDS,
+      clock === null ? undefined : clock.closedAt,
+    ).transaction;
+    if ("innerTransaction" in built) {
+      throw new Error("buildClassicTransaction returned a fee-bump transaction unexpectedly");
+    }
+    const signed = await signWith(deps, built, `"${node.description}"`);
+    node.status = "signed";
+    run.notify(node);
+    journal.pending = { hash: hashHex(built), maxTime: maxTimeOf(built) };
+    try {
+      const receipt = await deps.submitClassic(signed.signedXdr);
+      journal.pending = null;
+      journal.landedPhases.push(receipt);
+      node.status = "submitted";
+      run.notify(node);
+    } catch (err) {
+      if (!(err instanceof AmbiguousSubmitError)) journal.pending = null;
+      const kind = classicRejectionKind(err);
+      rejections += 1;
+      if (kind === null || rejections >= MAX_MERGE_ATTEMPTS) throw err;
+      if (kind === "fee") feeBase = Math.min(feeBase * 3, MAX_PER_OP_FEE);
+      if (kind === "fee_too_high") {
+        if (feeBase <= DEFAULT_FEE_BASE) throw err;
+        feeBase = DEFAULT_FEE_BASE;
+      }
+      // every other rejection is cleared by planning again from a fresh audit
+    }
+  }
+  throw new Error(
+    `executing: node "${node.id}" did not converge within ${MAX_CLOSE_PHASES} phases`,
+  );
 }
 
 // the account is gone. if a merge from it landed into the account this close
@@ -1389,12 +1540,29 @@ function blockReason(c: UnroutableCredit): string {
   }
 }
 
-async function assertExitPayoutsSwept(run: Run, audit: AccountAudit): Promise<void> {
+// the payout of a classic asset's SAC is a classic balance the batches already
+// handle. that covers the assets the account holds now and every asset the
+// reviewed batches touch: an earlier phase of a long close may have removed a
+// payout asset's trustline, and its SAC then traps on balance() (contract
+// error #13) instead of reading zero, which would wedge the merge.
+async function assertExitPayoutsSwept(
+  run: Run,
+  audit: AccountAudit,
+  final: FinalClassicTxNode,
+): Promise<void> {
   const passphrase = run.deps.network.passphrase;
   const classic = new Set([Asset.native().contractId(passphrase)]);
-  for (const b of audit.balances) {
-    if (b.asset.kind === "credit") {
-      classic.add(new Asset(b.asset.code, b.asset.issuer).contractId(passphrase));
+  const addCredit = (asset: unknown): void => {
+    const a = asset as { kind?: unknown; code?: unknown; issuer?: unknown } | null;
+    if (a?.kind === "credit" && typeof a.code === "string" && typeof a.issuer === "string") {
+      classic.add(new Asset(a.code, a.issuer).contractId(passphrase));
+    }
+  };
+  for (const b of audit.balances) addCredit(b.asset);
+  for (const batch of final.metadata.batches) {
+    for (const op of batch.operations) {
+      addCredit(op.metadata.asset);
+      addCredit(op.metadata.sendAsset);
     }
   }
   const tokens = planExitPayoutTokens(run.tree).filter((id) => !classic.has(id));

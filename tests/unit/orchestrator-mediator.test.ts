@@ -263,7 +263,8 @@ describe("the flow is minted right before the batch that funds the mediator", ()
       "sign:invokeHostFunction",
       "mint",
       `persist:${MEDIATOR_B}:MINTED-TOKEN`,
-      expect.stringMatching(/^sign:createAccount,.*accountMerge$/),
+      // the close marker pair, then the funding of the mediator and the merge into it
+      "sign:manageData,manageData,createAccount,accountMerge",
       "classic-landed",
     ]);
     const merge = mergeSigned(h);

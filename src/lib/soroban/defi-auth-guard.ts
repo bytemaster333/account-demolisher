@@ -88,7 +88,7 @@ interface ExpectedCall {
 // make, authorized by exactly the tree that call needs
 export function assertDefiAuthTree(node: PlanNode, tx: Transaction, ctx: DefiAuthContext): void {
   try {
-    if ((node.kind as string) === BLND_TRUSTLINE_KIND) checkBlndTrustline(node.kind, tx, ctx);
+    if (node.kind === "AddBlndTrustline") checkBlndTrustline(node.kind, tx, ctx);
     else check(node, tx, ctx);
   } catch (err) {
     if (err instanceof UnsafeDefiAuthError) throw err;
@@ -105,8 +105,6 @@ function refuse(kind: string, reason: string): never {
 }
 
 // the step that opens the BLND trustline before a pool emissions claim
-const BLND_TRUSTLINE_KIND = "AddBlndTrustline";
-
 function checkBlndTrustline(kind: string, tx: Transaction, ctx: DefiAuthContext): void {
   const fail = (reason: string): never => refuse(kind, reason);
   if (tx.source !== ctx.user) fail(`transaction source is ${tx.source}, expected ${ctx.user}`);
@@ -425,14 +423,24 @@ function expectedFor(
       ) {
         return "claim does not name a pool's token set";
       }
+      // pool_index is unique only within a token set, so the set must be the plan's
+      const plannedTokens = (node.metadata as { readonly tokens?: unknown }).tokens;
+      if (Array.isArray(plannedTokens) && !sameList(tokens, plannedTokens as string[])) {
+        return "claim names a different token set";
+      }
       if (bytesHex(a[2]) !== node.metadata.poolIndex.toLowerCase()) {
         return "claim names a different pool index";
       }
       // the router forwards to the pool it resolves on chain, which authorizes
-      // the same user; the reward is paid out by the pool
+      // the same user; the reward is paid out by the pool. a concentrated
+      // pool's claim names that pool, so the nested call is pinned to it.
+      const planned = node.metadata.poolAddress;
+      if (planned !== undefined && findConcentratedPool(planned, network) === undefined) {
+        return `${planned} is not a pinned Aquarius concentrated pool`;
+      }
       return [
         {
-          contract: poolShaped(nativeSac, root.contract)("pool"),
+          contract: planned ?? poolShaped(nativeSac, root.contract)("pool"),
           fn: "claim",
           args: exactArgs([user]),
           children: [],

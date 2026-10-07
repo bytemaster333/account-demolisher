@@ -13,6 +13,7 @@ import {
 } from "@stellar/stellar-sdk";
 
 import { AccountNotFoundError } from "@/lib/stellar/account-audit";
+import { BackstopClaimUnavailableError } from "@/lib/adapters/blend/exit";
 import type { PlanNode, PlanTree } from "@/lib/plan/tree";
 import type { DemolishProgressEvent } from "@/lib/types/plan";
 import { EMPTY_POSITIONS } from "@/lib/adapters/positions/interface";
@@ -83,6 +84,15 @@ vi.mock("@/lib/soroban/allowances", async () => {
     scanAllowances: (...a: unknown[]) => scanAllowances(...a),
     confirmAllowancesOnChain: (...a: unknown[]) => confirmAllowancesOnChain(...a),
   };
+});
+// the blend exit builders read pools through the blend sdk's own rpc client, so
+// they are a network leaf here too
+const buildExitSequence = vi.fn();
+vi.mock("@/lib/adapters/blend/exit", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/adapters/blend/exit")>(
+    "@/lib/adapters/blend/exit",
+  );
+  return { ...actual, buildExitSequence: (...a: unknown[]) => buildExitSequence(...a) };
 });
 vi.mock("@/lib/soroban/held-tokens", async () => {
   const actual = await vi.importActual<typeof import("@/lib/soroban/held-tokens")>(
@@ -925,6 +935,47 @@ describe("one close per account runs in a tab", () => {
     first.stop();
     second.stop();
   });
+
+  it("says so at once when another tab holds the close, instead of waiting on its lock", async () => {
+    // another tab's close holds the exclusive lock; a request for it would never
+    // be granted while that close runs
+    const request = vi.fn(() => new Promise(() => {}));
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      locks: {
+        query: async () => ({ held: [{ name: `account-demolisher:close:${USER}` }], pending: [] }),
+        request,
+      },
+    });
+    try {
+      const actor = withPlan(
+        () =>
+          tree({
+            id: "final-classic-tx",
+            kind: "FinalClassicTx",
+            dependencies: [],
+            description: "close account",
+            status: "simulated",
+            metadata: {
+              kind: "FinalClassicTx",
+              batches: [],
+              destination: DEST,
+              useMediator: false,
+            },
+          } as PlanNode),
+        input({ destination: DEST, useMediator: false }),
+      );
+      await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+      actor.send({ type: "CONFIRM", typed: DEST.slice(-4), expected: RUN });
+      await settle(actor, "failed");
+      expect(actor.getSnapshot().context.failureKind).toBe("close_running");
+      expect(actor.getSnapshot().context.error).toMatch(/another tab/);
+      expect(request).not.toHaveBeenCalled();
+      actor.stop();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe("discovery reports partial scans and drops spent allowances", () => {
@@ -1091,5 +1142,152 @@ describe("the preview leaves a step built after earlier ones pending", () => {
     expect(deferred.error).toBeUndefined();
     expect(unbuilt.status).toBe("failed");
     expect(unbuilt.error).toBe("pool is not on the allow-list");
+  });
+});
+
+describe("a run that only prepares the close never reads as a closed account", () => {
+  const unlocksAt = new Date("2026-10-28T00:00:00Z");
+  // a plan with no merge: a backstop queue stays locked after this run. the
+  // unwind step finds nothing to do, so the run needs no signature.
+  const preparePlan = (): PlanTree => ({
+    ...tree({
+      id: "classic-unwind",
+      kind: "ClassicUnwind",
+      dependencies: [],
+      description: "unwind offers",
+      status: "simulated",
+      metadata: {
+        kind: "ClassicUnwind",
+        batches: [{ operations: [], destination: DEST }],
+        offerIds: [],
+        poolIds: [],
+        repayAssets: [USDC_SAC],
+      },
+    } as unknown as PlanNode),
+    prepareOnly: { unlocksAt, reason: "A Blend backstop withdrawal stays locked." },
+  });
+
+  it("ends in prepared with the unlock date, never in succeeded or with a complete event", async () => {
+    const actor = withPlan(preparePlan, input({ destination: DEST, useMediator: false }));
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    actor.send({ type: "CONFIRM", typed: DEST.slice(-4), expected: RUN });
+    await settle(actor, "prepared");
+    const ctx = actor.getSnapshot().context;
+    expect(ctx.preparedClose).toEqual({
+      unlocksAt,
+      reason: "A Blend backstop withdrawal stays locked.",
+    });
+    expect(ctx.result?.mergedTxHash).toBeUndefined();
+    expect(progressKinds(actor)).not.toContain("complete");
+    expect(net.horizon.accounts.has(USER)).toBe(true);
+    actor.send({ type: "RESET" });
+    expect(actor.getSnapshot().matches("idle")).toBe(true);
+    expect(actor.getSnapshot().context.preparedClose).toBeNull();
+    actor.stop();
+  });
+
+  it("fails a plan that has neither a merge nor a prepare-only reason", async () => {
+    const actor = withPlan(
+      () => {
+        const { prepareOnly: _, ...rest } = preparePlan();
+        return rest;
+      },
+      input({ destination: DEST, useMediator: false }),
+    );
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    actor.send({ type: "CONFIRM", typed: DEST.slice(-4), expected: RUN });
+    await settle(actor, "failed");
+    expect(actor.getSnapshot().context.error).toMatch(/no merge step/);
+    expect(progressKinds(actor)).not.toContain("complete");
+    actor.stop();
+  });
+
+  it("does not mint an exchange-forward flow for a plan that only prepares", async () => {
+    const backstop = {
+      poolId: allowlisted("blend", "BlendPool"),
+      backstopId: "C",
+      shares: 0n,
+      queuedForWithdrawal: 10n,
+      unlockedQueuedForWithdrawal: 0n,
+    };
+    getPositions.mockResolvedValue({ ...EMPTY_POSITIONS, backstop: [backstop] });
+    const actor = createActor(pageFlowMachine).start();
+    actor.send({ type: "START", input: input() });
+    await settle(actor, "awaiting_confirmation");
+    const ctx = actor.getSnapshot().context;
+    expect(startMediatorFlow).not.toHaveBeenCalled();
+    expect(ctx.tree?.prepareOnly).toBeDefined();
+    expect([...ctx.tree!.allNodes.values()].map((n) => n.kind)).not.toContain("FinalClassicTx");
+    expect(ctx.discoveryWarnings.join(" ")).toMatch(/backstop withdrawal stays locked/);
+    actor.stop();
+  });
+});
+
+describe("backstop emissions that can't be claimed need the user's forfeit", () => {
+  const pool = allowlisted("blend", "BlendPool");
+  const deposit = {
+    poolId: pool,
+    shares: 50n,
+    queuedForWithdrawal: 0n,
+    unlockedQueuedForWithdrawal: 0n,
+    accruedEmissions: 7_114_578_242n,
+  };
+
+  beforeEach(() => {
+    // what the adapter throws for every mainnet backstop claim today
+    buildExitSequence.mockImplementation(
+      async (_n: unknown, _p: unknown, _u: unknown, _s: unknown, opts: Record<string, unknown>) => {
+        if (opts.claimBackstopEmissions === true) {
+          throw new BackstopClaimUnavailableError(
+            pool,
+            "CBACKSTOP",
+            7_114_578_242n,
+            "HostError: VM call trapped: UnreachableCodeReached",
+          );
+        }
+        throw new Error("the queue is not built in this test");
+      },
+    );
+  });
+
+  it("blocks the confirm with the accrued BLND while the claim can't be built", async () => {
+    getPositions.mockResolvedValue({ ...EMPTY_POSITIONS, backstop: [deposit] });
+    const actor = createActor(pageFlowMachine).start();
+    actor.send({ type: "START", input: input({ destination: DEST, useMediator: false }) });
+    await settle(actor, "awaiting_confirmation");
+    const ctx = actor.getSnapshot().context;
+    expect(ctx.emissionForfeits).toEqual([
+      {
+        poolId: pool,
+        accruedEmissions: 7_114_578_242n,
+        reason: "the claim fails when simulated against the chain today",
+      },
+    ]);
+    actor.send({ type: "CONFIRM", typed: DEST.slice(-4), expected: RUN });
+    expect(actor.getSnapshot().matches("awaiting_confirmation")).toBe(true);
+    actor.stop();
+  });
+
+  it("plans the queue without the claim once the user forfeits it, and says so", async () => {
+    getPositions.mockResolvedValue({ ...EMPTY_POSITIONS, backstop: [deposit] });
+    const actor = createActor(pageFlowMachine).start();
+    actor.send({
+      type: "START",
+      input: input({
+        destination: DEST,
+        useMediator: false,
+        forfeitBackstopEmissionPoolIds: [pool],
+      }),
+    });
+    await settle(actor, "awaiting_confirmation");
+    const ctx = actor.getSnapshot().context;
+    const kinds = [...ctx.tree!.allNodes.values()].map((n) => n.kind);
+    expect(kinds).toContain("BackstopQueue");
+    expect(kinds).not.toContain("ClaimBackstopEmissions");
+    expect(ctx.emissionForfeits).toEqual([]);
+    expect(ctx.discoveryWarnings.join(" ")).toMatch(
+      /711\.4578242 BLND of backstop emissions for pool .* are forfeited, as you chose/,
+    );
+    actor.stop();
   });
 });

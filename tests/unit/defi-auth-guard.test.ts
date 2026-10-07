@@ -882,6 +882,33 @@ describe("aquarius concentrated pools", () => {
     ).toThrow(/not a pinned Aquarius concentrated pool/);
   });
 
+  it("holds a concentrated pool's reward claim through the router to that pool", () => {
+    const router = RECORDED.aquariusClaim.contract;
+    const args = [
+      addr(user),
+      xdr.ScVal.scvVec([addr(XLM_SAC), addr(USDC_SAC)]),
+      xdr.ScVal.scvBytes(Uint8Array.from(Buffer.from(POOL_INDEX, "hex"))),
+    ];
+    const claim = (nestedPool: string) =>
+      buildTx(user, router, "claim", args, [
+        entry(inv(router, "claim", args, [inv(nestedPool, "claim", [addr(user)])])),
+      ]);
+    const rewards = node({
+      id: "cr",
+      kind: "ClaimAquariusRewards",
+      metadata: {
+        kind: "ClaimAquariusRewards",
+        poolIndex: POOL_INDEX,
+        tokens: [XLM_SAC, USDC_SAC],
+        poolAddress: pool,
+      },
+    });
+    expect(() => assertDefiAuthTree(rewards, claim(pool), ctx(user))).not.toThrow();
+    expect(() => assertDefiAuthTree(rewards, claim(EVIL), ctx(user))).toThrow(
+      /root authorizes .*claim, which is not expected/,
+    );
+  });
+
   it("refuses either call when it nests a drain", () => {
     const drain = inv(XLM_SAC, "transfer", [addr(user), addr(ATTACKER), i128(1n)]);
     expect(() =>
