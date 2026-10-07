@@ -227,6 +227,7 @@ describe("resume and inspect against chain state", () => {
   }
 
   beforeEach(() => {
+    vi.stubEnv("TRUSTED_PROXY_HOPS", "1");
     window.localStorage.clear();
     fake = new FakeHorizon({
       sign: { GET: signRoute.GET, POST: signRoute.POST },
@@ -245,6 +246,7 @@ describe("resume and inspect against chain state", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it("resumes a forward long after the token expired and clears the record", async () => {

@@ -108,6 +108,7 @@ function sign(envelopeXdr: string, flowToken: string): Promise<Response> {
 }
 
 beforeEach(() => {
+  vi.stubEnv("TRUSTED_PROXY_HOPS", "1");
   existing = new Set();
   horizonDown = false;
   horizonCalls.length = 0;
@@ -119,6 +120,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 

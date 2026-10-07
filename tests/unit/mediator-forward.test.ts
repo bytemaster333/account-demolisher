@@ -53,6 +53,7 @@ async function mergedFlow(): Promise<MediatorForwardInput> {
 }
 
 beforeEach(() => {
+  vi.stubEnv("TRUSTED_PROXY_HOPS", "1");
   fake = new FakeHorizon({
     sign: { GET: signRoute.GET, POST: signRoute.POST },
     reissue: reissueRoute.POST,
@@ -71,6 +72,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe("submitMediatorForward", () => {
