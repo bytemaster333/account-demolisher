@@ -93,6 +93,22 @@ function foreignSources(tx: Transaction, closing: string): readonly string[] {
   return [...out];
 }
 
+function snapshotOf(plan: RelayPlan): SignerSnapshot {
+  return { signers: plan.signers, thresholds: plan.thresholds };
+}
+
+// every relay frame carries the snapshot; keeping the held object when nothing
+// changed keeps the live-account check from re-running on each signature
+function sameSnapshot(x: SignerSnapshot, y: SignerSnapshot): boolean {
+  return (
+    x.thresholds.low === y.thresholds.low &&
+    x.thresholds.med === y.thresholds.med &&
+    x.thresholds.high === y.thresholds.high &&
+    x.signers.length === y.signers.length &&
+    x.signers.every((s, i) => s.key === y.signers[i]!.key && s.weight === y.signers[i]!.weight)
+  );
+}
+
 export default function SignPage(): React.JSX.Element {
   const [planId, setPlanId] = useState<string | null>(null);
   const [load, setLoad] = useState<Load>({ kind: "loading" });
@@ -100,6 +116,10 @@ export default function SignPage(): React.JSX.Element {
   const [envelopeError, setEnvelopeError] = useState<string | null>(null);
 
   const [facts, setFacts] = useState<Facts>({ kind: "loading" });
+  // the relay's snapshot of the signer set. it stays put while signatures
+  // arrive, but a request evicted and published again gets a fresh one under
+  // the same id, so it follows the latest frame
+  const [snapshot, setSnapshot] = useState<SignerSnapshot | null>(null);
 
   const [signing, setSigning] = useState(false);
   const [signError, setSignError] = useState<string | null>(null);
@@ -149,6 +169,7 @@ export default function SignPage(): React.JSX.Element {
           return;
         }
         setXdr(fetched.xdr);
+        setSnapshot(snapshotOf(fetched));
         setLoad({ kind: "ready", network: net, plan: fetched });
       } catch (e: unknown) {
         if (!cancelled)
@@ -163,15 +184,21 @@ export default function SignPage(): React.JSX.Element {
     };
   }, []);
 
-  // take the signatures of a relay envelope, only when it is the linked
-  // transaction. throws otherwise and leaves the held envelope alone.
+  // take the signatures and signer set of a relay frame, only when it is the
+  // linked transaction. throws otherwise and leaves what is held alone.
   const absorb = useCallback(
-    (incoming: string): void => {
+    (incoming: RelayPlan): void => {
       if (network === null || planId === null) return;
-      decodePinned(incoming, network.passphrase, planId);
+      decodePinned(incoming.xdr, network.passphrase, planId);
       setXdr((held) =>
-        held === null ? incoming : mergeRelayEnvelope(held, incoming, network.passphrase, planId),
+        held === null
+          ? incoming.xdr
+          : mergeRelayEnvelope(held, incoming.xdr, network.passphrase, planId),
       );
+      setSnapshot((held) => {
+        const next = snapshotOf(incoming);
+        return held !== null && sameSnapshot(held, next) ? held : next;
+      });
     },
     [network, planId],
   );
@@ -183,7 +210,7 @@ export default function SignPage(): React.JSX.Element {
       planId,
       (update) => {
         try {
-          absorb(update.xdr);
+          absorb(update);
           setLiveInterrupted(false);
         } catch (e: unknown) {
           setEnvelopeError(errorMessage(e, "The relay sent a transaction that doesn't match."));
@@ -205,7 +232,7 @@ export default function SignPage(): React.JSX.Element {
     setRefreshError(null);
     try {
       const fetched = await fetchPlan(planId);
-      absorb(fetched.xdr);
+      absorb(fetched);
       setLiveInterrupted(false);
       setLiveReloadKey((k) => k + 1);
     } catch (e: unknown) {
@@ -224,12 +251,6 @@ export default function SignPage(): React.JSX.Element {
     return foreignSources(decodePinned(xdr, network.passphrase, planId), closingSource);
   }, [network, xdr, planId, closingSource]);
 
-  // the relay's snapshot of the signer set; it doesn't change while signatures
-  // arrive, so it is read from the plan loaded with the link
-  const snapshot: SignerSnapshot | null = useMemo(
-    () => (plan === null ? null : { signers: plan.signers, thresholds: plan.thresholds }),
-    [plan],
-  );
   const required =
     snapshot === null
       ? 0
@@ -240,17 +261,15 @@ export default function SignPage(): React.JSX.Element {
         });
   const signerKeys = useMemo(() => snapshot?.signers.map((s) => s.key) ?? [], [snapshot]);
 
-  // compare the live account with the request, once per request. when the
-  // account is gone, ask horizon whether this very transaction is what closed it.
+  // compare the live account with the request, once per request and signer
+  // set. when the account is gone, ask horizon whether this very transaction is
+  // what closed it.
   useEffect(() => {
     if (network === null || plan === null || planId === null || closingSource.length === 0) return;
-    if (plan.account !== closingSource) return;
+    if (snapshot === null || plan.account !== closingSource) return;
     let cancelled = false;
     const horizon = getHorizon(network);
-    loadBundleFreshness(horizon, plan.xdr, network.passphrase, {
-      signers: plan.signers,
-      thresholds: plan.thresholds,
-    }).then(
+    loadBundleFreshness(horizon, plan.xdr, network.passphrase, snapshot).then(
       (r) => {
         if (!cancelled) setFacts(r.ok ? { kind: "fresh" } : { kind: "stale", reasons: r.reasons });
       },
@@ -286,7 +305,7 @@ export default function SignPage(): React.JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [network, plan, planId, closingSource]);
+  }, [network, plan, planId, closingSource, snapshot]);
 
   const signed = useMemo(
     () => (network && xdr ? signedSigners(xdr, network.passphrase, signerKeys) : []),
@@ -321,7 +340,7 @@ export default function SignPage(): React.JSX.Element {
         const merged = await submitSignature(planId, signedXdr);
         // the relay's answer may predate a signature that already arrived live;
         // absorb only adds, so nothing shown here is lost
-        absorb(merged.xdr);
+        absorb(merged);
         setLastSigner(signerPublicKey);
         setSignedHere(true);
       } catch (e: unknown) {

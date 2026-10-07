@@ -271,6 +271,17 @@ describe("/sign signer set", () => {
     expect(screen.getByRole("alert").textContent).toMatch(/not a signer/);
   });
 
+  // a request evicted from the relay and published again carries a fresh
+  // snapshot under the same id; the open tab must count against that one
+  it("counts against the signer set of the latest relay frame", async () => {
+    await openPage();
+    expect(screen.getByTestId("sign-progress").textContent).toBe("1 of 3");
+    act(() => relay.update?.(relayPlan(T2, [owner, a, b])));
+    await settle();
+    expect(screen.getByTestId("sign-progress").textContent).toBe("1 of 2");
+    expect(screen.queryAllByText(c.publicKey()).length).toBe(0);
+  });
+
   it("refuses a request whose relay snapshot is for another account", async () => {
     relay.plan = { ...relayPlan(T3, [owner, a]), account: Keypair.random().publicKey() };
     await openPage();
