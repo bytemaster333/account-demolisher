@@ -14,6 +14,7 @@ import type { PlanNode, PlanTree } from "@/lib/plan/tree";
 import { soroswapPairFor } from "@/lib/soroban/defi-auth-guard";
 import { BackstopEmissionsClaimError, PriceImpactRefusedError } from "@/lib/plan/hydration";
 import { NoSoroswapRouteError } from "@/lib/adapters/soroswap/swap";
+import { BackstopClaimUnavailableError } from "@/lib/adapters/blend/exit";
 import type { PathResultRef } from "@/lib/types/plan";
 import { EMPTY_POSITIONS } from "@/lib/adapters/positions/interface";
 
@@ -1514,6 +1515,21 @@ describe("a conversion the user did not agree to is never signed", () => {
     );
   });
 
+  it("stops before signing when the whole balance now sells below the reviewed quote", async () => {
+    // no price impact, but the full-size quote fell from 4 to 3 XLM per USDC
+    resolveCreditPaths.mockResolvedValue(quote("1500.0000000", "1.5000000"));
+    const d = deps();
+    const t = tree(
+      finalNode([], {
+        reviewedConversionQuotes: {
+          [key]: { sourceAmount: "500.0000000", destinationAmount: "2000.0000000" },
+        },
+      }),
+    );
+    await expect(run(t, d)).rejects.toMatchObject({ kind: "conversion_refused" });
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
+  });
+
   it("does not send a held token as-is when its swap was refused for its price", async () => {
     const convert = {
       id: "convert",
@@ -1536,6 +1552,133 @@ describe("a conversion the user did not agree to is never signed", () => {
     await expect(run(t, d)).rejects.toMatchObject({ kind: "conversion_refused" });
     expect(d.connector.signTransaction).not.toHaveBeenCalled();
     expect(convert.status).toBe("failed");
+  });
+});
+
+describe("a credit the close claims is quoted with the claim", () => {
+  const CB_CC = `00000000${"cc".repeat(32)}`;
+  const CB_DD = `00000000${"dd".repeat(32)}`;
+  it("converts a claimed balance landing on an empty trustline instead of refusing it", async () => {
+    const key = `USDC:${USDC_ISSUER}`;
+    const usdcLine = (amount: string) => ({
+      asset: { kind: "credit" as const, code: "USDC", issuer: USDC_ISSUER },
+      amount,
+      buyingLiabilities: "0",
+      sellingLiabilities: "0",
+      limit: "1000",
+    });
+    // the claim lands in the first phase; the next audit holds what it paid in
+    auditAccount
+      .mockResolvedValueOnce(
+        makeAudit({
+          subentryCount: 1,
+          balances: [...makeAudit().balances, usdcLine("0.0000000")],
+          claimableBalances: [
+            {
+              id: CB_CC,
+              asset: { kind: "credit", code: "USDC", issuer: USDC_ISSUER },
+              amount: "5.0000000",
+              sponsor: ATTACKER,
+              claimants: [USER],
+              predicate: [{ destination: USER, predicate: { unconditional: true } }],
+              claimableNow: true,
+            },
+          ],
+        }),
+      )
+      .mockResolvedValue(
+        makeAudit({ subentryCount: 1, balances: [...makeAudit().balances, usdcLine("5.0000000")] }),
+      );
+    // the path search quotes only what the account will hold, so the claim must be
+    // in the request: the empty line alone has nothing to quote
+    resolveCreditPaths.mockImplementation(
+      async (
+        a: { balances: { amount: string }[] },
+        _n: unknown,
+        opts?: { claimedBalanceIds?: readonly string[] },
+      ) =>
+        opts?.claimedBalanceIds?.includes(CB_CC) || a.balances[1]?.amount === "5.0000000"
+          ? new Map<string, PathResultRef>([
+              [
+                key,
+                {
+                  sourceAmount: "5.0000000",
+                  destinationAmount: "10.0000000",
+                  path: [],
+                  reference: { sourceAmount: "0.5000000", destinationAmount: "1.0000000" },
+                },
+              ],
+            ])
+          : new Map(),
+    );
+    const d = deps();
+    const t = tree(finalNode([], { claimableBalanceIds: [CB_CC] }));
+    await run(t, d);
+    expect(t.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
+    const ops = d.connector.signed.flatMap((tx) => tx.operations.map((o) => o.type));
+    expect(ops).toContain("claimClaimableBalance");
+    expect(ops).toContain("pathPaymentStrictSend");
+  });
+
+  it("quotes again without a claim the signing window leaves out", async () => {
+    const closedAt = 1_900_000_000;
+    const key = `USDC:${USDC_ISSUER}`;
+    auditAccount.mockResolvedValue(
+      makeAudit({
+        subentryCount: 1,
+        balances: [
+          ...makeAudit().balances,
+          {
+            asset: { kind: "credit", code: "USDC", issuer: USDC_ISSUER },
+            amount: "500.0000000",
+            buyingLiabilities: "0",
+            sellingLiabilities: "0",
+            limit: "1000",
+          },
+        ],
+        claimableBalances: [
+          {
+            id: CB_DD,
+            asset: { kind: "credit", code: "USDC", issuer: USDC_ISSUER },
+            amount: "5.0000000",
+            sponsor: ATTACKER,
+            claimants: [USER],
+            predicate: [
+              { destination: USER, predicate: { abs_before_epoch: String(closedAt + 60) } },
+            ],
+            claimableNow: true,
+          },
+        ],
+      }),
+    );
+    const path = (source: string, dest: string): PathResultRef => ({
+      sourceAmount: source,
+      destinationAmount: dest,
+      path: [],
+      reference: { sourceAmount: "0.5000000", destinationAmount: "1.0000000" },
+    });
+    resolveCreditPaths.mockImplementation(
+      async (_a: unknown, _n: unknown, opts?: { claimedBalanceIds?: readonly string[] }) =>
+        new Map([
+          [
+            key,
+            opts?.claimedBalanceIds?.includes(CB_DD)
+              ? path("505.0000000", "1010.0000000")
+              : path("500.0000000", "1000.0000000"),
+          ],
+        ]),
+    );
+    const d = clockedDeps({}, accounts(), closedAt);
+    const t = tree(finalNode([], { claimableBalanceIds: [CB_DD] }));
+    await run(t, d);
+    expect(resolveCreditPaths.mock.calls.map((c) => c[2])).toEqual([
+      { claimedBalanceIds: [CB_DD] },
+      { claimedBalanceIds: [] },
+    ]);
+    const sale = d.connector.signed
+      .flatMap((tx) => tx.operations)
+      .find((o) => o.type === "pathPaymentStrictSend") as { sendAmount: string; destMin: string };
+    expect(sale).toMatchObject({ sendAmount: "500.0000000", destMin: "990.0000000" });
   });
 });
 
@@ -1672,6 +1815,77 @@ describe("soroban fees are capped per kind of step before signing", () => {
     expect(lp.error).toMatch(/write 64000 bytes/);
     expect(d.connector.signTransaction).not.toHaveBeenCalled();
   });
+
+  describe("an aquarius exit runs pool tokens nobody vetted, so its writes are bounded too", () => {
+    const router = allowlisted("aquarius", "AquariusAmmRouter");
+    const xlmSac = Asset.native().contractId(NETWORK.passphrase);
+    const poolIndex = "ab".repeat(32);
+    // the router resolves the pool on chain; any contract shaped like a pool
+    const pool = HOSTILE_TOKEN;
+    const claimNode = (): PlanNode =>
+      ({
+        id: "aq-claim",
+        kind: "ClaimAquariusRewards",
+        dependencies: [],
+        description: "claim aquarius rewards",
+        status: "simulated",
+        metadata: { kind: "ClaimAquariusRewards", poolIndex, tokens: [xlmSac, USDC_SAC] },
+      }) as PlanNode;
+    // router claim(user, tokens, pool_index) -> pool.claim(user)
+    const claimRebuild =
+      (fee: bigint, resources: { writeBytes: number; readWriteEntries: number }) =>
+      async (n: PlanNode) => {
+        const args = [
+          addr(USER),
+          xdrVec([addr(xlmSac), addr(USDC_SAC)]),
+          nativeToScVal(Buffer.from(poolIndex, "hex")),
+        ];
+        (n.metadata as { transaction?: Transaction }).transaction = invokeTx(
+          new Account(USER, "1"),
+          router,
+          "claim",
+          args,
+          [sourceAuth(inv(router, "claim", args, [inv(pool, "claim", [addr(USER)])]))],
+          (fee + 100_000n).toString(),
+          resources,
+        );
+      };
+
+    it("refuses a claim that declares one byte over the pool-exit write bound", async () => {
+      const node = claimNode();
+      const d = deps({
+        rebuildSorobanNode: claimRebuild(400_000n, { writeBytes: 32_769, readWriteEntries: 1 }),
+      });
+      await expect(run(tree(node, finalNode(["aq-claim"])), d)).rejects.toMatchObject({
+        kind: "unsafe",
+      });
+      expect(node.error).toMatch(/write 32769 bytes/);
+      expect(d.connector.signTransaction).not.toHaveBeenCalled();
+    });
+
+    it("refuses a claim that declares 41 read-write entries", async () => {
+      const node = claimNode();
+      const d = deps({
+        rebuildSorobanNode: claimRebuild(400_000n, { writeBytes: 200, readWriteEntries: 41 }),
+      });
+      await expect(run(tree(node, finalNode(["aq-claim"])), d)).rejects.toMatchObject({
+        kind: "unsafe",
+      });
+      expect(d.connector.signTransaction).not.toHaveBeenCalled();
+    });
+
+    it("signs the largest exit measured on mainnet", async () => {
+      // 15,993,759 stroops, 10,564 bytes and 12 entries: a router exit measured
+      // on mainnet restoring archived reward pages (pool CDRRLX)
+      const node = claimNode();
+      const d = deps({
+        rebuildSorobanNode: claimRebuild(15_993_759n, { writeBytes: 10_564, readWriteEntries: 12 }),
+      });
+      await run(tree(node), d);
+      expect(node.status).toBe("confirmed");
+      expect(d.connector.signTransaction).toHaveBeenCalledTimes(1);
+    });
+  });
 });
 
 describe("the BLND trustline step", () => {
@@ -1724,6 +1938,7 @@ describe("the classic unwind ahead of the repays", () => {
         offerIds: ["77"],
         poolIds: [],
         repayAssets: [USDC_SAC],
+        destination: DEST,
       },
     }) as unknown as PlanNode;
 
@@ -1753,6 +1968,22 @@ describe("the classic unwind ahead of the repays", () => {
     await run(t, d);
     expect(t.allNodes.get("classic-unwind")!.status).toBe("confirmed");
     expect(d.connector.signTransaction).not.toHaveBeenCalled();
+  });
+
+  it("cancels only the offers the review listed, not one placed since", async () => {
+    // offer 78 sells the repay asset too, but it appeared after the review
+    const later = { ...offer, id: "78" };
+    auditAccount
+      .mockResolvedValueOnce(makeAudit({ offers: [offer, later], subentryCount: 2 }))
+      .mockResolvedValue(makeAudit({ offers: [later], subentryCount: 1 }));
+    const t = tree(unwindNode());
+    const d = deps();
+    await run(t, d);
+    expect(d.connector.signed).toHaveLength(1);
+    expect(
+      d.connector.signed[0]!.operations.map((o) => (o as { offerId?: string }).offerId),
+    ).toEqual(["77"]);
+    expect(t.allNodes.get("classic-unwind")!.status).toBe("confirmed");
   });
 
   it("stops the close when the unwind fails, so nothing that depends on it runs", async () => {
@@ -1858,7 +2089,9 @@ describe("a backstop emissions claim that can no longer run", () => {
     const d = deps({
       rebuildSorobanNode: async (n) => {
         if (n.kind === "ClaimBackstopEmissions") {
-          throw new BackstopEmissionsClaimError(pool, 7_114_578_242n, "VM call trapped");
+          throw new BackstopEmissionsClaimError(
+            new BackstopClaimUnavailableError(pool, "CBACKSTOP", 7_114_578_242n, "VM call trapped"),
+          );
         }
         throw new Error("the queue must not be built");
       },

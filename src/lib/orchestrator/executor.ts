@@ -24,9 +24,9 @@ import { filterClaimableNow } from "@/lib/stellar/claimable-balances";
 import { DEFAULT_TX_VALIDITY_SECONDS, type LedgerClock } from "@/lib/stellar/ledger-clock";
 import {
   batchClassicDemolition,
+  buildClassicUnwindBatches,
   mediatorFundingCheck,
   planClaimableBalances,
-  planClassicUnwind,
   unroutableCredits,
   type UnroutableCredit,
 } from "@/lib/plan/classic-batcher";
@@ -224,7 +224,10 @@ const MAX_SOROBAN_ATTEMPTS = 3;
 // what a soroban step may cost before it is signed (soroban/fee-cap.ts has the
 // measurements). a step that runs a token nobody vetted gets a class that also
 // bounds the writes it declares: the airdrop-reachable transfer and revoke, the
-// held-token swap, and a soroswap lp exit, whose pair can hold any token.
+// held-token swap, a soroswap lp exit, whose pair can hold any token, and the
+// aquarius exits, whose router is pinned but whose pools are permissionless, so
+// a pool token runs inside them too. the blend steps run only pinned pools and
+// backstops.
 function feeClassOf(node: PlanNode): SorobanFeeClass {
   switch (node.kind) {
     case "RevokeAllowance":
@@ -233,6 +236,11 @@ function feeClassOf(node: PlanNode): SorobanFeeClass {
     case "ConvertSorobanToXLM":
     case "WithdrawSoroswapLp":
       return "untrusted-convert";
+    case "WithdrawAquarius":
+    case "ClaimAquariusRewards":
+    case "WithdrawAquariusConcentrated":
+    case "ClaimAquariusConcentratedFees":
+      return "pool-exit";
     default:
       return "defi-exit";
   }
@@ -1120,7 +1128,44 @@ async function runFinalClassic(node: FinalClassicTxNode, run: Run): Promise<Conf
         if (err instanceof AccountNotFoundError) return mergeAlreadyLanded(node, run, err);
         throw err;
       }
-      const freshPaths = await withHorizonRetry(() => resolveCreditPaths(freshAudit, deps.network));
+      const md = node.metadata;
+      // the claims land before the conversions, so each credit is quoted at its
+      // balance plus what this close claims into it
+      const claimedIn = (audit: AccountAudit): string[] =>
+        planClaimableBalances(audit, md.claimableBalanceIds, {
+          feePerOpStroops: feeBase,
+        }).claimed.map((c) => c.id);
+      const quote = (audit: AccountAudit, claimedBalanceIds: readonly string[]) =>
+        withHorizonRetry(() => resolveCreditPaths(audit, deps.network, { claimedBalanceIds }));
+      const assertCreditsRoutable = (
+        audit: AccountAudit,
+        paths: ReadonlyMap<string, PathResultRef>,
+      ): void => {
+        const stuck = unroutableCredits(
+          audit,
+          paths,
+          md.returnToIssuerAssetKeys,
+          md.sendToDestinationAssetKeys,
+          {
+            ...(md.claimableBalanceIds !== undefined
+              ? { claimableBalanceIds: md.claimableBalanceIds }
+              : {}),
+            ...(md.acceptedPriceImpactAssetKeys
+              ? { acceptedPriceImpactAssetKeys: md.acceptedPriceImpactAssetKeys }
+              : {}),
+            ...(md.reviewedReferenceQuotes
+              ? { reviewedReferenceQuotes: md.reviewedReferenceQuotes }
+              : {}),
+            ...(md.reviewedConversionQuotes
+              ? { reviewedConversionQuotes: md.reviewedConversionQuotes }
+              : {}),
+            feePerOpStroops: feeBase,
+          },
+        );
+        if (stuck.length > 0) throw creditsBlocked(stuck);
+      };
+      const quotedClaims = claimedIn(freshAudit);
+      let freshPaths = await quote(freshAudit, quotedClaims);
 
       // the classic audit can't see soroban positions; rediscover them and
       // refuse while any is open or unreadable
@@ -1152,29 +1197,7 @@ async function runFinalClassic(node: FinalClassicTxNode, run: Run): Promise<Conf
         }
       }
 
-      const md = node.metadata;
-      const stuck = unroutableCredits(
-        freshAudit,
-        freshPaths,
-        md.returnToIssuerAssetKeys,
-        md.sendToDestinationAssetKeys,
-        {
-          ...(md.claimableBalanceIds !== undefined
-            ? { claimableBalanceIds: md.claimableBalanceIds }
-            : {}),
-          ...(md.acceptedPriceImpactAssetKeys
-            ? { acceptedPriceImpactAssetKeys: md.acceptedPriceImpactAssetKeys }
-            : {}),
-          ...(md.reviewedReferenceQuotes
-            ? { reviewedReferenceQuotes: md.reviewedReferenceQuotes }
-            : {}),
-          ...(md.reviewedConversionQuotes
-            ? { reviewedConversionQuotes: md.reviewedConversionQuotes }
-            : {}),
-          feePerOpStroops: feeBase,
-        },
-      );
-      if (stuck.length > 0) throw creditsBlocked(stuck);
+      assertCreditsRoutable(freshAudit, freshPaths);
       await assertResidueDeliverable(freshAudit, freshPaths, node, deps.horizon);
 
       // the network clock this batch's time bounds and claims are judged by, read
@@ -1182,6 +1205,13 @@ async function runFinalClassic(node: FinalClassicTxNode, run: Run): Promise<Conf
       // claimable for the whole signing window is left out of the batch.
       const clock = await readLedgerClock(deps.horizon);
       const auditNow = clock === null ? freshAudit : withClaimWindow(freshAudit, publicKey, clock);
+      // a claim the signing window leaves out is not sold either, so the batch is
+      // quoted again for what it really holds
+      const claimedNow = claimedIn(auditNow);
+      if (claimedNow.join(",") !== quotedClaims.join(",")) {
+        freshPaths = await quote(auditNow, claimedNow);
+        assertCreditsRoutable(auditNow, freshPaths);
+      }
 
       const mediatorFunded = mediator ? await mediator.probe() : false;
       // the options the plan was reviewed with, plus what only execute time
@@ -1358,11 +1388,6 @@ async function runClassicUnwind(
   const landed = await settlePending(journal, deps.lookupClassicTransaction, node.description);
   if (landed !== null) journal.landedPhases.push(landed);
 
-  // the batches only label their destination; the unwind ops pay nothing out
-  const destination = node.metadata.batches[0]?.destination;
-  if (destination === undefined) {
-    throw new Error(`executing: node "${node.id}" was planned without a batch`);
-  }
   const baseReserve = await readBaseReserve(deps.horizon);
   let feeBase = await surgeFeeBase(deps.horizon);
   let rejections = 0;
@@ -1381,12 +1406,9 @@ async function runClassicUnwind(
       }
       throw err;
     }
-    const batch = planClassicUnwind(
-      audit,
-      node.metadata.repayAssets,
-      deps.network.passphrase,
-      destination,
-    ).batches[0];
+    // only the offers and pools the review listed; one gone since is skipped,
+    // and anything new is left for the user to see in a rebuilt plan
+    const batch = buildClassicUnwindBatches(audit, node.metadata)[0];
     if (batch === undefined) return journal.landedPhases.at(-1) ?? null;
 
     const clock = await readLedgerClock(deps.horizon);
