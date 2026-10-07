@@ -80,6 +80,7 @@ describe("submitRevoke enqueue guard", () => {
     );
   });
 
+  // importActual loads the whole sdk, which can take seconds on a busy machine
   it("throws on ERROR and preserves the result-code detail", async () => {
     const { xdr } =
       await vi.importActual<typeof import("@stellar/stellar-sdk")>("@stellar/stellar-sdk");
@@ -95,7 +96,7 @@ describe("submitRevoke enqueue guard", () => {
     await expect(submitRevoke(NETWORK, connector(), RECORD, USER)).rejects.toThrow(
       /did not enqueue.*txBadSeq/,
     );
-  });
+  }, 30_000);
 
   it("refuses to build/submit when the wallet's active account drifted from the owner", async () => {
     // a kit wallet signing as a different account than the one we're revoking for

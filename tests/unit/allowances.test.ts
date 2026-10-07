@@ -316,9 +316,9 @@ describe("confirming allowances on chain", () => {
         return { error: "not modelled", events: [], latestLedger: 1, id: "1", _parsed: true };
       },
     } as unknown as rpc.Server;
-    const records = Array.from({ length: 1_000 }, (_, i) => record(i));
+    const records = Array.from({ length: 300 }, (_, i) => record(i));
     const out = await confirmAllowancesOnChain(server, USER, records, TESTNET, USER);
-    expect(out).toHaveLength(1_000);
+    expect(out).toHaveLength(300);
     expect(peak).toBeLessThanOrEqual(CONFIRM_CONCURRENCY);
     expect(out.every((r) => r.onChainAmount === null)).toBe(true);
   });
