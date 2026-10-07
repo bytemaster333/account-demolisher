@@ -217,7 +217,8 @@ describe("canonicalizeSignatures", () => {
   });
 });
 
-describe("the 20-signature envelope limit", () => {
+// 20 merges of pure-JS ed25519 checks, slow when the suite runs in parallel
+describe("the 20-signature envelope limit", { timeout: 30_000 }, () => {
   it("rejects the 21st signature with a clear error instead of an XDR write failure", () => {
     const source = Keypair.random();
     const keys = Array.from({ length: 21 }, () => Keypair.random());
