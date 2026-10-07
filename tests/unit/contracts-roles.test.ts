@@ -6,7 +6,6 @@ import {
   MAINNET_ALLOWLIST,
   TESTNET_ALLOWLIST,
   getAllowlistForNetwork,
-  isAllowedContract,
   isAllowedRootTarget,
   isKnownContract,
 } from "@/lib/config/contracts";
@@ -89,12 +88,6 @@ describe("allow-list roles: only entry points may be a signed root call", () => 
     expect(() => getAllowlistForNetwork(dropped)).toThrow(/unsupported .*"futurenet"/);
     expect(() => isAllowedRootTarget(router, dropped)).toThrow(/unsupported/);
     expect(() => isKnownContract(router, dropped)).toThrow(/unsupported/);
-  });
-
-  it("isAllowedContract has no implicit network", () => {
-    const router = idOf("SoroswapRouter");
-    expect(isAllowedContract(router, MAINNET)).toBe(true);
-    expect(() => isAllowedContract(router, undefined)).toThrow(/network/);
   });
 
   it("lists every pinned aquarius concentrated pool as an entry point", () => {

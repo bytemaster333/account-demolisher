@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, it, expect, vi } from "vitest";
 import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 
 import { xdr, type rpc } from "@stellar/stellar-sdk";
 import { buildFailoverServer, createRpcServer, isFailoverError } from "@/lib/soroban/rpc-client";
@@ -219,9 +220,11 @@ describe("request deadline", () => {
         );
       });
     });
-    await new Promise<void>((r) => stall.listen(3231, "127.0.0.1", r));
-    await new Promise<void>((r) => ok.listen(3232, "127.0.0.1", r));
+    // port 0: other worktrees run this suite at the same time
+    await new Promise<void>((r) => stall.listen(0, "127.0.0.1", r));
+    await new Promise<void>((r) => ok.listen(0, "127.0.0.1", r));
   });
+  const urlOf = (s: Server): string => `http://127.0.0.1:${(s.address() as AddressInfo).port}`;
   afterAll(async () => {
     stall.closeAllConnections();
     await new Promise((r) => stall.close(r));
@@ -230,12 +233,13 @@ describe("request deadline", () => {
 
   it("abandons a stalled host after the deadline and fails over", async () => {
     const server = buildFailoverServer([
-      createRpcServer("http://127.0.0.1:3231", { timeoutMs: 200, allowHttp: true }),
-      createRpcServer("http://127.0.0.1:3232", { timeoutMs: 200, allowHttp: true }),
+      createRpcServer(urlOf(stall), { timeoutMs: 200, allowHttp: true }),
+      // roomy, so a loaded machine cannot time out the host that does answer
+      createRpcServer(urlOf(ok), { timeoutMs: 3_000, allowHttp: true }),
     ]);
     const started = Date.now();
     const health = await server.getHealth();
     expect(health.latestLedger).toBe(4242);
     expect(Date.now() - started).toBeLessThan(5_000);
-  });
+  }, 10_000);
 });

@@ -106,11 +106,61 @@ describe("soroban fee cap", () => {
     ).not.toThrow();
   });
 
+  // aquarius standard, stable and concentrated pools are permissionless, so their
+  // exits run token code nobody vetted. measured on mainnet 2026-10-06/07.
+  it("passes measured legitimate exits through permissionless pools", () => {
+    // router withdraw and claim restoring archived reward pages (pool CDRRLX)
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(15_993_759n, 10_564, 12), "pool-exit"),
+    ).not.toThrow();
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(16_305_049n, 9_812, 9), "pool-exit"),
+    ).not.toThrow();
+    // the widest standard-pool withdraw (CDE57N) and router claim (CDE57N, CB37QM)
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(8_361_529n, 11_012, 15), "pool-exit"),
+    ).not.toThrow();
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(8_606_390n, 10_236, 15), "pool-exit"),
+    ).not.toThrow();
+    // concentrated withdraw_position: most bytes (CBRUQ7), most entries (CAAJYI),
+    // highest fee (CDQ223); claim_all_position_fees at its highest fee (CAAJYI)
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(245_761n, 15_984, 21), "pool-exit"),
+    ).not.toThrow();
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(171_697n, 15_152, 22), "pool-exit"),
+    ).not.toThrow();
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(4_517_897n, 11_424, 15), "pool-exit"),
+    ).not.toThrow();
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(6_317_225n, 6_200, 8), "pool-exit"),
+    ).not.toThrow();
+  });
+
+  it("bounds what a token in a permissionless pool may write during an exit", () => {
+    expect(() => assertSorobanFeeWithinCap(prepared(20_000n, 32_769, 2), "pool-exit")).toThrow(
+      /write 32769 bytes, over the 32768-byte limit/,
+    );
+    expect(() => assertSorobanFeeWithinCap(prepared(20_000n, 500, 41), "pool-exit")).toThrow(
+      /41 ledger entries, over the limit of 40/,
+    );
+    // the testnet lp exit that restored archived contract code (pair CCD3VL)
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(174_084_607n, 53_204, 12), "pool-exit"),
+    ).toThrow(SorobanFeeCapError);
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(SOROBAN_RESOURCE_FEE_CAPS["pool-exit"] + 1n), "pool-exit"),
+    ).toThrow(/over the 3\.3 XLM cap/);
+  });
+
   it("keeps about a 2x margin over the largest measured legitimate fee per class", () => {
     const largest = {
       "untrusted-token": 936_287n,
       "untrusted-convert": 6_923_446n,
-      "defi-exit": 16_305_049n,
+      "pool-exit": 16_305_049n,
+      "defi-exit": 11_763_314n,
     };
     for (const [cls, fee] of Object.entries(largest)) {
       const cap = SOROBAN_RESOURCE_FEE_CAPS[cls as keyof typeof largest];
