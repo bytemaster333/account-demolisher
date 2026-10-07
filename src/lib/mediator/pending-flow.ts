@@ -1,15 +1,16 @@
-// Recovery records for mediator forwards. A close to an exchange merges the
+// recovery records for mediator forwards. a close to an exchange merges the
 // account into an ephemeral mediator and then forwards the balance out of it; if
 // the page dies between the two, this record (the mediator, its flow token and
 // the committed destination and memo) is what lets the user finish the forward.
 //
-// One record per flow, keyed by network, account and mediator, so a later close
-// never overwrites or clears another close's record. A record only goes away
+// one record per flow, keyed by network, account and mediator, so a later close
+// never overwrites or clears another close's record. a record only goes away
 // when the chain shows its forward was delivered, when the user dismisses one
-// whose merge never happened, or when it names a network the mediator does not
-// serve (no forward can have run there, so it leads back to no balance).
+// whose merge never happened, or when it names a network this build does not
+// serve. earlier builds also ran forwards on futurenet, but a futurenet mediator
+// can only ever have held test lumens.
 //
-// The flow token is a bearer credential in localStorage. Anyone who can read it
+// the flow token is a bearer credential in localStorage. anyone who can read it
 // can only get a forward co-signed to the destination and memo bound into it;
 // script running in this page could just as well mint its own flow, so storing
 // it here adds no exposure beyond what a compromised page already has.
@@ -106,8 +107,8 @@ function parseMap(raw: string | null): { map: RecordMap; dropped: boolean } {
   for (const value of Object.values(parsed as Record<string, unknown>)) {
     if (!isPendingForward(value)) continue;
     if (pendingForwardNetwork(value) === null) {
-      // no exchange forward ever ran there (futurenet is gone, anything else is
-      // corrupt), so there is no balance this record could lead back to
+      // futurenet is no longer served and its mediators only ever held test
+      // lumens; any other name is corrupt. neither can be resumed here.
       console.warn(
         `Dropping an exchange-forward recovery record for mediator ${value.mediatorPublicKey}: ` +
           `network "${value.networkId}" is not one the mediator serves.`,
