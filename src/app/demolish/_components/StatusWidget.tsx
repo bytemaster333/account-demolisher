@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AddressActions } from "@/components/ui";
 import { PendingForwardBanner } from "@/components/wallet/PendingForwardBanner";
 import type { NetworkConfig } from "@/lib/config/networks";
+import { errorMessage } from "@/lib/errors";
 import { explorerAccountUrl, explorerTxUrl } from "@/lib/explorer";
 import { loadPendingForwards } from "@/lib/mediator/pending-flow";
 import type { FailureKind } from "@/lib/orchestrator/page-flow-machine";
@@ -111,9 +112,11 @@ export function DemolishStatusWidget({
     return () => clearInterval(h);
   }, [state]);
 
+  // the note and the landed-transaction list come from the same facts, so they
+  // can't contradict each other
   const note: FailureNote | null = useMemo(
-    () => (state === "failed" ? failureNoteFor(tree) : null),
-    [state, tree],
+    () => (state === "failed" ? failureNoteFor(tree, landedPhases) : null),
+    [state, tree, landedPhases],
   );
   // a plan with no merge only prepares the close; the account stays open
   const prepared = tree.prepareOnly !== undefined;
@@ -464,8 +467,6 @@ export function DemolishStatusWidget({
             retryResumes={retryResumes}
           />
         ) : null}
-
-        {state === "failed" ? <LandedPhases phases={landedPhases} network={network} /> : null}
 
         {state === "failed" && failureKind !== null && FAILURE_KIND_COPY[failureKind] ? (
           <p
@@ -826,14 +827,22 @@ function FailureNoteView({
   const warn = note.kind === "in-mediator" || note.kind === "partial" || note.kind === "closed";
   // the resume action needs this flow's own record, saved before the merge. read
   // once: a delivered forward removes the record, and the banner must stay put
-  // to show the delivery
-  const [hadRecord] = useState(
-    () =>
-      note.kind === "in-mediator" &&
-      loadPendingForwards(closedAccount).some(
-        (r) => r.mediatorPublicKey === note.mediatorPublicKey && r.networkId === network.id,
-      ),
-  );
+  // to show the delivery. storage that can't be read is said, not taken as "no
+  // record"
+  const [record] = useState<{ readonly found: boolean; readonly error: string | null }>(() => {
+    if (note.kind !== "in-mediator") return { found: false, error: null };
+    try {
+      return {
+        found: loadPendingForwards(closedAccount).some(
+          (r) => r.mediatorPublicKey === note.mediatorPublicKey && r.networkId === network.id,
+        ),
+        error: null,
+      };
+    } catch (err) {
+      return { found: false, error: errorMessage(err) };
+    }
+  });
+  const hadRecord = record.found;
   const [forwardDelivered, setForwardDelivered] = useState(false);
   return (
     <div
@@ -888,8 +897,10 @@ function FailureNoteView({
             // the record is written before the merge; without it (storage blocked)
             // this page has nothing to resume from
             <>
-              This browser has no saved record of the forward, so it can&apos;t be resumed from
-              here. Keep the merge link above and the helper account address:{" "}
+              {record.error !== null
+                ? `This browser's storage couldn't be read (${record.error}), so the forward can't be resumed from here.`
+                : "This browser has no saved record of the forward, so it can't be resumed from here."}{" "}
+              Keep the merge link above and the helper account address:{" "}
               <code style={{ wordBreak: "break-all" }}>{note.mediatorPublicKey}</code>.
               {retryResumes ? (
                 <div style={{ marginTop: 8 }}>
@@ -898,6 +909,7 @@ function FailureNoteView({
               ) : null}
             </>
           )}
+          <LandedList phases={note.landed} network={network} />
         </>
       ) : note.kind === "closed" ? (
         <>
@@ -914,19 +926,27 @@ function FailureNoteView({
             {truncateHash(note.mergeHash)}
           </a>
           .
+          <LandedList phases={note.landed} network={network} />
         </>
       ) : note.kind === "partial" ? (
         <>
           <strong style={{ color: "var(--fg)", fontWeight: 600 }}>
             Some steps already ran and changed your balances.
           </strong>{" "}
-          Your account is still open. These finished on chain and are not undone:
-          <ul style={{ margin: "6px 0 6px", paddingLeft: 18 }}>
-            {note.ran.map((n) => (
-              <li key={n.id}>{nodePlainLabel(n)}</li>
-            ))}
-          </ul>
-          {retryCopy}
+          Your account is still open.
+          {note.ran.length > 0 ? (
+            <>
+              {" "}
+              These steps finished on chain and are not undone:
+              <ul style={{ margin: "6px 0 6px", paddingLeft: 18 }}>
+                {note.ran.map((n) => (
+                  <li key={n.id}>{nodePlainLabel(n)}</li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+          <LandedList phases={note.landed} network={network} />
+          <div style={{ marginTop: 6 }}>{retryCopy}</div>
         </>
       ) : (
         <>
@@ -947,48 +967,37 @@ function FailureNoteView({
 // what Retry does for each failure kind, where the generic copy isn't enough
 const FAILURE_KIND_COPY: Partial<Record<FailureKind, string>> = {
   forward_pending:
-    "Your balance is in the temporary forwarding account. Retry, or Resume the forward, sends it on to your destination.",
+    "Your balance is in the temporary forwarding account. Retry runs the forward again from this tab; the merge is not repeated.",
   bundle_stale:
     "The signed bundle can no longer land, so its signatures can't be used. Retry starts a new signing request, and every signer has to sign again.",
   interrupted:
-    "You stopped the close between steps. Retry runs the steps that didn't land; the ones marked done are not repeated.",
+    "The close stopped between steps, because it was cancelled or the wallet or network changed. Retry runs the steps that didn't land; the ones marked done are not repeated.",
   mediator_expired:
     "The authorization for the temporary forwarding account ran too low to sign the merge safely, so the merge was not signed. Retry builds a fresh plan.",
   ambiguous:
     "An earlier submission's outcome isn't known yet. Retry checks it on the network before anything is signed again.",
   conversion_refused:
     "The price moved since you reviewed it, so the conversion was not signed. Retry rebuilds the plan so you can decide again for each token.",
+  claim_unavailable:
+    "A Blend backstop rewards claim that worked at review can no longer run, so nothing more was signed. Retry rebuilds the plan, and the review then asks whether to leave those rewards unclaimed.",
   close_running:
     "A close for this account is already running in this tab. Wait for it to finish, then Retry runs only what didn't land.",
 };
 
-// the classic transactions of the close that reached the chain, so the user
-// knows what is already final when a later one failed
-function LandedPhases({
+// the close's own classic transactions that reached the chain (an earlier
+// batch, or the merge), so the user knows what is already final when a later
+// one failed. Nothing is said when none landed: the failure note covers that.
+function LandedList({
   phases,
   network,
 }: {
   readonly phases: readonly PhaseReceipt[];
   readonly network: NetworkConfig;
-}): React.JSX.Element {
-  if (phases.length === 0) {
-    return (
-      <p
-        data-testid="landed-phases"
-        data-count={0}
-        style={{ margin: "10px 0 0", fontSize: 12.5, color: "var(--fg-2)" }}
-      >
-        None of the close&apos;s own transactions was applied.
-      </p>
-    );
-  }
+}): React.JSX.Element | null {
+  if (phases.length === 0) return null;
   return (
-    <div
-      data-testid="landed-phases"
-      data-count={phases.length}
-      style={{ marginTop: 10, fontSize: 12.5, lineHeight: 1.55, color: "var(--fg-2)" }}
-    >
-      The close was partially applied. These of its transactions are on chain and are not undone:
+    <div data-testid="landed-phases" data-count={phases.length} style={{ marginTop: 6 }}>
+      These transactions of the account close are on chain and are not undone:
       <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
         {phases.map((p) => (
           <li key={p.txHash}>

@@ -1,9 +1,12 @@
 // what the failure screen may honestly say about the account, read from the
-// plan tree's receipts rather than assumed. A failure can land after the merge
-// into the exchange helper account, or after DeFi steps already moved funds, so
-// "nothing changed" is only true when no step has a receipt.
+// plan tree's receipts and the close batches the executor saw land, rather than
+// assumed. A failure can land after the merge into the exchange helper account,
+// after DeFi steps already moved funds, or after an earlier batch of the close
+// itself (path payments, trustline removals), so "nothing changed" is only true
+// when neither shows anything.
 
 import { MEDIATOR_FORWARD_NODE_ID } from "@/lib/mediator/refresh";
+import type { PhaseReceipt } from "@/lib/orchestrator/journal";
 import { topologicalOrder, type PlanNode, type PlanTree } from "@/lib/plan/tree";
 
 export type FailureNote =
@@ -13,16 +16,34 @@ export type FailureNote =
       readonly kind: "in-mediator";
       readonly mergeHash: string;
       readonly mediatorPublicKey: string;
+      readonly landed: readonly PhaseReceipt[];
     }
   // the merge landed (direct close) but the run still reported a failure
-  | { readonly kind: "closed"; readonly mergeHash: string }
-  // some steps finished on chain; the account is still open
-  | { readonly kind: "partial"; readonly ran: readonly PlanNode[] }
-  // no step has a receipt
+  | {
+      readonly kind: "closed";
+      readonly mergeHash: string;
+      readonly landed: readonly PhaseReceipt[];
+    }
+  // some steps or close batches finished on chain; the account is still open
+  | {
+      readonly kind: "partial";
+      readonly ran: readonly PlanNode[];
+      readonly landed: readonly PhaseReceipt[];
+    }
+  // no step has a receipt and no close batch landed
   | { readonly kind: "nothing-ran"; readonly multiBatch: boolean };
 
-export function failureNoteFor(tree: PlanTree | null): FailureNote {
-  if (tree === null) return { kind: "nothing-ran", multiBatch: false };
+// landedPhases: the close batches (final-classic-tx) the executor saw land,
+// merge included, whatever the node's status says now
+export function failureNoteFor(
+  tree: PlanTree | null,
+  landedPhases: readonly PhaseReceipt[] = [],
+): FailureNote {
+  if (tree === null) {
+    return landedPhases.length > 0
+      ? { kind: "partial", ran: [], landed: landedPhases }
+      : { kind: "nothing-ran", multiBatch: false };
+  }
   const final = tree.allNodes.get("final-classic-tx");
   // node.executed on the final node is set only once the merge batch confirmed
   // (the executor never sets it for an intermediate batch), and a later
@@ -35,12 +56,15 @@ export function failureNoteFor(tree: PlanTree | null): FailureNote {
         kind: "in-mediator",
         mergeHash,
         mediatorPublicKey: forward.metadata.mediatorPublicKey,
+        landed: landedPhases,
       };
     }
-    return { kind: "closed", mergeHash };
+    return { kind: "closed", mergeHash, landed: landedPhases };
   }
   const ran = topologicalOrder(tree).filter((n) => n.executed !== undefined);
-  if (ran.length > 0) return { kind: "partial", ran };
+  if (ran.length > 0 || landedPhases.length > 0) {
+    return { kind: "partial", ran, landed: landedPhases };
+  }
   const multiBatch = final?.kind === "FinalClassicTx" && final.metadata.batches.length > 1;
   return { kind: "nothing-ran", multiBatch };
 }

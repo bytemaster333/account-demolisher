@@ -909,7 +909,8 @@ export function DemolishFlow(): React.JSX.Element {
   const doneCount = orderedNodes.filter(
     (n) => n.executed !== undefined || n.status === "confirmed" || n.status === "skipped",
   ).length;
-  const failedInMediator = isFailed && failureNoteFor(tree).kind === "in-mediator";
+  const failedInMediator =
+    isFailed && failureNoteFor(tree, ctx.landedPhases).kind === "in-mediator";
   const mergeHash = finalNode?.executed?.txHash;
 
   // the destination and memo the run was built with; the form can drift from it

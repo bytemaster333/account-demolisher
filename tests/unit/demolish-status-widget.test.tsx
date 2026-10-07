@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react";
 import { Keypair } from "@stellar/stellar-sdk";
 
 import { TESTNET } from "@/lib/config/networks";
@@ -149,6 +149,21 @@ describe("failed state copy follows what actually ran (H-30)", () => {
     expect(screen.queryByRole("button", { name: /Resume the forward/i })).toBeNull();
   });
 
+  it("says the storage couldn't be read instead of crashing (H-03)", () => {
+    const spy = vi.spyOn(window.localStorage, "getItem").mockImplementation(() => {
+      throw new Error("SecurityError: storage is disabled");
+    });
+    try {
+      renderWidget(mediatorTreeMergedForwardFailed());
+      const note = screen.getByTestId("demolish-failure-note").textContent ?? "";
+      expect(note).toMatch(/storage couldn't be read/);
+      expect(note).toMatch(/storage is disabled/);
+      expect(note).toMatch(/temporary forwarding account/i);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("says steps already ran when a Soroban step confirmed", () => {
     const tree = makeTree({ positions: blendPositions() });
     const repay = [...tree.allNodes.values()].find((n) => n.kind === "RepayBlend")!;
@@ -274,15 +289,59 @@ describe("the failed view says what landed and what Retry does (L-17)", () => {
     const hash = "d".repeat(64);
     renderWidget(makeTree(), { landedPhases: [{ txHash: hash, ledger: 41 }] });
     const landed = screen.getByTestId("landed-phases");
-    expect(landed.textContent).toMatch(/partially applied/);
+    expect(landed.textContent).toMatch(/on chain and are not undone/);
     expect(landed.querySelector("a")?.getAttribute("href")).toBe(
       `https://stellar.expert/explorer/testnet/tx/${hash}`,
     );
   });
 
-  it("says nothing was applied when no transaction landed", () => {
+  it("lists nothing and claims nothing extra when no transaction landed", () => {
     renderWidget(makeTree(), { landedPhases: [] });
-    expect(screen.getByTestId("landed-phases").textContent).toMatch(/None of the close/);
+    expect(screen.queryByTestId("landed-phases")).toBeNull();
+    expect(screen.getByTestId("demolish-failure-note").getAttribute("data-kind")).toBe(
+      "nothing-ran",
+    );
+  });
+
+  it("never says nothing finished when an intermediate close batch landed (H-30)", () => {
+    const hash = "b".repeat(64);
+    renderWidget(makeTree(), { landedPhases: [{ txHash: hash, ledger: 7 }] });
+    const note = screen.getByTestId("demolish-failure-note");
+    expect(note.getAttribute("data-kind")).toBe("partial");
+    expect(note.textContent).not.toMatch(/No step of this close finished/);
+    expect(note.textContent).toMatch(/still open/);
+    // the landed transaction is listed inside the note, with its link
+    const landed = within(note).getByTestId("landed-phases");
+    expect(landed.querySelector("a")?.getAttribute("href")).toBe(
+      `https://stellar.expert/explorer/testnet/tx/${hash}`,
+    );
+    expect(document.body.textContent).not.toMatch(/None of the close/);
+  });
+
+  it("doesn't deny a landed Soroban step when no close batch landed (H-30)", () => {
+    const tree = makeTree({ positions: blendPositions() });
+    for (const n of tree.allNodes.values()) {
+      if (n.kind === "RepayBlend" || n.kind === "WithdrawBlend") {
+        n.status = "confirmed";
+        n.executed = {
+          txHash: n.kind === "RepayBlend" ? "1".repeat(64) : "2".repeat(64),
+          ledger: 5,
+        };
+      }
+    }
+    renderWidget(tree, { landedPhases: [] });
+    const text = document.body.textContent ?? "";
+    expect(screen.getByTestId("demolish-failure-note").textContent).toMatch(
+      /Some steps already ran/,
+    );
+    expect(text).not.toMatch(/None of the close/);
+    expect(text).not.toMatch(/No step of this close finished/);
+  });
+
+  it("doesn't deny the merge after the funds reached the helper account (H-30)", () => {
+    saveRecord();
+    renderWidget(mediatorTreeMergedForwardFailed(), { landedPhases: [] });
+    expect(document.body.textContent ?? "").not.toMatch(/None of the close/);
   });
 
   it("explains each kind Retry handles differently", () => {
@@ -291,6 +350,15 @@ describe("the failed view says what landed and what Retry does (L-17)", () => {
     cleanup();
     renderWidget(makeTree(), { failureKind: "conversion_refused", retryResumes: false });
     expect(screen.getByTestId("failure-kind-note").textContent).toMatch(/price moved/);
+    cleanup();
+    renderWidget(makeTree(), { failureKind: "claim_unavailable", retryResumes: false });
+    expect(screen.getByTestId("failure-kind-note").textContent).toMatch(
+      /leave those rewards unclaimed/,
+    );
+    cleanup();
+    // the run guard raises this too, on a wallet or network change
+    renderWidget(makeTree(), { failureKind: "interrupted", retryResumes: true });
+    expect(screen.getByTestId("failure-kind-note").textContent).not.toMatch(/You stopped/);
   });
 
   it("shows what best-effort steps left undone, on success too", () => {
