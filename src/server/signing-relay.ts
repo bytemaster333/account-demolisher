@@ -31,7 +31,12 @@
 //    sequence number, so at most one of them can ever land. a signer can still
 //    push out a request holding no more weight than their own signature.
 
-import { StrKey, TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
+import {
+  StrKey,
+  TransactionBuilder,
+  type FeeBumpTransaction,
+  type Transaction,
+} from "@stellar/stellar-sdk";
 
 import { parseNetworkId, requireNetwork, type StellarNetwork } from "@/lib/config/networks";
 import {
@@ -39,6 +44,7 @@ import {
   type MergeResult,
   type TrimResult,
   canonicalizeSignatures,
+  isClassicTransaction,
   mergeNewSignatures,
   signedSigners,
   trimToThreshold,
@@ -220,20 +226,15 @@ function computeExpiry(tx: Transaction, createdAt: number): number {
   return max === null ? windowExpiry : Math.min(windowExpiry, max - EXPIRY_GRACE_MS);
 }
 
-function isClassicTransaction(tx: Transaction | { innerTransaction?: unknown }): tx is Transaction {
-  const candidate = tx as { feeSource?: unknown; innerTransaction?: unknown };
-  return candidate.feeSource === undefined && candidate.innerTransaction === undefined;
-}
-
 // decode a close and identify the account it actually closes. the account is the
 // accountMerge operation's effective source (op.source ?? tx.source), not blindly
 // tx.source, and every operation must share that same effective source, so an
 // attacker can't fetch the signer set of an account they control while merging a
 // victim account. muxed / non-ed25519 sources are rejected.
 function decodeClose(xdr: string, passphrase: string): { tx: Transaction; source: string } | null {
-  let tx: Transaction;
+  let tx: Transaction | FeeBumpTransaction;
   try {
-    tx = TransactionBuilder.fromXdr(xdr, passphrase) as Transaction;
+    tx = TransactionBuilder.fromXdr(xdr, passphrase);
   } catch {
     return null;
   }
@@ -388,10 +389,32 @@ export async function createPlan(network: string, xdr: string): Promise<CreateRe
   }
 
   const signerKeys = signers.map((s) => s.key);
+  // keep only verified signatures from the account's signers, one per key, so
+  // junk or padding in the published envelope can't block later co-signers,
+  // and no more of them than the threshold needs. canonicalizing is the one
+  // pass that checks the published signatures against every signer (junk under
+  // a hint no signer has costs a check per signer); trimming the result only
+  // checks canonical hints.
+  let canonical: TrimResult;
+  try {
+    canonical = trimToThreshold(
+      canonicalizeSignatures(xdr, net.passphrase, signerKeys),
+      net.passphrase,
+      signers,
+      requiredWeight(thresholds),
+    );
+  } catch (e) {
+    if (e instanceof TooManySignaturesError) {
+      return { ok: false, code: "TOO_MANY_SIGNATURES", reason: e.message };
+    }
+    throw e;
+  }
+
   // proof of control: only an account's own authorized signer may open a request
   // to close it. this binds a slot to a real signer, so nobody can fill the store
-  // with unsigned closes for accounts they don't control.
-  if (signedSigners(xdr, net.passphrase, signerKeys).length === 0) {
+  // with unsigned closes for accounts they don't control. the threshold is at
+  // least 1, so any verified signer signature survives the trim.
+  if (canonical.kept.length === 0) {
     return {
       ok: false,
       code: "UNSIGNED",
@@ -406,24 +429,6 @@ export async function createPlan(network: string, xdr: string): Promise<CreateRe
   if (raced !== undefined) {
     const merged = mergeInto(raced, xdr);
     return merged.ok ? { ok: true, id } : merged;
-  }
-
-  // keep only verified signatures from the account's signers, one per key, so
-  // junk or padding in the published envelope can't block later co-signers,
-  // and no more of them than the threshold needs
-  let canonical: TrimResult;
-  try {
-    canonical = trimToThreshold(
-      canonicalizeSignatures(xdr, net.passphrase, signerKeys),
-      net.passphrase,
-      signers,
-      requiredWeight(thresholds),
-    );
-  } catch (e) {
-    if (e instanceof TooManySignaturesError) {
-      return { ok: false, code: "TOO_MANY_SIGNATURES", reason: e.message };
-    }
-    throw e;
   }
 
   // the account's other requests: one whose sequence number is already used can

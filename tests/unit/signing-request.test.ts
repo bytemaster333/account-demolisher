@@ -27,6 +27,7 @@ import {
   requiredSigners,
   signedSigners,
   thresholdForClose,
+  type CloseDisposal,
 } from "@/lib/multisig/signing-request";
 
 const NET = Networks.TESTNET;
@@ -699,6 +700,7 @@ describe("liquidity pool shares cannot be bundled (L-94)", () => {
         destination: Keypair.random().publicKey(),
         network: TESTNET,
         sourceAccount: account,
+        disposal: { claimableBalanceIds: [] },
       }),
     ).toThrow(/liquidity pool/i);
 
@@ -721,6 +723,7 @@ describe("liquidity pool shares cannot be bundled (L-94)", () => {
         destination: Keypair.random().publicKey(),
         network: TESTNET,
         sourceAccount: account,
+        disposal: { claimableBalanceIds: [] },
       }),
     ).toThrow(/liquidity pool/i);
   });
@@ -802,7 +805,7 @@ describe("buildCloseTransaction carries the reviewed choices (H-11, H-29, L-25)"
       destination: Keypair.random().publicKey(),
       network: TESTNET,
       sourceAccount: source(),
-      disposal: { memo: { type: "id", value: "777" } },
+      disposal: { claimableBalanceIds: [], memo: { type: "id", value: "777" } },
     });
     expect(tx.memo.type).toBe("id");
     expect(String(tx.memo.value)).toBe("777");
@@ -817,10 +820,15 @@ describe("buildCloseTransaction carries the reviewed choices (H-11, H-29, L-25)"
       destination: Keypair.random().publicKey(),
       network: TESTNET,
     };
-    expect(claimedIds(buildCloseTransaction({ ...base, sourceAccount: source() }))).toEqual([
-      ID1,
-      ID2,
-    ]);
+    expect(
+      claimedIds(
+        buildCloseTransaction({
+          ...base,
+          sourceAccount: source(),
+          disposal: { claimableBalanceIds: [ID1, ID2] },
+        }),
+      ),
+    ).toEqual([ID1, ID2]);
     expect(
       claimedIds(
         buildCloseTransaction({
@@ -841,6 +849,22 @@ describe("buildCloseTransaction carries the reviewed choices (H-11, H-29, L-25)"
     ).toEqual([]);
   });
 
+  it("refuses to build without a reviewed claimable balance selection", () => {
+    // a missing selection used to mean "claim every balance claimable now",
+    // which claims balances nobody reviewed (H-11)
+    const a = audit({ claimableBalances: [cb(ID1, { kind: "native" })] });
+    const build = (disposal: unknown) => () =>
+      buildCloseTransaction({
+        audit: a,
+        destination: Keypair.random().publicKey(),
+        network: TESTNET,
+        sourceAccount: source(),
+        disposal: disposal as CloseDisposal,
+      });
+    expect(build(undefined)).toThrow(/claimable balance selection/);
+    expect(build({ memo: { type: "id", value: "1" } })).toThrow(/claimable balance selection/);
+  });
+
   it("anchors the expiry to the ledger close time when given", () => {
     const ledgerCloseTime = 2_000_000_000;
     const tx = buildCloseTransaction({
@@ -848,6 +872,7 @@ describe("buildCloseTransaction carries the reviewed choices (H-11, H-29, L-25)"
       destination: Keypair.random().publicKey(),
       network: TESTNET,
       sourceAccount: source(),
+      disposal: { claimableBalanceIds: [] },
       timeoutSeconds: 3600,
       ledgerCloseTime,
     });
@@ -874,6 +899,7 @@ describe("buildCloseTransaction carries the reviewed choices (H-11, H-29, L-25)"
         destination: Keypair.random().publicKey(),
         network: TESTNET,
         sourceAccount: source(),
+        disposal: { claimableBalanceIds: [ID1] },
       }),
     ).toThrow(/claimable balance/i);
   });
@@ -903,12 +929,56 @@ describe("buildCloseTransaction carries the reviewed choices (H-11, H-29, L-25)"
         destination: Keypair.random().publicKey(),
         network: TESTNET,
         sourceAccount: source(),
+        disposal: { claimableBalanceIds: [ID1] },
       });
     } catch (e) {
       message = (e as Error).message;
     }
     expect(message).toMatch(/needs \d+ operations/);
     expect(message).not.toMatch(/claimable balance/i);
+  });
+
+  it("checks room for the close marker at the bundle's own fee bid", () => {
+    // 1.6 XLM leaves 0.6 above the bare account's reserve: enough for the marker
+    // at 100 stroops per op, not at the executor's 0.1 XLM ceiling
+    const a = audit();
+    const lean = {
+      ...a,
+      balances: [{ ...a.balances[0]!, amount: "1.6000000" }],
+    } as AccountAudit;
+    const tx = buildCloseTransaction({
+      audit: lean,
+      destination: Keypair.random().publicKey(),
+      network: TESTNET,
+      sourceAccount: source(),
+      disposal: { claimableBalanceIds: [] },
+    });
+    const marker = tx.operations.filter(
+      (o) => o.type === "manageData" && o.name === "account-demolisher.close",
+    );
+    expect(marker).toHaveLength(2);
+    expect(Number(tx.fee)).toBe(Number(BASE_FEE) * tx.operations.length);
+  });
+
+  it("names the missing trustline when a reviewed claim needs one opened first", () => {
+    // the account doesn't trust USD; the issuer needs no authorization, so the
+    // batcher opens the line in a leading transaction before the claim
+    const a = audit({ claimableBalances: [{ ...cb(ID1, usd), issuerAuthRequired: false }] });
+    let message = "";
+    try {
+      buildCloseTransaction({
+        audit: a,
+        destination: Keypair.random().publicKey(),
+        network: TESTNET,
+        sourceAccount: source(),
+        disposal: { claimableBalanceIds: [ID1], returnToIssuerAssetKeys: [pathKey(usd)] },
+      });
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toMatch(/doesn't trust/);
+    expect(message).toMatch(/USD/);
+    expect(message).not.toMatch(/needs \d+ operations/);
   });
 
   it("reports the operation count when the claimed credit asset has a disposal", () => {
@@ -923,7 +993,7 @@ describe("buildCloseTransaction carries the reviewed choices (H-11, H-29, L-25)"
         destination: Keypair.random().publicKey(),
         network: TESTNET,
         sourceAccount: source(),
-        disposal: { returnToIssuerAssetKeys: [pathKey(usd)] },
+        disposal: { claimableBalanceIds: [ID1], returnToIssuerAssetKeys: [pathKey(usd)] },
       }),
     ).toThrow(/needs \d+ operations/);
   });

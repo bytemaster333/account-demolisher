@@ -10,6 +10,7 @@
 // mergeSignatures.
 
 import {
+  BASE_FEE,
   SignerKey,
   StrKey,
   TransactionBuilder,
@@ -20,11 +21,11 @@ import {
 import type { NetworkConfig } from "@/lib/config/networks";
 import { CLOSE_MARKER_NAME } from "@/lib/metrics/close-marker";
 import { mergeSignatures, signedSigners, trimToThreshold } from "@/lib/multisig/partial-xdr";
-import { batchClassicDemolition } from "@/lib/plan/classic-batcher";
+import { MAX_OPS_PER_TX, batchClassicDemolition } from "@/lib/plan/classic-batcher";
 import { stroopsToDecimal } from "@/lib/stellar/amount";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
 import type { AccountAudit, AssetIdentifier } from "@/lib/types/account";
-import { pathKey, type BatchOptions, type ClassicMemo } from "@/lib/types/plan";
+import { pathKey, type BatchOptions, type ClassicBatch, type ClassicMemo } from "@/lib/types/plan";
 
 export { mergeSignatures, signedSigners, trimToThreshold };
 
@@ -33,6 +34,9 @@ export { mergeSignatures, signedSigners, trimToThreshold };
 // expires cleanly rather than lingering and later failing on stale state.
 export const SIGNING_WINDOW_SECONDS = 72 * 60 * 60;
 
+// per-operation fee the bundle bids. it can't change once the first signer signs.
+const BUNDLE_FEE_PER_OP = Number.parseInt(BASE_FEE, 10);
+
 export interface CloseDisposal {
   // pathKey()s of credit assets to send to the merge destination (the
   // destination must already trust them, verified at preview time)
@@ -40,10 +44,10 @@ export interface CloseDisposal {
   // pathKey()s of credit assets to return to their issuer
   readonly returnToIssuerAssetKeys?: readonly string[];
   readonly memo?: ClassicMemo;
-  // the claimable balances the reviewed plan claims. an empty list claims
-  // none; leaving it out claims every balance claimable now, which is only
-  // right when nothing was reviewed.
-  readonly claimableBalanceIds?: readonly string[];
+  // the claimable balances the reviewed plan claims; an empty list claims none.
+  // required, because the batcher reads a missing list as "claim every balance
+  // claimable now", which would claim balances nobody reviewed
+  readonly claimableBalanceIds: readonly string[];
 }
 
 export interface BundleabilityResult {
@@ -140,27 +144,34 @@ export function buildCloseTransaction(params: {
   readonly destination: string;
   readonly network: NetworkConfig;
   readonly sourceAccount: Horizon.AccountResponse;
-  readonly disposal?: CloseDisposal;
+  readonly disposal: CloseDisposal;
   readonly timeoutSeconds?: number;
   // close time (unix seconds) of the latest ledger; anchors maxTime to the
   // network clock instead of this device's
   readonly ledgerCloseTime?: number;
 }): Transaction {
   const { audit, destination, network, sourceAccount, disposal } = params;
+  // the type requires it, but an untyped caller must not fall into claim-all
+  if (!Array.isArray(disposal?.claimableBalanceIds)) {
+    throw new Error(
+      "buildCloseTransaction: the reviewed claimable balance selection is missing; pass [] to claim none.",
+    );
+  }
 
   const batchOptions: BatchOptions = {
     destination,
     useMediator: false,
-    ...(disposal?.returnToIssuerAssetKeys
+    // the batcher's reserve checks (the close marker, a trustline a claim opens)
+    // take fees off the spendable XLM, so they must use the fee this bundle bids
+    feePerOpStroops: BUNDLE_FEE_PER_OP,
+    claimableBalanceIds: disposal.claimableBalanceIds,
+    ...(disposal.returnToIssuerAssetKeys
       ? { returnToIssuerAssetKeys: disposal.returnToIssuerAssetKeys }
       : {}),
-    ...(disposal?.sendToDestinationAssetKeys
+    ...(disposal.sendToDestinationAssetKeys
       ? { sendToDestinationAssetKeys: disposal.sendToDestinationAssetKeys }
       : {}),
-    ...(disposal?.memo ? { memo: disposal.memo } : {}),
-    ...(disposal?.claimableBalanceIds !== undefined
-      ? { claimableBalanceIds: disposal.claimableBalanceIds }
-      : {}),
+    ...(disposal.memo ? { memo: disposal.memo } : {}),
   };
 
   const batches = batchClassicDemolition(audit, batchOptions, undefined);
@@ -170,47 +181,60 @@ export function buildCloseTransaction(params: {
     );
   }
   if (batches.length > 1) {
-    // the batcher's leading phase holds pool withdraws and credit claims with no
-    // explicit disposal; an oversized close can also put other claims in an
-    // earlier batch, which is just the operation count
-    const first = batches[0]!;
-    if (first.operations.some((op) => op.kind === "liquidity_pool_withdraw")) {
-      throw new Error(`buildCloseTransaction: ${POOL_SHARE_REASON}`);
-    }
-    const disposed = new Set([
-      ...(disposal?.sendToDestinationAssetKeys ?? []),
-      ...(disposal?.returnToIssuerAssetKeys ?? []),
-    ]);
-    const undisposedClaim = first.operations.some((op) => {
-      if (op.kind !== "claim_claimable_balance") return false;
-      const asset = op.metadata["asset"] as AssetIdentifier;
-      return asset.kind === "credit" && !disposed.has(pathKey(asset));
-    });
-    if (undisposedClaim) {
-      throw new Error(
-        "buildCloseTransaction: a claimable balance in a credit asset has no disposal chosen " +
-          "(send it to the destination or return it to its issuer), so it would have to be " +
-          "claimed in a transaction of its own first. Choose a disposal for it, leave it " +
-          "unclaimed, or close with all signers present.",
-      );
-    }
-    const opCount = batches.reduce((n, b) => n + b.operations.length, 0);
-    throw new Error(
-      `buildCloseTransaction: this close needs ${opCount} operations, more than fit in one ` +
-        `transaction, so it can't be a single signing request. Close with all signers present.`,
-    );
+    throw new Error(`buildCloseTransaction: ${splitReason(audit, batches)}`);
   }
 
   const result = buildClassicTransaction(
     batches[0]!,
     sourceAccount,
     network,
-    undefined,
+    BUNDLE_FEE_PER_OP,
     params.timeoutSeconds ?? SIGNING_WINDOW_SECONDS,
     params.ledgerCloseTime,
   );
   // classic batches always build a classic Transaction (never a fee-bump)
   return result.transaction as Transaction;
+}
+
+// why the batcher split the close into more than one transaction. a pool share
+// is always withdrawn in a leading transaction. otherwise a close that fits in
+// one transaction by operation count was split only because a claim has to land
+// first: into a trustline the close opens, or for an asset with no disposal
+// chosen, whose balance can only be sized after the claim.
+function splitReason(audit: AccountAudit, batches: readonly ClassicBatch[]): string {
+  const leading = batches.slice(0, -1).flatMap((b) => b.operations);
+  if (leading.some((op) => op.kind === "liquidity_pool_withdraw")) return POOL_SHARE_REASON;
+  const opCount = batches.reduce((n, b) => n + b.operations.length, 0);
+  if (opCount > MAX_OPS_PER_TX) {
+    return (
+      `this close needs ${opCount} operations, more than fit in one transaction, so it ` +
+      "can't be a single signing request. Close with all signers present."
+    );
+  }
+  const trusted = new Set(
+    audit.balances.filter((b) => b.asset.kind === "credit").map((b) => pathKey(b.asset)),
+  );
+  const untrusted = new Map<string, string>();
+  for (const op of leading) {
+    if (op.kind !== "claim_claimable_balance") continue;
+    const asset = op.metadata["asset"] as AssetIdentifier;
+    if (asset.kind === "credit" && !trusted.has(pathKey(asset))) {
+      untrusted.set(pathKey(asset), `${asset.code} issued by ${asset.issuer}`);
+    }
+  }
+  if (untrusted.size > 0) {
+    return (
+      `this account doesn't trust ${[...untrusted.values()].join(", ")}, so claiming that ` +
+      "claimable balance means opening the trustline and claiming in a transaction of its " +
+      "own first. Leave the balance unclaimed, or close with all signers present."
+    );
+  }
+  return (
+    "a claimable balance in a credit asset has no disposal chosen (send it to the " +
+    "destination or return it to its issuer), so it would have to be claimed in a " +
+    "transaction of its own first. Choose a disposal for it, leave it unclaimed, or close " +
+    "with all signers present."
+  );
 }
 
 // ── envelope inspection (never blind-sign) ───────────────────────────────────

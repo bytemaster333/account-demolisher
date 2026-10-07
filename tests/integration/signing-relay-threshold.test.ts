@@ -61,6 +61,7 @@ describe("integration: signing relay threshold (testnet)", () => {
       destination: destination.publicKey(),
       network: TESTNET,
       sourceAccount: await server.loadAccount(owner.publicKey()),
+      disposal: { claimableBalanceIds: [] },
     });
     const signed = (...kps: Keypair[]): string => {
       const copy = TransactionBuilder.fromXdr(tx.toXdr(), TESTNET.passphrase);

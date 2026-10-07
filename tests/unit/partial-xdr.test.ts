@@ -12,6 +12,7 @@ import {
 import {
   TooManySignaturesError,
   canonicalizeSignatures,
+  isClassicTransaction,
   mergeSignatures,
   signedSigners,
   trimToThreshold,
@@ -51,6 +52,17 @@ function forgedHintPartial(sourcePk: string, seq: string, kp: Keypair, count: nu
   }
   return forged.toXdr();
 }
+
+describe("isClassicTransaction", () => {
+  it("accepts a classic transaction and refuses a fee-bump around one", () => {
+    const kp = Keypair.random();
+    const inner = buildTx(kp.publicKey(), "7");
+    inner.sign(kp);
+    const bump = TransactionBuilder.buildFeeBumpTransaction(kp, "200", inner, NET);
+    expect(isClassicTransaction(TransactionBuilder.fromXdr(inner.toXdr(), NET))).toBe(true);
+    expect(isClassicTransaction(TransactionBuilder.fromXdr(bump.toXdr(), NET))).toBe(false);
+  });
+});
 
 describe("mergeSignatures signature-wedge hardening", () => {
   it("collapses one signer's signature replayed under many forged hints to a single slot", () => {
@@ -205,7 +217,8 @@ describe("canonicalizeSignatures", () => {
   });
 });
 
-describe("the 20-signature envelope limit", () => {
+// 20 merges of pure-JS ed25519 checks, slow when the suite runs in parallel
+describe("the 20-signature envelope limit", { timeout: 30_000 }, () => {
   it("rejects the 21st signature with a clear error instead of an XDR write failure", () => {
     const source = Keypair.random();
     const keys = Array.from({ length: 21 }, () => Keypair.random());

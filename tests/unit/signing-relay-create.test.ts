@@ -127,6 +127,17 @@ describe("createPlan", () => {
     );
   });
 
+  it("rejects a fee-bump envelope around a signed close", async () => {
+    const a = newAccount();
+    loadAccount.mockResolvedValue(accountResponse(a));
+    const inner = TransactionBuilder.fromXdr(signedBy(buildClose(a), a.kp), NET) as Transaction;
+    const bump = TransactionBuilder.buildFeeBumpTransaction(a.kp, "200", inner, NET);
+    bump.sign(a.kp);
+    const res = await createPlan("testnet", bump.toXdr());
+    expect(res).toMatchObject({ ok: false, code: "NOT_A_CLOSE" });
+    expect(loadAccount).not.toHaveBeenCalled();
+  });
+
   it("rejects a transaction without an upper time bound", async () => {
     const a = newAccount();
     loadAccount.mockResolvedValue(accountResponse(a));
@@ -477,7 +488,10 @@ describe("worst-case bundle size (M-46)", () => {
   });
 });
 
-describe("verification cost per sign request (H-32)", () => {
+// building each 19-signature plan takes 18 sign requests of pure-JS ed25519 checks, so
+// like the 20-signature tests above these need more than the default timeout
+// when the suite runs in parallel. the bound under test is the verify count.
+describe("verification cost per sign request (H-32)", { timeout: 30_000 }, () => {
   // the stored envelope is public (GET /api/plan/[id]), so anyone can replay it
   // to the sign route. each ed25519 check is about a millisecond of blocking
   // cpu, so the relay must not check every signer against every signature.
@@ -508,6 +522,50 @@ describe("verification cost per sign request (H-32)", () => {
       verify.mockRestore();
     }
     expect(getPlan(id)!.xdr).toBe(published);
+  });
+
+  it("replaying the published envelope with every hint zeroed costs no extra checks", async () => {
+    const { id } = await fullPlan();
+    const published = getPlan(id)!.xdr;
+    const replay = TransactionBuilder.fromXdr(published, NET) as Transaction;
+    const sigs = replay.signatures.map(
+      (s) =>
+        new xdr.DecoratedSignature({ hint: Buffer.alloc(4), signature: s.signature.toBytes() }),
+    );
+    replay.signatures.splice(0, replay.signatures.length, ...sigs);
+
+    const verify = vi.spyOn(Keypair.prototype, "verify");
+    try {
+      expect(addSignature(id, replay.toXdr()).ok).toBe(true);
+      // the 19 stored signatures are matched by hint; the replayed ones carry the
+      // same bytes, so none of them needs a sweep over the 20 signers
+      expect(verify.mock.calls.length).toBeLessThanOrEqual(19);
+    } finally {
+      verify.mockRestore();
+    }
+    expect(getPlan(id)!.xdr).toBe(published);
+  });
+
+  it("checks a padded published envelope's signatures against the signers only once", async () => {
+    // junk under a zero hint matches no signer by hint, so each one costs a check
+    // per signer; publishing must not pay that twice
+    const a = newAccount(19);
+    loadAccount.mockResolvedValue(accountResponse({ ...a, thresholds: NEVER_MET }));
+    const padded = TransactionBuilder.fromXdr(signedBy(buildClose(a), a.kp), NET) as Transaction;
+    for (let i = 0; i < 19; i++) {
+      padded.signatures.push(
+        new xdr.DecoratedSignature({ hint: Buffer.alloc(4), signature: Buffer.alloc(64, i + 1) }),
+      );
+    }
+    const verify = vi.spyOn(Keypair.prototype, "verify");
+    try {
+      const res = await createPlan("testnet", padded.toXdr());
+      expect(res.ok).toBe(true);
+      // 19 junk signatures against 20 signers, plus the one valid signature
+      expect(verify.mock.calls.length).toBeLessThanOrEqual(19 * 20 + 20);
+    } finally {
+      verify.mockRestore();
+    }
   });
 
   it("adding one signature stays linear in the signature count", async () => {

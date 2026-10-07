@@ -179,12 +179,16 @@ describe("MetricsStore durability (L-96)", () => {
 
 describe("MetricsStore daily close caps (M-52)", () => {
   it("stops counting a network's closes for the day at its cap and logs it", async () => {
+    // 199 closes already on disk from before a restart (written directly: 199
+    // durable appends take seconds on a busy disk), then the 200th live
+    const ledger = Array.from(
+      { length: 199 },
+      (_, i) => JSON.stringify(close(i.toString(16).padStart(64, "0"), "testnet", "1")) + "\n",
+    ).join("");
+    await fs.writeFile(path.join(dir, "closes.jsonl"), ledger);
     const store = new MetricsStore(dir);
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
-    for (let i = 0; i < 200; i++) {
-      const res = await store.recordClose(close(i.toString(16).padStart(64, "0"), "testnet", "1"));
-      expect(res.added).toBe(true);
-    }
+    expect((await store.recordClose(close("e".repeat(64), "testnet", "1"))).added).toBe(true);
     const over = await store.recordClose(close("f".repeat(64), "testnet", "1"));
     expect(over).toEqual({ added: false, reason: "daily_cap" });
     expect(err).toHaveBeenCalledWith(expect.stringMatching(/daily close cap of 200/));

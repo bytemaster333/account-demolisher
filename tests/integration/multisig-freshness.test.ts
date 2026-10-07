@@ -58,7 +58,7 @@ describe("integration: bundle freshness (testnet)", () => {
       destination: destination.publicKey(),
       network: TESTNET,
       sourceAccount: await server.loadAccount(owner.publicKey()),
-      disposal: { returnToIssuerAssetKeys: [`USD:${issuer.publicKey()}`] },
+      disposal: { claimableBalanceIds: [], returnToIssuerAssetKeys: [`USD:${issuer.publicKey()}`] },
     });
     tx.sign(owner);
     const xdr = tx.toXdr();

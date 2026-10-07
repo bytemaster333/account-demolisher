@@ -84,9 +84,16 @@ export function mergeNewSignatures(
   // 20-signature XDR cap and wedge the plan. One signature per authorized key is
   // exactly what weighted multisig needs, so recover each key and admit it once.
   const presentKeys = new Set<string>();
+  // signature bytes already verified for a present key. ed25519 signatures are
+  // deterministic and the sdk verifies strictly (no zip215), so the same bytes
+  // can only be that key's signature again: a replay of the public envelope
+  // under forged hints is recognised without a verify per signer.
+  const presentSigs = new Set<string>();
   for (const sig of canonical.signatures) {
     const i = matchSigner(sig, canonicalHash, candidates);
-    if (i !== -1) presentKeys.add(candidates[i]!.publicKey());
+    if (i === -1) continue;
+    presentKeys.add(candidates[i]!.publicKey());
+    presentSigs.add(Buffer.from(sig.signature.toBytes()).toString("hex"));
   }
   let added = 0;
 
@@ -110,6 +117,8 @@ export function mergeNewSignatures(
     }
 
     for (const decorated of partial.signatures) {
+      const bytes = Buffer.from(decorated.signature.toBytes()).toString("hex");
+      if (presentSigs.has(bytes)) continue;
       const i = matchSigner(decorated, canonicalHash, candidates);
       if (i === -1) {
         throw new Error(
@@ -120,6 +129,7 @@ export function mergeNewSignatures(
 
       const kp = candidates[i]!;
       const signingKey = kp.publicKey();
+      presentSigs.add(bytes);
       if (presentKeys.has(signingKey)) continue;
       if (canonical.signatures.length >= MAX_ENVELOPE_SIGNATURES) {
         throw new TooManySignaturesError();
@@ -256,7 +266,7 @@ export function signedSigners(
   return signerKeys.filter((key) => signed.has(key));
 }
 
-function isClassicTransaction(tx: Transaction | FeeBumpTransaction): tx is Transaction {
+export function isClassicTransaction(tx: Transaction | FeeBumpTransaction): tx is Transaction {
   // FeeBumpTransaction exposes feeSource + innerTransaction
   const candidate = tx as unknown as { feeSource?: unknown; innerTransaction?: unknown };
   return candidate.feeSource === undefined && candidate.innerTransaction === undefined;

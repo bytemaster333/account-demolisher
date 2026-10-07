@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,25 +9,26 @@ vi.mock("server-only", () => ({}));
 vi.mock("@/server/close-verify", () => ({ verifyCloseTx: vi.fn() }));
 
 import { verifyCloseTx } from "@/server/close-verify";
-import { __resetMetricsStoreForTests, getMetricsStore } from "@/server/metrics-store";
+import { __resetMetricsStoreForTests } from "@/server/metrics-store";
 import { GET, POST } from "@/app/api/metrics/route";
 
 const TOKEN = "unit-test-admin-token-000";
 const HASH = "a".repeat(64);
 let ipCounter = 0;
 
-beforeAll(() => {
-  process.env.METRICS_ADMIN_TOKEN = TOKEN;
-});
-
 let dir: string;
 beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), "metrics-route-"));
-  process.env.METRICS_DB_DIR = dir;
+  vi.stubEnv("METRICS_ADMIN_TOKEN", TOKEN);
+  vi.stubEnv("METRICS_DB_DIR", dir);
+  // the limiter keys on the proxy's X-Forwarded-For entry; set the hop count
+  // here so the result doesn't depend on the shell running the tests
+  vi.stubEnv("TRUSTED_PROXY_HOPS", "1");
   __resetMetricsStoreForTests();
   vi.mocked(verifyCloseTx).mockReset();
 });
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await fs.rm(dir, { recursive: true, force: true });
 });
 
@@ -111,15 +112,18 @@ describe("POST /api/metrics", () => {
   });
 
   it("does not answer ok once the network's daily close cap is reached", async () => {
-    const store = getMetricsStore();
+    // today's 200 testnet closes are already in the ledger the store loads
     const now = Date.now();
-    for (let i = 0; i < 200; i++) {
-      await store.recordClose({
-        ...okClose.close,
-        txHash: i.toString(16).padStart(64, "0"),
-        recordedAt: now,
-      });
-    }
+    const ledger = Array.from(
+      { length: 200 },
+      (_, i) =>
+        JSON.stringify({
+          ...okClose.close,
+          txHash: i.toString(16).padStart(64, "0"),
+          recordedAt: now,
+        }) + "\n",
+    ).join("");
+    await fs.writeFile(path.join(dir, "closes.jsonl"), ledger);
     vi.mocked(verifyCloseTx).mockResolvedValue({
       ...okClose,
       close: { ...okClose.close, txHash: "b".repeat(64) },
@@ -148,12 +152,14 @@ describe("POST /api/metrics", () => {
   });
 
   it("rate-limits a single client after the bucket empties (429)", async () => {
+    // the limiter runs before the body is read, so a malformed body uses up the
+    // bucket the same way a visit does, without a durable write per request
     const ip = "203.0.113.7";
     const hit = (): Promise<Response> =>
       POST(
         new Request("http://x/api/metrics", {
           method: "POST",
-          body: JSON.stringify({ type: "visit", page: "landing" }),
+          body: "{",
           headers: { "content-type": "application/json", "x-forwarded-for": ip },
         }),
       );
@@ -184,7 +190,7 @@ describe("GET /api/metrics (admin)", () => {
     // a data dir under a regular file can't be created, like a read-only volume
     const blocker = path.join(dir, "not-a-dir");
     await fs.writeFile(blocker, "x");
-    process.env.METRICS_DB_DIR = path.join(blocker, "data");
+    vi.stubEnv("METRICS_DB_DIR", path.join(blocker, "data"));
     __resetMetricsStoreForTests();
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
     const res = await GET(
