@@ -117,7 +117,7 @@ export async function auditAccount(
   const coverableSponsorships = computeCoverableSponsorships(
     accountId,
     claimableBalances,
-    collectableClaimableBalanceIds(balances, claimableBalances),
+    collectableClaimableBalanceIds(balances, claimableBalances, poolShares),
   );
 
   const sponsorship: SponsorshipInfo = {
@@ -451,9 +451,13 @@ export function computeCoverableSponsorships(
 // add the line first. the plan can still leave one behind (for example when the
 // account cannot fund the new trustline's reserve), so this only feeds the
 // stored audit verdict; assessMergeability takes the plan's own list.
+//
+// the close withdraws every pool share before it claims, in the same
+// transaction, so each reserve's withdrawn amount comes off its line's room.
 export function collectableClaimableBalanceIds(
   balances: readonly AuditBalance[],
   claimableBalances: readonly AuditedClaimableBalance[],
+  poolShares: readonly PoolShareEntry[] = [],
 ): string[] {
   const room = new Map<string, bigint | null>();
   for (const b of balances) {
@@ -462,6 +466,19 @@ export function collectableClaimableBalanceIds(
     if (b.isAuthorized === false) room.set(key, 0n);
     else if (b.limit === undefined) room.set(key, null);
     else room.set(key, decimalToStroops(b.limit) - decimalToStroops(b.amount));
+  }
+  for (const pool of poolShares) {
+    const shares = decimalToStroops(pool.shareBalance);
+    const total = decimalToStroops(pool.totalShares);
+    if (shares <= 0n || total <= 0n) continue;
+    for (const reserve of pool.reserves) {
+      const key = assetKey(reserve.asset);
+      const left = room.get(key);
+      if (left === undefined || left === null) continue;
+      // core pays a withdraw out as reserve * shares / total, rounded down
+      const credited = (decimalToStroops(reserve.amount) * shares) / total;
+      room.set(key, left > credited ? left - credited : 0n);
+    }
   }
   const out: string[] = [];
   for (const cb of claimableBalances) {

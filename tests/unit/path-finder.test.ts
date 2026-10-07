@@ -257,3 +257,86 @@ describe("resolveCreditPaths: reference quote", () => {
     );
   });
 });
+
+// a claimed credit is sold together with the balance it lands on, and an asset
+// collected into a trustline the close opens has no balance line in the audit
+// yet, so each asset is quoted at what the close will actually hold
+describe("resolveCreditPaths: claims the close makes", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const ACCOUNT = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H";
+
+  function quoteAny(): void {
+    strictSendPaths.mockImplementation((_asset: unknown, amount: string) => ({
+      call: async () => ({
+        records: [{ destination_amount: "5.0000000", source_amount: amount, path: [] }],
+      }),
+    }));
+  }
+
+  function cb(id: string, asset: unknown, amount: string) {
+    return { id, asset, amount, sponsor: "", predicate: [], claimants: [ACCOUNT] };
+  }
+
+  function auditWithClaims(): AccountAudit {
+    return {
+      accountId: ACCOUNT,
+      balances: [
+        { asset: { kind: "native" }, amount: "50" },
+        { asset: { kind: "credit", code: "USDC", issuer: ISSUER }, amount: "100.0000000" },
+        {
+          asset: { kind: "credit", code: "FRZ", issuer: ISSUER },
+          amount: "0",
+          isAuthorized: false,
+        },
+      ],
+      claimableBalances: [
+        cb("usdc-1", { kind: "credit", code: "USDC", issuer: ISSUER }, "30"),
+        cb("usdc-2", { kind: "credit", code: "USDC", issuer: ISSUER }, "20.5"),
+        cb("new-1", { kind: "credit", code: "NEW", issuer: ISSUER }, "7"),
+        cb("unclaimed", { kind: "credit", code: "SKIP", issuer: ISSUER }, "9"),
+        cb("xlm", { kind: "native" }, "11"),
+        cb("own", { kind: "credit", code: "OWN", issuer: ACCOUNT }, "3"),
+        cb("frozen", { kind: "credit", code: "FRZ", issuer: ISSUER }, "4"),
+      ],
+    } as unknown as AccountAudit;
+  }
+
+  const quotedCodes = () => strictSendPaths.mock.calls.map((c) => (c[0] as { code: string }).code);
+
+  it("prices a balance plus the claims landing on it", async () => {
+    quoteAny();
+    const map = await resolveCreditPaths(auditWithClaims(), TESTNET, {
+      claimedBalanceIds: ["usdc-1", "usdc-2"],
+    });
+    expect(map.get(`USDC:${ISSUER}`)?.sourceAmount).toBe("150.5000000");
+    expect(map.get(`USDC:${ISSUER}`)?.reference?.sourceAmount).toBe("0.1505000");
+  });
+
+  it("prices an asset collected into a trustline the close opens", async () => {
+    quoteAny();
+    const map = await resolveCreditPaths(auditWithClaims(), TESTNET, {
+      claimedBalanceIds: ["new-1"],
+    });
+    expect(map.get(`NEW:${ISSUER}`)?.sourceAmount).toBe("7.0000000");
+    // the balance with no claim keeps its own amount
+    expect(map.get(`USDC:${ISSUER}`)?.sourceAmount).toBe("100.0000000");
+  });
+
+  it("ignores unclaimed, native, own-asset and frozen-line claims", async () => {
+    quoteAny();
+    const map = await resolveCreditPaths(auditWithClaims(), TESTNET, {
+      claimedBalanceIds: ["xlm", "own", "frozen"],
+    });
+    expect([...map.keys()]).toEqual([`USDC:${ISSUER}`]);
+    expect(map.get(`USDC:${ISSUER}`)?.sourceAmount).toBe("100.0000000");
+    expect(new Set(quotedCodes())).toEqual(new Set(["USDC"]));
+  });
+
+  it("refuses a claimed id the audit does not hold", async () => {
+    quoteAny();
+    await expect(
+      resolveCreditPaths(auditWithClaims(), TESTNET, { claimedBalanceIds: ["gone"] }),
+    ).rejects.toThrow(/gone/);
+  });
+});

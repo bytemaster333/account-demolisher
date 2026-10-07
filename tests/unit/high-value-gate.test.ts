@@ -254,4 +254,72 @@ describe("assessCloseValue", () => {
     });
     expect(value.unpricedHoldings).toBe(0);
   });
+
+  // resolveCreditPaths with claimedBalanceIds quotes balance plus claims as one
+  // sale and echoes the amount it quoted
+  describe("with quotes sized to the claims", () => {
+    const foo = { kind: "credit" as const, code: "FOO", issuer: ISSUER };
+    const cb = (id: string, asset: ClaimableBalanceEntry["asset"], amount: string) =>
+      ({
+        id,
+        asset,
+        amount,
+        sponsor: "GSPONSOR",
+        predicate: {},
+        claimants: [ACC],
+        claimableNow: true,
+      }) satisfies ClaimableBalanceEntry;
+
+    it("counts a quote for balance plus claims once, with nothing unpriced", () => {
+      const audit = auditWith(
+        [line({ kind: "native" }, "20"), line(usdc, "100")],
+        [cb("u1", usdc, "30"), cb("u2", usdc, "20")],
+      );
+      const quotes = new Map([
+        [`USDC:${ISSUER}`, { sourceAmount: "150.0000000", destinationAmount: "500.0000000" }],
+      ]);
+      expect(
+        assessCloseValue({
+          audit,
+          creditQuotes: quotes,
+          unpricedPositions: 0,
+          claimedBalanceIds: ["u1", "u2"],
+        }),
+      ).toEqual({ estimatedXlm: "520.0000000", unpricedHoldings: 0, highValue: false });
+    });
+
+    it("prices an asset collected into a trustline the close opens", () => {
+      const audit = auditWith([line({ kind: "native" }, "20")], [cb("f1", foo, "7")]);
+      const quotes = new Map([
+        [`FOO:${ISSUER}`, { sourceAmount: "7", destinationAmount: "2000.0000000" }],
+      ]);
+      expect(
+        assessCloseValue({
+          audit,
+          creditQuotes: quotes,
+          unpricedPositions: 0,
+          claimedBalanceIds: ["f1"],
+        }),
+      ).toEqual({ estimatedXlm: "2020.0000000", unpricedHoldings: 0, highValue: true });
+    });
+
+    // a quote for a different size says nothing reliable about this sale
+    it("treats a quote sized for another amount as unpriced", () => {
+      const audit = auditWith(
+        [line({ kind: "native" }, "20"), line(usdc, "100")],
+        [cb("u1", usdc, "30")],
+      );
+      const quotes = new Map([
+        [`USDC:${ISSUER}`, { sourceAmount: "100.0000000", destinationAmount: "300.0000000" }],
+      ]);
+      expect(
+        assessCloseValue({
+          audit,
+          creditQuotes: quotes,
+          unpricedPositions: 0,
+          claimedBalanceIds: ["u1"],
+        }),
+      ).toEqual({ estimatedXlm: "20.0000000", unpricedHoldings: 1, highValue: true });
+    });
+  });
 });

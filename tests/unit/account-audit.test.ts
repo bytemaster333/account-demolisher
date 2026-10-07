@@ -54,6 +54,7 @@ import type {
   AuditFlags,
   AuditThresholds,
   ClaimableBalanceEntry,
+  PoolShareEntry,
   SponsorshipInfo,
 } from "@/lib/types/account";
 
@@ -237,6 +238,30 @@ describe("collectableClaimableBalanceIds", () => {
       issuedByAccount: true as const,
     };
     expect(collectableClaimableBalanceIds([], [own])).toEqual(["own"]);
+  });
+
+  // the close withdraws pool shares in the same leading phase as these claims,
+  // and the withdraw credits the reserve asset's trustline first
+  it("counts what a pool withdraw credits against the trustline's room", () => {
+    const pool: PoolShareEntry = {
+      poolId: "ab".repeat(32),
+      poolType: "constant_product",
+      shareBalance: "30.0000000",
+      totalShares: "60.0000000",
+      shareLimit: "922337203685.4775807",
+      fee: 30,
+      reserves: [
+        { asset: { kind: "native" }, amount: "200.0000000" },
+        // half the shares: 30.0000000 CAP back into the line
+        { asset: { kind: "credit", code: "CAP", issuer: OTHER }, amount: "60.0000001" },
+      ],
+    };
+    const balances = [line("CAP", "40", "100")];
+    const claims = [creditCb("big", "CAP", "50"), creditCb("small", "CAP", "30")];
+    // 60 of room without the withdraw: the 50 fits, the 30 then does not
+    expect(collectableClaimableBalanceIds(balances, claims)).toEqual(["big"]);
+    // 30 of room left after the withdraw: only the 30 fits
+    expect(collectableClaimableBalanceIds(balances, claims, [pool])).toEqual(["small"]);
   });
 });
 
