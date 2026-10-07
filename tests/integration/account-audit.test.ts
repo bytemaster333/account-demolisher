@@ -5,13 +5,20 @@ import {
   AuthRevocableFlag,
   BASE_FEE,
   Claimant,
+  getLiquidityPoolId,
   Keypair,
+  LiquidityPoolAsset,
+  LiquidityPoolFeeV18,
   Operation,
   TransactionBuilder,
   type Transaction,
   type xdr,
 } from "@stellar/stellar-sdk";
-import { assessMergeability, auditAccount } from "@/lib/stellar/account-audit";
+import {
+  assessMergeability,
+  auditAccount,
+  collectableClaimableBalanceIds,
+} from "@/lib/stellar/account-audit";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
 import { resolveCreditPaths } from "@/lib/stellar/path-finder";
 import { planClaimableBalances } from "@/lib/plan/classic-batcher";
@@ -351,5 +358,66 @@ describe("integration: audit merge verdicts (testnet)", () => {
     await server.submitTransaction(tx, { skipMemoRequiredCheck: true });
     const after = await auditAccount(issuer.publicKey(), TESTNET);
     expect(after.claimableBalances).toEqual([]);
+  });
+
+  // the close withdraws pool shares before it claims, in one transaction. the
+  // withdraw credits the reserve asset's trustline, so on a custom limit it uses
+  // up the room a same-asset claim was counted against
+  it("counts a pool withdraw against a custom trustline limit before a claim", async () => {
+    const issuer = Keypair.random();
+    const holder = Keypair.random();
+    await friendbotFund(issuer.publicKey());
+    await friendbotFund(holder.publicKey());
+    const cap = new Asset("CAP", issuer.publicKey());
+    const poolAsset = new LiquidityPoolAsset(Asset.native(), cap, LiquidityPoolFeeV18);
+    const poolId = Buffer.from(
+      getLiquidityPoolId("constant_product", poolAsset.getLiquidityPoolParameters()),
+    ).toString("hex");
+    await submitAs(holder, [Operation.changeTrust({ asset: cap, limit: "100" })]);
+    await submitAs(issuer, [
+      Operation.payment({ destination: holder.publicKey(), asset: cap, amount: "70" }),
+      Operation.createClaimableBalance({
+        asset: cap,
+        amount: "50",
+        claimants: [new Claimant(holder.publicKey(), Claimant.predicateUnconditional())],
+      }),
+    ]);
+    await submitAs(holder, [
+      Operation.changeTrust({ asset: poolAsset }),
+      Operation.liquidityPoolDeposit({
+        liquidityPoolId: poolId,
+        maxAmountA: "30",
+        maxAmountB: "30",
+        minPrice: "0.9",
+        maxPrice: "1.1",
+      }),
+    ]);
+
+    const audit = await auditAccount(holder.publicKey(), TESTNET);
+    const capLine = audit.balances.find((b) => b.asset.kind === "credit");
+    expect(capLine).toMatchObject({ amount: "40.0000000", limit: "100.0000000" });
+    expect(audit.poolShares).toHaveLength(1);
+    const cb = audit.claimableBalances[0]!;
+    // 60 of room before the withdraw, 30 after it: the 50 does not fit
+    expect(
+      collectableClaimableBalanceIds(audit.balances, audit.claimableBalances, audit.poolShares),
+    ).toEqual([]);
+
+    const shares = audit.poolShares[0]!.shareBalance;
+    await expect(
+      submitAs(holder, [
+        Operation.liquidityPoolWithdraw({
+          liquidityPoolId: poolId,
+          amount: shares,
+          minAmountA: "0",
+          minAmountB: "0",
+        }),
+        Operation.claimClaimableBalance({ balanceId: cb.id }),
+      ]),
+    ).rejects.toMatchObject({
+      response: {
+        data: { extras: { result_codes: { operations: ["op_success", "op_line_full"] } } },
+      },
+    });
   });
 });
