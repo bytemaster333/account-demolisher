@@ -507,10 +507,11 @@ function prepared(
       landedPhases: [],
     };
   }
+  // the run is complete, the close is not: no merge hash, and the message says so
   input.onProgress({
-    kind: "submitted",
+    kind: "complete",
     message:
-      "The close is prepared, and the account stays open. Come back after " +
+      "Preparation complete. The account stays open. Come back after " +
       `${plan.unlocksAt.toISOString().slice(0, 10)} to withdraw the backstop and finish closing.`,
   });
   return {

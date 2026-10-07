@@ -27,6 +27,7 @@ import type { ClassicMemo, DemolishProgressEvent, DemolishResult } from "@/lib/t
 import { EMPTY_POSITIONS, type ProtocolPositions } from "@/lib/adapters/positions/interface";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import type { HeldToken } from "@/lib/soroban/held-tokens";
+import type { ExitTrustlineGap } from "@/lib/soroban/stellar-asset";
 import type { Connector } from "@/lib/wallet/connector";
 
 export { classifyFailure, isRetryableFailure, type FailureKind };
@@ -113,6 +114,9 @@ export interface PageFlowContext {
   readonly discoveryWarnings: readonly string[];
   // technical detail behind the discovery warnings, for a collapsed section
   readonly discoveryDiagnostics: readonly string[];
+  // pool payouts this account has no usable trustline for; the preview turns
+  // the ones its exits pay into blockers
+  readonly exitTrustlineGaps: readonly ExitTrustlineGap[];
   readonly unroutableCredits: readonly UnroutableCredit[];
   // what the preview found that keeps the close from starting (mergeability,
   // the BLND trustline, the exchange-forward funding), in words for the user
@@ -182,6 +186,7 @@ const initialContext: PageFlowContext = {
   heldTokenScanFailed: false,
   discoveryWarnings: [],
   discoveryDiagnostics: [],
+  exitTrustlineGaps: [],
   unroutableCredits: [],
   reviewBlockers: [],
   refusedConversions: [],
@@ -222,8 +227,10 @@ export function confirmBlockers(
 ): readonly string[] {
   const forfeitPools = new Set(context.emissionForfeits.map((f) => f.poolId));
   return [
+    // a claim the user can forfeit is listed once, with its own wording below. a
+    // refused conversion never reaches previewBlockers (a conversion is a
+    // best-effort kind), so it is listed only from refusedConversions
     ...previewBlockers(context.tree)
-      // a claim the user can forfeit is listed once, with its own wording below
       .filter((b) => !isForfeitable(context.tree, b.nodeId, forfeitPools))
       .map((b) => `${b.description}: ${b.error}`),
     ...context.unroutableCredits.map(
@@ -432,6 +439,7 @@ export const pageFlowMachine = setup({
             heldTokenScanFailed: ({ event }) => event.output.heldTokenScanFailed,
             discoveryWarnings: ({ event }) => event.output.discoveryWarnings,
             discoveryDiagnostics: ({ event }) => event.output.discoveryDiagnostics,
+            exitTrustlineGaps: ({ event }) => event.output.exitTrustlineGaps,
           }),
         },
         onError: {
@@ -485,6 +493,7 @@ export const pageFlowMachine = setup({
             ...(i.sendHeldTokensAsIs ? { sendHeldTokensAsIs: i.sendHeldTokensAsIs } : {}),
             ...(i.leaveHeldTokens ? { leaveHeldTokens: i.leaveHeldTokens } : {}),
             ...(i.deterministicDisposal ? { deterministicDisposal: true } : {}),
+            exitTrustlineGaps: context.exitTrustlineGaps,
           };
         },
         onDone: {

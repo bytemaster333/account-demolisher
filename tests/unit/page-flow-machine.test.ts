@@ -541,6 +541,66 @@ describe("what the preview found blocks the close until it is resolved", () => {
     actor.stop();
   });
 
+  it("lists a refused conversion once, not again as a failed step", async () => {
+    const convert = node("convert", "ConvertSorobanToXLM", {
+      status: "failed",
+      error: "ConvertSorobanToXLM: selling the whole balance has a 9.00% price impact",
+      metadata: {
+        kind: "ConvertSorobanToXLM",
+        asset: { kind: "contract", contractId: "CTOKEN" },
+        amount: 5n,
+      },
+    } as unknown as Partial<PlanNode>);
+    const { actor } = machineWith({
+      execute: hang,
+      tree: () => treeOf(convert),
+      preview: {
+        refusedConversions: [
+          {
+            key: "contract:CTOKEN",
+            contractId: "CTOKEN",
+            refusal: "price_impact",
+            reason: "9.00% price impact",
+          },
+        ],
+      },
+    });
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    expect(confirmBlockers(actor.getSnapshot().context)).toEqual([
+      expect.stringMatching(/^Converting token CTOKEN was refused for its price/),
+    ]);
+    actor.stop();
+  });
+
+  it("hands the trustline gaps discovery found to the preview", async () => {
+    const gaps = [{ contractId: "CUSDC", code: "USDC", issuer: "GISSUER", reason: "missing" }];
+    const previewInputs: Record<string, unknown>[] = [];
+    const machine = pageFlowMachine.provide({
+      actors: {
+        discover: fromPromise(async () => ({
+          audit: fakeAudit,
+          positions: EMPTY_POSITIONS,
+          allowances: [],
+          heldTokens: [],
+          unreadableHeldTokens: [],
+          heldTokenScanFailed: false,
+          discoveryWarnings: [],
+          discoveryDiagnostics: [],
+          exitTrustlineGaps: gaps,
+        })) as never,
+        preview: fromPromise(async ({ input }: { input: Record<string, unknown> }) => {
+          previewInputs.push(input);
+          return { tree: emptyTree(), unroutableCredits: [], heldTokenWarnings: [] };
+        }) as never,
+      },
+    });
+    const actor = createActor(machine).start();
+    actor.send({ type: "START", input: fakeInput });
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    expect(previewInputs[0]!["exitTrustlineGaps"]).toEqual(gaps);
+    actor.stop();
+  });
+
   it("folds the review notes into the warnings the page shows", async () => {
     const { actor } = machineWith({
       execute: hang,
