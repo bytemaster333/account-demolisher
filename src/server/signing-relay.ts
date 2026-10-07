@@ -31,7 +31,12 @@
 //    sequence number, so at most one of them can ever land. a signer can still
 //    push out a request holding no more weight than their own signature.
 
-import { StrKey, TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
+import {
+  StrKey,
+  TransactionBuilder,
+  type FeeBumpTransaction,
+  type Transaction,
+} from "@stellar/stellar-sdk";
 
 import { parseNetworkId, requireNetwork, type StellarNetwork } from "@/lib/config/networks";
 import {
@@ -39,6 +44,7 @@ import {
   type MergeResult,
   type TrimResult,
   canonicalizeSignatures,
+  isClassicTransaction,
   mergeNewSignatures,
   signedSigners,
   trimToThreshold,
@@ -220,20 +226,15 @@ function computeExpiry(tx: Transaction, createdAt: number): number {
   return max === null ? windowExpiry : Math.min(windowExpiry, max - EXPIRY_GRACE_MS);
 }
 
-function isClassicTransaction(tx: Transaction | { innerTransaction?: unknown }): tx is Transaction {
-  const candidate = tx as { feeSource?: unknown; innerTransaction?: unknown };
-  return candidate.feeSource === undefined && candidate.innerTransaction === undefined;
-}
-
 // decode a close and identify the account it actually closes. the account is the
 // accountMerge operation's effective source (op.source ?? tx.source), not blindly
 // tx.source, and every operation must share that same effective source, so an
 // attacker can't fetch the signer set of an account they control while merging a
 // victim account. muxed / non-ed25519 sources are rejected.
 function decodeClose(xdr: string, passphrase: string): { tx: Transaction; source: string } | null {
-  let tx: Transaction;
+  let tx: Transaction | FeeBumpTransaction;
   try {
-    tx = TransactionBuilder.fromXdr(xdr, passphrase) as Transaction;
+    tx = TransactionBuilder.fromXdr(xdr, passphrase);
   } catch {
     return null;
   }

@@ -12,6 +12,7 @@ import {
 import {
   TooManySignaturesError,
   canonicalizeSignatures,
+  isClassicTransaction,
   mergeSignatures,
   signedSigners,
   trimToThreshold,
@@ -51,6 +52,17 @@ function forgedHintPartial(sourcePk: string, seq: string, kp: Keypair, count: nu
   }
   return forged.toXdr();
 }
+
+describe("isClassicTransaction", () => {
+  it("accepts a classic transaction and refuses a fee-bump around one", () => {
+    const kp = Keypair.random();
+    const inner = buildTx(kp.publicKey(), "7");
+    inner.sign(kp);
+    const bump = TransactionBuilder.buildFeeBumpTransaction(kp, "200", inner, NET);
+    expect(isClassicTransaction(TransactionBuilder.fromXdr(inner.toXdr(), NET))).toBe(true);
+    expect(isClassicTransaction(TransactionBuilder.fromXdr(bump.toXdr(), NET))).toBe(false);
+  });
+});
 
 describe("mergeSignatures signature-wedge hardening", () => {
   it("collapses one signer's signature replayed under many forged hints to a single slot", () => {

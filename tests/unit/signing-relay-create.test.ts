@@ -127,6 +127,17 @@ describe("createPlan", () => {
     );
   });
 
+  it("rejects a fee-bump envelope around a signed close", async () => {
+    const a = newAccount();
+    loadAccount.mockResolvedValue(accountResponse(a));
+    const inner = TransactionBuilder.fromXdr(signedBy(buildClose(a), a.kp), NET) as Transaction;
+    const bump = TransactionBuilder.buildFeeBumpTransaction(a.kp, "200", inner, NET);
+    bump.sign(a.kp);
+    const res = await createPlan("testnet", bump.toXdr());
+    expect(res).toMatchObject({ ok: false, code: "NOT_A_CLOSE" });
+    expect(loadAccount).not.toHaveBeenCalled();
+  });
+
   it("rejects a transaction without an upper time bound", async () => {
     const a = newAccount();
     loadAccount.mockResolvedValue(accountResponse(a));
@@ -504,6 +515,28 @@ describe("verification cost per sign request (H-32)", () => {
       expect(addSignature(id, published).ok).toBe(true);
       // 19 stored + 19 incoming signatures, each matched by its hint
       expect(verify.mock.calls.length).toBeLessThanOrEqual(2 * 19);
+    } finally {
+      verify.mockRestore();
+    }
+    expect(getPlan(id)!.xdr).toBe(published);
+  });
+
+  it("replaying the published envelope with every hint zeroed costs no extra checks", async () => {
+    const { id } = await fullPlan();
+    const published = getPlan(id)!.xdr;
+    const replay = TransactionBuilder.fromXdr(published, NET) as Transaction;
+    const sigs = replay.signatures.map(
+      (s) =>
+        new xdr.DecoratedSignature({ hint: Buffer.alloc(4), signature: s.signature.toBytes() }),
+    );
+    replay.signatures.splice(0, replay.signatures.length, ...sigs);
+
+    const verify = vi.spyOn(Keypair.prototype, "verify");
+    try {
+      expect(addSignature(id, replay.toXdr()).ok).toBe(true);
+      // the 19 stored signatures are matched by hint; the replayed ones carry the
+      // same bytes, so none of them needs a sweep over the 20 signers
+      expect(verify.mock.calls.length).toBeLessThanOrEqual(19);
     } finally {
       verify.mockRestore();
     }
