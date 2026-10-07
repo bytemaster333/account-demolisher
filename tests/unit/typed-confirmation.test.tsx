@@ -97,3 +97,43 @@ describe("TypedConfirmation timed-delay gate", () => {
     expect(onConfirm).toHaveBeenCalledWith("KTL3");
   });
 });
+
+describe("TypedConfirmation memo", () => {
+  afterEach(cleanup);
+
+  const DEST = "GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3";
+
+  it("shows the memo's type and value next to the destination", () => {
+    render(
+      <TypedConfirmation
+        destination={DEST}
+        memo={{ type: "id", value: "777" }}
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(screen.getByTestId("typed-confirmation-memo").textContent).toBe("Memo (ID): 777");
+  });
+
+  it("says there is no memo when the close carries none", () => {
+    render(
+      <TypedConfirmation destination={DEST} memo={null} onConfirm={() => {}} onCancel={() => {}} />,
+    );
+    expect(screen.getByTestId("typed-confirmation-memo").textContent).toBe("No memo");
+  });
+
+  it("says a mediator close applies the memo on the forward", () => {
+    render(
+      <TypedConfirmation
+        destination={DEST}
+        memo={{ type: "text", value: "deposit-42" }}
+        memoViaMediator
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    const memo = screen.getByTestId("typed-confirmation-memo").textContent ?? "";
+    expect(memo).toContain("Memo (TEXT): deposit-42");
+    expect(memo).toMatch(/mediator/);
+  });
+});

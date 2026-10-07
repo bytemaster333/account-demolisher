@@ -6,16 +6,20 @@
 // ever added to the envelope a page already holds, so a late or stale relay
 // response can't drop one. before submit the envelope is trimmed to the
 // signatures stellar-core will actually use: an unused signature fails the whole
-// transaction with tx_bad_auth_extra.
+// transaction with tx_bad_auth_extra. the trim is the relay's own
+// (partial-xdr), so the browser and the relay never disagree on what is kept.
 
 import {
-  Keypair,
   TransactionBuilder,
-  xdr,
   type FeeBumpTransaction,
   type Horizon,
   type Transaction,
 } from "@stellar/stellar-sdk";
+
+import { trimToThreshold, type TrimResult, type WeightedSigner } from "@/lib/multisig/partial-xdr";
+import { thresholdForClose } from "@/lib/multisig/signing-request";
+
+export { trimToThreshold, type TrimResult, type WeightedSigner };
 
 export class EnvelopeMismatchError extends Error {
   constructor(message: string) {
@@ -77,11 +81,6 @@ export function mergeRelayEnvelope(
   return added ? base.toXdr() : held;
 }
 
-export interface WeightedSigner {
-  readonly key: string;
-  readonly weight: number;
-}
-
 export interface CloseSignerSet {
   readonly signers: readonly WeightedSigner[];
   // weight the close needs. the bundle always has an accountMerge (high), usually
@@ -96,50 +95,10 @@ export function closeSignerSet(account: Horizon.AccountResponse): CloseSignerSet
     signers: account.signers
       .filter((s) => s.type === "ed25519_public_key" && s.weight > 0)
       .map((s) => ({ key: s.key, weight: s.weight })),
-    required: Math.max(1, t.low_threshold, t.med_threshold, t.high_threshold),
+    required: thresholdForClose({
+      low: t.low_threshold,
+      medium: t.med_threshold,
+      high: t.high_threshold,
+    }),
   };
-}
-
-export interface TrimResult {
-  readonly xdr: string;
-  // signer keys whose signatures were kept, in envelope order
-  readonly kept: readonly string[];
-  readonly weight: number;
-  readonly met: boolean;
-}
-
-// keep only the signatures core will consume. core walks the envelope in order,
-// counts each signature from a current signer once, and stops at the needed
-// weight; anything left over is unused and fails the transaction. kept signatures
-// get the canonical hint for their key, since core skips a signature whose hint
-// does not match.
-export function trimToThreshold(
-  envelopeXdr: string,
-  passphrase: string,
-  signers: readonly WeightedSigner[],
-  required: number,
-): TrimResult {
-  const decoded = TransactionBuilder.fromXdr(envelopeXdr, passphrase);
-  if (isFeeBump(decoded)) throw new Error("trimToThreshold: fee-bump envelopes are not supported.");
-  const tx = decoded;
-  const hash = tx.hash();
-  const remaining = signers.map((s) => ({ ...s, kp: Keypair.fromPublicKey(s.key) }));
-  const keptSigs: xdr.DecoratedSignature[] = [];
-  const kept: string[] = [];
-  let weight = 0;
-  for (const sig of tx.signatures) {
-    if (weight >= required) break;
-    const bytes = sig.signature.toBytes();
-    const idx = remaining.findIndex((s) => s.kp.verify(hash, bytes));
-    if (idx === -1) continue;
-    const signer = remaining[idx]!;
-    remaining.splice(idx, 1);
-    keptSigs.push(
-      new xdr.DecoratedSignature({ hint: signer.kp.signatureHint(), signature: bytes }),
-    );
-    kept.push(signer.key);
-    weight += signer.weight;
-  }
-  tx.signatures.splice(0, tx.signatures.length, ...keptSigs);
-  return { xdr: tx.toXdr(), kept, weight, met: weight >= required };
 }

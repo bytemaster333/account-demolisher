@@ -10,11 +10,15 @@ const sep41 = {
   symbol: vi.fn(),
   decimals: vi.fn(),
 };
-vi.mock("@/lib/soroban/sep41", () => ({
+vi.mock("@/lib/soroban/sep41", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/soroban/sep41")>()),
   symbol: (...args: unknown[]) => sep41.symbol(...args),
   decimals: (...args: unknown[]) => sep41.decimals(...args),
 }));
-vi.mock("@/lib/soroban/rpc-client", () => ({ getRpc: () => ({}) }));
+// one server object per test, as getRpc caches one per network; token metadata
+// is cached per server, so a fresh one keeps each test's reads its own
+let rpcServer: object = {};
+vi.mock("@/lib/soroban/rpc-client", () => ({ getRpc: () => rpcServer }));
 
 import { AllowanceList } from "@/components/allowance-viewer/AllowanceList";
 import { resolveNetwork } from "@/lib/config/networks";
@@ -61,6 +65,7 @@ async function settle(): Promise<void> {
 }
 
 beforeEach(() => {
+  rpcServer = {};
   sep41.symbol.mockReset();
   sep41.decimals.mockReset();
   const check = (source: string) => {
@@ -138,5 +143,73 @@ describe("AllowanceList on-chain confirmation", () => {
     expect(primary).toContain("2");
     expect(primary).not.toContain("1");
     expect(screen.getByTestId("row-amount-mismatch").textContent).toMatch(/events: 1/);
+  });
+});
+
+describe("AllowanceList metadata reads", () => {
+  it("reads a token's metadata once however many rows show it", async () => {
+    const shared = "CSHAREDTOKEN";
+    renderList(
+      Array.from({ length: 12 }, (_, i) => rec(`GSPEND${i}`, { contractId: shared })),
+      G_WALLET,
+    );
+    await settle();
+    await settle();
+    expect(sep41.symbol).toHaveBeenCalledTimes(1);
+    expect(sep41.decimals).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByTestId("row-token-symbol").map((e) => e.textContent)).toEqual(
+      Array(12).fill("USDC"),
+    );
+  });
+
+  it("drops the read of a row that unmounts and shows no error for it", async () => {
+    let release!: () => void;
+    sep41.symbol.mockImplementation(
+      () => new Promise<string>((resolve) => (release = () => resolve("USDC"))),
+    );
+    renderList([rec("GSPEND1")], G_WALLET);
+    await settle();
+    cleanup();
+    release();
+    await settle();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+describe("AllowanceList amount formatting", () => {
+  it("shows raw units, without hanging or throwing, for decimals a token can't need", async () => {
+    sep41.decimals.mockResolvedValue(4_294_967_295);
+    renderList([rec("GSPEND1", { amount: 12_345n, onChainAmount: 12_345n })], G_WALLET);
+    await settle();
+    expect(screen.getByTestId("row-amount-primary").textContent).toBe("12,345");
+  });
+
+  it("shows raw units for 39 decimals", async () => {
+    sep41.decimals.mockResolvedValue(39);
+    renderList([rec("GSPEND1", { amount: 7n, onChainAmount: 7n })], G_WALLET);
+    await settle();
+    expect(screen.getByTestId("row-amount-primary").textContent).toBe("7");
+  });
+
+  it("trims trailing zeros of the fraction", async () => {
+    renderList([rec("GSPEND1", { amount: 12_500_000n, onChainAmount: 12_500_000n })], G_WALLET);
+    await settle();
+    expect(screen.getByTestId("row-amount-primary").textContent).toBe("1.25");
+  });
+});
+
+describe("AllowanceList token symbols", () => {
+  it("badges a symbol with non-ASCII letters", async () => {
+    sep41.symbol.mockResolvedValue("USDС");
+    renderList([rec("GSPEND1")], G_WALLET);
+    await settle();
+    expect(screen.getByTestId("row-token-nonascii")).toBeTruthy();
+  });
+
+  it("does not badge a plain ASCII symbol", async () => {
+    renderList([rec("GSPEND1")], G_WALLET);
+    await settle();
+    expect(screen.getByTestId("row-token-symbol").textContent).toBe("USDC");
+    expect(screen.queryByTestId("row-token-nonascii")).toBeNull();
   });
 });

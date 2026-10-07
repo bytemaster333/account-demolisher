@@ -67,3 +67,22 @@ describe("CreateTestAccountButton way back", () => {
     expect(screen.getByTestId("create-test-account-button")).toBeTruthy();
   });
 });
+
+describe("CreateTestAccountButton network gate", () => {
+  it("renders nothing off testnet, even for a network that has a friendbot", () => {
+    const mainnetWithFaucet = { ...resolveNetwork("mainnet"), friendbot: network.friendbot };
+    render(
+      <CreateTestAccountButton
+        network={mainnetWithFaucet}
+        onConnector={() => {}}
+        onActiveChange={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId("create-test-account-button")).toBeNull();
+  });
+
+  it("renders on testnet", () => {
+    renderButton();
+    expect(screen.getByTestId("create-test-account-button")).toBeTruthy();
+  });
+});

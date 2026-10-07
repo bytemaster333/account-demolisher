@@ -19,6 +19,10 @@ export function InfoTip({
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<{ top: number; left: number } | null>(null);
   const ref = useRef<HTMLButtonElement>(null);
+  // set by a pointer press on the term until its click (or blur). a tap focuses
+  // the button before the click arrives, so a focus that opened the tip would
+  // let the click close it straight away; only keyboard focus opens it.
+  const pressedRef = useRef(false);
   const tipId = useId();
 
   const place = useCallback((): void => {
@@ -36,15 +40,19 @@ export function InfoTip({
 
   useEffect(() => {
     if (!open) return;
+    // capture phase, and the event stops here: inside a dialog that also closes
+    // on Escape, the first press dismisses only the tip
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      setOpen(false);
     };
-    window.addEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
     // capture, so scrolling any scroll container moves the tip too
     window.addEventListener("scroll", place, true);
     window.addEventListener("resize", place);
     return () => {
-      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("scroll", place, true);
       window.removeEventListener("resize", place);
     };
@@ -62,8 +70,15 @@ export function InfoTip({
           // click handler (e.g. a <summary> that would also collapse a <details>)
           e.preventDefault();
           e.stopPropagation();
+          pressedRef.current = false;
           if (open) hide();
           else show();
+        }}
+        onPointerDown={() => {
+          pressedRef.current = true;
+        }}
+        onPointerCancel={() => {
+          pressedRef.current = false;
         }}
         // hover is mouse-only: on touch, a synthetic enter before the click
         // would open the tip and the click would immediately close it again
@@ -73,8 +88,13 @@ export function InfoTip({
         onPointerLeave={(e) => {
           if (e.pointerType === "mouse") hide();
         }}
-        onFocus={show}
-        onBlur={hide}
+        onFocus={() => {
+          if (!pressedRef.current) show();
+        }}
+        onBlur={() => {
+          pressedRef.current = false;
+          hide();
+        }}
         style={{
           font: "inherit",
           color: "inherit",

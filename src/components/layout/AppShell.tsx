@@ -16,13 +16,45 @@ import { describeConnectError } from "@/components/wallet/connect-error";
 import { hasMainnetAck, recordMainnetAck, subscribeMainnetAck } from "./mainnet-ack";
 import { MainnetConfirm } from "./MainnetConfirm";
 import { useTheme } from "./ThemeProvider";
-import { resolveNetwork, type NetworkConfig, type StellarNetwork } from "@/lib/config/networks";
+import {
+  NETWORKS,
+  parseNetworkId,
+  type NetworkConfig,
+  type StellarNetwork,
+} from "@/lib/config/networks";
 import { explorerAccountUrl } from "@/lib/explorer";
 import { disconnectSession, setActiveConnector } from "@/lib/wallet/active-connector";
 import { WalletKitConnector } from "@/lib/wallet/connector";
 import { restoreKitSession } from "@/lib/wallet/kit";
+import { useCloseBusy } from "@/stores/close-busy";
 import { useNetworkStore } from "@/stores/network";
 import { useWalletStore } from "@/stores/wallet";
+
+// leaving /demolish unmounts the running close, which then stops before its next
+// step and leaves the account part way closed
+const LEAVE_WHILE_BUSY =
+  "A close is running. Leaving this page stops it before its next step: steps that already landed stay on chain and the account is left part way closed. Leave anyway?";
+
+// client navigation (next/link) never fires beforeunload, so in-app links ask
+// here while a close runs
+function useLeaveGuard(): (e: React.MouseEvent<HTMLAnchorElement>) => void {
+  const busy = useCloseBusy((s) => s.busy);
+  return useCallback(
+    (e: React.MouseEvent<HTMLAnchorElement>) => {
+      if (busy && !window.confirm(LEAVE_WHILE_BUSY)) e.preventDefault();
+    },
+    [busy],
+  );
+}
+
+// why the network and the wallet can't change right now, or null. the demolish
+// page sets lockReason while a close executes or signatures are collected; busy
+// covers a run that is executing either way
+function useSessionLock(): string | null {
+  const lockReason = useNetworkStore((s) => s.lockReason);
+  const busy = useCloseBusy((s) => s.busy);
+  return lockReason ?? (busy ? "A close is running on this network." : null);
+}
 
 export function AppShell({ children }: { readonly children: React.ReactNode }) {
   return (
@@ -55,7 +87,9 @@ function Navbar() {
   const disconnect = useWalletStore((s) => s.disconnect);
   const setConnected = useWalletStore((s) => s.setConnected);
   const networkId = useNetworkStore((s) => s.networkId);
-  const network = useMemo(() => resolveNetwork(networkId), [networkId]);
+  const network = useMemo(() => NETWORKS[networkId], [networkId]);
+  const guardLeave = useLeaveGuard();
+  const lock = useSessionLock();
 
   const isDemolish = pathname?.startsWith("/demolish") ?? false;
   const isAllowances = pathname?.startsWith("/allowances") ?? false;
@@ -95,9 +129,7 @@ function Navbar() {
         } catch {
           // storage unavailable; fall back to the store's network
         }
-        const net = resolveNetwork(
-          stored === "mainnet" || stored === "testnet" ? stored : networkId,
-        );
+        const net = parseNetworkId(stored) ?? NETWORKS[networkId];
         const address = await restoreKitSession(net);
         // bail if nothing to restore, or a connect happened while we awaited
         if (cancelled || address === null || useWalletStore.getState().publicKey !== null) return;
@@ -140,6 +172,7 @@ function Navbar() {
         <Link
           href="/"
           aria-label="Home"
+          onClick={guardLeave}
           style={{
             display: "flex",
             alignItems: "center",
@@ -174,10 +207,10 @@ function Navbar() {
           className="resp-nav-hide"
           style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: 8 }}
         >
-          <NavLink href="/demolish" active={isDemolish}>
+          <NavLink href="/demolish" active={isDemolish} onClick={guardLeave}>
             Demolish
           </NavLink>
-          <NavLink href="/allowances" active={isAllowances}>
+          <NavLink href="/allowances" active={isAllowances} onClick={guardLeave}>
             Allowances
           </NavLink>
           <a
@@ -245,7 +278,12 @@ function Navbar() {
           </button>
 
           {publicKey ? (
-            <WalletMenu publicKey={publicKey} network={network} onDisconnect={disconnect} />
+            <WalletMenu
+              publicKey={publicKey}
+              network={network}
+              onDisconnect={disconnect}
+              lockReason={lock}
+            />
           ) : (
             // Connect in place from the header on every page (landing, demolish,
             // allowances, sign). The top-right wallet slot is ALWAYS present so
@@ -311,15 +349,18 @@ function Navbar() {
 function NavLink({
   href,
   active,
+  onClick,
   children,
 }: {
   readonly href: string;
   readonly active: boolean;
+  readonly onClick: (e: React.MouseEvent<HTMLAnchorElement>) => void;
   readonly children: React.ReactNode;
 }) {
   return (
     <Link
       href={href}
+      onClick={onClick}
       style={{
         padding: "8px 12px",
         borderRadius: 8,
@@ -342,10 +383,13 @@ function WalletMenu({
   publicKey,
   network,
   onDisconnect,
+  lockReason,
 }: {
   readonly publicKey: string;
   readonly network: NetworkConfig;
   readonly onDisconnect: () => void;
+  // set while a close or a signature collection depends on this wallet
+  readonly lockReason: string | null;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -383,6 +427,8 @@ function WalletMenu({
   }, [publicKey]);
 
   const onDisconnectClick = useCallback(() => {
+    // re-read the store: the run may have taken the lock since this rendered
+    if (useNetworkStore.getState().lockReason !== null || useCloseBusy.getState().busy) return;
     setOpen(false);
     void disconnectSession(onDisconnect);
   }, [onDisconnect]);
@@ -485,7 +531,12 @@ function WalletMenu({
           <MenuItem href={explorerAccountUrl(network, publicKey)} onClick={() => setOpen(false)}>
             View on explorer
           </MenuItem>
-          <MenuItem onClick={onDisconnectClick} tone="danger" testId="wallet-disconnect">
+          <MenuItem
+            onClick={onDisconnectClick}
+            tone="danger"
+            testId="wallet-disconnect"
+            disabledReason={lockReason}
+          >
             Disconnect
           </MenuItem>
         </div>
@@ -514,18 +565,23 @@ function MenuItem({
   children,
   tone,
   testId,
+  disabledReason = null,
 }: {
   readonly onClick: () => void;
   readonly href?: string;
   readonly children: React.ReactNode;
   readonly tone?: "danger";
   readonly testId?: string;
+  // disables a button item and says why, under its label
+  readonly disabledReason?: string | null;
 }): React.JSX.Element {
   const [hover, setHover] = useState(false);
+  const disabled = disabledReason !== null;
   const style: CSSProperties = {
     ...MENU_ITEM_BASE,
-    color: tone === "danger" ? "var(--danger)" : "var(--fg)",
-    background: hover ? "var(--surface-2)" : "transparent",
+    color: disabled ? "var(--fg-3)" : tone === "danger" ? "var(--danger)" : "var(--fg)",
+    background: hover && !disabled ? "var(--surface-2)" : "transparent",
+    cursor: disabled ? "not-allowed" : "pointer",
   };
   const shared = {
     role: "menuitem" as const,
@@ -541,6 +597,21 @@ function MenuItem({
       </a>
     );
   }
+  if (disabled) {
+    return (
+      <button
+        {...shared}
+        type="button"
+        disabled
+        style={{ ...style, flexDirection: "column", alignItems: "flex-start", gap: 4 }}
+      >
+        {children}
+        <span style={{ fontSize: 11.5, fontWeight: 500, lineHeight: 1.4, whiteSpace: "normal" }}>
+          {disabledReason}
+        </span>
+      </button>
+    );
+  }
   return (
     <button {...shared} type="button" onClick={onClick}>
       {children}
@@ -550,10 +621,21 @@ function MenuItem({
 
 const NETWORK_STORAGE_KEY = "demolisher.network";
 
+// the network this browser saved, read at render time; null on the server, when
+// nothing valid is stored, or when storage is blocked
+function readStoredNetwork(): StellarNetwork | null {
+  try {
+    return parseNetworkId(window.localStorage.getItem(NETWORK_STORAGE_KEY))?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function NetworkSwitcher() {
   const networkId = useNetworkStore((s) => s.networkId);
   const setNetwork = useNetworkStore((s) => s.setNetwork);
   const disconnect = useWalletStore((s) => s.disconnect);
+  const lock = useSessionLock();
 
   // hydrate the saved choice on the client (store initialises from env for SSR)
   useEffect(() => {
@@ -577,10 +659,19 @@ function NetworkSwitcher() {
   // choice, needs this browser to have acknowledged the unaudited notice. the
   // server snapshot says acknowledged so the dialog only renders on the client.
   const acknowledged = useSyncExternalStore(subscribeMainnetAck, hasMainnetAck, () => true);
-  const startupGate = networkId === "mainnet" && !acknowledged && !pendingMainnet;
+  // until the effect above moves the store to the saved choice, the store still
+  // holds the build default. a browser that saved testnet is about to leave
+  // mainnet, so it must not flash the dialog on a mainnet build. this only ever
+  // holds the dialog back for a saved testnet; it never raises it on its own.
+  const storedNetwork = useSyncExternalStore(noSubscription, readStoredNetwork, () => null);
+  const startupGate =
+    networkId === "mainnet" && storedNetwork !== "testnet" && !acknowledged && !pendingMainnet;
 
   const applySwitch = useCallback(
     (id: StellarNetwork): void => {
+      // a switch tears down the wallet session a running close signs with; the
+      // store is re-read because the lock can be taken after this rendered
+      if (useNetworkStore.getState().lockReason !== null || useCloseBusy.getState().busy) return;
       setNetwork(id);
       try {
         window.localStorage.setItem(NETWORK_STORAGE_KEY, id);
@@ -631,6 +722,8 @@ function NetworkSwitcher() {
         ariaLabel="Select network"
         value={networkId === "mainnet" ? "mainnet" : "testnet"}
         onChange={(v) => onChange(v as StellarNetwork)}
+        disabled={lock !== null}
+        disabledReason={lock ?? undefined}
         options={[
           { value: "testnet", label: label("testnet") },
           { value: "mainnet", label: label("mainnet") },
@@ -700,6 +793,7 @@ function GithubIcon() {
 }
 
 function Footer() {
+  const guardLeave = useLeaveGuard();
   return (
     <footer
       style={{
@@ -750,8 +844,12 @@ function Footer() {
           {/* link groups */}
           <div style={{ display: "flex", flexWrap: "wrap", gap: 56 }}>
             <FooterColumn title="Product">
-              <FooterLink href="/demolish">Close an account</FooterLink>
-              <FooterLink href="/allowances">Allowances</FooterLink>
+              <FooterLink href="/demolish" onClick={guardLeave}>
+                Close an account
+              </FooterLink>
+              <FooterLink href="/allowances" onClick={guardLeave}>
+                Allowances
+              </FooterLink>
             </FooterColumn>
             <FooterColumn title="Resources">
               <FooterLink href="https://docs.demolisher.app" external>
@@ -827,10 +925,13 @@ function FooterColumn({
 function FooterLink({
   href,
   external = false,
+  onClick,
   children,
 }: {
   readonly href: string;
   readonly external?: boolean;
+  // in-app links take the leave guard; external ones open a new tab
+  readonly onClick?: (e: React.MouseEvent<HTMLAnchorElement>) => void;
   readonly children: React.ReactNode;
 }): React.JSX.Element {
   const style: React.CSSProperties = {
@@ -846,7 +947,7 @@ function FooterLink({
     );
   }
   return (
-    <Link href={href} style={style}>
+    <Link href={href} {...(onClick ? { onClick } : {})} style={style}>
       {children}
     </Link>
   );

@@ -12,6 +12,7 @@ import { errorMessage } from "@/lib/errors";
 import { explorerTxUrl } from "@/lib/explorer";
 import {
   DEMO_STEPS,
+  isDemoNetwork,
   runDemoSetup,
   type DemoStepId,
   type DemoStepResult,
@@ -138,7 +139,8 @@ export function CreateTestAccountButton({
     onConnector(ready.connector);
   }, [ready, setConnected, onConnector]);
 
-  if (network.friendbot === null) return null;
+  // the same gate runDemoSetup enforces: the demo builds real testnet state
+  if (!isDemoNetwork(network)) return null;
 
   const successfulCount = Array.from(results.values()).filter((r) => r.status === "done").length;
   const skippedCount = Array.from(results.values()).filter((r) => r.status === "skipped").length;
