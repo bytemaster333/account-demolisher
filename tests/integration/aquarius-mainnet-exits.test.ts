@@ -1,10 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { Address, Horizon, scValToNative, xdr, type rpc } from "@stellar/stellar-sdk";
+import { Address, Asset, Horizon, scValToNative, xdr, type rpc } from "@stellar/stellar-sdk";
 
 import {
   claim,
   claimConcentratedFees,
   getUserReward,
+  readAquariusRewardToken,
   withdrawConcentratedPosition,
 } from "@/lib/adapters/aquarius/client";
 import {
@@ -168,5 +169,14 @@ describe("integration: aquarius exits simulate against mainnet", () => {
       },
       { server },
     );
+  });
+
+  // a reward claim pays this token, so a holder needs its trustline before the claim
+  it("reads the router's reward token as the AQUA SAC", async () => {
+    const aqua = new Asset(
+      "AQUA",
+      "GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA",
+    ).contractId(MAINNET.passphrase);
+    await expect(readAquariusRewardToken(getRpc(MAINNET), MAINNET)).resolves.toBe(aqua);
   });
 });
