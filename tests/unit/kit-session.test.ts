@@ -95,7 +95,11 @@ let kitApi: typeof import("@creit.tech/stellar-wallets-kit");
 beforeAll(async () => {
   process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID = "test-project-id";
   kitApi = await import("@creit.tech/stellar-wallets-kit");
-});
+  // transform our wrappers once here, so the first test is not the one that pays
+  // for it (on a loaded machine that alone ran past the 5s test timeout)
+  await import("@/lib/wallet/kit");
+  await import("@/lib/wallet/connector");
+}, 60_000);
 
 // a fresh page: our kit wrapper is re-imported (its module state starts empty)
 // and the kit's session state is what it reads from localStorage on load
