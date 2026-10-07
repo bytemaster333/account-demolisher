@@ -87,6 +87,7 @@ async function flowRecord(): Promise<PendingMediatorForward> {
 }
 
 beforeEach(() => {
+  vi.stubEnv("TRUSTED_PROXY_HOPS", "1");
   window.localStorage.clear();
   fake = new FakeHorizon({
     sign: { GET: signRoute.GET, POST: signRoute.POST },
@@ -104,6 +105,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   Object.defineProperty(navigator, "locks", { value: null, configurable: true });
 });
 

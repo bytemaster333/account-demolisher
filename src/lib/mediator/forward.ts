@@ -13,6 +13,7 @@ import {
 } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
+import { errorMessage } from "@/lib/errors";
 import {
   horizonFor,
   loadMediatorAccount,
@@ -455,7 +456,7 @@ function describe(err: unknown): string {
     const title = typeof data?.title === "string" ? `: ${data.title}` : "";
     return status !== null ? `${err.message} (HTTP ${String(status)}${title})` : err.message;
   }
-  return String(err);
+  return errorMessage(err);
 }
 
 // bounded retry for read-only horizon calls; a 404 is an answer, not a fault
