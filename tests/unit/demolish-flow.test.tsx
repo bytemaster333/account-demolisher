@@ -68,6 +68,10 @@ const ctl = vi.hoisted(() => ({
   tokenSymbol: "TKN",
   // close time of the network's latest ledger, ms; null reads the local clock
   ledgerCloseMs: null as number | null,
+  // the page's own credit quote lookup (Horizon path finding); null leaves it real
+  resolvePaths: null as
+    null | ((audit: unknown, network: unknown, opts: unknown) => Promise<unknown>),
+  resolvePathCalls: [] as unknown[],
 }));
 
 vi.mock("@/components/wallet/ConnectButton", () => ({
@@ -149,6 +153,18 @@ vi.mock("@/lib/multisig/plan-client", async () => {
         thresholds: { low: 2, med: 2, high: 2 },
         expiresAt: Date.now() + 3_600_000,
       };
+    },
+  };
+});
+vi.mock("@/lib/stellar/path-finder", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("@/lib/stellar/path-finder")>();
+  return {
+    ...orig,
+    resolveCreditPaths: (...args: Parameters<typeof orig.resolveCreditPaths>) => {
+      ctl.resolvePathCalls.push(args[2]);
+      return ctl.resolvePaths === null
+        ? orig.resolveCreditPaths(...args)
+        : (ctl.resolvePaths(...args) as ReturnType<typeof orig.resolveCreditPaths>);
     },
   };
 });
@@ -306,6 +322,8 @@ beforeEach(() => {
   ctl.typedTail = "";
   ctl.tokenSymbol = "TKN";
   ctl.ledgerCloseMs = null;
+  ctl.resolvePaths = null;
+  ctl.resolvePathCalls = [];
 });
 
 afterEach(() => {
@@ -622,6 +640,82 @@ describe("the position re-probe runs before a signing request is published (C-08
     await createRequest();
     expect((await screen.findByRole("alert")).textContent).toMatch(/probe timed out/);
     expect(ctl.published).toHaveLength(0);
+  });
+});
+
+describe("a claimed credit is priced for what the close really moves (M-22)", () => {
+  const CB = `00000000${"d5".repeat(32)}`;
+  const KEY = `USDC:${DEST}`;
+
+  // 10 USDC held and 5 more claimed; the reviewed quote covers the 10 only
+  function creditWithClaim(): void {
+    const audit = makeAudit({
+      subentryCount: 1,
+      balances: [
+        ...makeAudit().balances,
+        {
+          asset: { kind: "credit", code: "USDC", issuer: DEST },
+          amount: "10.0000000",
+          limit: "1000.0000000",
+          buyingLiabilities: "0",
+          sellingLiabilities: "0",
+          isAuthorized: true,
+        },
+      ],
+      claimableBalances: [
+        {
+          id: CB,
+          asset: { kind: "credit", code: "USDC", issuer: DEST },
+          amount: "5.0000000",
+          sponsor: DEST,
+          predicate: [{ destination: ACC, predicate: { unconditional: true } }],
+          claimants: [ACC],
+          claimableNow: true,
+        },
+      ],
+    });
+    const reviewed = new Map([
+      [
+        KEY,
+        {
+          sourceAmount: "10.0000000",
+          destinationAmount: "2.0000000",
+          path: [],
+          reference: { sourceAmount: "0.1000000", destinationAmount: "0.0200000" },
+        },
+      ],
+    ]);
+    ctl.discover = async () => ({ audit, positions: emptyPositions(), heldTokens: [] });
+    ctl.preview = async () => ({
+      tree: makeTree({ audit, opts: { paths: reviewed } }),
+      unroutableCredits: [],
+    });
+  }
+
+  it("uses a quote sized to the balance plus the claim", async () => {
+    creditWithClaim();
+    ctl.resolvePaths = async () =>
+      new Map([[KEY, { sourceAmount: "15.0000000", destinationAmount: "3.0000000", path: [] }]]);
+    connect();
+    render(<DemolishFlow />);
+    await configureAndStart();
+    await waitFor(() => expect(ctl.resolvePathCalls).toHaveLength(1));
+    expect(ctl.resolvePathCalls[0]).toEqual({ claimedBalanceIds: [CB] });
+    await screen.findByTestId("ack-autohandled");
+    await waitFor(() => expect(screen.queryByTestId("high-value-notice")).toBeNull());
+  });
+
+  it("counts the claim as unpriced, and says why, when the quote can't be read", async () => {
+    creditWithClaim();
+    ctl.resolvePaths = async () => {
+      throw new Error("horizon path search failed");
+    };
+    connect();
+    render(<DemolishFlow />);
+    await configureAndStart();
+    expect((await screen.findByTestId("high-value-pricing-error")).textContent).toMatch(
+      /horizon path search failed/,
+    );
   });
 });
 

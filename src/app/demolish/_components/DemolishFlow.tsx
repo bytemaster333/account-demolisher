@@ -45,6 +45,7 @@ import { disconnectSession, getActiveConnector } from "@/lib/wallet/active-conne
 import { useWalletStore } from "@/stores/wallet";
 
 import { useBaseReserve, useDeliveredAmount } from "../_hooks/use-chain-figures";
+import { useClaimedCreditQuotes } from "../_hooks/use-claimed-credit-quotes";
 import { useDemolishMetrics } from "../_hooks/use-demolish-metrics";
 import { useDestinationChecks } from "../_hooks/use-destination-checks";
 import { useHeldTokenScam } from "../_hooks/use-held-token-scam";
@@ -298,24 +299,46 @@ export function DemolishFlow(): React.JSX.Element {
     };
   }, [audit, multisigRequired, claimSelection, builtClaimList]);
 
-  // what the close is expected to move, priced at the reviewed quotes
+  // the claimable balances the built close really claims
+  const claimedIds = useMemo<readonly string[]>(
+    () =>
+      finalNode === null
+        ? []
+        : finalNode.metadata.batches
+            .flatMap((b) => b.operations)
+            .filter((o) => o.kind === "claim_claimable_balance")
+            .map((o) => String(o.metadata["balanceId"])),
+    [finalNode],
+  );
+  // a credit the close claims more of is priced at a quote sized to the balance
+  // plus the claims; the reviewed quotes cover the balance alone. A shared
+  // account's close sells nothing, so it has no market quotes to check.
+  const claimedQuotes = useClaimedCreditQuotes({
+    audit,
+    network: runNetwork,
+    claimedBalanceIds: claimedIds,
+    enabled: runInput !== null && runInput.deterministicDisposal !== true,
+  });
+
+  // what the close is expected to move. A credit that can't be priced trips the
+  // large-value gate, so a failed quote lookup leaves the claimed ones unpriced
+  // and says why.
   const closeValue = useMemo(() => {
     if (audit === null || finalNode === null) return null;
-    const quotes = new Map(Object.entries(finalNode.metadata.reviewedConversionQuotes ?? {}));
-    const claimed = finalNode.metadata.batches
-      .flatMap((b) => b.operations)
-      .filter((o) => o.kind === "claim_claimable_balance")
-      .map((o) => String(o.metadata["balanceId"]));
+    const quotes =
+      claimedQuotes.status === "ready"
+        ? claimedQuotes.quotes
+        : new Map(Object.entries(finalNode.metadata.reviewedConversionQuotes ?? {}));
     const movedTokens = [...(tree?.allNodes.values() ?? [])].filter(
       (n) => n.kind === "TransferAsIs" || n.kind === "ConvertSorobanToXLM",
     ).length;
     return assessCloseValue({
       audit,
       creditQuotes: quotes,
-      claimedBalanceIds: claimed,
+      claimedBalanceIds: claimedIds,
       unpricedPositions: openPositionCount(ctx.positions) + movedTokens,
     });
-  }, [audit, finalNode, tree, ctx.positions]);
+  }, [audit, finalNode, tree, ctx.positions, claimedIds, claimedQuotes]);
   const isHighValue = closeValue?.highValue === true;
 
   // everything that keeps the close from starting; the machine refuses CONFIRM
@@ -1350,6 +1373,8 @@ export function DemolishFlow(): React.JSX.Element {
                           ? {
                               estimatedXlm: closeValue.estimatedXlm,
                               unpricedHoldings: closeValue.unpricedHoldings,
+                              pricingError:
+                                claimedQuotes.status === "error" ? claimedQuotes.message : null,
                             }
                           : null
                       }
@@ -1378,7 +1403,11 @@ export function DemolishFlow(): React.JSX.Element {
                       }
                       rebuildRequired={rebuildRequired}
                       waitReason={
-                        heldScam.pending ? "Checking the standalone tokens' names…" : null
+                        heldScam.pending
+                          ? "Checking the standalone tokens' names…"
+                          : claimedQuotes.status === "loading"
+                            ? "Pricing the pending payments this close collects…"
+                            : null
                       }
                       onRebuild={onStart}
                       onBack={hasBlocker ? () => goToStage("resolve") : onBackToConfigure}
