@@ -13,7 +13,12 @@ import {
 } from "@stellar/stellar-sdk";
 
 import { MAINNET } from "@/lib/config/networks";
-import { assertDefiAuthTree, soroswapPairFor } from "@/lib/soroban/defi-auth-guard";
+import {
+  assertDefiAuthTree,
+  assertSingleChangeTrust,
+  soroswapPairFor,
+  UnsafeDefiAuthError,
+} from "@/lib/soroban/defi-auth-guard";
 import type { PlanNode } from "@/lib/plan/tree";
 
 // auth entries recorded by read-only mainnet simulation (2026-10-02) of the exact
@@ -793,6 +798,71 @@ describe("the BLND trustline step", () => {
         ctx(user),
       ),
     ).toThrow(/expected 1 operation, got 2/);
+  });
+});
+
+describe("a step that opens a pool payout trustline", () => {
+  const user = RECORDED.blendRepay.source;
+  const issuer = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
+  const USDC = new Asset("USDC", issuer);
+  const tx = (ops: xdr.Operation[], source: string = user) => {
+    const b = new TransactionBuilder(new Account(source, "100"), {
+      fee: "100",
+      networkPassphrase: Networks.PUBLIC,
+    });
+    for (const op of ops) b.addOperation(op);
+    return b.setTimeout(300).build();
+  };
+  const usdc = { code: "USDC", issuer };
+
+  it("accepts exactly one change_trust for the payout asset", () => {
+    expect(() =>
+      assertSingleChangeTrust(
+        "AddExitTrustline",
+        tx([Operation.changeTrust({ asset: USDC })]),
+        user,
+        usdc,
+      ),
+    ).not.toThrow();
+  });
+
+  it("refuses a look-alike issuer, a removal, an extra op or another source", () => {
+    const fake = new Asset("USDC", Keypair.random().publicKey());
+    expect(() =>
+      assertSingleChangeTrust(
+        "AddExitTrustline",
+        tx([Operation.changeTrust({ asset: fake })]),
+        user,
+        usdc,
+      ),
+    ).toThrow(UnsafeDefiAuthError);
+    expect(() =>
+      assertSingleChangeTrust(
+        "AddExitTrustline",
+        tx([Operation.changeTrust({ asset: USDC, limit: "0" })]),
+        user,
+        usdc,
+      ),
+    ).toThrow(/limit is zero/);
+    expect(() =>
+      assertSingleChangeTrust(
+        "AddExitTrustline",
+        tx([
+          Operation.changeTrust({ asset: USDC }),
+          Operation.payment({ destination: ATTACKER, asset: Asset.native(), amount: "1" }),
+        ]),
+        user,
+        usdc,
+      ),
+    ).toThrow(/expected 1 operation, got 2/);
+    expect(() =>
+      assertSingleChangeTrust(
+        "AddExitTrustline",
+        tx([Operation.changeTrust({ asset: USDC })], ATTACKER),
+        user,
+        usdc,
+      ),
+    ).toThrow(/transaction source/);
   });
 });
 

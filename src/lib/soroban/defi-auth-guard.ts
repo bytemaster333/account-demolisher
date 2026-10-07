@@ -106,24 +106,36 @@ function refuse(kind: string, reason: string): never {
 
 // the step that opens the BLND trustline before a pool emissions claim
 function checkBlndTrustline(kind: string, tx: Transaction, ctx: DefiAuthContext): void {
+  const blnd = blndTokenForNetwork(ctx.network);
+  assertSingleChangeTrust(kind, tx, ctx.user, { code: blnd.code, issuer: blnd.issuer });
+}
+
+// a step that only opens one trustline (BLND before an emissions claim, or a
+// pool payout asset before its exit): exactly one change_trust by the user, for
+// exactly that asset, with a nonzero limit. throws UnsafeDefiAuthError otherwise.
+export function assertSingleChangeTrust(
+  kind: string,
+  tx: Transaction,
+  user: string,
+  asset: { readonly code: string; readonly issuer: string },
+): void {
   const fail = (reason: string): never => refuse(kind, reason);
-  if (tx.source !== ctx.user) fail(`transaction source is ${tx.source}, expected ${ctx.user}`);
+  if (tx.source !== user) fail(`transaction source is ${tx.source}, expected ${user}`);
   if (tx.operations.length !== 1) fail(`expected 1 operation, got ${tx.operations.length}`);
   const op = tx.operations[0]!;
   if (op.type !== "changeTrust") fail(`operation is ${op.type}`);
   const change = op as Operation.ChangeTrust;
-  if (change.source !== undefined && change.source !== ctx.user) {
+  if (change.source !== undefined && change.source !== user) {
     fail(`operation source is ${change.source}`);
   }
-  const blnd = blndTokenForNetwork(ctx.network);
   const line = change.line;
   if (
     !(line instanceof Asset) ||
     line.isNative() ||
-    line.getCode() !== blnd.code ||
-    line.getIssuer() !== blnd.issuer
+    line.getCode() !== asset.code ||
+    line.getIssuer() !== asset.issuer
   ) {
-    fail(`the trustline is not BLND:${blnd.issuer}`);
+    fail(`the trustline is not ${asset.code}:${asset.issuer}`);
   }
   // a zero limit would remove the line instead of adding it
   if (change.limit === "0.0000000") fail("the trustline limit is zero");

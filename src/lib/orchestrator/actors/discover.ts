@@ -25,6 +25,12 @@ import {
   heldTokenScanWarning,
   type HeldToken,
 } from "@/lib/soroban/held-tokens";
+import {
+  exitPayoutTokens,
+  exitTrustlineGaps,
+  readWrappedAssets,
+  type ExitTrustlineGap,
+} from "@/lib/soroban/stellar-asset";
 import { ALL_PROTOCOLS, discoveryWarningFor } from "@/lib/orchestrator/warnings";
 
 export interface DiscoverInput {
@@ -45,6 +51,10 @@ export interface DiscoverOutput {
   // the UI can warn that the plan may be incomplete instead of hiding them.
   readonly discoveryWarnings: readonly string[];
   readonly discoveryDiagnostics: readonly string[];
+  // classic assets a pool exit pays out that this account has no usable
+  // trustline for; the exit traps on chain until the line exists and is
+  // authorized
+  readonly exitTrustlineGaps: readonly ExitTrustlineGap[];
 }
 
 // per-discovery-step ceiling so a hanging rpc can't pin the ui on a spinner
@@ -221,6 +231,12 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
   ]);
   const positions = positionResult.positions;
 
+  // a pool exit pays each pool token to the account, and a stellar asset
+  // contract writes a classic asset into its trustline: without one the whole
+  // exit traps (contract error #13). a token that can't be read stops discovery,
+  // since "unread" must never pass as "no trustline needed".
+  const gaps = await exitGaps(input, audit, positions);
+
   // warnings in a stable order (scan warnings, per-protocol errors, blend repay
   // shortfall) so copy doesn't reshuffle between runs
   if (allowanceResult.warning) discoveryWarnings.push(allowanceResult.warning);
@@ -254,5 +270,30 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
     heldTokenScanFailed: heldResult.failed,
     discoveryWarnings,
     discoveryDiagnostics,
+    exitTrustlineGaps: gaps,
   };
 });
+
+async function exitGaps(
+  input: DiscoverInput,
+  audit: AccountAudit,
+  positions: ProtocolPositions,
+): Promise<readonly ExitTrustlineGap[]> {
+  const tokens = exitPayoutTokens(positions);
+  if (tokens.length === 0) return [];
+  let wrapped: Awaited<ReturnType<typeof readWrappedAssets>>;
+  try {
+    wrapped = await withTimeout(
+      "readWrappedAssets",
+      readWrappedAssets(getRpc(input.network), input.network, tokens, input.publicKey),
+      DISCOVERY_TIMEOUT_MS,
+    );
+  } catch (e) {
+    throw new Error(
+      `Could not check which trustlines your pool exits pay into (${errorMessage(e)}). ` +
+        "Nothing was planned. Retry once the network is responsive.",
+      { cause: e },
+    );
+  }
+  return exitTrustlineGaps(audit.accountId, audit.balances, tokens, wrapped);
+}
