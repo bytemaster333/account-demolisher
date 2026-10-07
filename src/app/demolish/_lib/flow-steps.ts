@@ -26,7 +26,8 @@ export function flowPhaseFor(args: {
   if (!showFlow) return "connect";
   if (state === "cancelled") return "configure";
   if (state === "failed") return hasTree ? "execute" : "configure";
-  if (state === "executing" || state === "succeeded") return "execute";
+  // a run that only prepared the close ended like a success: its steps landed
+  if (state === "executing" || state === "succeeded" || state === "prepared") return "execute";
   // a rebuild (or a retry that rediscovers) may still hold the previous tree
   // while it runs, but the user is effectively back at Configure
   if (!hasTree || state !== "awaiting_confirmation") return "configure";

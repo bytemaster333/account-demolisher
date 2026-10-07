@@ -387,10 +387,29 @@ describe("a run that only prepared the close (M-25)", () => {
         reason: "A Blend backstop withdrawal stays locked after this run.",
       },
     };
-    renderWidget(tree, { state: "succeeded", error: null });
+    const prepared = {
+      unlocksAt: new Date("2026-10-25T12:00:00Z"),
+      reason: "The queued backstop withdrawal unlocks later.",
+    };
+    let done = 0;
+    renderWidget(tree, {
+      state: "prepared",
+      prepared,
+      error: null,
+      onPreparedDone: () => {
+        done += 1;
+      },
+    });
     const text = document.body.textContent ?? "";
     expect(text).not.toMatch(/Account closed/);
     expect(text).not.toMatch(/permanently closed/);
-    expect(screen.getByTestId("prepared-note").textContent).toMatch(/still open/);
+    expect(text).not.toMatch(/Back to landing/);
+    const note = screen.getByTestId("prepared-note").textContent ?? "";
+    expect(note).toMatch(/still open/);
+    // the run's own unlock time and reason, not the plan's estimate
+    expect(note).toMatch(/unlocks later/);
+    expect(note).toMatch(/2026/);
+    fireEvent.click(screen.getByTestId("demolish-prepared-done"));
+    expect(done).toBe(1);
   });
 });

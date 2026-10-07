@@ -216,6 +216,9 @@ export function DemolishFlow(): React.JSX.Element {
   const isAwaitingConfirmation = state === "awaiting_confirmation";
   const isExecuting = state === "executing";
   const isSucceeded = state === "succeeded";
+  // every step ran but nothing merged: the account stays open until the queued
+  // backstop withdrawal unlocks
+  const isPrepared = state === "prepared";
   const isFailed = state === "failed";
   const isCancelled = state === "cancelled";
 
@@ -230,7 +233,6 @@ export function DemolishFlow(): React.JSX.Element {
     send,
   });
 
-  const prepared = tree?.prepareOnly !== undefined;
   useDemolishMetrics({
     networkId: network.id,
     runNetworkId: runNetwork.id,
@@ -529,7 +531,7 @@ export function DemolishFlow(): React.JSX.Element {
         }),
         hasResolve: planBuilt && hasBlocker,
         hasAcknowledge: planBuilt && hasAckItems && !hasBlocker,
-        isSucceeded,
+        isSucceeded: isSucceeded || isPrepared,
         hasCollect: multisigRequired,
         collecting,
       }),
@@ -541,6 +543,7 @@ export function DemolishFlow(): React.JSX.Element {
       hasBlocker,
       hasAckItems,
       isSucceeded,
+      isPrepared,
       multisigRequired,
       collecting,
     ],
@@ -558,15 +561,15 @@ export function DemolishFlow(): React.JSX.Element {
   // later navigation back to /demolish starts at Connect, not Configure with a
   // dead account. A shared close also ends in the machine "succeeded" state (the
   // collected bundle is submitted via SUBMIT_BUNDLE), so this one guard covers
-  // both flows. A run that only prepared the close leaves the account open, so
-  // the wallet stays connected for the run that finishes it. Cleared directly
-  // (not via setConnector) so the success view stays visible. Fires once.
+  // both flows. A run that only prepared the close ends in "prepared" instead
+  // and leaves the account open, so the wallet stays connected for the run that
+  // finishes it. Cleared directly (not via setConnector) so the success view
+  // stays visible. Fires once.
   const closedRef = useRef(false);
   const finishSigning = signing.finished;
   useEffect(() => {
     if (isSucceeded && !closedRef.current) {
       closedRef.current = true;
-      if (prepared) return;
       connectorRef.current = null;
       // a submitted signing request has nothing left to resume
       if (ctx.signedBundle !== null) finishSigning();
@@ -576,7 +579,7 @@ export function DemolishFlow(): React.JSX.Element {
     } else if (!isSucceeded && closedRef.current) {
       closedRef.current = false;
     }
-  }, [isSucceeded, prepared, disconnectWallet, ctx.signedBundle, finishSigning]);
+  }, [isSucceeded, disconnectWallet, ctx.signedBundle, finishSigning]);
 
   // guard against navigating away / closing the tab mid-execution, a partial
   // run leaves the account half-dismantled; while signatures are being
@@ -819,6 +822,19 @@ export function DemolishFlow(): React.JSX.Element {
     send({ type: "RESET" });
   }, [send, setConnector, disconnectWallet, signing, clearChoices]);
 
+  // a prepared close leaves the account open: back to Configure with the same
+  // connection, so the close can be finished once the withdrawal unlocks
+  const onPreparedDone = useCallback(() => {
+    setShowConfirmDialog(false);
+    setForm(INITIAL_FORM);
+    setSelectedHeldTokens([]);
+    setConvertHeldTokensToXLM(false);
+    clearChoices();
+    setFormError(null);
+    signing.reset();
+    send({ type: "RESET" });
+  }, [send, signing, clearChoices]);
+
   // start over after a cancel: back to Configure for the same connection
   const onStartOverAfterCancel = useCallback(() => {
     signing.reset();
@@ -927,7 +943,7 @@ export function DemolishFlow(): React.JSX.Element {
     (runInput?.useMediator ? ctx.result?.forwardTxHash : ctx.result?.mergedTxHash) ?? null;
   const delivered = useDeliveredAmount(
     runNetwork,
-    isSucceeded && !prepared ? deliveryHash : null,
+    isSucceeded ? deliveryHash : null,
     runDestination,
   );
 
@@ -1080,10 +1096,18 @@ export function DemolishFlow(): React.JSX.Element {
               widget. one card lifecycle: header morphs by state (executing
               counter → success banner → failure banner), the plan tree is the
               body throughout, and the footer holds the right actions per state. */}
-          {(isExecuting || isSucceeded || isFailed) && tree !== null ? (
+          {(isExecuting || isSucceeded || isFailed || isPrepared) && tree !== null ? (
             <div style={{ maxWidth: 1080, margin: "0 auto" }}>
               <DemolishStatusWidget
-                state={isSucceeded ? "succeeded" : isFailed ? "failed" : "executing"}
+                state={
+                  isSucceeded
+                    ? "succeeded"
+                    : isPrepared
+                      ? "prepared"
+                      : isFailed
+                        ? "failed"
+                        : "executing"
+                }
                 tree={tree}
                 planGroups={planGroups}
                 doneCount={doneCount}
@@ -1105,8 +1129,10 @@ export function DemolishFlow(): React.JSX.Element {
                 executionNotes={ctx.executionNotes}
                 landedPhases={ctx.landedPhases}
                 discoveryDiagnostics={ctx.discoveryDiagnostics}
+                prepared={ctx.preparedClose}
                 onRetry={onRetry}
                 onReset={onReset}
+                onPreparedDone={onPreparedDone}
               />
             </div>
           ) : null}
@@ -1144,7 +1170,11 @@ export function DemolishFlow(): React.JSX.Element {
           ) : null}
 
           {/* single-column flow content, configure / review / sign-off / cancelled. */}
-          {!(isDiscovering || isPreviewing) && !isExecuting && !isSucceeded && !isFailed ? (
+          {!(isDiscovering || isPreviewing) &&
+          !isExecuting &&
+          !isSucceeded &&
+          !isPrepared &&
+          !isFailed ? (
             <div style={{ maxWidth: 1080, margin: "0 auto" }}>
               {/* refusals from a rebuild (Resolve, the token card, Warnings) or a
                   refused confirmation land here; Configure shows its own */}

@@ -853,7 +853,19 @@ describe("a run that only prepares the close (M-25)", () => {
       prepareOnly: { unlocksAt, reason: "A Blend backstop withdrawal stays locked." },
     });
     ctl.preview = async () => ({ tree: prepared(), unroutableCredits: [] });
-    ctl.execute = async (tree) => ({ result: { ok: true, errors: [] }, tree });
+    // the execute actor reports a prepare-only run with its unlock date, and
+    // the machine ends in its own "prepared" state
+    const preparedClose = {
+      unlocksAt: new Date(Date.now() + 18 * 86_400_000),
+      reason: "The queued backstop withdrawal unlocks later.",
+    };
+    ctl.execute = async (tree) => ({
+      result: { ok: true, errors: [] },
+      tree,
+      notes: [],
+      landedPhases: [],
+      prepared: preparedClose,
+    });
     connect();
     render(<DemolishFlow />);
     await configureAndStart();
@@ -861,8 +873,18 @@ describe("a run that only prepares the close (M-25)", () => {
       /doesn't delete the account/,
     );
     await confirmTyped();
-    await waitFor(() => expect(state()).toBe("succeeded"));
-    expect((await screen.findByTestId("prepared-note")).textContent).toMatch(/still open/);
+    await waitFor(() => expect(state()).toBe("prepared"));
+    const widget = await screen.findByTestId("demolish-status-widget");
+    expect(widget.getAttribute("data-state")).toBe("prepared");
+    const note = (await screen.findByTestId("prepared-note")).textContent ?? "";
+    expect(note).toMatch(/still open/);
+    expect(note).toMatch(/unlocks later/);
+    expect(widget.textContent).not.toMatch(/Account closed|permanently closed/);
+    expect(useWalletStore.getState().publicKey).toBe(ACC);
+
+    // the only way on is back to Configure, with the account still connected
+    fireEvent.click(screen.getByTestId("demolish-prepared-done"));
+    await waitFor(() => expect(state()).toBe("idle"));
     expect(useWalletStore.getState().publicKey).toBe(ACC);
   }, 20_000);
 });

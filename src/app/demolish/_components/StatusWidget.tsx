@@ -11,7 +11,7 @@ import { explorerAccountUrl, explorerTxUrl } from "@/lib/explorer";
 import { loadPendingForwards } from "@/lib/mediator/pending-flow";
 import type { FailureKind } from "@/lib/orchestrator/page-flow-machine";
 import type { PhaseReceipt } from "@/lib/orchestrator/journal";
-import type { PlanTree } from "@/lib/plan/tree";
+import type { PlanTree, PreparePlan } from "@/lib/plan/tree";
 import { EVENT_RETENTION_WINDOW_LEDGERS } from "@/lib/soroban/event-retention";
 
 import { SR_ONLY } from "../_lib/a11y";
@@ -32,7 +32,7 @@ export type DeliveredAmount =
 // already signed by everyone
 export type SigningMode = "wallet" | "secret" | "bundle";
 
-// single, evolving widget that covers execute / succeeded / failed
+// single, evolving widget that covers execute / succeeded / prepared / failed
 export function DemolishStatusWidget({
   state,
   tree,
@@ -52,10 +52,14 @@ export function DemolishStatusWidget({
   executionNotes = [],
   landedPhases = [],
   discoveryDiagnostics = [],
+  prepared = null,
   onRetry,
   onReset,
+  onPreparedDone,
 }: {
-  readonly state: "executing" | "succeeded" | "failed";
+  // "prepared": every step ran but nothing merged, the account stays open until
+  // the queued backstop withdrawal unlocks
+  readonly state: "executing" | "succeeded" | "prepared" | "failed";
   readonly tree: PlanTree;
   readonly planGroups: readonly PlanGroup[];
   readonly doneCount: number;
@@ -83,21 +87,24 @@ export function DemolishStatusWidget({
   readonly landedPhases?: readonly PhaseReceipt[];
   // technical detail behind the discovery warnings
   readonly discoveryDiagnostics?: readonly string[];
+  // the run's own prepared close (unlock time and reason), for the prepared state
+  readonly prepared?: PreparePlan | null;
   readonly onRetry: () => void;
   readonly onReset: () => void;
+  // leaves the prepared state for Configure, keeping the wallet connected
+  readonly onPreparedDone?: () => void;
 }): React.JSX.Element {
+  // the run ended, either way the steps' work is final
+  const ended = state === "succeeded" || state === "prepared";
   const accent =
     state === "succeeded"
       ? "var(--success)"
       : state === "failed"
         ? "var(--danger)"
-        : "var(--accent)";
-  const accentSoft =
-    state === "succeeded"
-      ? "var(--surface-2)"
-      : state === "failed"
-        ? "var(--surface-2)"
-        : "var(--surface-2)";
+        : state === "prepared"
+          ? "var(--warning)"
+          : "var(--accent)";
+  const accentSoft = "var(--surface-2)";
 
   const parsed = state === "failed" ? parseDemolishError(error) : null;
   const pct = activeCount > 0 ? Math.round((doneCount / activeCount) * 100) : 0;
@@ -118,9 +125,7 @@ export function DemolishStatusWidget({
     () => (state === "failed" ? failureNoteFor(tree, landedPhases) : null),
     [state, tree, landedPhases],
   );
-  // a plan with no merge only prepares the close; the account stays open
-  const prepared = tree.prepareOnly !== undefined;
-  const unlockDate = tree.prepareOnly?.unlocksAt.toLocaleDateString(undefined, {
+  const unlockDate = prepared?.unlocksAt.toLocaleDateString(undefined, {
     year: "numeric",
     month: "long",
     day: "numeric",
@@ -136,7 +141,7 @@ export function DemolishStatusWidget({
     network,
     mergeHash,
     ordered: planGroups.flatMap((g) => g.nodes),
-    ...(tree.prepareOnly ? { preparedUntil: tree.prepareOnly.unlocksAt } : {}),
+    ...(state === "prepared" && prepared !== null ? { preparedUntil: prepared.unlocksAt } : {}),
   });
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const copyReceipt = async (): Promise<void> => {
@@ -158,7 +163,7 @@ export function DemolishStatusWidget({
     const url = URL.createObjectURL(new Blob([receiptText], { type: "text/plain" }));
     const a = document.createElement("a");
     a.href = url;
-    a.download = `account-closed-${closedAccount.slice(0, 8)}.txt`;
+    a.download = `${state === "prepared" ? "close-prepared" : "account-closed"}-${closedAccount.slice(0, 8)}.txt`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -200,15 +205,14 @@ export function DemolishStatusWidget({
               display: "grid",
               placeItems: "center",
               flexShrink: 0,
-              animation:
-                state === "succeeded"
-                  ? "pop .35s ease-out"
-                  : state === "executing"
-                    ? "pulse 2s ease-in-out infinite"
-                    : "none",
+              animation: ended
+                ? "pop .35s ease-out"
+                : state === "executing"
+                  ? "pulse 2s ease-in-out infinite"
+                  : "none",
             }}
           >
-            {state === "succeeded" ? (
+            {ended ? (
               <svg
                 width="22"
                 height="22"
@@ -270,12 +274,12 @@ export function DemolishStatusWidget({
                 }}
               >
                 {state === "succeeded"
-                  ? prepared
+                  ? "Account closed"
+                  : state === "prepared"
                     ? "Preparation done, account still open"
-                    : "Account closed"
-                  : state === "failed"
-                    ? "Couldn't finish closing the account"
-                    : "Closing your account"}
+                    : state === "failed"
+                      ? "Couldn't finish closing the account"
+                      : "Closing your account"}
               </h2>
               <span
                 role="progressbar"
@@ -300,10 +304,13 @@ export function DemolishStatusWidget({
                 color: "var(--fg-2)",
               }}
             >
-              {state === "succeeded" && prepared ? (
+              {state === "prepared" ? (
                 <span data-testid="prepared-note">
-                  The preparation steps landed and the account is still open.{" "}
-                  {tree.prepareOnly?.reason} Come back on or after {unlockDate} to finish the close.
+                  The preparation steps landed and the account is still open. Nothing was sent to
+                  the destination yet.{" "}
+                  {prepared !== null
+                    ? `${prepared.reason} Come back on or after ${unlockDate} to finish the close.`
+                    : "Come back once the queued withdrawal unlocks to finish the close."}
                 </span>
               ) : state === "succeeded" ? (
                 <>
@@ -477,7 +484,7 @@ export function DemolishStatusWidget({
           </p>
         ) : null}
 
-        {(state === "succeeded" || state === "failed") && executionNotes.length > 0 ? (
+        {(ended || state === "failed") && executionNotes.length > 0 ? (
           <div
             role="note"
             data-testid="execution-notes"
@@ -494,7 +501,7 @@ export function DemolishStatusWidget({
           </div>
         ) : null}
 
-        {state === "succeeded" || state === "failed" ? (
+        {ended || state === "failed" ? (
           <p style={{ margin: "10px 0 0", fontSize: 11.5, lineHeight: 1.5, color: "var(--fg-3)" }}>
             Token spending permissions were looked for in about the last 7 days of approve events (
             {EVENT_RETENTION_WINDOW_LEDGERS.toLocaleString("en-US")} ledgers); an older one was not
@@ -578,7 +585,7 @@ export function DemolishStatusWidget({
       </div>
 
       {/* ─── footer: action buttons (state-specific) ─── */}
-      {state === "succeeded" || state === "failed" ? (
+      {ended || state === "failed" ? (
         <div
           style={{
             display: "flex",
@@ -672,34 +679,56 @@ export function DemolishStatusWidget({
               >
                 Download .txt
               </button>
-              <Link
-                href="/"
-                data-testid="demolish-reset"
-                style={{
-                  flex: 1,
-                  height: 40,
-                  padding: "0 16px",
-                  borderRadius: 10,
-                  border: "1px solid var(--accent-line)",
-                  background: "transparent",
-                  color: "var(--accent)",
-                  fontWeight: 600,
-                  fontSize: 13.5,
-                  cursor: "pointer",
-                  textDecoration: "none",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                Back to landing
-              </Link>
+              {state === "prepared" ? (
+                <button
+                  type="button"
+                  onClick={onPreparedDone}
+                  data-testid="demolish-prepared-done"
+                  style={{
+                    flex: 1,
+                    height: 40,
+                    padding: "0 16px",
+                    borderRadius: 10,
+                    border: "1px solid var(--accent-line)",
+                    background: "transparent",
+                    color: "var(--accent)",
+                    fontWeight: 600,
+                    fontSize: 13.5,
+                    cursor: "pointer",
+                  }}
+                >
+                  Done
+                </button>
+              ) : (
+                <Link
+                  href="/"
+                  data-testid="demolish-reset"
+                  style={{
+                    flex: 1,
+                    height: 40,
+                    padding: "0 16px",
+                    borderRadius: 10,
+                    border: "1px solid var(--accent-line)",
+                    background: "transparent",
+                    color: "var(--accent)",
+                    fontWeight: 600,
+                    fontSize: 13.5,
+                    cursor: "pointer",
+                    textDecoration: "none",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  Back to landing
+                </Link>
+              )}
             </>
           )}
         </div>
       ) : null}
 
-      {state === "succeeded" ? (
+      {ended ? (
         <div style={{ background: "var(--bg-2)" }}>
           <p role="status" aria-live="polite" data-testid="demolish-copy-status" style={SR_ONLY}>
             {copyState === "copied"
