@@ -2,7 +2,6 @@
 
 import { Asset } from "@stellar/stellar-sdk";
 import { getHorizon } from "@/lib/stellar/horizon-client";
-import { isFrozenBalance } from "@/lib/stellar/account-audit";
 import { decimalToStroops, stroopsToDecimal } from "@/lib/stellar/amount";
 import { mapWithConcurrency } from "@/lib/stellar/concurrency";
 import { HORIZON_REQUEST_ATTEMPTS, withHorizonRetry } from "@/lib/stellar/horizon-retry";
@@ -79,13 +78,17 @@ export async function findPathToXLM(
 // balances frozen by their issuer are skipped: horizon's path search ignores
 // whether the source may send the asset, and any payment of it fails with
 // op_src_not_authorized (assessMergeability blocks the close on them instead).
+//
+// with claimedBalanceIds, an asset is quoted at its balance plus the credit
+// claims the close lands on it, including an asset collected into a trustline
+// the close opens, which has no balance line in this audit yet. sourceAmount on
+// each result is the amount quoted.
 export async function resolveCreditPaths(
   audit: AccountAudit,
   network: NetworkConfig,
+  options: CreditPathOptions = {},
 ): Promise<Map<string, PathResultRef>> {
-  const credits = audit.balances.filter(
-    (b) => b.asset.kind === "credit" && hasPositiveAmount(b.amount) && !isFrozenBalance(b),
-  );
+  const credits = heldCredits(audit, options.claimedBalanceIds ?? []);
   const bps = resolveConfiguredSlippageBps();
   const floor = resolveMinMarketOutStroops();
   const resolved = await mapWithConcurrency(credits, PATH_REQUEST_CONCURRENCY, async (b) => {
@@ -114,6 +117,55 @@ export async function resolveCreditPaths(
     if (path) map.set(key, path);
   }
   return map;
+}
+
+export interface CreditPathOptions {
+  // ids of the claimable balances the plan claims,
+  // planClaimableBalances(audit, selection).claimed, not the user's selection
+  readonly claimedBalanceIds?: readonly string[];
+}
+
+interface HeldCredit {
+  readonly asset: Extract<AssetIdentifier, { kind: "credit" }>;
+  readonly amount: string;
+}
+
+// what the close sells per credit asset: the positive balance, plus claimed
+// credit balances of other issuers. the account's own asset is burned by its
+// claim, and a claim into a deauthorized trustline never lands.
+function heldCredits(audit: AccountAudit, claimedBalanceIds: readonly string[]): HeldCredit[] {
+  const held = new Map<string, { asset: HeldCredit["asset"]; amount: string; claimed: bigint }>();
+  const unsendable = new Set<string>();
+  for (const b of audit.balances) {
+    if (b.asset.kind !== "credit") continue;
+    // covers isFrozenBalance, and a zero deauthorized line a claim can't land on
+    if (b.isAuthorized === false) {
+      unsendable.add(pathKey(b.asset));
+      continue;
+    }
+    if (hasPositiveAmount(b.amount)) {
+      held.set(pathKey(b.asset), { asset: b.asset, amount: b.amount, claimed: 0n });
+    }
+  }
+  if (claimedBalanceIds.length > 0) {
+    const byId = new Map(audit.claimableBalances.map((cb) => [cb.id, cb]));
+    for (const id of claimedBalanceIds) {
+      const cb = byId.get(id);
+      if (cb === undefined) {
+        throw new Error(`resolveCreditPaths: claimed balance ${id} is not in the audit`);
+      }
+      if (cb.asset.kind !== "credit" || cb.asset.issuer === audit.accountId) continue;
+      const key = pathKey(cb.asset);
+      if (unsendable.has(key)) continue;
+      const entry = held.get(key) ?? { asset: cb.asset, amount: "0", claimed: 0n };
+      held.set(key, { ...entry, claimed: entry.claimed + decimalToStroops(cb.amount) });
+    }
+  }
+  return [...held.values()].map(({ asset, amount, claimed }) => ({
+    asset,
+    // horizon's own string when nothing is added, so the quote echoes it unchanged
+    amount: claimed === 0n ? amount : stroopsToDecimal(decimalToStroops(amount) + claimed),
+  }));
 }
 
 // an account with hundreds of trustlines would otherwise fire hundreds of path

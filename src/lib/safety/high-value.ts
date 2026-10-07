@@ -11,8 +11,14 @@ export const HIGH_VALUE_THRESHOLD_XLM = 1000;
 
 export interface CloseValueInput {
   readonly audit: AccountAudit;
-  // xlm quotes for credit balances, keyed by pathKey (resolveCreditPaths output)
-  readonly creditQuotes: ReadonlyMap<string, { readonly destinationAmount: string }>;
+  // xlm quotes for credit balances, keyed by pathKey (resolveCreditPaths output).
+  // a quote carrying sourceAmount covers exactly that amount of the asset, and
+  // counts only when it matches the balance plus the credit claims on it; one
+  // without sourceAmount covers the balance alone.
+  readonly creditQuotes: ReadonlyMap<
+    string,
+    { readonly destinationAmount: string; readonly sourceAmount?: string }
+  >;
   // ids of the claimable balances the plan claims
   // (planClaimableBalances(audit, selection).claimed), not the user's selection:
   // the batcher also claims self-sponsored balances the user unticked
@@ -40,14 +46,22 @@ export function assessCloseValue(
   let stroops = 0n;
   let unpriced = input.unpricedPositions;
 
+  // per credit asset: the balance and each credit claim landing on it
+  const credits = new Map<string, { balance: bigint; claims: bigint[] }>();
+  const creditOf = (key: string) => {
+    let entry = credits.get(key);
+    if (entry === undefined) {
+      entry = { balance: 0n, claims: [] };
+      credits.set(key, entry);
+    }
+    return entry;
+  };
+
   for (const b of audit.balances) {
     if (!isPositive(b.amount)) continue;
-    if (b.asset.kind === "native") {
-      stroops += decimalToStroops(b.amount);
-      continue;
-    }
-    const quote = b.asset.kind === "credit" ? creditQuotes.get(pathKey(b.asset)) : undefined;
-    if (quote) stroops += decimalToStroops(quote.destinationAmount);
+    if (b.asset.kind === "native") stroops += decimalToStroops(b.amount);
+    else if (b.asset.kind === "credit")
+      creditOf(pathKey(b.asset)).balance = decimalToStroops(b.amount);
     else unpriced += 1;
   }
 
@@ -57,7 +71,25 @@ export function assessCloseValue(
     if (cb.asset.kind === "native") stroops += decimalToStroops(cb.amount);
     // claiming the account's own asset burns it, so it moves nothing
     else if (cb.asset.kind === "credit" && cb.asset.issuer === audit.accountId) continue;
-    else unpriced += 1;
+    else if (cb.asset.kind === "credit") {
+      creditOf(pathKey(cb.asset)).claims.push(decimalToStroops(cb.amount));
+    } else unpriced += 1;
+  }
+
+  for (const [key, { balance, claims }] of credits) {
+    const quote = creditQuotes.get(key);
+    const total = claims.reduce((sum, c) => sum + c, balance);
+    if (quote === undefined) {
+      unpriced += (balance > 0n ? 1 : 0) + claims.length;
+    } else if (quote.sourceAmount === undefined) {
+      // sized for the balance only, so the claims stay unpriced
+      if (balance > 0n) stroops += decimalToStroops(quote.destinationAmount);
+      unpriced += claims.length;
+    } else if (decimalToStroops(quote.sourceAmount) === total) {
+      stroops += decimalToStroops(quote.destinationAmount);
+    } else {
+      unpriced += 1;
+    }
   }
 
   const estimatedXlm = stroopsToDecimal(stroops);
