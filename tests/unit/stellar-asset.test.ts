@@ -2,7 +2,12 @@ import { describe, it, expect, vi } from "vitest";
 import { Address, Asset, Keypair, xdr, type rpc } from "@stellar/stellar-sdk";
 
 import { MAINNET } from "@/lib/config/networks";
-import { exitTrustlineGaps, readWrappedAssets } from "@/lib/soroban/stellar-asset";
+import { EMPTY_POSITIONS, type ProtocolPositions } from "@/lib/adapters/positions/interface";
+import {
+  exitPayoutTokens,
+  exitTrustlineGaps,
+  readWrappedAssets,
+} from "@/lib/soroban/stellar-asset";
 import type { AuditBalance } from "@/lib/types/account";
 
 const USER = "GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3";
@@ -158,5 +163,30 @@ describe("exitTrustlineGaps", () => {
         wrapped,
       ),
     ).toThrow(/was not resolved/);
+  });
+});
+
+describe("exitPayoutTokens", () => {
+  it("lists every token an lp exit pays out, once each", () => {
+    const positions: ProtocolPositions = {
+      ...EMPTY_POSITIONS,
+      soroswap: [{ pair: { tokenA: AQUA, tokenB: YBX }, shareBalance: 5n }],
+      aquarius: [{ poolIndex: "00", shareBalance: 1n, tokens: [XLM, AQUA] }],
+      aquariusConcentrated: [
+        {
+          poolAddress: WASM_TOKEN,
+          poolIndex: "01",
+          tokens: [XLM, YBX],
+          ranges: [],
+          pendingFees: [0n, 0n],
+          pendingReward: 0n,
+        },
+      ],
+    };
+    expect([...exitPayoutTokens(positions)].sort()).toEqual([AQUA, XLM, YBX].sort());
+  });
+
+  it("needs nothing when no lp position is open", () => {
+    expect(exitPayoutTokens(EMPTY_POSITIONS)).toEqual([]);
   });
 });

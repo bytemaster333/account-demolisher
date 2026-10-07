@@ -15,6 +15,7 @@
 
 import { Address, Asset, xdr, type rpc } from "@stellar/stellar-sdk";
 
+import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
 import type { NetworkConfig } from "@/lib/config/networks";
 import type { AuditBalance } from "@/lib/types/account";
 import { fromScValString } from "@/lib/soroban/scval";
@@ -104,6 +105,21 @@ function parseSacName(name: string): WrappedAsset {
   // Asset's constructor validates the code and the issuer key
   new Asset(code, issuer);
   return { kind: "credit", code, issuer };
+}
+
+// every token an lp exit of these positions pays out: both sides of each
+// soroswap pair, and each aquarius pool's token set (a concentrated withdraw and
+// its fee claim pay the pool's own tokens). the aquarius reward claim pays the
+// router's reward token, which is not listed here.
+export function exitPayoutTokens(positions: ProtocolPositions): readonly string[] {
+  const out = new Set<string>();
+  for (const p of positions.soroswap) {
+    out.add(p.pair.tokenA);
+    out.add(p.pair.tokenB);
+  }
+  for (const p of positions.aquarius) for (const t of p.tokens) out.add(t);
+  for (const p of positions.aquariusConcentrated) for (const t of p.tokens) out.add(t);
+  return [...out];
 }
 
 export interface ExitTrustlineGap {
