@@ -16,6 +16,7 @@ const MASTER = Keypair.random().secret();
 process.env.MEDIATOR_SECRET = MASTER;
 
 import { encodeMemoCommitment } from "@/lib/mediator/forward-terms";
+import { REFUSED_DESTINATIONS } from "@/lib/safety/cex-registry";
 import { GET, OPTIONS, POST, PUT, __resetRateLimiterForTests } from "@/app/api/mediator/sign/route";
 import { MEDIATOR_FLOW_TTL_MS } from "@/server/mediator-secret";
 
@@ -119,6 +120,21 @@ describe("GET /api/mediator/sign (mint)", () => {
       const res = GET(getReq(mintUrl(params)));
       expect(res.status).toBe(400);
       expect(await res.json()).toMatchObject({ code: "INVALID_NETWORK" });
+    }
+  });
+
+  it("refuses to mint a flow to an exchange's internal wallet", async () => {
+    const memo = encodeMemoCommitment(Memo.none());
+    for (const refused of REFUSED_DESTINATIONS) {
+      for (const network of ["mainnet", "testnet"]) {
+        const res = GET(getReq(mintUrl({ destination: refused.address, network, memo })));
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as Record<string, unknown>;
+        expect(body).toMatchObject({ ok: false, code: "REFUSED_DESTINATION" });
+        expect(body.reason).toContain(refused.name);
+        expect(body.reason).toContain("not a deposit address");
+        expect(body).not.toHaveProperty("flowToken");
+      }
     }
   });
 

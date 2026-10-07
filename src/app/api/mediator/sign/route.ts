@@ -5,6 +5,7 @@ import { StrKey } from "@stellar/stellar-sdk";
 import { requireNetwork } from "@/lib/config/networks";
 import { decodeMemoCommitment, isMediatorNetworkId } from "@/lib/mediator/forward-terms";
 import { validateMediatorForwardEnvelope } from "@/lib/mediator/validator";
+import { lookupRefusedDestination } from "@/lib/safety/cex-registry";
 import { resolveMediatorFlow, startMediatorFlow } from "@/server/mediator-secret";
 import { createLimiter, rateLimitByIp, rateLimitByKey } from "@/server/rate-limit";
 import { readJsonCapped, MAX_JSON_BODY_BYTES, BodyTooLargeError } from "@/server/read-body";
@@ -191,6 +192,18 @@ export function GET(request: Request): Response {
     return failure(
       "INVALID_DESTINATION",
       "A valid `destination` (G...) query parameter is required to start a flow.",
+      400,
+      cors,
+    );
+  }
+  // a merge into an exchange's cold or withdrawal wallet is credited to no
+  // customer, so no flow is ever started toward one
+  const refused = lookupRefusedDestination(destination);
+  if (refused !== null) {
+    return failure(
+      "REFUSED_DESTINATION",
+      `${destination} is ${refused.name}, an exchange internal wallet and not a deposit address. ` +
+        "Use the deposit address and memo your exchange account shows you.",
       400,
       cors,
     );
