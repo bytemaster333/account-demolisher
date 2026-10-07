@@ -61,7 +61,10 @@ vi.mock("@/lib/stellar/account-audit", async () => {
   );
   return { ...actual, auditAccount: (...a: unknown[]) => auditAccount(...a) };
 });
-vi.mock("@/lib/stellar/path-finder", () => ({ resolveCreditPaths: async () => new Map() }));
+const resolveCreditPaths = vi.fn();
+vi.mock("@/lib/stellar/path-finder", () => ({
+  resolveCreditPaths: (...a: unknown[]) => resolveCreditPaths(...a),
+}));
 vi.mock("@/lib/mediator/client", () => ({
   startMediatorFlow: (...a: unknown[]) => startMediatorFlow(...a),
 }));
@@ -88,11 +91,18 @@ vi.mock("@/lib/soroban/allowances", async () => {
 // the blend exit builders read pools through the blend sdk's own rpc client, so
 // they are a network leaf here too
 const buildExitSequence = vi.fn();
+const buildBackstopClaimTx = vi.fn();
+const buildBackstopQueueTx = vi.fn();
 vi.mock("@/lib/adapters/blend/exit", async () => {
   const actual = await vi.importActual<typeof import("@/lib/adapters/blend/exit")>(
     "@/lib/adapters/blend/exit",
   );
-  return { ...actual, buildExitSequence: (...a: unknown[]) => buildExitSequence(...a) };
+  return {
+    ...actual,
+    buildExitSequence: (...a: unknown[]) => buildExitSequence(...a),
+    buildBackstopClaimTx: (...a: unknown[]) => buildBackstopClaimTx(...a),
+    buildBackstopQueueTx: (...a: unknown[]) => buildBackstopQueueTx(...a),
+  };
 });
 vi.mock("@/lib/soroban/held-tokens", async () => {
   const actual = await vi.importActual<typeof import("@/lib/soroban/held-tokens")>(
@@ -325,6 +335,7 @@ beforeEach(() => {
     records.map((r) => ({ ...(r as object), onChainAmount: 5n })),
   );
   discoverHeldTokens.mockResolvedValue({ held: [], unreadable: [], incomplete: null });
+  resolveCreditPaths.mockResolvedValue(new Map());
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -1167,7 +1178,7 @@ describe("a run that only prepares the close never reads as a closed account", (
     prepareOnly: { unlocksAt, reason: "A Blend backstop withdrawal stays locked." },
   });
 
-  it("ends in prepared with the unlock date, never in succeeded or with a complete event", async () => {
+  it("ends in prepared with the unlock date, never in succeeded or as a finished demolition", async () => {
     const actor = withPlan(preparePlan, input({ destination: DEST, useMediator: false }));
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
     actor.send({ type: "CONFIRM", typed: DEST.slice(-4), expected: RUN });
@@ -1178,7 +1189,10 @@ describe("a run that only prepares the close never reads as a closed account", (
       reason: "A Blend backstop withdrawal stays locked.",
     });
     expect(ctx.result?.mergedTxHash).toBeUndefined();
-    expect(progressKinds(actor)).not.toContain("complete");
+    const last = ctx.progress.at(-1);
+    expect(last?.message).toMatch(/^Preparation complete\. The account stays open\./);
+    expect(last?.txHash).toBeUndefined();
+    expect(ctx.progress.map((p) => p.message).join(" ")).not.toMatch(/Demolition complete/);
     expect(net.horizon.accounts.has(USER)).toBe(true);
     actor.send({ type: "RESET" });
     expect(actor.getSnapshot().matches("idle")).toBe(true);
@@ -1235,19 +1249,15 @@ describe("backstop emissions that can't be claimed need the user's forfeit", () 
 
   beforeEach(() => {
     // what the adapter throws for every mainnet backstop claim today
-    buildExitSequence.mockImplementation(
-      async (_n: unknown, _p: unknown, _u: unknown, _s: unknown, opts: Record<string, unknown>) => {
-        if (opts.claimBackstopEmissions === true) {
-          throw new BackstopClaimUnavailableError(
-            pool,
-            "CBACKSTOP",
-            7_114_578_242n,
-            "HostError: VM call trapped: UnreachableCodeReached",
-          );
-        }
-        throw new Error("the queue is not built in this test");
-      },
+    buildBackstopClaimTx.mockRejectedValue(
+      new BackstopClaimUnavailableError(
+        pool,
+        "CBACKSTOP",
+        7_114_578_242n,
+        "HostError: VM call trapped: UnreachableCodeReached",
+      ),
     );
+    buildBackstopQueueTx.mockRejectedValue(new Error("the queue is not built in this test"));
   });
 
   it("blocks the confirm with the accrued BLND while the claim can't be built", async () => {
@@ -1288,6 +1298,47 @@ describe("backstop emissions that can't be claimed need the user's forfeit", () 
     expect(ctx.discoveryWarnings.join(" ")).toMatch(
       /711\.4578242 BLND of backstop emissions for pool .* are forfeited, as you chose/,
     );
+    actor.stop();
+  });
+});
+
+describe("the review quotes each credit with what the close claims into it", () => {
+  it("passes the claimed balances to the path search", async () => {
+    const cb = `00000000${"ee".repeat(32)}`;
+    const audit = makeAudit({
+      subentryCount: 1,
+      balances: [
+        ...makeAudit().balances,
+        {
+          asset: { kind: "credit", code: "USDC", issuer: USDC_ISSUER },
+          amount: "0.0000000",
+          buyingLiabilities: "0.0000000",
+          sellingLiabilities: "0.0000000",
+          limit: "1000.0000000",
+        },
+      ],
+      claimableBalances: [
+        {
+          id: cb,
+          asset: { kind: "credit", code: "USDC", issuer: USDC_ISSUER },
+          amount: "5.0000000",
+          sponsor: DEST,
+          claimants: [USER],
+          predicate: [{ destination: USER, predicate: { unconditional: true } }],
+          claimableNow: true,
+        },
+      ],
+    });
+    auditAccount.mockResolvedValue(audit);
+    const actor = createActor(pageFlowMachine).start();
+    actor.send({
+      type: "START",
+      input: input({ destination: DEST, useMediator: false, selectedClaimableBalanceIds: [cb] }),
+    });
+    await settle(actor, "awaiting_confirmation");
+    expect(resolveCreditPaths).toHaveBeenCalledWith(expect.anything(), NETWORK, {
+      claimedBalanceIds: [cb],
+    });
     actor.stop();
   });
 });

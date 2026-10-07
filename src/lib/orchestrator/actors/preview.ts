@@ -13,6 +13,7 @@ import {
   buildPlanTree,
   isSorobanNode,
   nodeTransaction,
+  planExitPayoutTokens,
   topologicalOrder,
   type PlanNode,
   type PlanTree,
@@ -23,7 +24,7 @@ import {
   unroutableCredits,
   type UnroutableCredit,
 } from "@/lib/plan/classic-batcher";
-import { hydratePlanTransactions } from "@/lib/plan/hydration";
+import { hydratePlanTransactions, type HydrationFailure } from "@/lib/plan/hydration";
 import { startMediatorFlow } from "@/lib/mediator/client";
 import {
   checkRequiredSorobanStep,
@@ -45,6 +46,7 @@ import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
 import { blndTrustlineRequirement } from "@/lib/adapters/blend/emissions-check";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import type { HeldToken } from "@/lib/soroban/held-tokens";
+import type { ExitTrustlineGap } from "@/lib/soroban/stellar-asset";
 
 export interface PreviewInput {
   readonly audit: AccountAudit;
@@ -72,6 +74,8 @@ export interface PreviewInput {
   readonly sendHeldTokensAsIs?: readonly string[];
   readonly leaveHeldTokens?: readonly string[];
   readonly deterministicDisposal?: boolean;
+  // pool payouts this account has no usable trustline for (discovery)
+  readonly exitTrustlineGaps?: readonly ExitTrustlineGap[];
 }
 
 // why a held-token conversion needs the user's answer
@@ -191,15 +195,26 @@ export async function simulatePreviewTree(
 
 export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ input }) => {
   const { audit, network } = input;
+  const horizon = getHorizon(network);
+  // the per-op bid the executor starts the classic batches at; the batches'
+  // reserve checks (close marker, trustlines a claim opens) are sized for it
+  const classicFeePerOp = await surgeFeeBase(horizon);
+
   // resolve real XLM-conversion paths so credit balances convert via path
   // payment; anything without a path (and without disposal consent) is reported
-  // as un-routable rather than silently paid away. in deterministic mode
-  // (multisig signing request) path resolution is skipped, so every non-XLM
-  // balance must go to its issuer or the destination: no market sell that could
-  // fail and sink the one transaction everyone signs.
+  // as un-routable rather than silently paid away. each credit is quoted at its
+  // balance plus what the close claims into it, including a trustline the close
+  // opens for a claim. in deterministic mode (multisig signing request) path
+  // resolution is skipped, so every non-XLM balance must go to its issuer or the
+  // destination: no market sell that could fail and sink the one transaction
+  // everyone signs.
   const paths: Awaited<ReturnType<typeof resolveCreditPaths>> = input.deterministicDisposal
     ? new Map()
-    : await resolveCreditPaths(audit, network);
+    : await resolveCreditPaths(audit, network, {
+        claimedBalanceIds: planClaimableBalances(audit, input.selectedClaimableBalanceIds, {
+          feePerOpStroops: classicFeePerOp,
+        }).claimed.map((c) => c.id),
+      });
 
   // a frozen balance can't be sold, sent or returned, so no option is offered
   // for it; the mergeability check below blocks the close instead
@@ -231,11 +246,6 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
       emissionForfeits: [],
     };
   }
-
-  const horizon = getHorizon(network);
-  // the per-op bid the executor starts the classic batches at; the batches'
-  // reserve checks (close marker, trustlines a claim opens) are sized for it
-  const classicFeePerOp = await surgeFeeBase(horizon);
 
   // a run that only prepares the close disposes of no classic balance
   const unroutableBase =
@@ -355,8 +365,8 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
   });
   refuseUnsafeSteps(tree, audit.accountId, network);
 
-  const emissionForfeits = backstopClaimForfeits(tree);
-  const refusedConversions = refusedHeldTokenConversions(tree);
+  const emissionForfeits = backstopClaimForfeits(tree, failures);
+  const refusedConversions = refusedHeldTokenConversions(tree, failures);
 
   const heldTokenWarnings = heldTokenDispositionWarnings(tree, {
     useMediator: input.useMediator,
@@ -397,6 +407,7 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
         "queued without it.",
     );
   }
+  reviewBlockers.push(...exitTrustlineBlockers(tree, input.exitTrustlineGaps ?? []));
   if (tree.prepareOnly !== undefined) {
     reviewNotes.push(
       `${tree.prepareOnly.reason} The withdrawal unlocks around ${tree.prepareOnly.unlocksAt
@@ -427,22 +438,8 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
     });
     if (!merge.mergeable) reviewBlockers.push(merge.detail);
 
-    // the exchange forward needs its starting balance from this account at the
-    // merge; the steps ahead of it can spend some of what is there now
-    const funding = mediatorFundingCheck(
-      audit,
-      md.batches,
-      classicFeePerOp,
-      spentBefore(tree, network),
-    );
-    if (funding !== null && !funding.sufficient) {
-      reviewBlockers.push(
-        `This account needs at least ${formatXlm(funding.requiredStroops)} XLM free at the merge to ` +
-          `fund the exchange forward; it has about ${formatXlm(
-            funding.availableStroops < 0n ? 0n : funding.availableStroops,
-          )} XLM. Add XLM, then rebuild the plan.`,
-      );
-    }
+    const funding = exchangeFundingBlocker(audit, tree, classicFeePerOp, network);
+    if (funding !== null) reviewBlockers.push(funding);
   }
 
   return {
@@ -478,51 +475,123 @@ export function refuseUnsafeSteps(tree: PlanTree, user: string, network: Network
   }
 }
 
-// a backstop emissions claim that could not be built: on mainnet the comet pool
-// deposit it makes currently traps. each stays a blocker until the user
-// acknowledges leaving the BLND unclaimed; the rebuilt plan then omits the claim
-// and queues the withdrawal without it.
-function backstopClaimForfeits(tree: PlanTree): EmissionForfeit[] {
+// a backstop emissions claim the network refuses in simulation (on mainnet the
+// comet pool deposit it makes currently traps). each stays a blocker until the
+// user acknowledges leaving the BLND unclaimed; the rebuilt plan then omits the
+// claim and queues the withdrawal without it. a claim that failed for any other
+// reason (an rpc error, a refused auth tree or fee) is an ordinary failed step,
+// shown with its own error, which a rebuild can clear.
+export function backstopClaimForfeits(
+  tree: PlanTree,
+  failures: readonly HydrationFailure[],
+): EmissionForfeit[] {
+  const unavailable = new Set(
+    failures.filter((f) => f.backstopClaimUnavailable).map((f) => f.nodeId),
+  );
   const out: EmissionForfeit[] = [];
   for (const node of tree.allNodes.values()) {
     if (node.kind !== "ClaimBackstopEmissions" || node.status !== "failed") continue;
+    if (!unavailable.has(node.id)) continue;
     out.push({
       poolId: node.metadata.poolId,
       accruedEmissions: node.metadata.accruedEmissions,
-      // the hydration error carries the whole simulation diagnostic; it stays
-      // on the node for the details view
+      // node.error keeps the hydration's own line for the details view
       reason: "the claim fails when simulated against the chain today",
     });
   }
   return out;
 }
 
-// how hydration words each refusal (plan/hydration.ts hydrateConvert, and
-// adapters/soroswap/swap.ts NoSoroswapRouteError). its failures carry only the
-// message, so the kind is read from it.
-const REFUSAL_WORDING: readonly (readonly [RegExp, ConversionRefusalKind])[] = [
-  [/^No Soroswap route from /, "no_route"],
+// how hydration words a price refusal (plan/hydration.ts hydrateConvert). its
+// failure says only that the price was refused, so which check refused it is
+// read from the message; a price refusal that matches none is a price impact.
+const PRICE_REFUSAL_WORDING: readonly (readonly [RegExp, ConversionRefusalKind])[] = [
   [/can't price a reference trade/, "unpriced"],
-  [/ price impact, over the /, "price_impact"],
   [/ worse than the reviewed /, "requote_worse"],
 ];
 
 // held-token conversions hydration refused: over the price-impact cap, with no
-// reference price, worse than the reviewed quote, or with no route at all. any
-// other failure of a conversion is retried at execute time and then falls back
-// to sending the token as-is.
-export function refusedHeldTokenConversions(tree: PlanTree): RefusedConversion[] {
+// reference price, worse than the reviewed quote, or with no route at all. only
+// the hydration failure decides whether a conversion was refused; any other
+// failure of a conversion is retried at execute time and then falls back to
+// sending the token as-is.
+export function refusedHeldTokenConversions(
+  tree: PlanTree,
+  failures: readonly HydrationFailure[],
+): RefusedConversion[] {
+  const byNode = new Map(failures.map((f) => [f.nodeId, f]));
   const out: RefusedConversion[] = [];
   for (const node of tree.allNodes.values()) {
     if (node.kind !== "ConvertSorobanToXLM" || node.status !== "failed") continue;
     if (node.metadata.asset.kind !== "contract") continue;
-    const reason = node.error ?? "";
-    const refusal = REFUSAL_WORDING.find(([wording]) => wording.test(reason))?.[1];
-    if (refusal === undefined) continue;
+    const failure = byNode.get(node.id);
+    if (failure === undefined) continue;
+    let refusal: ConversionRefusalKind;
+    if (failure.noSoroswapRoute) {
+      refusal = "no_route";
+    } else if (failure.priceImpactRefused) {
+      refusal =
+        PRICE_REFUSAL_WORDING.find(([wording]) => wording.test(failure.reason))?.[1] ??
+        "price_impact";
+    } else {
+      continue;
+    }
     const contractId = node.metadata.asset.contractId;
-    out.push({ key: `contract:${contractId}`, contractId, refusal, reason });
+    out.push({ key: `contract:${contractId}`, contractId, refusal, reason: failure.reason });
   }
   return out;
+}
+
+// a pool exit the plan runs that pays a classic asset into a trustline this
+// account lacks, or one its issuer has not authorized, traps on chain. the close
+// can't open the line for it yet, so the review says how to fix it.
+export function exitTrustlineBlockers(tree: PlanTree, gaps: readonly ExitTrustlineGap[]): string[] {
+  const paid = new Set(planExitPayoutTokens(tree));
+  const out: string[] = [];
+  for (const gap of gaps) {
+    if (!paid.has(gap.contractId)) continue;
+    out.push(
+      gap.reason === "unauthorized"
+        ? `A pool exit in this plan pays out ${gap.code} (issuer ${gap.issuer}), and your ` +
+            `${gap.code} trustline is not authorized by its issuer, so the exit would fail on ` +
+            "chain. Ask the issuer to authorize it, then rebuild the plan."
+        : `A pool exit in this plan pays out ${gap.code} (issuer ${gap.issuer}), and this ` +
+            `account has no ${gap.code} trustline, so the exit would fail on chain. Add a ` +
+            `${gap.code} trustline from your wallet, then rebuild the plan.`,
+    );
+  }
+  return out;
+}
+
+// the exchange forward needs its starting balance from this account at the
+// merge. the steps ahead of it can spend some of what is there now: the soroban
+// steps' fees and repays, and the classic unwind's fees (its pool withdraws also
+// pay in their native floor). the final batches are previewed after the unwind,
+// so its batches are counted here.
+export function exchangeFundingBlocker(
+  audit: AccountAudit,
+  tree: PlanTree,
+  classicFeePerOp: number,
+  network: NetworkConfig,
+): string | null {
+  const nodes = [...tree.allNodes.values()];
+  const final = nodes.find((n) => n.kind === "FinalClassicTx");
+  if (final === undefined || final.kind !== "FinalClassicTx") return null;
+  const unwind = nodes.find((n) => n.kind === "ClassicUnwind");
+  const unwindBatches = unwind?.kind === "ClassicUnwind" ? unwind.metadata.batches : [];
+  const funding = mediatorFundingCheck(
+    audit,
+    [...unwindBatches, ...final.metadata.batches],
+    classicFeePerOp,
+    spentBefore(tree, network),
+  );
+  if (funding === null || funding.sufficient) return null;
+  return (
+    `This account needs at least ${formatXlm(funding.requiredStroops)} XLM free at the merge to ` +
+    `fund the exchange forward; it has about ${formatXlm(
+      funding.availableStroops < 0n ? 0n : funding.availableStroops,
+    )} XLM. Add XLM, then rebuild the plan.`
+  );
 }
 
 // every transaction this account still sources up to and including the merge:
