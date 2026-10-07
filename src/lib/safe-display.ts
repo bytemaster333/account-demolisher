@@ -6,10 +6,12 @@
 // text around it (for example to spoof an amount or a destination).
 //
 // call sites: AllowanceList (components/allowance-viewer) renders sep-41
-// symbol() text through safeDisplay, and it is the only rendering call site.
-// the scam heuristics use safeDisplay for their messages and
-// hasHiddenCharacters to flag a held token's name, which takes effect only
-// where a page runs runHeldTokenScamHeuristics over the held tokens. other
+// symbol() text through safeDisplay and badges a non-ASCII one with
+// hasNonAscii. the multisig memo label (components/multisig/memo-label.ts)
+// shows a signing request's text memo through it, and the root error boundary
+// (app/error.tsx) its error message. the scam heuristics use safeDisplay for
+// their messages and hasHiddenCharacters to flag a held token's name; the
+// demolish page runs them over the held tokens (use-held-token-scam). other
 // on-chain strings are not routed through here.
 //
 // removed (matched by unicode property, so the source itself carries none of the
