@@ -220,6 +220,65 @@ describe("Blend backstop is read from each pool's own backstop (C-07)", () => {
     });
   });
 
+  it("keeps the unlock date of an already queued deposit through validation (M-25)", async () => {
+    const unlocksAt = new Date("2026-10-20T08:00:00Z");
+    const positions = await provider({
+      blendPoolIds: [POOL_V2],
+      blendLoadUserPositions: async () => ({
+        positions: [snapshot({ poolId: POOL_V2 })],
+        errors: [],
+      }),
+      blendLoadBackstopDeposits: async () => ({
+        deposits: [
+          {
+            poolId: POOL_V2,
+            backstopId: BLEND_BACKSTOP_MAINNET_ID,
+            backstopVersion: "V2",
+            shares: 0n,
+            queuedForWithdrawal: 90n,
+            unlockedQueuedForWithdrawal: 0n,
+            accruedEmissions: 0n,
+            queueDurationSeconds: 17 * 24 * 60 * 60,
+            latestQueueUnlocksAt: unlocksAt,
+          },
+        ],
+        unclaimedEmissions: [],
+        errors: [],
+      }),
+    }).getPositions(USER, MAINNET);
+    expect(positions.errors).toEqual([]);
+    expect(positions.backstop[0]?.latestQueueUnlocksAt).toEqual(unlocksAt);
+  });
+
+  it("refuses an unlock date that is not a real date", async () => {
+    const positions = await provider({
+      blendPoolIds: [POOL_V2],
+      blendLoadUserPositions: async () => ({
+        positions: [snapshot({ poolId: POOL_V2 })],
+        errors: [],
+      }),
+      blendLoadBackstopDeposits: async () => ({
+        deposits: [
+          {
+            poolId: POOL_V2,
+            backstopId: BLEND_BACKSTOP_MAINNET_ID,
+            backstopVersion: "V2",
+            shares: 0n,
+            queuedForWithdrawal: 90n,
+            unlockedQueuedForWithdrawal: 0n,
+            accruedEmissions: 0n,
+            queueDurationSeconds: 17 * 24 * 60 * 60,
+            latestQueueUnlocksAt: new Date(Number.NaN),
+          },
+        ],
+        unclaimedEmissions: [],
+        errors: [],
+      }),
+    }).getPositions(USER, MAINNET);
+    expect(positions.backstop).toEqual([]);
+    expect(positions.errors.map((e) => e.protocol)).toContain("blend");
+  });
+
   it("reports emissions left after a withdrawal without blocking the merge (L-49)", async () => {
     const positions = await provider({
       blendPoolIds: [POOL_V2],

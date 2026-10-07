@@ -65,7 +65,8 @@ export interface SoroswapPositionSummary {
 // blocks the final account merge. accruedEmissions is what a claim ahead of the
 // queue would pay into new shares.
 //
-// discovery always sets the optional fields. they are optional only so a
+// discovery always sets the optional fields except latestQueueUnlocksAt (set
+// only while something locked is queued). they are optional only so a
 // summary built by hand without them still means "nothing beyond shares and
 // queue", which never weakens the merge guard because the guard counts entries.
 export interface BlendBackstopSummary {
@@ -76,6 +77,10 @@ export interface BlendBackstopSummary {
   readonly unlockedQueuedForWithdrawal?: bigint; // queued shares past their unlock time
   readonly accruedEmissions?: bigint; // BLND (7 decimals) a backstop claim would add
   readonly queueDurationSeconds?: number;
+  // when the last still-locked entry already in the queue unlocks (the chain's
+  // q4w exp). shares queued later lock for queueDurationSeconds from when that
+  // queue lands.
+  readonly latestQueueUnlocksAt?: Date;
 }
 
 // backstop emissions accrued to a user who holds no backstop shares and nothing

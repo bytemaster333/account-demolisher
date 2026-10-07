@@ -211,6 +211,9 @@ export class DirectContractProvider implements IDeFiPositionProvider {
           unlockedQueuedForWithdrawal: d.unlockedQueuedForWithdrawal,
           accruedEmissions: d.accruedEmissions,
           queueDurationSeconds: d.queueDurationSeconds,
+          ...(d.latestQueueUnlocksAt === undefined
+            ? {}
+            : { latestQueueUnlocksAt: d.latestQueueUnlocksAt }),
         });
       }
       unclaimed.push(...backstop.unclaimedEmissions);
