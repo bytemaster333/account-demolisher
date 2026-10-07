@@ -95,6 +95,16 @@ describe("readWrappedAssets", () => {
     ).rejects.toThrow(/refusing to trust it/);
   });
 
+  it("refuses a SAC name that is not CODE:ISSUER", async () => {
+    const s = server({ [AQUA]: true });
+    for (const bad of ["AQUA", "AQUA:not-a-key", `A:B:${AQUA_ISSUER}`]) {
+      const read = vi.fn(async () => ({ retval: xdr.ScVal.scvString(bad) }));
+      await expect(
+        readWrappedAssets(s, MAINNET, [AQUA], USER, { simulateRead: read }),
+      ).rejects.toThrow();
+    }
+  });
+
   it("refuses to answer for a contract the rpc does not return", async () => {
     const s = server({ [AQUA]: true });
     await expect(

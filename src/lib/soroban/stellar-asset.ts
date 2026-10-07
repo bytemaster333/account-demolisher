@@ -99,9 +99,11 @@ function parseSacName(name: string): WrappedAsset {
   if (sep <= 0 || sep !== name.lastIndexOf(":")) {
     throw new Error(`stellar asset contract name "${name}" is not CODE:ISSUER`);
   }
+  const code = name.slice(0, sep);
+  const issuer = name.slice(sep + 1);
   // Asset's constructor validates the code and the issuer key
-  const asset = new Asset(name.slice(0, sep), name.slice(sep + 1));
-  return { kind: "credit", code: asset.getCode(), issuer: asset.getIssuer() };
+  new Asset(code, issuer);
+  return { kind: "credit", code, issuer };
 }
 
 export interface ExitTrustlineGap {
