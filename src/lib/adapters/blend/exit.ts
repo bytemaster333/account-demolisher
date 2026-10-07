@@ -173,9 +173,9 @@ export async function buildBlendRepayTx(
 }
 
 // withdraw the user's whole collateral or supply position in one asset. the v2
-// pool caps a withdraw at the position, so i128::MAX drains it exactly; the v1
-// pool overflows on i128::MAX before that cap, so it gets the buffered
-// underlying amount, which it caps the same way.
+// pool caps a withdraw at the position, so a request far above it drains it
+// exactly (see v2WithdrawRequest); the v1 pool overflows on huge amounts before
+// that cap, so it gets the buffered underlying amount, which it caps the same way.
 export async function buildBlendWithdrawTx(
   network: NetworkConfig,
   target: {
@@ -205,7 +205,10 @@ export async function buildBlendWithdrawTx(
       `no ${target.bucket} position in ${target.asset} in Blend pool ${target.poolId}`,
     );
   }
-  const amount = pool.version === "V2" ? I128_MAX : withBuffer(reserve.toAssetFromBToken(bTokens));
+  const amount =
+    pool.version === "V2"
+      ? v2WithdrawRequest(reserve)
+      : withBuffer(reserve.toAssetFromBToken(bTokens));
   const transaction = await buildSubmitTx(
     network,
     server,
@@ -368,20 +371,26 @@ export async function buildBackstopWithdrawTx(
 // the backstop claim fails in simulation against current chain state. on
 // 2026-10-06 every mainnet claim did, on both backstops: the BLND-USDC comet
 // traps (UnreachableCodeReached in dep_tokn_amt_in_get_lp_tokns_out) for any
-// amount. typed so the plan can show the accrued BLND and ask the user to
-// forfeit it before queueing without the claim. an rpc transport failure is
-// never this error, so a flaky endpoint is never read as a forfeit.
+// amount. a v2 claim that simulates but mints no shares is the same case: the
+// BLND would go into the comet for nothing. typed so the plan can show the
+// accrued BLND and ask the user to forfeit it before queueing without the
+// claim. an rpc transport failure is never this error, so a flaky endpoint is
+// never read as a forfeit.
 export class BackstopClaimUnavailableError extends Error {
   readonly poolId: string;
   readonly backstopId: string;
   // BLND, 7 decimals, as read on chain when the claim was probed
   readonly accruedEmissions: bigint;
+  // one line, safe to show: the rpc error's first line or why the mint is unusable
   readonly simulationError: string;
+  // the rpc's whole error text with its diagnostic event log, for logs only
+  readonly simulationLog: string | undefined;
   constructor(
     poolId: string,
     backstopId: string,
     accruedEmissions: bigint,
     simulationError: string,
+    simulationLog?: string,
   ) {
     super(
       `the Blend backstop ${backstopId} cannot claim the ${stroopsToDecimal(accruedEmissions)} ` +
@@ -393,6 +402,7 @@ export class BackstopClaimUnavailableError extends Error {
     this.backstopId = backstopId;
     this.accruedEmissions = accruedEmissions;
     this.simulationError = simulationError;
+    this.simulationLog = simulationLog;
   }
 }
 
@@ -427,13 +437,18 @@ export async function buildBackstopClaimTx(
     backstop.version === "V1" ? v1Args : [from, pools, nativeToScVal(0n, { type: "i128" })],
   );
   const sim = await (deps.simulate ?? simulate)(server, probe);
-  if (!sim.ok) {
-    throw new BackstopClaimUnavailableError(
+  const unavailable = (reason: string, log?: string) =>
+    new BackstopClaimUnavailableError(
       target.poolId,
       backstop.id,
       state.accruedEmissions,
-      sim.error,
+      reason,
+      log,
     );
+  if (!sim.ok) {
+    // the rpc appends the whole diagnostic event log after the first line
+    const firstLine = sim.error.split("\n", 1)[0]!.trim();
+    throw unavailable(firstLine === "" ? "unknown simulation error" : firstLine, sim.error);
   }
   if (backstop.version === "V1") {
     const transaction = await buildCallTx(
@@ -449,11 +464,11 @@ export async function buildBackstopClaimTx(
   }
 
   if (sim.retval === null) {
-    throw new Error("the Blend backstop claim simulation returned no LP amount");
+    throw unavailable("it returned no LP amount");
   }
   const minted = scValToNative(sim.retval) as unknown;
   if (typeof minted !== "bigint" || minted <= 0n) {
-    throw new Error("the Blend backstop claim simulation returned no LP tokens to deposit");
+    throw unavailable("it mints no backstop shares for the accrued BLND");
   }
   const minOut = BigInt(applySlippageMin(minted.toString(), resolveConfiguredSlippageBps()));
   const transaction = await buildCallTx(
@@ -661,6 +676,25 @@ async function readBackstop(
     backstopLoader.loadUser(sdkNetwork, backstop, poolId, userPublicKey),
   );
   return { backstop, state };
+}
+
+// the v2 pool turns a withdraw request into bTokens, ceil(amount * 1e12 /
+// b_rate) in i128, before it caps the burn at the position (blend-contracts-v2
+// pool/src/pool/actions.rs apply_withdraw). once bad debt pushes b_rate below
+// 1e12, i128::MAX overflows there and the call traps: on 2026-10-07 every
+// YieldBloxV2 withdraw did. so ask for an amount that converts to at most a
+// quarter of i128::MAX, which leaves room for b_rate to halve before inclusion
+// and is still far above any real position.
+export function v2WithdrawRequest(reserve: Reserve): bigint {
+  const bRate = reserve.data.bRate;
+  if (bRate <= 0n) {
+    throw new Error(
+      `Blend reserve ${reserve.assetId} has a zero bToken rate; nothing can be withdrawn`,
+    );
+  }
+  const scalar = 10n ** BigInt(reserve.rateDecimals);
+  const amount = (I128_MAX / 4n / scalar) * bRate;
+  return amount < I128_MAX ? amount : I128_MAX;
 }
 
 function withBuffer(amount: bigint): bigint {

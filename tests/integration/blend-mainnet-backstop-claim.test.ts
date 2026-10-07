@@ -79,6 +79,9 @@ describe("integration: blend backstop emissions claim against mainnet (L-49)", (
         expect(e.backstopId).toBe(c.backstopId);
         expect(e.accruedEmissions).toBeGreaterThan(0n);
         expect(e.simulationError).toMatch(/HostError/);
+        // the event log stays out of the message the review shows
+        expect(e.message).not.toMatch(/\n|Diagnostic Event/u);
+        expect(e.simulationLog).toMatch(/Diagnostic Event/u);
       } else {
         const claim = call(outcome.built.transaction);
         expect([claim.contract, claim.fn]).toEqual([c.backstopId, "claim"]);

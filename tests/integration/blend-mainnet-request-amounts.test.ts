@@ -11,7 +11,9 @@ import {
 } from "@stellar/stellar-sdk";
 import { RequestType } from "@blend-capital/blend-sdk";
 
+import { defaultBlendPoolLoader, withBlendFailover } from "@/lib/adapters/blend/client";
 import { I128_MAX } from "@/lib/adapters/blend/constants";
+import { v2WithdrawRequest } from "@/lib/adapters/blend/exit";
 import { BLEND_MAINNET_POOLS } from "@/lib/adapters/blend/pools";
 import { MAINNET } from "@/lib/config/networks";
 import { getRpc } from "@/lib/soroban/rpc-client";
@@ -33,12 +35,13 @@ async function simulateSubmit(
   pool: string,
   requestType: RequestType,
   amount: bigint,
+  asset: string = XLM_SAC,
 ): Promise<string> {
   const user = Keypair.random().publicKey();
   const request = xdr.ScVal.scvMap([
     new xdr.ScMapEntry({
       key: nativeToScVal("address", { type: "symbol" }),
-      val: nativeToScVal(XLM_SAC, { type: "address" }),
+      val: nativeToScVal(asset, { type: "address" }),
     }),
     new xdr.ScMapEntry({
       key: nativeToScVal("amount", { type: "symbol" }),
@@ -66,7 +69,6 @@ async function simulateSubmit(
 
 describe("integration: Blend request amounts per pool version (mainnet, read-only)", () => {
   const v1 = poolId("Fixed");
-  const v2 = poolId("FixedV2");
   // the order of magnitude the v1 builders send: a buffered underlying amount
   const finite = 100_1000000n;
 
@@ -84,11 +86,24 @@ describe("integration: Blend request amounts per pool version (mainnet, read-onl
     }
   });
 
-  it("v2 reaches the position check with i128::MAX withdrawals", async () => {
-    for (const type of [RequestType.Withdraw, RequestType.WithdrawCollateral]) {
-      const error = await simulateSubmit(v2, type, I128_MAX);
-      expect(error).toMatch(/Error\(Contract, #\d+\)/u);
-      expect(error).not.toMatch(/WasmVm/u);
+  // a reserve whose b_rate fell below 1e12 overflows the bToken conversion on
+  // i128::MAX (YieldBloxV2's XLM and USDC reserves did on 2026-10-07), so the
+  // builders size the v2 request from each reserve's b_rate instead
+  it("v2 withdraw requests the builders send never trap, in any reserve of any v2 pool", async () => {
+    const v2Pools = BLEND_MAINNET_POOLS.filter((p) => p.version === "V2");
+    expect(v2Pools.length).toBeGreaterThan(0);
+    for (const entry of v2Pools) {
+      const pool = await withBlendFailover(MAINNET, (n) =>
+        defaultBlendPoolLoader.load(n, entry.pool_id),
+      );
+      expect(pool.version).toBe("V2");
+      for (const reserve of pool.reserves.values()) {
+        const amount = v2WithdrawRequest(reserve);
+        for (const type of [RequestType.Withdraw, RequestType.WithdrawCollateral]) {
+          const error = await simulateSubmit(entry.pool_id, type, amount, reserve.assetId);
+          expect(error, `${entry.name} ${reserve.assetId} type ${type}`).not.toMatch(/WasmVm/u);
+        }
+      }
     }
   });
 });

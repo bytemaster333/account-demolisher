@@ -1,10 +1,10 @@
-// zod schema validation for discovery-provider outputs.
+// zod schema validation for discovery-provider outputs
 //
 // every position-discovery source (the direct on-chain reader today; a future API
 // provider behind the same interface) is validated against these schemas before
-// its positions enter the plan. That gives the provider layer a single, strict,
+// its positions enter the plan. that gives the provider layer a single, strict,
 // schema-validated boundary: a malformed balance (negative, non-integer), a
-// bad contract/pool id, or a wrong-shaped record is REJECTED rather than silently
+// bad contract/pool id, or a wrong-shaped record is rejected rather than silently
 // carried into a close where it could mis-price a conversion or hide a position.
 import { z } from "zod";
 import { StrKey } from "@stellar/stellar-sdk";
@@ -18,7 +18,7 @@ import type {
   SoroswapPositionSummary,
 } from "./interface";
 
-// a Soroban contract id (C…). Asset ids and pool/token contracts are all C-strkeys.
+// a soroban contract id (C…). asset ids and pool/token contracts are all C-strkeys.
 const contractId = z.string().refine((s) => StrKey.isValidContract(s), {
   message: "expected a valid Soroban contract id (C…)",
 });

@@ -319,13 +319,20 @@ describe("Blend v1 pools get finite request amounts (H-23)", () => {
     expect(submitRequest(built.transaction).amount).toBe(5_0050000n);
   });
 
-  it("keeps i128::MAX for v2 withdrawals, which the v2 pool caps", async () => {
+  // the v2 pool converts the request to bTokens before capping it at the
+  // position: to_b_token_up = ceil(amount * 1e12 / b_rate) in i128
+  // (blend-contracts-v2 pool/src/pool/actions.rs apply_withdraw, reserve.rs)
+  function toBTokenUp(amount: bigint, bRate: bigint): bigint {
+    return (amount * 10n ** 12n + bRate - 1n) / bRate;
+  }
+
+  async function v2WithdrawAmount(bRate: bigint, bTokens: bigint): Promise<bigint> {
     const v2 = makePool({
       version: "V2",
       poolId: POOL_V2,
       backstop: BLEND_BACKSTOP_MAINNET_ID,
-      reserves: [{ assetId: XLM_SAC, index: 0, dRate: V2_RATE_1, bRate: V2_RATE_1 }],
-      user: { collateral: [[0, 10n]] },
+      reserves: [{ assetId: XLM_SAC, index: 0, dRate: V2_RATE_1, bRate }],
+      user: { collateral: [[0, bTokens]] },
     });
     const built = await buildBlendWithdrawTx(
       MAINNET,
@@ -334,7 +341,28 @@ describe("Blend v1 pools get finite request amounts (H-23)", () => {
       account([{ balance: "10.0000000" }]),
       deps({ poolLoader: loaderFor(v2) }),
     );
-    expect(submitRequest(built.transaction).amount).toBe(I128_MAX);
+    expect(built.amount).toBe(submitRequest(built.transaction).amount);
+    return built.amount;
+  }
+
+  it("asks a v2 pool for more than the position, which the pool caps", async () => {
+    for (const bRate of [V2_RATE_1, 1_213_896_311_078n, 5n * V2_RATE_1]) {
+      const amount = await v2WithdrawAmount(bRate, 10n);
+      expect(toBTokenUp(amount, bRate)).toBeGreaterThan(10n ** 30n);
+      expect(toBTokenUp(amount, bRate)).toBeLessThanOrEqual(I128_MAX);
+    }
+  });
+
+  it("never overflows the bToken conversion of a v2 pool whose b_rate fell below 1", async () => {
+    // YieldBloxV2's XLM and USDC reserves on 2026-10-07: i128::MAX trapped
+    // there (UnreachableCodeReached in submit) for every holder
+    for (const bRate of [475_616_154_671n, 980_386_811_687n, 1n]) {
+      const amount = await v2WithdrawAmount(bRate, 21_336_569_771n);
+      expect(toBTokenUp(amount, bRate)).toBeLessThanOrEqual(I128_MAX);
+      // even if b_rate halves again before inclusion
+      expect(toBTokenUp(amount, bRate / 2n > 0n ? bRate / 2n : 1n)).toBeLessThanOrEqual(I128_MAX);
+      expect(toBTokenUp(amount, bRate)).toBeGreaterThan(21_336_569_771n);
+    }
   });
 
   it("buildExitSequence decides the version from chain, not from the caller's label", async () => {
@@ -379,12 +407,25 @@ function simulateMint(lpOut: bigint): NonNullable<BuildExitSequenceDeps["simulat
   });
 }
 
-// what mainnet rpc returned on 2026-10-06 for every backstop claim: the
-// BLND-USDC comet traps inside dep_tokn_amt_in_get_lp_tokns_out
+// what mainnet rpc returned for every backstop claim (GBCRDN4B on FixedV2,
+// 2026-10-07, shortened): the BLND-USDC comet traps inside
+// dep_tokn_amt_in_get_lp_tokns_out, and the error carries the whole event log
 const COMET_TRAP = "HostError: Error(WasmVm, InvalidAction)";
+const COMET_TRAP_LOG = [
+  COMET_TRAP,
+  "",
+  "Event log (newest first):",
+  "   0: [Diagnostic Event] contract:CAQQR5SWBXKIGZKPBZDH3KM5GQ5GUTPKB7JAFCINLZBC5WXPJKRG3IM7, " +
+    'topics:[error, Error(WasmVm, InvalidAction)], data:"escalating error to VM trap from ' +
+    'failed host function call: call"',
+  "   1: [Failed Diagnostic Event (not emitted)] " +
+    "contract:CAS3FL6TLZKDGGSISDBWGGPXT3NRR4DYTZD7YOD3HMYO6LTJUVGRVEAM, topics:[error, " +
+    'Error(WasmVm, InvalidAction)], data:["VM call trapped: UnreachableCodeReached", ' +
+    "dep_tokn_amt_in_get_lp_tokns_out]",
+].join("\n");
 const simulateTrap: NonNullable<BuildExitSequenceDeps["simulate"]> = async () => ({
   ok: false,
-  error: COMET_TRAP,
+  error: COMET_TRAP_LOG,
   diagnostic: [],
   latestLedger: 1,
 });
@@ -743,8 +784,44 @@ describe("a backstop claim that cannot run is reported, never swallowed (L-49)",
     expect(e.poolId).toBe(POOL_V2);
     expect(e.backstopId).toBe(BLEND_BACKSTOP_MAINNET_ID);
     expect(e.accruedEmissions).toBe(7_114_578_242n);
+    // the review shows the message, so it carries the trap, not the event log
     expect(e.simulationError).toBe(COMET_TRAP);
+    expect(e.simulationLog).toBe(COMET_TRAP_LOG);
     expect(e.message).toContain("711.4578242 BLND");
+    expect(e.message).toContain(COMET_TRAP);
+    expect(e.message).not.toMatch(/\n|Diagnostic Event/);
+  });
+
+  // decision: accrued emissions never block the close. a claim that simulates
+  // but mints nothing would pay the BLND into the comet for no shares, so it is
+  // offered as a forfeit like the trap, never raised as a hard failure.
+  it.each([
+    ["no return value", null],
+    ["a zero LP mint", xdr.ScVal.scvI128(new xdr.Int128Parts({ hi: 0n, lo: 0n }))],
+  ])("types a v2 claim simulation with %s as unavailable", async (_label, retval) => {
+    const err: unknown = await buildBackstopClaimTx(
+      MAINNET,
+      { poolId: POOL_V2 },
+      USER,
+      account([{ balance: "10.0000000" }]),
+      deps({
+        poolLoader: loaderFor(v2()),
+        backstopLoader: backstopLoader({ shares: 1n, accruedEmissions: 3n }),
+        simulate: async () => ({
+          ok: true,
+          retval,
+          transactionData: undefined as never,
+          minResourceFee: "0",
+          auth: [],
+          latestLedger: 1,
+        }),
+      }),
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BackstopClaimUnavailableError);
+    const e = err as BackstopClaimUnavailableError;
+    expect(e.accruedEmissions).toBe(3n);
+    expect(e.simulationLog).toBeUndefined();
+    expect(e.message).toContain("0.0000003 BLND");
   });
 
   it("probes the v1 claim too, so its trap is typed the same way", async () => {
