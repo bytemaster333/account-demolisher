@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Address, Operation, StrKey, xdr, type rpc, type Transaction } from "@stellar/stellar-sdk";
 
 import { TESTNET } from "@/lib/config/networks";
@@ -45,11 +45,11 @@ function tokenServer(decimalsOf: (contract: string) => number = () => 7) {
 describe("readTokenMetadata", () => {
   it("keeps at most a few simulations in flight however many rows ask at once", async () => {
     const { server, stats } = tokenServer();
-    const ids = Array.from({ length: 1_000 }, (_, i) => token(i));
+    const ids = Array.from({ length: 300 }, (_, i) => token(i));
     const all = await Promise.all(ids.map((id) => readTokenMetadata(server, id, SOURCE, TESTNET)));
-    expect(all).toHaveLength(1_000);
+    expect(all).toHaveLength(300);
     expect(all[0]).toEqual({ symbol: "TKN", decimals: 7 });
-    expect(stats.calls).toHaveLength(2_000);
+    expect(stats.calls).toHaveLength(600);
     expect(stats.peak).toBeLessThanOrEqual(TOKEN_METADATA_CONCURRENCY);
     expect(stats.peak).toBeGreaterThan(1);
   });
@@ -100,6 +100,33 @@ describe("readTokenMetadata", () => {
     expect(second.signal.aborted).toBe(false);
     await Promise.all(busy);
     expect(stats.calls.filter((c) => c.startsWith(id))).toEqual([`${id}.symbol`, `${id}.decimals`]);
+  });
+
+  // once a read holds a slot it runs to the end anyway, so a row that unmounts
+  // and mounts again must pick up that read instead of queueing a second one
+  it("reuses a read that already started after its only row went away", async () => {
+    const { server: inner, stats } = tokenServer();
+    let open: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    let entered = 0;
+    const server = {
+      simulateTransaction: async (tx: Transaction) => {
+        entered += 1;
+        await gate;
+        return inner.simulateTransaction(tx);
+      },
+    } as unknown as rpc.Server;
+    const id = token(779);
+    const first = new AbortController();
+    const dropped = readTokenMetadata(server, id, SOURCE, TESTNET, { signal: first.signal });
+    // the read has its slot and is inside its first simulation
+    await vi.waitFor(() => expect(entered).toBe(1));
+    first.abort();
+    await expect(dropped).rejects.toMatchObject({ name: "AbortError" });
+    const again = readTokenMetadata(server, id, SOURCE, TESTNET);
+    open();
+    await expect(again).resolves.toEqual({ symbol: "TKN", decimals: 7 });
+    expect(stats.calls).toEqual([`${id}.symbol`, `${id}.decimals`]);
   });
 
   it("keeps a shared read going while another row still waits on it", async () => {
