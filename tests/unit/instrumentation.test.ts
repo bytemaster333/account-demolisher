@@ -1,7 +1,16 @@
 // the server start hook refuses a proxy setting that can't identify clients
 // (H-35, M-59), so a misconfigured deployment exits instead of serving.
 
-import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type MockInstance,
+} from "vitest";
 
 import { register } from "@/instrumentation";
 
@@ -10,6 +19,12 @@ class Exited extends Error {
     super(`exit ${String(code)}`);
   }
 }
+
+// register() imports the startup check lazily. loading it here keeps a cold
+// transform of that module graph on a busy machine out of the first test's time
+beforeAll(async () => {
+  await import("@/server/startup-check");
+}, 60_000);
 
 let exit: MockInstance<typeof process.exit>;
 let logged: MockInstance<typeof console.error>;
