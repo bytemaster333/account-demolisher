@@ -8,7 +8,7 @@ import { explorerTxUrl } from "@/lib/explorer";
 import {
   inspectPendingForward,
   isCloseInFlight,
-  legacyFlowId,
+  isLegacyFlowToken,
   loadPendingForwards,
   pendingForwardNetwork,
   removePendingForward,
@@ -246,7 +246,7 @@ function PendingForwardRow({
 
   const network = pendingForwardNetwork(record);
   const networkName = network?.id ?? record.networkId;
-  const legacyId = legacyFlowId(record.flowToken);
+  const legacy = isLegacyFlowToken(record.flowToken);
 
   const onResume = async (): Promise<void> => {
     setResuming(true);
@@ -299,18 +299,32 @@ function PendingForwardRow({
           {subject} merged your account&apos;s balance into the temporary account{" "}
           {shorten(record.mediatorPublicKey)} on {networkName}, but the forward to{" "}
           {shorten(record.ultimateDestination)} has not gone out.{" "}
-          {legacyId !== null ? (
+          {legacy ? (
             <>
               The record was saved by an earlier version of the app, whose flow token can no longer
-              be renewed, so the app can&apos;t send the forward. Contact the operator with the
-              temporary account {record.mediatorPublicKey} and flow id {legacyId}; the balance stays
-              in that account until then.
+              be renewed, so the app can&apos;t send the forward. Send the operator the temporary
+              account {record.mediatorPublicKey}, your deposit memo
+              {record.memo !== undefined
+                ? ` (memo saved with this close: ${record.memo.type} ${record.memo.value})`
+                : ""}{" "}
+              and the recovery token below. The balance stays in that account until then.
+              <div
+                data-testid="legacy-recovery-token"
+                style={{
+                  marginTop: 8,
+                  font: "500 12px 'Geist Mono', monospace",
+                  overflowWrap: "anywhere",
+                  userSelect: "all",
+                }}
+              >
+                {record.flowToken}
+              </div>
             </>
           ) : (
             <>Resume it to deliver the balance with your deposit memo.</>
           )}
           {errorLine}
-          {legacyId === null ? (
+          {!legacy ? (
             <div style={{ marginTop: 12 }}>
               <Button
                 variant="primary"

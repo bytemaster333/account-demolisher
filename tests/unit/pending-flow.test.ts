@@ -329,7 +329,11 @@ describe("resume and inspect against chain state", () => {
     fake.requests.length = 0;
     const result = await resumePendingForward(legacy, deps);
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toContain("earlier version");
+    if (!result.ok) {
+      expect(result.error).toContain("earlier version");
+      // the whole token, which proves the destination to the operator
+      expect(result.error).toContain(legacy.flowToken);
+    }
     expect(fake.requests).toEqual([]);
     expect(loadPendingForwards(user)).toHaveLength(1);
   });

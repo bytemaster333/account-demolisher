@@ -196,14 +196,11 @@ function readAll(): RecordMap {
 // parts (nonce.expiry.destination.mac). the routes refuse them, and renewing
 // one would let whoever holds it pick the memo, so the app can't finish such a
 // forward. the operator can: the nonce (the first part) and MEDIATOR_SECRET
-// derive the mediator key.
+// derive the mediator key, and the mac proves the destination, so the operator
+// needs the whole token.
 export function isLegacyFlowToken(flowToken: string): boolean {
   const parts = flowToken.split(".");
   return parts.length === 4 && /^[0-9a-f]{32}$/u.test(parts[0] ?? "");
-}
-
-export function legacyFlowId(flowToken: string): string | null {
-  return isLegacyFlowToken(flowToken) ? (flowToken.split(".")[0] ?? null) : null;
 }
 
 function writeAll(map: RecordMap): void {
@@ -321,14 +318,13 @@ export async function resumePendingForward(
       flowToken: pending.flowToken,
     };
   }
-  const legacyId = legacyFlowId(pending.flowToken);
-  if (legacyId !== null) {
+  if (isLegacyFlowToken(pending.flowToken)) {
     return {
       ok: false,
       error:
         "This record was saved by an earlier version of the app, whose flow token can no longer " +
-        `be renewed. Contact the operator with the temporary account ${pending.mediatorPublicKey} ` +
-        `and flow id ${legacyId} to have the forward finished.`,
+        `be renewed. Contact the operator with the temporary account ${pending.mediatorPublicKey}, ` +
+        `your deposit memo and this recovery token to have the forward finished: ${pending.flowToken}`,
       flowToken: pending.flowToken,
     };
   }
