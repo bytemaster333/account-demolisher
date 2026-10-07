@@ -27,6 +27,9 @@ const isDev = process.env.NODE_ENV !== "production";
 const config: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  // next dev otherwise writes AGENTS.md and CLAUDE.md into the project root
+  // whenever it detects a coding agent, or inserts its block into existing ones
+  agentRules: false,
   experimental: {
     // /api is outside the proxy matcher, so the route handlers' own body caps
     // apply there. this bounds what next buffers for the proxy on every other
