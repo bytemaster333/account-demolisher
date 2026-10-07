@@ -232,14 +232,3 @@ export function isKnownContract(contractId: string, network: NetworkConfig): boo
       return unsupportedNetwork(network.id);
   }
 }
-
-// the predicate allowlist.ts applies before signing, so it answers the root-target
-// question. there is no default network: the parameter still admits undefined
-// only because allowlist.ts forwards an optional one, and undefined is refused
-// rather than read as mainnet.
-export function isAllowedContract(contractId: string, network: NetworkConfig | undefined): boolean {
-  if (network === undefined) {
-    throw new Error(`isAllowedContract(${contractId}): no network given; refusing to guess one`);
-  }
-  return isAllowedRootTarget(contractId, network);
-}
