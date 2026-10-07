@@ -7,14 +7,20 @@ import { DirectContractProvider } from "@/lib/adapters/positions/direct";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import { fetchPlan, publishPlan } from "@/lib/multisig/plan-client";
-import type { BundleabilityResult } from "@/lib/multisig/signing-request";
+import { SIGNING_WINDOW_SECONDS, type BundleabilityResult } from "@/lib/multisig/signing-request";
 import type { PageFlowRunInput } from "@/lib/orchestrator/page-flow-machine";
 import type { PlanTree } from "@/lib/plan/tree";
 import { getHorizon } from "@/lib/stellar/horizon-client";
+import { fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 import type { AccountAudit } from "@/lib/types/account";
 import type { Connector } from "@/lib/wallet/connector";
 
-import { buildReviewedBundle, reprobeBeforePublish } from "../_lib/signing-bundle";
+import {
+  buildReviewedBundle,
+  claimsAtRiskInWindow,
+  reprobeBeforePublish,
+  sinkingClaims,
+} from "../_lib/signing-bundle";
 import {
   clearSigningRequest,
   loadSigningRequest,
@@ -168,8 +174,35 @@ export function useSigningRequest(args: {
         setError(probe.reason ?? "The account's DeFi positions couldn't be confirmed closed.");
         return;
       }
+      // the request is valid for the signing window from now, on the network's
+      // clock: every claim it makes has to stay claimable for all of it. The
+      // Review's check ran earlier, on this browser's clock.
+      const clock = await fetchLedgerClock(network);
+      const sinking = sinkingClaims(
+        claimsAtRiskInWindow({
+          audit,
+          tree,
+          publicKey: audit.accountId,
+          nowMs: clock.closedAt * 1000,
+          windowSeconds: SIGNING_WINDOW_SECONDS,
+        }),
+      );
+      if (sinking.length > 0) {
+        setError(
+          `${sinking.length === 1 ? "A pending payment" : `${sinking.length} pending payments`} in ` +
+            "this close can't be collected for the whole signing window from now, so the signed " +
+            "request would fail. Leave them out and rebuild, then create the request.",
+        );
+        return;
+      }
       const sourceAccount = await getHorizon(network).loadAccount(audit.accountId);
-      const tx = buildReviewedBundle({ tree, input: runInput, sourceAccount, network });
+      const tx = buildReviewedBundle({
+        tree,
+        input: runInput,
+        sourceAccount,
+        network,
+        ledgerCloseTime: clock.closedAt,
+      });
       const { signedXdr } = await connector.signTransaction(tx, network.passphrase);
       const id = await publishPlan(network.id, signedXdr);
       if (id.toLowerCase() !== hashHex(tx)) {

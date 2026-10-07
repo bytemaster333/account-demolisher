@@ -66,6 +66,8 @@ const ctl = vi.hoisted(() => ({
   typedTail: "",
   // the symbol a standalone token contract reports
   tokenSymbol: "TKN",
+  // close time of the network's latest ledger, ms; null reads the local clock
+  ledgerCloseMs: null as number | null,
 }));
 
 vi.mock("@/components/wallet/ConnectButton", () => ({
@@ -101,7 +103,15 @@ vi.mock("@/lib/stellar/horizon-client", async () => {
         ledgers: () => ({
           order: () => ({
             limit: () => ({
-              call: async () => ({ records: [{ base_reserve_in_stroops: 5_000_000 }] }),
+              call: async () => ({
+                records: [
+                  {
+                    base_reserve_in_stroops: 5_000_000,
+                    sequence: 4242,
+                    closed_at: new Date(ctl.ledgerCloseMs ?? Date.now()).toISOString(),
+                  },
+                ],
+              }),
             }),
           }),
         }),
@@ -295,6 +305,7 @@ beforeEach(() => {
   ctl.destinationData = {};
   ctl.typedTail = "";
   ctl.tokenSymbol = "TKN";
+  ctl.ledgerCloseMs = null;
 });
 
 afterEach(() => {
@@ -611,6 +622,71 @@ describe("the position re-probe runs before a signing request is published (C-08
     await createRequest();
     expect((await screen.findByRole("alert")).textContent).toMatch(/probe timed out/);
     expect(ctl.published).toHaveLength(0);
+  });
+});
+
+describe("the claim window is checked on the ledger clock when publishing (L-25)", () => {
+  const WINDOW_MS = 72 * 3_600_000;
+  const CB = `00000000${"c4".repeat(32)}`;
+
+  // a shared account with one pending XLM payment that stops being claimable at
+  // `expiresAtMs`
+  function sharedWithExpiringClaim(expiresAtMs: number): void {
+    const audit = makeAudit({
+      ...sharedAudit(),
+      claimableBalances: [
+        {
+          id: CB,
+          asset: { kind: "native" },
+          amount: "5.0000000",
+          sponsor: DEST,
+          predicate: [
+            {
+              destination: ACC,
+              predicate: { abs_before: new Date(expiresAtMs).toISOString() },
+            },
+          ],
+          claimants: [ACC],
+          claimableNow: true,
+        },
+      ],
+    });
+    ctl.preflightAudit = audit;
+    ctl.discover = async () => ({ audit, positions: emptyPositions(), heldTokens: [] });
+    ctl.preview = async () => ({ tree: makeTree({ audit }), unroutableCredits: [] });
+  }
+
+  it("refuses a claim that expires inside the window counted from publish time", async () => {
+    const mounted = Date.now();
+    // the network's clock reads two hours past the page's mount time: the claim
+    // is safe for a window counted from the mount, not for one from now
+    ctl.ledgerCloseMs = mounted + 2 * 3_600_000;
+    sharedWithExpiringClaim(mounted + WINDOW_MS + 3_600_000);
+    connect();
+    render(<DemolishFlow />);
+    await configureAndStart();
+    // collecting the payment is listed on the Warnings step first
+    fireEvent.click(await screen.findByTestId("ack-autohandled"));
+    fireEvent.click(screen.getByTestId("acknowledge-continue"));
+    const create = await screen.findByTestId("review-create-request");
+    // the Review's own check, from the mount time, sees nothing at risk
+    expect(screen.queryByTestId("review-claim-risks")).toBeNull();
+    fireEvent.click(create);
+    expect((await screen.findByRole("alert")).textContent).toMatch(/signing window/);
+    expect(ctl.published).toHaveLength(0);
+  });
+
+  it("anchors the published request's expiry to the ledger clock", async () => {
+    const ledger = Date.now() + 5 * 60_000;
+    ctl.ledgerCloseMs = ledger;
+    setUpSharedAccount();
+    connect();
+    render(<DemolishFlow />);
+    await configureAndStart();
+    fireEvent.click(await screen.findByTestId("review-create-request"));
+    await screen.findByTestId("collect-stub");
+    const tx = TransactionBuilder.fromXdr(ctl.published[0]!.xdr, TESTNET.passphrase) as Transaction;
+    expect(Number(tx.timeBounds?.maxTime)).toBe(Math.floor(ledger / 1000) + WINDOW_MS / 1000);
   });
 });
 
