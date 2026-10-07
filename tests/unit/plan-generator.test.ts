@@ -154,8 +154,23 @@ describe("generatePlan, protocol ordering invariants", () => {
 });
 
 describe("generatePlan, mediator forward", () => {
+  // an exchange close can only take exits that pay out classic balances
+  const xlm = Asset.native().contractId(TESTNET.passphrase);
+  const xlmPositions = (): ProtocolPositions =>
+    emptyPositions({
+      blend: [
+        {
+          poolId: POOL_ID,
+          liabilities: new Map([[xlm, 100n]]),
+          collateral: new Map([[xlm, 200n]]),
+          supply: new Map(),
+          emissionReserveTokenIds: [2, 3],
+        },
+      ],
+    });
+
   it("wires mediator-forward on the final tx and orders it last", () => {
-    const tree = generatePlan(makeAudit(), richPositions(), [], DEST, {
+    const tree = generatePlan(makeAudit(), xlmPositions(), [], DEST, {
       network: TESTNET,
       useMediator: true,
       mediatorPublicKey: MED,
@@ -176,7 +191,7 @@ describe("generatePlan, mediator forward", () => {
   it("carries the FULL deposit memo (incl. numeric 'id') to the forward, not just text", () => {
     // regression: an 'id' (numeric) CEX memo was dropped because only 'text' was
     // propagated, so the forward reached the exchange with no memo (fund loss).
-    const tree = generatePlan(makeAudit(), richPositions(), [], DEST, {
+    const tree = generatePlan(makeAudit(), xlmPositions(), [], DEST, {
       network: TESTNET,
       useMediator: true,
       mediatorPublicKey: MED,
@@ -358,6 +373,27 @@ describe("generatePlan, blend backstop (queued withdrawal, prepare-only plan)", 
     expect(() => generatePlan(makeAudit(), positions, [], DEST, { now: NOW })).toThrow(
       /opts\.network is required/,
     );
+  });
+
+  it("names the backstop discovery found on every backstop step", () => {
+    const positions = emptyPositions({
+      backstop: [
+        {
+          poolId: POOL_ID,
+          backstopId: "CBACKSTOP",
+          shares: 1000n,
+          queuedForWithdrawal: 500n,
+          unlockedQueuedForWithdrawal: 500n,
+          accruedEmissions: 1n,
+        },
+      ],
+    });
+    const tree = generatePlan(makeAudit(), positions, [], DEST, { now: NOW, network: TESTNET });
+    for (const prefix of ["backstop-claim", "backstop-queue", "backstop-withdraw"]) {
+      expect(tree.allNodes.get(id(prefix, POOL_ID))?.metadata).toMatchObject({
+        backstopId: "CBACKSTOP",
+      });
+    }
   });
 
   it("claims accrued backstop emissions before the queue (L-49)", () => {
@@ -606,14 +642,24 @@ describe("M-24: held-token sweeps follow the exits and cover contract-token payo
     expect(tree.allNodes.has(id("drain-token", usdcSac))).toBe(false);
   });
 
-  it("plans no payout sweep on an exchange close", () => {
-    const tree = generatePlan(makeAudit(), positions, [], DEST, {
+  it("plans no payout sweep on an exchange close whose exits pay out classic balances", () => {
+    const usdc = { kind: "credit" as const, code: "USDC", issuer: Keypair.random().publicKey() };
+    const usdcSac = new Asset(usdc.code, usdc.issuer).contractId(TESTNET.passphrase);
+    const nativeSac = Asset.native().contractId(TESTNET.passphrase);
+    const classicOnly = emptyPositions({
+      soroswap: [{ pair: { tokenA: usdcSac, tokenB: nativeSac }, shareBalance: 5n }],
+    });
+    const audit = makeAudit({
+      balances: [{ asset: usdc, amount: "0", buyingLiabilities: "0", sellingLiabilities: "0" }],
+    });
+    const tree = generatePlan(audit, classicOnly, [], DEST, {
       networkPassphrase: TESTNET.passphrase,
       useMediator: true,
       mediatorPublicKey: MED,
       flowToken: "nonce.exp.mac",
     });
-    expect(tree.allNodes.has(id("drain-token", TOKEN_X))).toBe(false);
+    expect([...tree.allNodes.values()].some((n) => n.kind === "TransferAsIs")).toBe(false);
+    expect(tree.allNodes.has("mediator-forward")).toBe(true);
   });
 });
 
@@ -759,6 +805,11 @@ describe("M-26: Blend emissions claims open the BLND trustline first", () => {
     expect(dependsOn(tree, id("blend-claim", POOL_ID), "blnd-trustline")).toBe(true);
   });
 
+  it("opens the trustline before any other step runs", () => {
+    const tree = generatePlan(makeAudit(), richPositions(), [], DEST, { network: TESTNET });
+    expect(topologicalOrder(tree)[0]?.id).toBe("blnd-trustline");
+  });
+
   it("adds no trustline when the account already holds an authorized one", () => {
     const audit = makeAudit({
       balances: [
@@ -853,6 +904,38 @@ describe("M-23: a repay asset locked in classic offers or pools is unwound first
     expect(dependsOn(tree, "final-classic-tx", "classic-unwind")).toBe(true);
   });
 
+  it("previews the final batches as they look after the unwind", () => {
+    const funded = makeAudit({
+      ...audit,
+      subentryCount: 4,
+      balances: [
+        {
+          asset: { kind: "native" },
+          amount: "100",
+          buyingLiabilities: "0",
+          sellingLiabilities: "5",
+        },
+        { asset: usdcId, amount: "20", buyingLiabilities: "5", sellingLiabilities: "5" },
+      ],
+    });
+    const tree = generatePlan(funded, positions, [], DEST, {
+      network: TESTNET,
+      classicFeePerOp: 100,
+    });
+    const unwind = tree.allNodes.get("classic-unwind");
+    if (unwind?.kind !== "ClassicUnwind") throw new Error("expected ClassicUnwind");
+    expect(unwind.metadata.destination).toBe(DEST);
+    const final = tree.allNodes.get("final-classic-tx");
+    if (final?.kind !== "FinalClassicTx") throw new Error("expected FinalClassicTx");
+    const ops = final.metadata.batches.flatMap((b) => b.operations);
+    // the unwind already cancelled offer 11 and withdrew the pool; only offer 12
+    // is left for the final batches
+    expect(
+      ops.filter((o) => o.kind === "manage_sell_offer_cancel").map((o) => o.metadata.offerId),
+    ).toEqual(["12"]);
+    expect(ops.some((o) => o.kind === "liquidity_pool_withdraw")).toBe(false);
+  });
+
   it("plans no unwind when nothing classic holds the repay asset", () => {
     const tree = generatePlan(makeAudit({ offers: [audit.offers[1]!] }), positions, [], DEST, {
       network: TESTNET,
@@ -937,10 +1020,66 @@ describe("decision 3: per-token answers to a refused conversion", () => {
   });
 });
 
+describe("M-25: an exchange close can't take exit payouts it can't forward", () => {
+  const NOW = 1_700_000_000_000;
+  const unlocked = (queued: bigint) =>
+    emptyPositions({
+      backstop: [
+        {
+          poolId: POOL_ID,
+          shares: 0n,
+          queuedForWithdrawal: queued,
+          unlockedQueuedForWithdrawal: 500n,
+        },
+      ],
+    });
+  const exchange = {
+    now: NOW,
+    network: TESTNET,
+    useMediator: true,
+    mediatorPublicKey: MED,
+    flowToken: "flow",
+  } as const;
+
+  it("refuses before any step runs when the backstop withdraw pays out LP tokens", () => {
+    expect(() => generatePlan(makeAudit(), unlocked(500n), [], DEST, exchange)).toThrow(
+      /exchange close can only forward XLM.*BLND-USDC LP token CA5UTU\.\.\.DWDM/,
+    );
+  });
+
+  it("refuses a pool exit that pays out a token the account holds no classic line for", () => {
+    const token = StrKey.encodeContract(Buffer.alloc(32, 31));
+    const positions = emptyPositions({
+      soroswap: [
+        {
+          pair: { tokenA: token, tokenB: Asset.native().contractId(TESTNET.passphrase) },
+          shareBalance: 5n,
+        },
+      ],
+    });
+    expect(() => generatePlan(makeAudit(), positions, [], DEST, exchange)).toThrow(
+      /exchange close can only forward XLM/,
+    );
+    // the same exit on a direct close sweeps the token to the destination
+    const direct = generatePlan(makeAudit(), positions, [], DEST, { network: TESTNET });
+    expect(direct.allNodes.has(id("drain-token", token))).toBe(true);
+  });
+
+  it("still prepares an exchange close whose queue stays partly locked: the account stays open", () => {
+    const tree = generatePlan(makeAudit(), unlocked(800n), [], DEST, exchange);
+    expect(tree.prepareOnly).toBeDefined();
+    expect(tree.allNodes.has(id("backstop-withdraw", POOL_ID))).toBe(true);
+  });
+});
+
 describe("PLCL-30: callers can tell a prepare-only plan before minting a mediator", () => {
   const NOW = 1_700_000_000_000;
   const locked = emptyPositions({
     backstop: [{ poolId: POOL_ID, shares: 5n, queuedForWithdrawal: 0n }],
+  });
+
+  it("says the date is the latest the queue unlocks", () => {
+    expect(preparePlanFor(locked, NOW)?.reason).toMatch(/at the latest/);
   });
 
   it("reports the unlock date for positions that keep a locked queue, and nothing otherwise", () => {

@@ -10,7 +10,14 @@ import {
   type Transaction,
 } from "@stellar/stellar-sdk";
 
-import { BlndTrustlineMissingError } from "@/lib/adapters/blend/exit";
+import {
+  BLEND_BACKSTOP_MAINNET_ID,
+  BLEND_BACKSTOP_V1_MAINNET_ID,
+} from "@/lib/adapters/blend/constants";
+import {
+  BackstopClaimUnavailableError,
+  BlndTrustlineMissingError,
+} from "@/lib/adapters/blend/exit";
 import { spendableFromAccount } from "@/lib/adapters/blend/spendable";
 import { NoSoroswapRouteError } from "@/lib/adapters/soroswap/swap";
 import {
@@ -60,6 +67,27 @@ function accountAt(seq: bigint): Horizon.AccountResponse {
     data_attr: {},
     num_sponsoring: 0,
     num_sponsored: 0,
+  } as never);
+}
+
+// the same account holding the given XLM, with the given selling liabilities
+function withNative(
+  account: Horizon.AccountResponse,
+  balance: string,
+  sellingLiabilities: string,
+): Horizon.AccountResponse {
+  return new Horizon.AccountResponse({
+    ...account,
+    account_id: account.accountId(),
+    sequence: account.sequenceNumber(),
+    balances: [
+      {
+        asset_type: "native",
+        balance,
+        buying_liabilities: "0.0000000",
+        selling_liabilities: sellingLiabilities,
+      },
+    ],
   } as never);
 }
 
@@ -502,9 +530,14 @@ describe("hydratePlanTransactions, steps behind other steps are deferred", () =>
       deps,
     );
 
+    const plain = {
+      priceImpactRefused: false,
+      noSoroswapRoute: false,
+      backstopClaimUnavailable: false,
+    };
     expect(failures).toEqual([
-      { nodeId: "repay", reason: "Error(Contract, #1205)", deferred: false },
-      { nodeId: "withdraw", reason: "Error(Contract, #1205)", deferred: true },
+      { nodeId: "repay", reason: "Error(Contract, #1205)", deferred: false, ...plain },
+      { nodeId: "withdraw", reason: "Error(Contract, #1205)", deferred: true, ...plain },
     ]);
     expect(repay.status).toBe("failed");
     expect(withdraw.status).toBe("pending");
@@ -744,7 +777,12 @@ describe("hydration, every build gets a full copy of the account record", () => 
 });
 
 describe("hydration, Blend backstop steps take their amounts from the built transaction", () => {
-  const backstopNode = (kind: "BackstopQueue" | "BackstopWithdraw"): PlanNode =>
+  const V2 = { id: BLEND_BACKSTOP_MAINNET_ID, version: "V2" as const, queueDurationSeconds: 1 };
+  const V1 = { id: BLEND_BACKSTOP_V1_MAINNET_ID, version: "V1" as const, queueDurationSeconds: 1 };
+  const backstopNode = (
+    kind: "BackstopQueue" | "BackstopWithdraw",
+    backstopId?: string,
+  ): PlanNode =>
     kind === "BackstopQueue"
       ? {
           id: "queue",
@@ -752,7 +790,13 @@ describe("hydration, Blend backstop steps take their amounts from the built tran
           dependencies: [],
           description: "queue",
           status: "pending",
-          metadata: { kind, poolId: "CPOOL", shares: 10n, queueEndsAt: new Date(0) },
+          metadata: {
+            kind,
+            poolId: "CPOOL",
+            shares: 10n,
+            queueEndsAt: new Date(0),
+            ...(backstopId !== undefined ? { backstopId } : {}),
+          },
         }
       : {
           id: "withdraw",
@@ -760,55 +804,101 @@ describe("hydration, Blend backstop steps take their amounts from the built tran
           dependencies: [],
           description: "withdraw",
           status: "pending",
-          metadata: { kind, poolId: "CPOOL", amount: 10n, lpToken: "CCOMET" },
+          metadata: {
+            kind,
+            poolId: "CPOOL",
+            amount: 10n,
+            lpToken: "CCOMET",
+            ...(backstopId !== undefined ? { backstopId } : {}),
+          },
         };
-
-  it("records the shares and unlock date the queue transaction carries", async () => {
-    const ends = new Date(1_800_000_000_000);
-    const buildExitSequence = vi.fn(async () => [
-      {
-        kind: "backstop_queue_withdrawal",
-        shares: 15n,
-        queueEndsAt: ends,
-        transaction: { fake: "tx" },
-        manualReturnRequired: true,
-      },
-    ]) as unknown as NonNullable<HydrationAdapterOverrides["buildExitSequence"]>;
-    const node = backstopNode("BackstopQueue");
-    await rebuildSorobanNodeTransaction(node, USER, baseDeps({ adapters: { buildExitSequence } }));
-    expect(node.metadata).toMatchObject({ shares: 15n, queueEndsAt: ends });
+  const claimNode = (deps: string[] = [], backstopId?: string): PlanNode => ({
+    id: "claim",
+    kind: "ClaimBackstopEmissions",
+    dependencies: deps,
+    description: "claim",
+    status: "pending",
+    metadata: {
+      kind: "ClaimBackstopEmissions",
+      poolId: "CPOOL",
+      accruedEmissions: 7n,
+      ...(backstopId !== undefined ? { backstopId } : {}),
+    },
   });
 
-  it("withdraws the unlocked queue and records the amount read on chain", async () => {
-    const buildExitSequence = vi.fn(async () => [
-      { kind: "backstop_withdraw", amount: 12n, transaction: { fake: "tx" } },
-    ]) as unknown as NonNullable<HydrationAdapterOverrides["buildExitSequence"]>;
+  it("records the shares, unlock date and backstop the queue transaction carries", async () => {
+    const ends = new Date(1_800_000_000_000);
+    const buildBackstopQueueTx = vi.fn(async () => ({
+      transaction: { fake: "tx" } as unknown as Transaction,
+      shares: 15n,
+      backstop: V2,
+      queueEndsAt: ends,
+    }));
+    const node = backstopNode("BackstopQueue");
+    await rebuildSorobanNodeTransaction(
+      node,
+      USER,
+      baseDeps({ adapters: { buildBackstopQueueTx } }),
+    );
+    expect(node.metadata).toMatchObject({ shares: 15n, queueEndsAt: ends, backstopId: V2.id });
+  });
+
+  it("withdraws the unlocked queue and records the amount and backstop read on chain", async () => {
+    const buildBackstopWithdrawTx = vi.fn(async () => ({
+      transaction: { fake: "tx" } as unknown as Transaction,
+      shares: 12n,
+      backstop: V1,
+    }));
     const node = backstopNode("BackstopWithdraw");
-    await rebuildSorobanNodeTransaction(node, USER, baseDeps({ adapters: { buildExitSequence } }));
-    expect(buildExitSequence).toHaveBeenCalledWith(
+    await rebuildSorobanNodeTransaction(
+      node,
+      USER,
+      baseDeps({ adapters: { buildBackstopWithdrawTx } }),
+    );
+    expect(buildBackstopWithdrawTx).toHaveBeenCalledWith(
       NETWORK,
-      expect.objectContaining({ poolId: "CPOOL" }),
+      { poolId: "CPOOL" },
       USER,
       expect.anything(),
-      expect.objectContaining({ backstopWithdrawAmount: 10n }),
+      expect.objectContaining({ server: expect.anything() }),
     );
-    expect((node.metadata as { amount: bigint }).amount).toBe(12n);
+    expect(node.metadata).toMatchObject({ amount: 12n, backstopId: V1.id });
   });
 
-  it("fails a backstop emissions claim that can't run, with the accrued BLND, never deferring", async () => {
-    const buildExitSequence = vi.fn(async () => {
-      throw new Error(
-        "could not simulate the Blend backstop claim: HostError: Error(WasmVm, InvalidAction)",
-      );
-    }) as unknown as NonNullable<HydrationAdapterOverrides["buildExitSequence"]>;
-    const claim: PlanNode = {
-      id: "claim",
-      kind: "ClaimBackstopEmissions",
-      dependencies: ["before"],
-      description: "claim",
-      status: "pending",
-      metadata: { kind: "ClaimBackstopEmissions", poolId: "CPOOL", accruedEmissions: 7n },
-    };
+  it("refuses a build against a different backstop than the one the plan names", async () => {
+    const buildBackstopQueueTx = vi.fn(async () => ({
+      transaction: { fake: "tx" } as unknown as Transaction,
+      shares: 15n,
+      backstop: V2,
+      queueEndsAt: new Date(0),
+    }));
+    const node = backstopNode("BackstopQueue", V1.id);
+    await expect(
+      rebuildSorobanNodeTransaction(node, USER, baseDeps({ adapters: { buildBackstopQueueTx } })),
+    ).rejects.toThrow(/not the backstop .* the plan named/);
+    expect((node.metadata as { transaction?: unknown }).transaction).toBeUndefined();
+  });
+
+  it("records the backstop of a claim that builds", async () => {
+    const buildBackstopClaimTx = vi.fn(async () => ({
+      transaction: { fake: "tx" } as unknown as Transaction,
+      backstop: V2,
+    }));
+    const node = claimNode();
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([node]),
+      USER,
+      baseDeps({ adapters: { buildBackstopClaimTx } }),
+    );
+    expect(failures).toEqual([]);
+    expect(node.metadata).toMatchObject({ backstopId: V2.id });
+  });
+
+  it("fails a claim that traps in simulation as a forfeit question, with the accrued BLND, never deferring", async () => {
+    const log = "HostError: Error(WasmVm, InvalidAction)\nevent log:\n 0: [Diagnostic Event] ...";
+    const buildBackstopClaimTx = vi.fn(async () => {
+      throw new BackstopClaimUnavailableError("CPOOL", V2.id, 7_114_578_242n, log);
+    });
     const before: PlanNode = {
       id: "before",
       kind: "BackstopWithdraw",
@@ -823,15 +913,102 @@ describe("hydration, Blend backstop steps take their amounts from the built tran
         transaction: { fake: "tx" } as never,
       },
     };
+    const claim = claimNode(["before"]);
     const { failures } = await hydratePlanTransactions(
       buildPlanTree([before, claim]),
       USER,
-      baseDeps({ adapters: { buildExitSequence } }),
+      baseDeps({ adapters: { buildBackstopClaimTx } }),
     );
-    expect(failures).toEqual([expect.objectContaining({ nodeId: "claim", deferred: false })]);
+    expect(failures).toEqual([
+      expect.objectContaining({ nodeId: "claim", deferred: false, backstopClaimUnavailable: true }),
+    ]);
     expect(claim.status).toBe("failed");
-    expect(claim.error).toMatch(/InvalidAction/);
-    expect(claim.error).toMatch(/forfeited/);
+    // the amount read on chain, and a one-line reason without the diagnostic log
+    expect(claim.error).toMatch(/711\.4578242 BLND/);
+    expect(claim.error).toMatch(/forfeit/);
+    expect(claim.error).not.toMatch(/InvalidAction|event log/);
+    await expect(
+      rebuildSorobanNodeTransaction(
+        claimNode(),
+        USER,
+        baseDeps({ adapters: { buildBackstopClaimTx } }),
+      ),
+    ).rejects.toMatchObject({
+      name: "BackstopEmissionsClaimError",
+      poolId: "CPOOL",
+      backstopId: V2.id,
+      accruedEmissions: 7_114_578_242n,
+      simulationError: log,
+    });
+  });
+
+  // a source-account read or an rpc timeout is not a trapping claim: offering a
+  // permanent forfeit for it would give the BLND away over a network blip
+  it("keeps any other claim failure an ordinary one, not a forfeit question", async () => {
+    const buildBackstopClaimTx = vi.fn(async () => {
+      throw new Error("timeout of 30000ms exceeded");
+    });
+    const claim = claimNode();
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([claim]),
+      USER,
+      baseDeps({ adapters: { buildBackstopClaimTx } }),
+    );
+    expect(failures).toEqual([
+      {
+        nodeId: "claim",
+        reason: "timeout of 30000ms exceeded",
+        deferred: false,
+        priceImpactRefused: false,
+        noSoroswapRoute: false,
+        backstopClaimUnavailable: false,
+      },
+    ]);
+    expect(claim.error).not.toMatch(/forfeit/);
+  });
+});
+
+describe("hydration, failures say which user answer they wait on", () => {
+  it("flags a conversion refused for its price", async () => {
+    const thinPool = (x: bigint): bigint => (x * 1_000_000n) / (1_000_000n + x);
+    const market = swapMarket(thinPool);
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([convertNode()]),
+      USER,
+      baseDeps({
+        rpc: market.rpc,
+        adapters: {
+          buildSwapToXLM: market.buildSwapToXLM,
+          quoteRouteToXLM: market.quoteRouteToXLM,
+          readTokenBalance: async () => 1_000_000n,
+        },
+      }),
+    );
+    expect(failures).toEqual([
+      expect.objectContaining({
+        priceImpactRefused: true,
+        noSoroswapRoute: false,
+        backstopClaimUnavailable: false,
+      }),
+    ]);
+  });
+
+  it("flags a token with no route to XLM", async () => {
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([convertNode()]),
+      USER,
+      baseDeps({
+        adapters: {
+          quoteRouteToXLM: async () => {
+            throw new NoSoroswapRouteError(HELD_TOKEN, []);
+          },
+          readTokenBalance: async () => 1_000_000n,
+        },
+      }),
+    );
+    expect(failures).toEqual([
+      expect.objectContaining({ priceImpactRefused: false, noSoroswapRoute: true }),
+    ]);
   });
 });
 
@@ -849,13 +1026,46 @@ describe("hydration, the BLND trustline and the emissions claim behind it", () =
     };
     const deps = baseDeps({
       network: TESTNET,
-      fetchSourceAccount: vi.fn(async () => accountAt(700n)),
+      fetchSourceAccount: vi.fn(async () => withNative(accountAt(700n), "10.0000000", "0.0000000")),
     });
     const { failures } = await hydratePlanTransactions(buildPlanTree([node]), USER, deps);
     expect(failures).toEqual([]);
     const tx = (node.metadata as { transaction?: Transaction }).transaction!;
     expect(tx.sequence).toBe("701");
     expect(tx.operations.map((o) => o.type)).toEqual(["changeTrust"]);
+  });
+
+  // the change_trust runs ahead of the other steps; an account that can't hold
+  // the new line's reserve would fail it on chain (op_low_reserve), so the step
+  // fails at build time with the amount to add instead
+  it("refuses the change_trust when the account can't fund the line's reserve", async () => {
+    const node: PlanNode = {
+      id: "blnd-trustline",
+      kind: "AddBlndTrustline",
+      dependencies: [],
+      description: "trust BLND",
+      status: "pending",
+      metadata: { kind: "AddBlndTrustline", code: "BLND", issuer: BLND_TESTNET_ISSUER },
+    };
+    // 1.55 XLM on a bare account: 0.55 XLM free, one 0.5 XLM reserve plus the
+    // 0.01 XLM fee bid fits, so take a little more off through liabilities
+    const tight = withNative(accountAt(700n), "1.5500000", "0.0600000");
+    const deps = baseDeps({ network: TESTNET, fetchSourceAccount: vi.fn(async () => tight) });
+    const { failures } = await hydratePlanTransactions(buildPlanTree([node]), USER, deps);
+    expect(failures).toEqual([expect.objectContaining({ nodeId: "blnd-trustline" })]);
+    expect(node.status).toBe("failed");
+    expect(node.error).toMatch(/0\.5100000 XLM free.*has 0\.4900000/);
+    expect((node.metadata as { transaction?: unknown }).transaction).toBeUndefined();
+
+    const enough = withNative(accountAt(700n), "1.5500000", "0.0400000");
+    const ok: PlanNode = { ...node, status: "pending", metadata: { ...node.metadata } };
+    delete (ok as { error?: string }).error;
+    const passed = await hydratePlanTransactions(
+      buildPlanTree([ok]),
+      USER,
+      baseDeps({ network: TESTNET, fetchSourceAccount: vi.fn(async () => enough) }),
+    );
+    expect(passed.failures).toEqual([]);
   });
 
   it("keeps the claim pending until the trustline lands", async () => {
@@ -893,6 +1103,9 @@ describe("hydration, the BLND trustline and the emissions claim behind it", () =
         nodeId: "claim",
         reason: "ClaimBlendEmissions: built after the BLND trustline is added",
         deferred: true,
+        priceImpactRefused: false,
+        noSoroswapRoute: false,
+        backstopClaimUnavailable: false,
       },
     ]);
     expect(claim.status).toBe("pending");

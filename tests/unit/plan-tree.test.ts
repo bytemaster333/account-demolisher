@@ -238,7 +238,14 @@ describe("plan tree, prepare-only plans and the classic unwind", () => {
     dependencies: [],
     description: "unwind",
     status: "pending",
-    metadata: { kind: "ClassicUnwind", batches: [], offerIds: [], poolIds: [], repayAssets: [] },
+    metadata: {
+      kind: "ClassicUnwind",
+      batches: [],
+      offerIds: [],
+      poolIds: [],
+      repayAssets: [],
+      destination: "GDEST",
+    },
   };
 
   it("keeps the unlock date on a plan without a merge", () => {

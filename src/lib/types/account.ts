@@ -88,6 +88,9 @@ export interface ClaimableBalanceEntry {
   // the account: the issuer's auth_required flag. false means the close can add
   // the trustline and then claim. unset when the issuer account does not exist.
   readonly issuerAuthRequired?: boolean;
+  // the audited account issued this credit asset; it claims it with no trustline
+  // and the claim burns it
+  readonly issuedByAccount?: true;
 }
 
 export interface PoolShareEntry {

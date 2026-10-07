@@ -18,6 +18,7 @@ import {
 } from "@/lib/types/plan";
 import { applySlippageMin, resolveConfiguredSlippageBps } from "@/lib/safety/slippage";
 import { MAX_PRICE_IMPACT_BPS, priceImpactBps } from "@/lib/plan/price-impact";
+import { lookupRefusedDestination } from "@/lib/safety/cex-registry";
 import { isFrozenBalance } from "@/lib/stellar/account-audit";
 import { decimalToStroops as toStroops, stroopsToDecimal } from "@/lib/stellar/amount";
 
@@ -43,6 +44,15 @@ export function batchClassicDemolition(
   options: BatchOptions,
   paths?: ReadonlyMap<string, PathResultRef>,
 ): readonly ClassicBatch[] {
+  // the page refuses these too; this keeps a non-ui caller from merging into an
+  // exchange wallet that would never credit the funds
+  const refused = lookupRefusedDestination(options.destination);
+  if (refused !== null) {
+    throw new Error(
+      `batchClassicDemolition: ${options.destination} is ${refused.name}, an exchange internal ` +
+        `wallet, not a deposit address`,
+    );
+  }
   if (options.useMediator && !options.mediatorPublicKey) {
     throw new Error("batchClassicDemolition: useMediator=true requires options.mediatorPublicKey");
   }
@@ -326,9 +336,14 @@ export function batchClassicDemolition(
   // the marker sets a data entry and deletes it again, so for one op it needs a
   // base reserve free on top of the bare account's minimum. it comes before the
   // mediator funding, which then sees the same balance it would without it. when
-  // the account can't spare it the close goes ahead unmarked and is not counted.
+  // the account can't spare it, or the merge transaction has no room for two more
+  // ops, the close goes ahead unmarked and is not counted.
   const withoutMarker = [...leading, ...body, ...mergeGroup, ...(mediatorOp ? [mediatorOp] : [])];
-  if (markerFits(audit, [...withoutMarker, mergeOp], feePerOp)) {
+  const mergeTxOps = mergeGroup.length + (mediatorOp ? 1 : 0) + 1;
+  if (
+    mergeTxOps + 2 <= MAX_OPS_PER_TX &&
+    markerFits(audit, [...withoutMarker, mergeOp], feePerOp)
+  ) {
     mergeGroup.push(closeMarkerOp("set"), closeMarkerOp("delete"));
   }
   if (mediatorOp) mergeGroup.push(mediatorOp);
@@ -950,6 +965,13 @@ export interface ClassicUnwindPlan {
   readonly poolIds: readonly string[];
 }
 
+// what an unwind cancels and withdraws, by id, and the close's destination
+export interface ClassicUnwindTargets {
+  readonly offerIds: readonly string[];
+  readonly poolIds: readonly string[];
+  readonly destination: string;
+}
+
 // the classic phase that frees repay assets before the repays: cancel every
 // offer that sells one (its selling liabilities lock the balance a SAC transfer
 // can spend) and withdraw every classic pool share that holds one in its
@@ -969,18 +991,106 @@ export function planClassicUnwind(
     }
     return false;
   };
-  const offers = audit.offers.filter((o) => locks(o.selling));
-  const pools = audit.poolShares.filter(
-    (p) =>
-      hasPositive(p.shareBalance) &&
-      p.reserves[0] !== undefined &&
-      p.reserves[1] !== undefined &&
-      p.reserves.some((r) => locks(r.asset)),
-  );
-  const ops = [...pools.map(poolWithdrawOp), ...offers.map(offerCancelOp)];
+  const offerIds = audit.offers.filter((o) => locks(o.selling)).map((o) => o.id);
+  const poolIds = withdrawablePools(audit)
+    .filter((p) => p.reserves.some((r) => locks(r.asset)))
+    .map((p) => p.poolId);
   return {
-    batches: packLeading(ops, { destination, useMediator: false }),
-    offerIds: offers.map((o) => o.id),
-    poolIds: pools.map((p) => p.poolId),
+    batches: buildClassicUnwindBatches(audit, { offerIds, poolIds, destination }),
+    offerIds,
+    poolIds,
   };
+}
+
+// the unwind batches for the offers and pools a plan reviewed, rebuilt from this
+// audit: an offer already gone or a pool already withdrawn is skipped, a pool's
+// floors come from today's reserves, and nothing the review did not list is
+// touched. no batches when everything is already unwound.
+export function buildClassicUnwindBatches(
+  audit: AccountAudit,
+  targets: ClassicUnwindTargets,
+): readonly ClassicBatch[] {
+  const { offers, pools } = unwindEntries(audit, targets);
+  const ops = [...pools.map(poolWithdrawOp), ...offers.map(offerCancelOp)];
+  return packLeading(ops, { destination: targets.destination, useMediator: false });
+}
+
+// the account as the final batches will find it once the unwind has run: the
+// cancelled offers gone with the liabilities they held, the withdrawn pool shares
+// at zero with their payout at its floor on the reserve balances, and every
+// unwind op's fee taken off the XLM. the executor re-audits before the final
+// batches, so this only keeps the review from showing the unwind twice.
+export function auditAfterUnwind(
+  audit: AccountAudit,
+  targets: ClassicUnwindTargets,
+  feePerOpStroops: number = CLASSIC_FEE_CEILING_PER_OP,
+): AccountAudit {
+  const { offers, pools } = unwindEntries(audit, targets);
+  if (offers.length + pools.length === 0) return audit;
+  const delta = new Map<string, { amount: bigint; selling: bigint; buying: bigint }>();
+  const shift = (asset: AssetIdentifier, field: "amount" | "selling" | "buying", by: bigint) => {
+    const key = pathKey(asset);
+    const d = delta.get(key) ?? { amount: 0n, selling: 0n, buying: 0n };
+    d[field] += by;
+    delta.set(key, d);
+  };
+  for (const offer of offers) {
+    const amount = toStroops(offer.amount);
+    shift(offer.selling, "selling", -amount);
+    shift(offer.buying, "buying", -(amount * BigInt(offer.priceR.n)) / BigInt(offer.priceR.d));
+  }
+  for (const pool of pools) {
+    const op = poolWithdrawOp(pool);
+    shift(pool.reserves[0]!.asset, "amount", toStroops(String(op.metadata["minAmountA"])));
+    shift(pool.reserves[1]!.asset, "amount", toStroops(String(op.metadata["minAmountB"])));
+  }
+  shift(
+    { kind: "native" },
+    "amount",
+    -BigInt(feePerOpStroops) * BigInt(offers.length + pools.length),
+  );
+  const atLeastZero = (v: bigint): string => stroopsToDecimal(v > 0n ? v : 0n);
+  const cancelled = new Set(offers.map((o) => o.id));
+  const withdrawn = new Set(pools.map((p) => p.poolId));
+  return {
+    ...audit,
+    subentryCount: audit.subentryCount - offers.length,
+    balances: audit.balances.map((b) => {
+      const d = delta.get(pathKey(b.asset));
+      if (d === undefined) return b;
+      return {
+        ...b,
+        amount: atLeastZero(toStroops(b.amount) + d.amount),
+        sellingLiabilities: atLeastZero(toStroops(b.sellingLiabilities) + d.selling),
+        buyingLiabilities: atLeastZero(toStroops(b.buyingLiabilities) + d.buying),
+      };
+    }),
+    offers: audit.offers.filter((o) => !cancelled.has(o.id)),
+    poolShares: audit.poolShares.map((p) =>
+      withdrawn.has(p.poolId) ? { ...p, shareBalance: "0.0000000" } : p,
+    ),
+  };
+}
+
+function unwindEntries(
+  audit: AccountAudit,
+  targets: Pick<ClassicUnwindTargets, "offerIds" | "poolIds">,
+): {
+  readonly offers: readonly AccountAudit["offers"][number][];
+  readonly pools: readonly AccountAudit["poolShares"][number][];
+} {
+  const offerIds = new Set(targets.offerIds);
+  const poolIds = new Set(targets.poolIds);
+  return {
+    offers: audit.offers.filter((o) => offerIds.has(o.id)),
+    pools: withdrawablePools(audit).filter((p) => poolIds.has(p.poolId)),
+  };
+}
+
+// pool shares a withdraw can be built for: a positive balance and both reserves
+function withdrawablePools(audit: AccountAudit): readonly AccountAudit["poolShares"][number][] {
+  return audit.poolShares.filter(
+    (p) =>
+      hasPositive(p.shareBalance) && p.reserves[0] !== undefined && p.reserves[1] !== undefined,
+  );
 }

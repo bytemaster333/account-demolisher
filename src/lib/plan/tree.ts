@@ -78,7 +78,8 @@ export interface RevokeAllowanceMetadata {
 // a classic phase ahead of the repays: cancels the offers that sell a repay
 // asset and withdraws the classic pool shares that hold one, so the asset is
 // spendable when the repay pulls it. rebuilt from a fresh audit at execute time
-// with planClassicUnwind(audit, repayAssets, passphrase).
+// with buildClassicUnwindBatches(audit, metadata), which only touches the
+// reviewed offers and pools.
 export interface ClassicUnwindMetadata {
   readonly kind: "ClassicUnwind";
   readonly batches: readonly ClassicBatch[];
@@ -86,6 +87,8 @@ export interface ClassicUnwindMetadata {
   readonly poolIds: readonly string[];
   // SAC contract ids of the assets the plan repays
   readonly repayAssets: readonly string[];
+  // the close's destination, carried on the batches; they pay nothing to it
+  readonly destination: string;
 }
 
 export interface RepayBlendMetadata {
@@ -213,6 +216,9 @@ export interface ClaimBackstopEmissionsMetadata {
   readonly poolId: string;
   // BLND (7 decimals) accrued at discovery, shown when the claim can't run
   readonly accruedEmissions: bigint;
+  // the pool's backstop contract. set from discovery or the first build; a build
+  // against any other backstop is refused, and the auth-tree guard pins it
+  readonly backstopId?: string;
   readonly transaction?: Transaction;
 }
 
@@ -223,6 +229,8 @@ export interface BackstopQueueMetadata {
   // built transaction queues
   readonly shares: bigint;
   readonly queueEndsAt: Date;
+  // see ClaimBackstopEmissionsMetadata.backstopId
+  readonly backstopId?: string;
   readonly transaction?: Transaction;
 }
 
@@ -234,6 +242,8 @@ export interface BackstopWithdrawMetadata {
   readonly amount: bigint;
   // the BLND-USDC comet LP token the withdraw pays out
   readonly lpToken: string;
+  // see ClaimBackstopEmissionsMetadata.backstopId
+  readonly backstopId?: string;
   readonly transaction?: Transaction;
 }
 
@@ -375,7 +385,9 @@ export type PlanNode =
 // a plan that can't merge yet: a backstop deposit stays locked after it runs,
 // so it queues and unwinds now and the close is finished in a later run
 export interface PreparePlan {
-  // latest moment a withdrawal this plan queues (or one already queued) unlocks
+  // latest moment a withdrawal this plan queues (or one already queued) unlocks.
+  // an existing queue entry is dated a full duration from now, so it can unlock
+  // earlier than this
   readonly unlocksAt: Date;
   readonly reason: string;
 }
