@@ -1,97 +1,97 @@
 ---
 title: Simulation
-description: What is simulated before you sign, what is extracted from the result, and what is validated in memory instead.
+description: How each step is built and simulated before you sign, what is checked on the result, and how conversions are priced.
 ---
 
-Every plan node is run through `simulateNode` in `src/lib/plan/simulator.ts` before the
-Review step shows it. Soroban nodes go to the network. Classic nodes are validated in
-memory.
+The preview builds every step that carries its own transaction (`hydratePlanTransactions` in
+`src/lib/plan/hydration.ts`) and then runs each node through `simulateNode` in
+`src/lib/plan/simulator.ts`, in topological order. Soroban steps go to the RPC; classic steps are
+built and validated in memory.
 
-## Soroban nodes
+## Building the steps
 
-Each of the eleven Soroban node kinds carries a built transaction, and that transaction is
-sent to the RPC's `simulateTransaction`.
+Hydration attaches an unsigned transaction to each Soroban step and to the two trustline steps.
+The source account is loaded once, and every build gets a copy pinned to that sequence, so each
+transaction carries exactly the on-chain sequence plus one.
 
-A node without a built transaction throws before any RPC call:
+Aquarius and Soroswap pool withdraws are built twice. The first build has zero minimums and is simulated to read the
+expected payout per token; the second build signs those amounts less the slippage tolerance. An
+exit whose expected amounts cannot be read is not built, so no exit is signed without a floor.
 
-```
-simulateNode: Soroban node "<id>" (<kind>) has no built transaction;
-attach metadata.transaction before simulating
-```
+A step with no dependencies that cannot be built is marked failed with its reason. A step that runs
+after other steps (a collateral withdraw behind its repay, a sweep behind the exits that pay it) is
+built here against state those steps have not changed yet, so a failure only defers it: it stays
+`pending` with `deferred` set and is built at execute time once they land. A refused conversion and
+a backstop emissions claim that cannot run fail either way, because they need the user's answer.
 
-On success the outcome records exactly six things, which are then baked into the envelope:
+## Soroban steps
 
-| Field                     | Use                                     |
-| ------------------------- | --------------------------------------- |
-| `retval`                  | The simulated return value              |
-| `minResourceFee`          | The resource fee the node has to pay    |
-| `transactionData`         | The ledger footprint                    |
-| `latestLedger`            | The ledger the simulation ran against   |
-| `auth`                    | The authorization entries               |
-| `restorePreambleRequired` | Whether the RPC reported archived state |
+Each built transaction goes to the RPC's `simulateTransaction`. On success the outcome records:
 
-A failed simulation raises `SimulationFailedError`, carrying the node id and the upstream
-error text:
+| Field                     | Use                                         |
+| ------------------------- | ------------------------------------------- |
+| `retval`                  | The simulated return value                  |
+| `minResourceFee`          | The resource fee the step pays              |
+| `maxFee`                  | The fee the built transaction authorizes    |
+| `transactionData`         | The ledger footprint                        |
+| `latestLedger`            | The ledger the simulation ran against       |
+| `auth`                    | The authorization entries                   |
+| `restorePreambleRequired` | Whether the RPC reported a restore preamble |
 
-```
-simulateNode: <kind> node "<id>" simulation failed: <error>
-```
+A failed simulation raises `SimulationFailedError` with the node id and the RPC's error text. A
+transport failure is retried up to three times with a growing delay; a simulation that ran and
+failed is an answer and is not retried. A deferred step raises `NodeNotBuiltError` with
+`deferred` set and stays pending.
 
-### Archived state
+The trustline steps are classic `change_trust` transactions: the built envelope is the check, and
+their fee is reported as a classic fee.
 
-`restorePreambleRequired` records whether the RPC returned a restore preamble. Nothing
-builds, prepends, or submits a restore-footprint transaction in response.
+## Checks on the simulated steps
 
-An exit against archived state therefore fails cleanly and surfaces in the preview rather
-than being restored and retried automatically.
+`refuseUnsafeSteps` runs the sign-time checks on every simulated required step: the allow-listed
+root contract, exactly the authorization tree its call needs, and the fee cap for its class. A step
+that fails is marked failed with the reason. The token transfer and the allowance revoke are
+checked by their own guards when they are signed. Every failed required step becomes a
+confirmation blocker, so confirming is disabled until the plan is rebuilt.
 
-## The classic close
+See [Contract allow-list](/docs/developers/security/contract-allowlist) for the three checks.
 
-`FinalClassicTx` is **not** sent to the RPC. No network call is made on this path at all.
+## The classic batches
 
-Instead every batch is actually built in memory against a synthetic source account with
-sequence zero. That is enough for structural validation: `buildClassicTransaction` throws
-on an empty or malformed operation set, and on a total fee above the uint32 ceiling. A
-doomed classic close therefore surfaces at preview time instead of hiding behind an empty
-envelope.
-
-A node with zero batches throws:
-
-```
-simulateNode: FinalClassicTx "<id>" has zero batches; cannot validate
-```
-
-Every batch is validated, but only the **first** batch's envelope, operation count, and fee
-are reported. The executor rebuilds against live account state anyway, so the preview
-figure is the first batch's, not the whole close's.
-
-A returned fee-bump transaction is rejected outright.
+`FinalClassicTx` and `ClassicUnwind` are not sent to the RPC. Every batch is built in memory against
+a synthetic source account with sequence zero, at the fee bid the executor will start from and
+with time bounds from the latest ledger. `buildClassicTransaction` throws on an empty or malformed
+operation set and on a total fee above the u32 ceiling, so a broken close surfaces in the review.
+The outcome's operation count, transaction count and fee cover every batch.
 
 ## The mediator forward
 
-`MediatorForward` is neither simulated nor built here. Its envelope cannot be reproduced
-client-side, because it is built and signed server-side against the mediator's live
-sequence number at submit time, and that needs the flow token.
+The forward is built in the browser at execute time, against the forwarding account's live
+sequence once the merge into it has landed; the server only co-signs it. The preview checks that
+the node carries the forwarding account, the destination and the flow token, and reports 2
+operations and a fee of `MAX_FORWARD_FEE` (2,000,000 stroops), the most the forward can bid.
 
-Only its metadata is validated. Missing `mediatorPublicKey`, `ultimateDestination`, or
-`flowToken` raises `SimulationFailedError` with the upstream code
-`malformed-mediator-forward`.
+## Pricing conversions
 
-The reported shape is fixed rather than estimated: exactly 2 operations (one payment, one
-account merge) and a fee of 200 stroops. Its `xdr` is deliberately empty.
+`resolveCreditPaths` quotes each credit balance, plus what the close claims into it, with Horizon's
+strict-send path search to XLM, keeping the best path of at most five hops. Alongside it, the same
+search quotes a reference trade of one thousandth of the amount. The price impact is how far the
+full-size rate sits below the reference rate, in basis points, rounded up.
 
-## What the preview does with the outcome
+- An impact over 200 basis points (2%) is refused unless the user accepted it for that asset.
+- A balance with no reference quote is unpriced and refused unless the user accepted it.
+- A path whose output after slippage nets at or below `NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS` is
+  dropped, so the asset falls through to the issuer or destination choice.
+- At execute time, a fresh reference or full-size rate worse than the reviewed one by more than the
+  slippage tolerance is refused, accepted or not.
 
-A node that simulates cleanly moves to the `simulated` status, which the Review step draws
-as a passed dry run.
-
-A node that cannot be simulated is marked failed or skipped, and the close is held until
-you resolve it or accept the gap. It is never carried silently into execution.
+The held-token swap through the Soroswap router uses the same cap, measured against a router quote
+for one thousandth of the amount, and the same refusal of a fresh quote worse than the reviewed
+one.
 
 ## Re-simulation at execution time
 
-The preview simulation is not the one that gets signed. Before signing, the executor
-rebuilds each Soroban node against fresh on-chain state and re-simulates it, so a footprint
-that went stale between review and execution is recomputed rather than reused.
-
-See [Execution and recovery](/docs/developers/internals/execution).
+The preview's transactions are not the ones that get signed. Before each Soroban step is signed,
+the executor rebuilds it from a fresh sequence number, a fresh simulation and a fresh time bound,
+runs the checks again, and only then signs. See
+[Execution and recovery](/docs/developers/internals/execution).
