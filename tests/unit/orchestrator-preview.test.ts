@@ -15,7 +15,9 @@ import {
   backstopClaimForfeits,
   exchangeFundingBlocker,
   exitTrustlineBlockers,
+  exitTrustlineNotes,
   refusedHeldTokenConversions,
+  unopenableExitLineBlockers,
   refuseUnsafeSteps,
 } from "@/lib/orchestrator/actors/preview";
 import { previewBlockers } from "@/lib/orchestrator/retry";
@@ -175,6 +177,26 @@ describe("a refused held-token conversion is put to the user with its kind", () 
     expect(refusedHeldTokenConversions(tree, failures)).toEqual([]);
   });
 
+  it("takes the kind from the hydration failure, whatever its text says", () => {
+    const node = convert();
+    node.status = "failed";
+    const failure = (refusal: "unpriced" | "requote_worse"): HydrationFailure => ({
+      nodeId: "convert",
+      reason: "ConvertSorobanToXLM: refused",
+      deferred: false,
+      priceImpactRefused: true,
+      noSoroswapRoute: false,
+      backstopClaimUnavailable: false,
+      refusal,
+      error: new Error("refused"),
+    });
+    const tree = buildPlanTree([node]);
+    expect(refusedHeldTokenConversions(tree, [failure("unpriced")])[0]!.refusal).toBe("unpriced");
+    expect(refusedHeldTokenConversions(tree, [failure("requote_worse")])[0]!.refusal).toBe(
+      "requote_worse",
+    );
+  });
+
   it("does not take a failure for a refusal because its text reads like one", () => {
     // failed by the sign-time checks, not by hydration's price check
     const node = convert();
@@ -229,6 +251,25 @@ describe("only a claim the network refuses in simulation is offered as a forfeit
     ]);
   });
 
+  it("shows the BLND read on chain when the claim was simulated, not discovery's", async () => {
+    const tree = buildPlanTree([claim()]);
+    const { failures } = await hydratePlanTransactions(tree, USER, {
+      rpc: {} as never,
+      horizon: {} as never,
+      network: NETWORK,
+      currentLedger: 100,
+      fetchSourceAccount: async () => source(),
+      adapters: {
+        buildBackstopClaimTx: async () => {
+          throw new BackstopClaimUnavailableError(pool, "CBACKSTOP", 7_200_000_000n, "trapped");
+        },
+      },
+    });
+    expect(backstopClaimForfeits(tree, failures).map((f) => f.accruedEmissions)).toEqual([
+      7_200_000_000n,
+    ]);
+  });
+
   it("keeps an rpc failure an ordinary failed step the user can retry", async () => {
     const { tree, failures } = await hydrateClaim(() => {
       throw new Error("getLedgerEntries timed out after 30000ms");
@@ -275,6 +316,67 @@ describe("a pool exit that pays into a missing or unauthorized trustline blocks 
 
   it("ignores a gap no exit in the plan pays into", () => {
     expect(exitTrustlineBlockers(buildPlanTree([]), [gap("unauthorized")])).toEqual([]);
+  });
+
+  const line = (): PlanNode =>
+    ({
+      id: "exit-trustline",
+      kind: "AddExitTrustline",
+      dependencies: [],
+      description: "add usdc",
+      status: "simulated",
+      metadata: {
+        kind: "AddExitTrustline",
+        code: "USDC",
+        issuer: USDC_ISSUER,
+        contractId: USDC_SAC,
+      },
+    }) as PlanNode;
+
+  it("does not block a missing line the plan opens ahead of the exit", () => {
+    const tree = buildPlanTree([line(), { ...lp(), dependencies: ["exit-trustline"] }]);
+    expect(exitTrustlineBlockers(tree, [gap("missing")])).toEqual([]);
+    expect(exitTrustlineBlockers(tree, [gap("unauthorized")])).toEqual([
+      expect.stringMatching(/not authorized by its issuer/),
+    ]);
+  });
+
+  it("notes each line the plan opens and the reserve it holds until the close", () => {
+    const tree = buildPlanTree([line(), { ...lp(), dependencies: ["exit-trustline"] }]);
+    expect(exitTrustlineNotes(tree)).toEqual([
+      `The close first opens a USDC trustline (issuer ${USDC_ISSUER}) so a pool exit can pay ` +
+        "it out. It holds 0.5 XLM of reserve, which comes back when the final step removes the " +
+        "trustline.",
+    ]);
+    expect(exitTrustlineNotes(buildPlanTree([lp()]))).toEqual([]);
+  });
+});
+
+describe("a payout line the close can't open usefully blocks the review", () => {
+  const line = (why: "issuer_auth_required" | "issuer_missing") => ({
+    contractId: USDC_SAC,
+    code: "USDC",
+    issuer: USDC_ISSUER,
+    reason: "missing" as const,
+    why,
+  });
+
+  it("says the issuer has to authorize a line the account opens itself", () => {
+    expect(unopenableExitLineBlockers([line("issuer_auth_required")])).toEqual([
+      `A pool exit in this plan pays out USDC (issuer ${USDC_ISSUER}), and this account has no ` +
+        "USDC trustline. Its issuer authorizes each new trustline, so a line the close opened " +
+        "could not receive the payout. Add the trustline from your wallet, have the issuer " +
+        "authorize it, then rebuild the plan.",
+    ]);
+  });
+
+  it("says no line can be opened when the issuer account is gone", () => {
+    expect(unopenableExitLineBlockers([line("issuer_missing")])).toEqual([
+      `A pool exit in this plan pays out USDC (issuer ${USDC_ISSUER}), and this account has no ` +
+        "USDC trustline. The issuer account no longer exists, so no trustline for it can be " +
+        "opened and the exit can't pay it to this account. The account can't be closed while " +
+        "that position is open.",
+    ]);
   });
 });
 
@@ -341,6 +443,32 @@ describe("the exchange funding check counts the classic unwind ahead of the merg
 
   it("passes when only the merge batch has to be paid for", () => {
     expect(exchangeFundingBlocker(audit, buildPlanTree([final]), 100, NETWORK)).toBeNull();
+  });
+
+  it("counts the fee of a trustline the close opens ahead of the merge", () => {
+    const line = {
+      id: "exit-trustline",
+      kind: "AddExitTrustline",
+      dependencies: [],
+      description: "add usdc",
+      status: "simulated",
+      metadata: {
+        kind: "AddExitTrustline",
+        code: "USDC",
+        issuer: USDC_ISSUER,
+        contractId: USDC_SAC,
+      },
+      simulated: {
+        kind: "classic",
+        xdr: "",
+        operationCount: 1,
+        estimatedFee: "100",
+        transactionCount: 1,
+      },
+    } as unknown as PlanNode;
+    expect(exchangeFundingBlocker(audit, buildPlanTree([line, final]), 100, NETWORK)).toMatch(
+      /it has about 1\.99999 XLM/,
+    );
   });
 
   it("blocks once the unwind's fee comes out of the same balance", () => {

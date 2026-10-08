@@ -64,6 +64,7 @@ vi.mock("@/lib/mediator/forward", () => ({
 
 import {
   executePlanTreeOnChain,
+  MAX_PER_OP_FEE,
   type ConfirmationReceipt,
   type ExecutorDeps,
 } from "@/lib/orchestrator/executor";
@@ -1360,6 +1361,16 @@ function clockedDeps(
   return deps({ horizon: fakeHorizon(table, { ledgers: ledgers as never }), ...over }, table);
 }
 
+describe("a close batch is timed by the network's clock, never the browser's", () => {
+  it("refuses to sign the merge when horizon serves no latest ledger", async () => {
+    const table = accounts();
+    const { loadAccount } = fakeHorizon(table);
+    const d = deps({ horizon: { loadAccount } as never }, table);
+    await expect(run(tree(finalNode()), d)).rejects.toThrow(/latest ledger/);
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
+  });
+});
+
 describe("the merge guard checks what this close really does", () => {
   it("refuses a self-sponsored claimable balance the batch leaves behind (IS_SPONSOR)", async () => {
     // the stored audit counted it as released, but it is not claimable for the
@@ -1386,6 +1397,66 @@ describe("the merge guard checks what this close really does", () => {
     const d = clockedDeps({}, accounts(), closedAt);
     await expect(run(tree(finalNode()), d)).rejects.toThrow(/account_merge blocked: IS_SPONSOR/);
     expect(d.connector.signTransaction).not.toHaveBeenCalled();
+  });
+
+  it("judges the claims at the fee the batch is bid at, as the batch does", async () => {
+    // 0.6 XLM spendable pays the new line's 0.5 XLM reserve and two ops at the
+    // 100 stroop bid, not at the 0.1 XLM per-op ceiling, so the batch claims the
+    // self-sponsored balance and the merge check must count it as claimed
+    const EURT_ISSUER = "GAP5LETOV6YIE62YAM56STDANPRDO7ZFDBGSNHJQIYGGKSMOZAHOOS2S";
+    const eurt = { kind: "credit" as const, code: "EURT", issuer: EURT_ISSUER };
+    // after the claim phase lands: the balance sits on its new line
+    const claimed = makeAudit({
+      subentryCount: 1,
+      balances: [
+        {
+          asset: { kind: "native" },
+          amount: "1.5999800",
+          buyingLiabilities: "0.0000000",
+          sellingLiabilities: "0.0000000",
+        },
+        {
+          asset: eurt,
+          amount: "1.0000000",
+          buyingLiabilities: "0.0000000",
+          sellingLiabilities: "0.0000000",
+          limit: "922337203685.4775807",
+          isAuthorized: true,
+        },
+      ],
+    });
+    auditAccount.mockResolvedValueOnce(
+      makeAudit({
+        balances: [
+          {
+            asset: { kind: "native" },
+            amount: "2.1000000",
+            buyingLiabilities: "0.0000000",
+            sellingLiabilities: "0.0000000",
+          },
+        ],
+        sponsorship: { numSponsoring: 1, numSponsored: 0, coverable: 1 },
+        claimableBalances: [
+          {
+            id: `00000000${"bb".repeat(32)}`,
+            asset: eurt,
+            amount: "1.0000000",
+            sponsor: USER,
+            claimants: [USER],
+            predicate: [{ destination: USER, predicate: { unconditional: true } }],
+            claimableNow: true,
+            issuerAuthRequired: false,
+          },
+        ],
+      }),
+    );
+    auditAccount.mockResolvedValue(claimed);
+    const d = deps();
+    const t = tree(finalNode([], { returnToIssuerAssetKeys: [`EURT:${EURT_ISSUER}`] }));
+    await expect(run(t, d)).resolves.toBeDefined();
+    const signed = d.connector.signed.flatMap((tx) => tx.operations.map((op) => op.type));
+    expect(signed).toContain("claimClaimableBalance");
+    expect(signed).toContain("accountMerge");
   });
 
   it("refuses a balance frozen by its issuer (FROZEN_TRUSTLINE), even with consent to return it", async () => {
@@ -1434,7 +1505,7 @@ describe("the merge is timed by the network's clock", () => {
       makeAudit({
         claimableBalances: [
           {
-            id: "00000000bb",
+            id: `00000000${"bb".repeat(32)}`,
             asset: { kind: "native" },
             amount: "1.0000000",
             sponsor: ATTACKER,
@@ -1913,6 +1984,48 @@ describe("the BLND trustline step", () => {
     await run(tree(node), d);
     expect(node.status).toBe("confirmed");
     expect(d.connector.signed[0]!.operations[0]!.type).toBe("changeTrust");
+  });
+});
+
+describe("the trustline a pool exit pays into", () => {
+  const usdc = new Asset("USDC", USDC_ISSUER);
+  const lineNode = (): PlanNode =>
+    ({
+      id: "exit-line",
+      kind: "AddExitTrustline",
+      dependencies: [],
+      description: "open USDC trustline",
+      status: "simulated",
+      metadata: {
+        kind: "AddExitTrustline",
+        code: "USDC",
+        issuer: USDC_ISSUER,
+        contractId: USDC_SAC,
+      },
+    }) as unknown as PlanNode;
+  const rebuildAt = (fee: string) => async (n: PlanNode) => {
+    (n.metadata as { transaction?: Transaction }).transaction = new TransactionBuilder(
+      new Account(USER, "1"),
+      { fee, networkPassphrase: NETWORK.passphrase },
+    )
+      .addOperation(Operation.changeTrust({ asset: usdc }))
+      .setTimeout(300)
+      .build();
+  };
+
+  it("signs and submits exactly the change_trust at a classic bid", async () => {
+    const node = lineNode();
+    const d = deps({ rebuildSorobanNode: rebuildAt("100000") });
+    await run(tree(node), d);
+    expect(node.status).toBe("confirmed");
+    expect(d.connector.signed[0]!.operations[0]).toMatchObject({ type: "changeTrust" });
+  });
+
+  it("refuses a bid over the classic per-op ceiling before signing", async () => {
+    const node = lineNode();
+    const d = deps({ rebuildSorobanNode: rebuildAt(String(MAX_PER_OP_FEE + 1)) });
+    await expect(run(tree(node), d)).rejects.toThrow(/trustline bid over/);
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
   });
 });
 

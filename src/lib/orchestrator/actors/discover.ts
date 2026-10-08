@@ -6,6 +6,7 @@ import { fromPromise } from "xstate";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import { auditAccount } from "@/lib/stellar/account-audit";
+import { getHorizon } from "@/lib/stellar/horizon-client";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import type { AccountAudit } from "@/lib/types/account";
 import { EMPTY_POSITIONS, type ProtocolPositions } from "@/lib/adapters/positions/interface";
@@ -15,6 +16,7 @@ import { manualCloseRequiredNotice } from "@/lib/safety/manual-close";
 import {
   confirmAllowancesOnChain,
   DEFAULT_SCAN_WINDOW_LEDGERS,
+  describeAllowanceOverflow,
   scanAllowances,
   withoutConfirmedZero,
   type AllowanceRecord,
@@ -26,18 +28,27 @@ import {
   type HeldToken,
 } from "@/lib/soroban/held-tokens";
 import {
-  exitPayoutTokens,
   exitTrustlineGaps,
+  readExitPayoutTokens,
   readWrappedAssets,
   type ExitTrustlineGap,
 } from "@/lib/soroban/stellar-asset";
+import { readAquariusRewardToken } from "@/lib/adapters/aquarius/client";
 import { ALL_PROTOCOLS, discoveryWarningFor } from "@/lib/orchestrator/warnings";
+import { isNotFoundError } from "@/lib/orchestrator/submit";
 
 export interface DiscoverInput {
   readonly publicKey: string;
   readonly network: NetworkConfig;
   readonly positions?: ProtocolPositions;
   readonly allowances?: readonly AllowanceRecord[];
+}
+
+// a missing payout line the close can't open usefully: its issuer authorizes
+// each new trustline, so a line the close opened could not receive the payout,
+// or its issuer account is gone, so no line can be opened at all
+export interface UnopenableExitLine extends ExitTrustlineGap {
+  readonly why: "issuer_auth_required" | "issuer_missing";
 }
 
 export interface DiscoverOutput {
@@ -55,6 +66,11 @@ export interface DiscoverOutput {
   // trustline for; the exit traps on chain until the line exists and is
   // authorized
   readonly exitTrustlineGaps: readonly ExitTrustlineGap[];
+  // missing payout lines left out of exitTrustlineGaps; the review blocks on them
+  readonly unopenableExitLines: readonly UnopenableExitLine[];
+  // the token the aquarius reward claims pay, read only when a planned claim
+  // will pay some
+  readonly aquariusRewardToken?: string;
 }
 
 // per-discovery-step ceiling so a hanging rpc can't pin the ui on a spinner
@@ -126,17 +142,32 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
             } catch (e) {
               confirmDetail = `allowance confirm: ${errorMessage(e)}`;
             }
-            // a partial scan keeps what it found and says how much it checked
+            // a partial scan keeps what it found and says how much it checked. a
+            // contract whose approvals were cut keeps its most recent ones, and
+            // the plan says which contracts and how many were left out
+            const warnings: string[] = [];
+            const details: string[] = [];
+            if (scan.incomplete !== null) {
+              warnings.push(
+                `${describeIncompleteScan(scan.incomplete, "token spending permissions")} An older permission may be missing from this plan; review them on the Allowances page before closing.`,
+              );
+              details.push(`allowance scan: ${scan.incomplete.detail}`);
+            }
+            if (scan.overflow.length > 0) {
+              warnings.push(
+                `${describeAllowanceOverflow(scan.overflow)} The close revokes only the token spending permissions that are listed.`,
+              );
+              details.push(
+                `allowance overflow: ${scan.overflow
+                  .map((o) => `${o.contractId} ${o.spenders} spenders, ${o.kept} kept`)
+                  .join("; ")}`,
+              );
+            }
+            if (confirmDetail !== undefined) details.push(confirmDetail);
             return {
               allowances,
-              ...(scan.incomplete !== null
-                ? {
-                    warning: `${describeIncompleteScan(scan.incomplete, "token spending permissions")} An older permission may be missing from this plan; review them on the Allowances page before closing.`,
-                    detail: `allowance scan: ${scan.incomplete.detail}${confirmDetail ? `; ${confirmDetail}` : ""}`,
-                  }
-                : confirmDetail !== undefined
-                  ? { detail: confirmDetail }
-                  : {}),
+              ...(warnings.length > 0 ? { warning: warnings.join(" ") } : {}),
+              ...(details.length > 0 ? { detail: details.join("; ") } : {}),
             };
           } catch (e) {
             return {
@@ -235,7 +266,7 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
   // contract writes a classic asset into its trustline: without one the whole
   // exit traps (contract error #13). a token that can't be read stops discovery,
   // since "unread" must never pass as "no trustline needed".
-  const gaps = await exitGaps(input, audit, positions);
+  const exits = await exitGaps(input, audit, positions);
 
   // warnings in a stable order (scan warnings, per-protocol errors, blend repay
   // shortfall) so copy doesn't reshuffle between runs
@@ -270,24 +301,53 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
     heldTokenScanFailed: heldResult.failed,
     discoveryWarnings,
     discoveryDiagnostics,
-    exitTrustlineGaps: gaps,
+    exitTrustlineGaps: exits.gaps,
+    unopenableExitLines: exits.unopenable,
+    ...(exits.aquariusRewardToken !== undefined
+      ? { aquariusRewardToken: exits.aquariusRewardToken }
+      : {}),
   };
 });
 
+// the payout tokens include the aquarius reward token when a planned claim will
+// pay some, so its token is kept for the plan: a missing line for it is opened
+// ahead of the reward claims
 async function exitGaps(
   input: DiscoverInput,
   audit: AccountAudit,
   positions: ProtocolPositions,
-): Promise<readonly ExitTrustlineGap[]> {
-  const tokens = exitPayoutTokens(positions);
-  if (tokens.length === 0) return [];
-  let wrapped: Awaited<ReturnType<typeof readWrappedAssets>>;
+): Promise<{
+  readonly gaps: readonly ExitTrustlineGap[];
+  readonly unopenable: readonly UnopenableExitLine[];
+  readonly aquariusRewardToken?: string;
+}> {
+  const rpc = getRpc(input.network);
+  let rewardToken: string | undefined;
   try {
-    wrapped = await withTimeout(
-      "readWrappedAssets",
-      readWrappedAssets(getRpc(input.network), input.network, tokens, input.publicKey),
+    const tokens = await withTimeout(
+      "readExitPayoutTokens",
+      readExitPayoutTokens(rpc, input.network, input.publicKey, positions, {
+        readRewardToken: async (server, network) => {
+          rewardToken = await readAquariusRewardToken(server, network);
+          return rewardToken;
+        },
+      }),
       DISCOVERY_TIMEOUT_MS,
     );
+    if (tokens.length === 0) return { gaps: [], unopenable: [] };
+    const wrapped = await withTimeout(
+      "readWrappedAssets",
+      readWrappedAssets(rpc, input.network, tokens, input.publicKey),
+      DISCOVERY_TIMEOUT_MS,
+    );
+    const all = exitTrustlineGaps(audit.accountId, audit.balances, tokens, wrapped);
+    const unopenable = await unopenableLines(input.network, all);
+    const left = new Set(unopenable.map((l) => l.contractId));
+    return {
+      gaps: all.filter((g) => !left.has(g.contractId)),
+      unopenable,
+      ...(rewardToken !== undefined ? { aquariusRewardToken: rewardToken } : {}),
+    };
   } catch (e) {
     throw new Error(
       `Could not check which trustlines your pool exits pay into (${errorMessage(e)}). ` +
@@ -295,5 +355,33 @@ async function exitGaps(
       { cause: e },
     );
   }
-  return exitTrustlineGaps(audit.accountId, audit.balances, tokens, wrapped);
+}
+
+// a line opened under an issuer with auth_required starts unauthorized, and the
+// SAC payout into it traps like a missing one; a change_trust to an asset whose
+// issuer is gone fails. any other failed read throws.
+async function unopenableLines(
+  network: NetworkConfig,
+  gaps: readonly ExitTrustlineGap[],
+): Promise<UnopenableExitLine[]> {
+  const missing = gaps.filter((g) => g.reason === "missing");
+  const horizon = getHorizon(network);
+  const out: UnopenableExitLine[] = [];
+  for (const issuer of [...new Set(missing.map((g) => g.issuer))]) {
+    let why: UnopenableExitLine["why"] | null;
+    try {
+      const account = await withTimeout(
+        "loadIssuer",
+        horizon.loadAccount(issuer),
+        DISCOVERY_TIMEOUT_MS,
+      );
+      why = account.flags.auth_required ? "issuer_auth_required" : null;
+    } catch (e) {
+      if (!isNotFoundError(e)) throw e;
+      why = "issuer_missing";
+    }
+    if (why === null) continue;
+    for (const g of missing) if (g.issuer === issuer) out.push({ ...g, why });
+  }
+  return out;
 }

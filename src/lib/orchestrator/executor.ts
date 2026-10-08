@@ -74,12 +74,11 @@ export interface ConfirmationReceipt {
   readonly ledger: number;
 }
 
-// the horizon surface the executor reads. feeStats and ledgers are optional so
-// test doubles can leave them out; production passes a Horizon.Server, so the
-// surge bid and the spendable-balance fee cap are always on there.
-export type HorizonLike = Pick<Horizon.Server, "loadAccount"> & {
+// the horizon surface the executor reads. the latest ledger times every classic
+// batch and sizes its fee to the spendable balance, so it is required; without
+// fee stats the bid starts at the network minimum and the fee retry raises it.
+export type HorizonLike = Pick<Horizon.Server, "loadAccount" | "ledgers"> & {
   readonly feeStats?: Horizon.Server["feeStats"];
-  readonly ledgers?: Horizon.Server["ledgers"];
 };
 
 // on-chain outcome of a transaction submitted earlier. "pending" means not found
@@ -356,10 +355,8 @@ export async function surgeFeeBase(horizon: HorizonLike): Promise<number> {
   return Math.min(Math.max(DEFAULT_FEE_BASE, bid), MAX_PER_OP_FEE);
 }
 
-async function readBaseReserve(horizon: HorizonLike): Promise<bigint | null> {
-  const ledgers = horizon.ledgers;
-  if (typeof ledgers !== "function") return null;
-  const page = await withHorizonRetry(() => ledgers.call(horizon).order("desc").limit(1).call());
+async function readBaseReserve(horizon: HorizonLike): Promise<bigint> {
+  const page = await latestLedgerPage(horizon);
   const reserve = page.records[0]?.base_reserve_in_stroops;
   if (typeof reserve !== "number" || reserve <= 0) {
     throw new Error("Horizon's latest ledger reported no base reserve");
@@ -373,9 +370,8 @@ function capFeeToBalance(
   feeBase: number,
   opCount: number,
   audit: AccountAudit,
-  baseReserve: bigint | null,
+  baseReserve: bigint,
 ): number {
-  if (baseReserve === null) return feeBase;
   const native = audit.balances.find((b) => b.asset.kind === "native");
   const balance = native ? toStroops(native.amount) : 0n;
   const selling = native ? toStroops(native.sellingLiabilities) : 0n;
@@ -594,7 +590,7 @@ export async function executePlanTreeOnChain(
         continue;
       }
       default: {
-        // a required defi exit (or the BLND trustline ahead of a claim): an
+        // a required defi exit (or a trustline ahead of a claim or exit): an
         // allow-listed contract and exactly the auth tree its call needs. a kind
         // the auth guard has no expected tree for is refused, so a step added to
         // the plan without one is never signed. a failure stops the close before
@@ -865,11 +861,11 @@ async function signAndSubmitSorobanNode(
 }
 
 // the fee the step's signature authorizes, refused (SorobanFeeCapError) when it
-// is above what its class of step legitimately costs. the classic trustline step
-// carries no soroban resources; one change_trust may bid at most the classic
-// per-op ceiling.
+// is above what its class of step legitimately costs. the classic trustline steps
+// (BLND, or a pool payout asset) carry no soroban resources; one change_trust may
+// bid at most the classic per-op ceiling.
 function stepFee(node: PlanNode, tx: Transaction): bigint {
-  if (node.kind === "AddBlndTrustline") {
+  if (node.kind === "AddBlndTrustline" || node.kind === "AddExitTrustline") {
     const fee = BigInt(tx.fee);
     if (fee > BigInt(MAX_PER_OP_FEE)) {
       throw new SorobanFeeCapError(
@@ -883,7 +879,7 @@ function stepFee(node: PlanNode, tx: Transaction): bigint {
   return assertSorobanFeeWithinCap(tx, feeClassOf(node)).totalFee;
 }
 
-// what every required step (a defi exit, the BLND trustline, a held-token
+// what every required step (a defi exit, a trustline it pays into, a held-token
 // conversion) must pass before it is signed: an allow-listed contract, exactly
 // the auth tree its call needs, and a fee within its class's cap. returns the
 // fee the signature authorizes. the preview runs it on each built step too, so
@@ -1204,7 +1200,7 @@ async function runFinalClassic(node: FinalClassicTxNode, run: Run): Promise<Conf
       // after the slow path and position reads above. a claim that would not stay
       // claimable for the whole signing window is left out of the batch.
       const clock = await readLedgerClock(deps.horizon);
-      const auditNow = clock === null ? freshAudit : withClaimWindow(freshAudit, publicKey, clock);
+      const auditNow = withClaimWindow(freshAudit, publicKey, clock);
       // a claim the signing window leaves out is not sold either, so the batch is
       // quoted again for what it really holds
       const claimedNow = claimedIn(auditNow);
@@ -1240,10 +1236,9 @@ async function runFinalClassic(node: FinalClassicTxNode, run: Run): Promise<Conf
       // world may have moved. these run before a flow is minted, so a close that
       // can't merge leaves no recovery record behind.
       const merge = assessMergeability(auditNow, {
-        ledger: clock ?? freshAudit.ledger,
-        claimedBalanceIds: planClaimableBalances(auditNow, md.claimableBalanceIds).claimed.map(
-          (c) => c.id,
-        ),
+        ledger: clock,
+        // the claims the batch makes, judged at the fee it is bid at
+        claimedBalanceIds: claimedNow,
         transactionsBeforeMerge: freshBatches.length,
       });
       if (!merge.mergeable) {
@@ -1311,7 +1306,7 @@ async function runFinalClassic(node: FinalClassicTxNode, run: Run): Promise<Conf
         deps.network,
         fee,
         DEFAULT_TX_VALIDITY_SECONDS,
-        clock === null ? undefined : clock.closedAt,
+        clock.closedAt,
       ).transaction;
       if ("innerTransaction" in built) {
         throw new Error("buildClassicTransaction returned a fee-bump transaction unexpectedly");
@@ -1420,7 +1415,7 @@ async function runClassicUnwind(
       deps.network,
       fee,
       DEFAULT_TX_VALIDITY_SECONDS,
-      clock === null ? undefined : clock.closedAt,
+      clock.closedAt,
     ).transaction;
     if ("innerTransaction" in built) {
       throw new Error("buildClassicTransaction returned a fee-bump transaction unexpectedly");
@@ -1496,13 +1491,18 @@ function quoteSignature(
   return parts.length === 0 ? null : parts.sort().join("|");
 }
 
-// the latest closed ledger from the executor's horizon, or null when it serves
-// no ledgers (test doubles). production passes a Horizon.Server, so the clock is
-// always read there.
-async function readLedgerClock(horizon: HorizonLike): Promise<LedgerClock | null> {
-  const ledgers = horizon.ledgers;
-  if (typeof ledgers !== "function") return null;
-  const page = await withHorizonRetry(() => ledgers.call(horizon).order("desc").limit(1).call());
+// a horizon that serves no ledgers can't time a batch or size its fee, and the
+// browser's clock must not stand in for the network's
+async function latestLedgerPage(horizon: HorizonLike) {
+  if (typeof horizon.ledgers !== "function") {
+    throw new Error("Horizon serves no latest ledger, so the close can't be timed safely");
+  }
+  return withHorizonRetry(() => horizon.ledgers().order("desc").limit(1).call());
+}
+
+// the latest closed ledger from the executor's horizon
+async function readLedgerClock(horizon: HorizonLike): Promise<LedgerClock> {
+  const page = await latestLedgerPage(horizon);
   const record = page.records[0];
   const ms = Date.parse(String(record?.closed_at));
   const sequence = record?.sequence;

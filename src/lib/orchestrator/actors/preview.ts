@@ -7,7 +7,7 @@ import { Asset } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
-import { generatePlan, preparePlanFor } from "@/lib/plan/generator";
+import { assertExchangeCloseCanRun, generatePlan, preparePlanFor } from "@/lib/plan/generator";
 import { NodeNotBuiltError, simulateNode, SimulationFailedError } from "@/lib/plan/simulator";
 import {
   buildPlanTree,
@@ -19,13 +19,19 @@ import {
   type PlanTree,
 } from "@/lib/plan/tree";
 import {
+  auditAfterUnwind,
   mediatorFundingCheck,
   planClaimableBalances,
   unroutableCredits,
   type UnroutableCredit,
 } from "@/lib/plan/classic-batcher";
-import { hydratePlanTransactions, type HydrationFailure } from "@/lib/plan/hydration";
+import {
+  BackstopEmissionsClaimError,
+  hydratePlanTransactions,
+  type HydrationFailure,
+} from "@/lib/plan/hydration";
 import { startMediatorFlow } from "@/lib/mediator/client";
+import { FINAL_CLASSIC_TX_NODE_ID } from "@/lib/mediator/refresh";
 import {
   checkRequiredSorobanStep,
   isUnsafeStepError,
@@ -47,6 +53,7 @@ import { blndTrustlineRequirement } from "@/lib/adapters/blend/emissions-check";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import type { HeldToken } from "@/lib/soroban/held-tokens";
 import type { ExitTrustlineGap } from "@/lib/soroban/stellar-asset";
+import type { UnopenableExitLine } from "@/lib/orchestrator/actors/discover";
 
 export interface PreviewInput {
   readonly audit: AccountAudit;
@@ -76,6 +83,10 @@ export interface PreviewInput {
   readonly deterministicDisposal?: boolean;
   // pool payouts this account has no usable trustline for (discovery)
   readonly exitTrustlineGaps?: readonly ExitTrustlineGap[];
+  // the token the aquarius reward claims pay (discovery), when a claim pays some
+  readonly aquariusRewardToken?: string;
+  // missing payout lines the close can't open usefully (discovery)
+  readonly unopenableExitLines?: readonly UnopenableExitLine[];
 }
 
 // why a held-token conversion needs the user's answer
@@ -208,13 +219,16 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
   // resolution is skipped, so every non-XLM balance must go to its issuer or the
   // destination: no market sell that could fail and sink the one transaction
   // everyone signs.
-  const paths: Awaited<ReturnType<typeof resolveCreditPaths>> = input.deterministicDisposal
-    ? new Map()
-    : await resolveCreditPaths(audit, network, {
-        claimedBalanceIds: planClaimableBalances(audit, input.selectedClaimableBalanceIds, {
-          feePerOpStroops: classicFeePerOp,
-        }).claimed.map((c) => c.id),
-      });
+  const quote = async (
+    claimedBalanceIds: readonly string[],
+  ): Promise<Awaited<ReturnType<typeof resolveCreditPaths>>> =>
+    input.deterministicDisposal
+      ? new Map()
+      : resolveCreditPaths(audit, network, { claimedBalanceIds });
+  let quotedClaims = planClaimableBalances(audit, input.selectedClaimableBalanceIds, {
+    feePerOpStroops: classicFeePerOp,
+  }).claimed.map((c) => c.id);
+  let paths = await quote(quotedClaims);
 
   // a frozen balance can't be sold, sent or returned, so no option is offered
   // for it; the mergeability check below blocks the close instead
@@ -227,6 +241,11 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
   // this run) never merges: it needs no mediator flow and no classic batches
   const prepare = preparePlanFor(input.positions);
 
+  // an exit that pays into a line the close can't open usefully would trap
+  // after the steps ahead of it ran, so nothing is planned
+  const unopenable = unopenableExitLineBlockers(input.unopenableExitLines ?? []);
+  if (unopenable.length > 0) return blockedPreview(...unopenable);
+
   // a frozen balance blocks the merge outright, and the batcher refuses to plan
   // around it, so the review shows the freeze instead of a plan that would run
   // the exits and then stop at the merge
@@ -236,29 +255,114 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
       claimedBalanceIds: [],
       transactionsBeforeMerge: 1,
     });
-    return {
-      tree: buildPlanTree([]),
-      unroutableCredits: [],
-      heldTokenWarnings: [],
-      reviewNotes: [],
-      reviewBlockers: [merge.mergeable ? "A balance is frozen by its issuer." : merge.detail],
-      refusedConversions: [],
-      emissionForfeits: [],
-    };
+    return blockedPreview(merge.mergeable ? "A balance is frozen by its issuer." : merge.detail);
   }
 
-  // a run that only prepares the close disposes of no classic balance
+  // a CEX destination routes through a per-flow mediator account. a flow is
+  // minted here only so the preview can build and check the real merge batch;
+  // the executor mints the flow that is actually funded right before funding it.
+  let mediator: { readonly flowToken: string; readonly mediatorPublicKey: string } | null = null;
+  if (input.useMediator && prepare === undefined) {
+    // an exit payout the forward can't carry refuses the plan; asked before the
+    // mint so a plan that can't run leaves no flow behind
+    try {
+      assertExchangeCloseCanRun(audit, input.positions, {
+        network,
+        ...(input.exitTrustlineGaps ? { exitTrustlineGaps: input.exitTrustlineGaps } : {}),
+        ...(input.aquariusRewardToken ? { aquariusRewardToken: input.aquariusRewardToken } : {}),
+      });
+    } catch (err) {
+      return blockedPreview(errorMessage(err));
+    }
+    const flow = await startMediatorFlow(input.destination, {
+      network: network.id,
+      memo: input.memo ?? null,
+    });
+    if (!flow.ok) {
+      throw new Error(`Could not start the exchange-forward flow (${flow.code}): ${flow.reason}`);
+    }
+    mediator = { flowToken: flow.flowToken, mediatorPublicKey: flow.mediatorPublicKey };
+  }
+
+  // demolition revokes every active allowance the user owns. The account is
+  // being closed, there's no "keep this defi protocol" outcome
+  const selectedAllowances = input.allowances.map((a) => `${a.contractId}|${a.spender}`);
+
+  // the generator builds FinalClassicTx's batches with every option the user
+  // chose; those batches are what the review shows
+  const plan = (): PlanTree =>
+    generatePlan(audit, input.positions, input.allowances, input.destination, {
+      useMediator: input.useMediator,
+      selectedAllowances,
+      paths,
+      // the emissions claims, the classic unwind and the backstop withdraw need
+      // the whole network, not just its passphrase
+      network,
+      classicFeePerOp,
+      // sweep only the tokens the user opted in to; the generator ignores them for
+      // a mediator close (an exchange can't receive a raw token)
+      ...(input.selectedHeldTokens.length > 0 ? { heldTokens: input.selectedHeldTokens } : {}),
+      ...(input.convertHeldTokensToXLM ? { convertHeldTokensToXLM: true } : {}),
+      ...(mediator
+        ? { mediatorPublicKey: mediator.mediatorPublicKey, flowToken: mediator.flowToken }
+        : {}),
+      ...(input.memo ? { memo: input.memo } : {}),
+      ...(input.selectedClaimableBalanceIds !== undefined
+        ? { selectedClaimableBalanceIds: input.selectedClaimableBalanceIds }
+        : {}),
+      ...(input.returnToIssuerAssetKeys
+        ? { returnToIssuerAssetKeys: input.returnToIssuerAssetKeys }
+        : {}),
+      ...(input.sendToDestinationAssetKeys
+        ? { sendToDestinationAssetKeys: input.sendToDestinationAssetKeys }
+        : {}),
+      ...(input.acceptedPriceImpactAssetKeys
+        ? { acceptedPriceImpactAssetKeys: input.acceptedPriceImpactAssetKeys }
+        : {}),
+      ...(input.sendHeldTokensAsIs ? { sendHeldTokensAsIs: input.sendHeldTokensAsIs } : {}),
+      ...(input.leaveHeldTokens ? { leaveHeldTokens: input.leaveHeldTokens } : {}),
+      // an acknowledged forfeit plans the queue without the claim ahead of it
+      ...(input.forfeitBackstopEmissionPoolIds
+        ? { forfeitBackstopEmissionsPoolIds: input.forfeitBackstopEmissionPoolIds }
+        : {}),
+      // a missing payout line is opened ahead of the exits that pay into it
+      ...(input.exitTrustlineGaps ? { exitTrustlineGaps: input.exitTrustlineGaps } : {}),
+      ...(input.aquariusRewardToken ? { aquariusRewardToken: input.aquariusRewardToken } : {}),
+    });
+  let tree = plan();
+
+  // the final batches claim against the account as the classic unwind leaves
+  // it, where a cancelled offer can free the reserve a claim's new trustline
+  // needs. a claim the first quote did not count is quoted and planned again,
+  // so every credit the close claims into is sold at a price the review shows.
+  const final = finalClassicNode(tree);
+  const unwound = final === undefined ? audit : auditAsUnwound(audit, tree, classicFeePerOp);
+  const plannedClaims =
+    final === undefined
+      ? []
+      : planClaimableBalances(unwound, final.metadata.claimableBalanceIds, {
+          feePerOpStroops: classicFeePerOp,
+        }).claimed.map((c) => c.id);
+  if (final !== undefined && !sameIds(plannedClaims, quotedClaims)) {
+    quotedClaims = plannedClaims;
+    paths = await quote(quotedClaims);
+    tree = plan();
+  }
+
+  // a run that only prepares the close disposes of no classic balance; the
+  // others are judged on the account the final batches see, with their claims
+  const finalNow = finalClassicNode(tree);
   const unroutableBase =
-    prepare !== undefined
+    prepare !== undefined || finalNow === undefined
       ? []
       : unroutableCredits(
-          audit,
+          unwound,
           paths,
           input.returnToIssuerAssetKeys,
           input.sendToDestinationAssetKeys,
           {
-            ...(input.selectedClaimableBalanceIds !== undefined
-              ? { claimableBalanceIds: input.selectedClaimableBalanceIds }
+            ...(finalNow.metadata.claimableBalanceIds !== undefined
+              ? { claimableBalanceIds: finalNow.metadata.claimableBalanceIds }
               : {}),
             ...(input.acceptedPriceImpactAssetKeys
               ? { acceptedPriceImpactAssetKeys: input.acceptedPriceImpactAssetKeys }
@@ -281,63 +385,6 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
     ...c,
     destinationTrusts: usableKeys.has(c.key),
   }));
-
-  // a CEX destination routes through a per-flow mediator account. a flow is
-  // minted here only so the preview can build and check the real merge batch;
-  // the executor mints the flow that is actually funded right before funding it.
-  let mediator: { readonly flowToken: string; readonly mediatorPublicKey: string } | null = null;
-  if (input.useMediator && prepare === undefined) {
-    const flow = await startMediatorFlow(input.destination, {
-      network: network.id,
-      memo: input.memo ?? null,
-    });
-    if (!flow.ok) {
-      throw new Error(`Could not start the exchange-forward flow (${flow.code}): ${flow.reason}`);
-    }
-    mediator = { flowToken: flow.flowToken, mediatorPublicKey: flow.mediatorPublicKey };
-  }
-
-  // demolition revokes every active allowance the user owns. The account is
-  // being closed, there's no "keep this defi protocol" outcome
-  const selectedAllowances = input.allowances.map((a) => `${a.contractId}|${a.spender}`);
-
-  // the generator builds FinalClassicTx's batches with every option the user
-  // chose; those batches are what the review shows
-  const tree = generatePlan(audit, input.positions, input.allowances, input.destination, {
-    useMediator: input.useMediator,
-    selectedAllowances,
-    paths,
-    // the emissions claims, the classic unwind and the backstop withdraw need
-    // the whole network, not just its passphrase
-    network,
-    classicFeePerOp,
-    // sweep only the tokens the user opted in to; the generator ignores them for
-    // a mediator close (an exchange can't receive a raw token)
-    ...(input.selectedHeldTokens.length > 0 ? { heldTokens: input.selectedHeldTokens } : {}),
-    ...(input.convertHeldTokensToXLM ? { convertHeldTokensToXLM: true } : {}),
-    ...(mediator
-      ? { mediatorPublicKey: mediator.mediatorPublicKey, flowToken: mediator.flowToken }
-      : {}),
-    ...(input.memo ? { memo: input.memo } : {}),
-    ...(input.selectedClaimableBalanceIds !== undefined
-      ? { selectedClaimableBalanceIds: input.selectedClaimableBalanceIds }
-      : {}),
-    ...(input.returnToIssuerAssetKeys
-      ? { returnToIssuerAssetKeys: input.returnToIssuerAssetKeys }
-      : {}),
-    ...(input.sendToDestinationAssetKeys
-      ? { sendToDestinationAssetKeys: input.sendToDestinationAssetKeys }
-      : {}),
-    ...(input.acceptedPriceImpactAssetKeys
-      ? { acceptedPriceImpactAssetKeys: input.acceptedPriceImpactAssetKeys }
-      : {}),
-    ...(input.sendHeldTokensAsIs ? { sendHeldTokensAsIs: input.sendHeldTokensAsIs } : {}),
-    ...(input.leaveHeldTokens ? { leaveHeldTokens: input.leaveHeldTokens } : {}),
-    // an acknowledged forfeit plans the queue without the claim ahead of it
-    ...(input.forfeitBackstopEmissionPoolIds
-      ? { forfeitBackstopEmissionsPoolIds: input.forfeitBackstopEmissionPoolIds }
-      : {}),
-  });
 
   const rpcServer = getRpc(network);
 
@@ -407,6 +454,7 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
         "queued without it.",
     );
   }
+  reviewNotes.push(...exitTrustlineNotes(tree));
   reviewBlockers.push(...exitTrustlineBlockers(tree, input.exitTrustlineGaps ?? []));
   if (tree.prepareOnly !== undefined) {
     reviewNotes.push(
@@ -427,13 +475,14 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
       );
     }
     // the network's own checks on the merge, against what this plan really
-    // claims and how many transactions the account still sources before it
+    // claims (on the account as the unwind leaves it, at the batches' fee) and
+    // how many transactions the account still sources before it
     const clock = await fetchLedgerClock(network);
     const merge = assessMergeability(audit, {
       ledger: clock,
-      claimedBalanceIds: planClaimableBalances(audit, md.claimableBalanceIds).claimed.map(
-        (c) => c.id,
-      ),
+      claimedBalanceIds: planClaimableBalances(unwound, md.claimableBalanceIds, {
+        feePerOpStroops: classicFeePerOp,
+      }).claimed.map((c) => c.id),
       transactionsBeforeMerge: transactionsBeforeMerge(tree),
     });
     if (!merge.mergeable) reviewBlockers.push(merge.detail);
@@ -452,6 +501,39 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
     emissionForfeits,
   };
 });
+
+function finalClassicNode(
+  tree: PlanTree,
+): Extract<PlanNode, { kind: "FinalClassicTx" }> | undefined {
+  const node = tree.allNodes.get(FINAL_CLASSIC_TX_NODE_ID);
+  return node?.kind === "FinalClassicTx" ? node : undefined;
+}
+
+// the account as the plan's classic unwind leaves it, as the generator saw it
+// when it planned the final batches
+function auditAsUnwound(audit: AccountAudit, tree: PlanTree, feePerOp: number): AccountAudit {
+  const unwind = [...tree.allNodes.values()].find((n) => n.kind === "ClassicUnwind");
+  return unwind?.kind === "ClassicUnwind"
+    ? auditAfterUnwind(audit, unwind.metadata, feePerOp)
+    : audit;
+}
+
+function sameIds(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && [...a].sort().join(",") === [...b].sort().join(",");
+}
+
+// a review with nothing to run and one reason it can't
+function blockedPreview(...blockers: string[]): PreviewOutput {
+  return {
+    tree: buildPlanTree([]),
+    unroutableCredits: [],
+    heldTokenWarnings: [],
+    reviewNotes: [],
+    reviewBlockers: blockers,
+    refusedConversions: [],
+    emissionForfeits: [],
+  };
+}
 
 // runs the sign-time checks of every required step (allow-listed contract, the
 // exact auth tree its call needs, the fee cap) on the transaction preview built.
@@ -485,30 +567,27 @@ export function backstopClaimForfeits(
   tree: PlanTree,
   failures: readonly HydrationFailure[],
 ): EmissionForfeit[] {
-  const unavailable = new Set(
-    failures.filter((f) => f.backstopClaimUnavailable).map((f) => f.nodeId),
+  const unavailable = new Map(
+    failures.filter((f) => f.backstopClaimUnavailable).map((f) => [f.nodeId, f.error]),
   );
   const out: EmissionForfeit[] = [];
   for (const node of tree.allNodes.values()) {
     if (node.kind !== "ClaimBackstopEmissions" || node.status !== "failed") continue;
     if (!unavailable.has(node.id)) continue;
+    const err = unavailable.get(node.id);
     out.push({
       poolId: node.metadata.poolId,
-      accruedEmissions: node.metadata.accruedEmissions,
+      // the amount the claim's simulation read, which can be newer than discovery's
+      accruedEmissions:
+        err instanceof BackstopEmissionsClaimError
+          ? err.accruedEmissions
+          : node.metadata.accruedEmissions,
       // node.error keeps the hydration's own line for the details view
       reason: "the claim fails when simulated against the chain today",
     });
   }
   return out;
 }
-
-// how hydration words a price refusal (plan/hydration.ts hydrateConvert). its
-// failure says only that the price was refused, so which check refused it is
-// read from the message; a price refusal that matches none is a price impact.
-const PRICE_REFUSAL_WORDING: readonly (readonly [RegExp, ConversionRefusalKind])[] = [
-  [/can't price a reference trade/, "unpriced"],
-  [/ worse than the reviewed /, "requote_worse"],
-];
 
 // held-token conversions hydration refused: over the price-impact cap, with no
 // reference price, worse than the reviewed quote, or with no route at all. only
@@ -530,9 +609,8 @@ export function refusedHeldTokenConversions(
     if (failure.noSoroswapRoute) {
       refusal = "no_route";
     } else if (failure.priceImpactRefused) {
-      refusal =
-        PRICE_REFUSAL_WORDING.find(([wording]) => wording.test(failure.reason))?.[1] ??
-        "price_impact";
+      // a refusal thrown without its detail can only be the impact cap's
+      refusal = failure.refusal ?? "price_impact";
     } else {
       continue;
     }
@@ -543,13 +621,20 @@ export function refusedHeldTokenConversions(
 }
 
 // a pool exit the plan runs that pays a classic asset into a trustline this
-// account lacks, or one its issuer has not authorized, traps on chain. the close
-// can't open the line for it yet, so the review says how to fix it.
+// account lacks, or one its issuer has not authorized, traps on chain. a missing
+// line the plan opens ahead of the exit is fine; any other gap an exit pays into
+// blocks the review with how to fix it.
 export function exitTrustlineBlockers(tree: PlanTree, gaps: readonly ExitTrustlineGap[]): string[] {
   const paid = new Set(planExitPayoutTokens(tree));
+  const opened = new Set(
+    [...tree.allNodes.values()].flatMap((n) =>
+      n.kind === "AddExitTrustline" ? [n.metadata.contractId] : [],
+    ),
+  );
   const out: string[] = [];
   for (const gap of gaps) {
     if (!paid.has(gap.contractId)) continue;
+    if (gap.reason === "missing" && opened.has(gap.contractId)) continue;
     out.push(
       gap.reason === "unauthorized"
         ? `A pool exit in this plan pays out ${gap.code} (issuer ${gap.issuer}), and your ` +
@@ -558,6 +643,38 @@ export function exitTrustlineBlockers(tree: PlanTree, gaps: readonly ExitTrustli
         : `A pool exit in this plan pays out ${gap.code} (issuer ${gap.issuer}), and this ` +
             `account has no ${gap.code} trustline, so the exit would fail on chain. Add a ` +
             `${gap.code} trustline from your wallet, then rebuild the plan.`,
+    );
+  }
+  return out;
+}
+
+// a missing payout line whose issuer authorizes each new trustline, or whose
+// issuer account is gone: the close can't open one the exit could pay into
+export function unopenableExitLineBlockers(lines: readonly UnopenableExitLine[]): string[] {
+  return lines.map(
+    (l) =>
+      `A pool exit in this plan pays out ${l.code} (issuer ${l.issuer}), and this account has ` +
+      `no ${l.code} trustline. ` +
+      (l.why === "issuer_auth_required"
+        ? "Its issuer authorizes each new trustline, so a line the close opened could not " +
+          "receive the payout. Add the trustline from your wallet, have the issuer authorize " +
+          "it, then rebuild the plan."
+        : "The issuer account no longer exists, so no trustline for it can be opened and the " +
+          "exit can't pay it to this account. The account can't be closed while that position " +
+          "is open."),
+  );
+}
+
+// the payout trustlines the close opens. the final batches remove every line
+// before the forward is funded, so the reserve comes back by the merge.
+export function exitTrustlineNotes(tree: PlanTree): string[] {
+  const out: string[] = [];
+  for (const node of tree.allNodes.values()) {
+    if (node.kind !== "AddExitTrustline") continue;
+    out.push(
+      `The close first opens a ${node.metadata.code} trustline (issuer ${node.metadata.issuer}) ` +
+        "so a pool exit can pay it out. It holds 0.5 XLM of reserve, which comes back when the " +
+        "final step removes the trustline.",
     );
   }
   return out;
@@ -607,14 +724,20 @@ function transactionsBeforeMerge(tree: PlanTree): number {
 }
 
 // XLM the steps ahead of the classic batches can spend: each simulated step's
-// maximum fee, plus any XLM debt a blend repay pays back. a step deferred to
-// execute time has no simulated fee yet; the executor's check on fresh state
-// before the funding batch covers it.
+// maximum fee (a trustline step's classic fee too), plus any XLM debt a blend
+// repay pays back. a step deferred to execute time has no simulated fee yet; the
+// executor's check on fresh state before the funding batch covers it.
 function spentBefore(tree: PlanTree, network: NetworkConfig): bigint {
   const nativeSac = Asset.native().contractId(network.passphrase);
   let spent = 0n;
   for (const node of tree.allNodes.values()) {
     if (node.simulated?.kind === "soroban") spent += BigInt(node.simulated.maxFee);
+    if (
+      (node.kind === "AddBlndTrustline" || node.kind === "AddExitTrustline") &&
+      node.simulated?.kind === "classic"
+    ) {
+      spent += BigInt(node.simulated.estimatedFee);
+    }
     if (node.kind === "RepayBlend" && node.metadata.asset === nativeSac) {
       spent += node.metadata.amount;
     }

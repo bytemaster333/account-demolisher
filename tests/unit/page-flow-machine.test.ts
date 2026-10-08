@@ -574,6 +574,15 @@ describe("what the preview found blocks the close until it is resolved", () => {
 
   it("hands the trustline gaps discovery found to the preview", async () => {
     const gaps = [{ contractId: "CUSDC", code: "USDC", issuer: "GISSUER", reason: "missing" }];
+    const unopenable = [
+      {
+        contractId: "CEURT",
+        code: "EURT",
+        issuer: "GEURT",
+        reason: "missing",
+        why: "issuer_missing",
+      },
+    ];
     const previewInputs: Record<string, unknown>[] = [];
     const machine = pageFlowMachine.provide({
       actors: {
@@ -587,6 +596,7 @@ describe("what the preview found blocks the close until it is resolved", () => {
           discoveryWarnings: [],
           discoveryDiagnostics: [],
           exitTrustlineGaps: gaps,
+          unopenableExitLines: unopenable,
         })) as never,
         preview: fromPromise(async ({ input }: { input: Record<string, unknown> }) => {
           previewInputs.push(input);
@@ -598,6 +608,37 @@ describe("what the preview found blocks the close until it is resolved", () => {
     actor.send({ type: "START", input: fakeInput });
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
     expect(previewInputs[0]!["exitTrustlineGaps"]).toEqual(gaps);
+    expect(previewInputs[0]!["unopenableExitLines"]).toEqual(unopenable);
+    expect(previewInputs[0]).not.toHaveProperty("aquariusRewardToken");
+    actor.stop();
+  });
+
+  it("hands the aquarius reward token discovery read to the preview", async () => {
+    const previewInputs: Record<string, unknown>[] = [];
+    const machine = pageFlowMachine.provide({
+      actors: {
+        discover: fromPromise(async () => ({
+          audit: fakeAudit,
+          positions: EMPTY_POSITIONS,
+          allowances: [],
+          heldTokens: [],
+          unreadableHeldTokens: [],
+          heldTokenScanFailed: false,
+          discoveryWarnings: [],
+          discoveryDiagnostics: [],
+          exitTrustlineGaps: [],
+          aquariusRewardToken: "CAQUA",
+        })) as never,
+        preview: fromPromise(async ({ input }: { input: Record<string, unknown> }) => {
+          previewInputs.push(input);
+          return { tree: emptyTree(), unroutableCredits: [], heldTokenWarnings: [] };
+        }) as never,
+      },
+    });
+    const actor = createActor(machine).start();
+    actor.send({ type: "START", input: fakeInput });
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    expect(previewInputs[0]!["aquariusRewardToken"]).toBe("CAQUA");
     actor.stop();
   });
 

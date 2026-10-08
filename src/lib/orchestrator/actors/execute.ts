@@ -6,16 +6,15 @@ import { TransactionBuilder, type Horizon, type Transaction } from "@stellar/ste
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
-import type { PlanTree, PreparePlan } from "@/lib/plan/tree";
+import { preparedUnlocksAt, type PlanTree, type PreparePlan } from "@/lib/plan/tree";
 import { rebuildSorobanNodeTransaction } from "@/lib/plan/hydration";
 import { reissueMediatorFlow, startMediatorFlow } from "@/lib/mediator/client";
 import { FINAL_CLASSIC_TX_NODE_ID, MEDIATOR_FORWARD_NODE_ID } from "@/lib/mediator/refresh";
 import {
-  isCloseInFlight,
   latestPendingForward,
   removePendingForward,
-  runWithCloseLock,
   savePendingForward,
+  tryRunWithCloseLock,
 } from "@/lib/mediator/pending-flow";
 import {
   feeBumpBundle,
@@ -318,9 +317,12 @@ export const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ in
   }
   inFlight.add(runKey);
   try {
-    // a close running in another tab holds the lock. waiting for it would hang
-    // this tab with no word, and stopping can't end a lock wait, so say so now
-    if (await isCloseInFlight(input.publicKey)) {
+    // the lock tells other tabs a close for this account is running, so they
+    // don't offer to resume or dismiss its recovery record meanwhile. a close in
+    // another tab holds it; waiting would hang this tab with no word, and
+    // stopping can't end a lock wait, so the lock is only taken when it is free
+    const attempt = await tryRunWithCloseLock(input.publicKey, () => runClose(input, signal));
+    if (!attempt.ran) {
       const message =
         "A close for this account is running in another tab. Let it finish there, then retry here.";
       input.onProgress({ kind: "blocked", message });
@@ -332,9 +334,7 @@ export const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ in
         landedPhases: [],
       };
     }
-    // the lock tells other tabs a close for this account is running, so they
-    // don't offer to resume or dismiss its recovery record meanwhile
-    return await runWithCloseLock(input.publicKey, () => runClose(input, signal));
+    return attempt.value;
   } finally {
     inFlight.delete(runKey);
   }
@@ -347,7 +347,13 @@ async function runClose(input: ExecuteInput, signal: AbortSignal): Promise<Execu
   const stop = eitherSignal(signal, input.interrupt);
   const submitClassic = createClassicSubmitter(horizon, input.network.passphrase);
   const finalNode = tree.allNodes.get(FINAL_CLASSIC_TX_NODE_ID);
-  const landed = (): readonly PhaseReceipt[] => (finalNode ? landedPhasesOf(finalNode) : []);
+  // every classic batch that landed, the unwind's ahead of the close's: each is
+  // on chain whatever happens to the run after it
+  const unwinds = [...tree.allNodes.values()].filter((n) => n.kind === "ClassicUnwind");
+  const landed = (): readonly PhaseReceipt[] => [
+    ...unwinds.flatMap((n) => landedPhasesOf(n)),
+    ...(finalNode ? landedPhasesOf(finalNode) : []),
+  ];
 
   if (input.bundle) {
     return submitBundle(input, input.bundle, submitClassic, horizon, stop);
@@ -412,7 +418,7 @@ async function runClose(input: ExecuteInput, signal: AbortSignal): Promise<Execu
   // a plan that only prepares the close has no merge: it is done once every
   // step ran, and the account stays open until the backstop queue unlocks
   if (tree.prepareOnly !== undefined) {
-    return prepared(input, tree, tree.prepareOnly, notes);
+    return prepared(input, tree, tree.prepareOnly, notes, landed());
   }
   if (finalNode === undefined) {
     const reason = "The plan has no merge step, so the account was not closed.";
@@ -422,7 +428,7 @@ async function runClose(input: ExecuteInput, signal: AbortSignal): Promise<Execu
       tree,
       failureKind: "unknown",
       notes,
-      landedPhases: [],
+      landedPhases: landed(),
     };
   }
 
@@ -484,6 +490,7 @@ function prepared(
   tree: PlanTree,
   plan: PreparePlan,
   notes: readonly string[],
+  landedPhases: readonly PhaseReceipt[],
 ): ExecuteOutput {
   const open = [...tree.allNodes.values()].filter(
     (n) =>
@@ -504,22 +511,25 @@ function prepared(
       tree,
       failureKind: "unknown",
       notes,
-      landedPhases: [],
+      landedPhases,
     };
   }
+  // the review dated a new queue from review time; its lock starts when it
+  // lands, and the queue built right before signing read that unlock
+  const unlocksAt = preparedUnlocksAt(tree) ?? plan.unlocksAt;
   // the run is complete, the close is not: no merge hash, and the message says so
   input.onProgress({
     kind: "complete",
     message:
       "Preparation complete. The account stays open. Come back after " +
-      `${plan.unlocksAt.toISOString().slice(0, 10)} to withdraw the backstop and finish closing.`,
+      `${unlocksAt.toISOString().slice(0, 10)} to withdraw the backstop and finish closing.`,
   });
   return {
     result: { ok: true, errors: [] },
     tree,
-    prepared: plan,
+    prepared: { ...plan, unlocksAt },
     notes,
-    landedPhases: [],
+    landedPhases,
   };
 }
 

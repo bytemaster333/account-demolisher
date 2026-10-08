@@ -864,6 +864,50 @@ describe("a step that opens a pool payout trustline", () => {
       ),
     ).toThrow(/transaction source/);
   });
+
+  const exitNode = (md: { code: string; issuer: string; contractId: string }) =>
+    node({
+      id: "exit-line",
+      kind: "AddExitTrustline",
+      metadata: { kind: "AddExitTrustline", ...md },
+    });
+  const usdcLine = { ...usdc, contractId: USDC.contractId(Networks.PUBLIC) };
+
+  it("signs the plan's AddExitTrustline step for the asset its token wraps", () => {
+    expect(() =>
+      assertDefiAuthTree(
+        exitNode(usdcLine),
+        tx([Operation.changeTrust({ asset: USDC })]),
+        ctx(user),
+      ),
+    ).not.toThrow();
+  });
+
+  it("refuses an AddExitTrustline step whose asset is not the payout token's", () => {
+    // a step naming one token but another asset would open a line nothing pays into
+    expect(() =>
+      assertDefiAuthTree(
+        exitNode({ ...usdcLine, contractId: XLM_SAC }),
+        tx([Operation.changeTrust({ asset: USDC })]),
+        ctx(user),
+      ),
+    ).toThrow(/not the asset of token/);
+    // the line itself must match the step
+    expect(() =>
+      assertDefiAuthTree(
+        exitNode(usdcLine),
+        tx([Operation.changeTrust({ asset: new Asset("USDC", Keypair.random().publicKey()) })]),
+        ctx(user),
+      ),
+    ).toThrow(UnsafeDefiAuthError);
+    expect(() =>
+      assertDefiAuthTree(
+        exitNode(usdcLine),
+        tx([Operation.changeTrust({ asset: USDC, limit: "0" })]),
+        ctx(user),
+      ),
+    ).toThrow(/limit is zero/);
+  });
 });
 
 // recorded on mainnet 2026-10-07 by read-only simulation through the app's own

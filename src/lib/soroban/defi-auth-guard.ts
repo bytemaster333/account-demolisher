@@ -32,8 +32,9 @@
 // deposit as the backstop itself (blend-contracts-v2 backstop/src/contract.rs,
 // emissions/claim.rs).
 //
-// the BLND trustline a pool emissions claim needs is a classic change_trust and
-// is held to exactly that one operation.
+// the BLND trustline a pool emissions claim needs, and the trustline a pool exit
+// pays a classic asset into, are classic change_trusts held to exactly that one
+// operation.
 //
 // anything else (a second auth entry, address credentials, an extra or deeper
 // node, different args) is refused, and so is anything we fail to parse.
@@ -89,6 +90,7 @@ interface ExpectedCall {
 export function assertDefiAuthTree(node: PlanNode, tx: Transaction, ctx: DefiAuthContext): void {
   try {
     if (node.kind === "AddBlndTrustline") checkBlndTrustline(node.kind, tx, ctx);
+    else if (node.kind === "AddExitTrustline") checkExitTrustline(node, tx, ctx);
     else check(node, tx, ctx);
   } catch (err) {
     if (err instanceof UnsafeDefiAuthError) throw err;
@@ -108,6 +110,22 @@ function refuse(kind: string, reason: string): never {
 function checkBlndTrustline(kind: string, tx: Transaction, ctx: DefiAuthContext): void {
   const blnd = blndTokenForNetwork(ctx.network);
   assertSingleChangeTrust(kind, tx, ctx.user, { code: blnd.code, issuer: blnd.issuer });
+}
+
+// the step that opens the line a pool exit pays a classic asset into. the line
+// must be the asset the payout token wraps: a SAC's id is the hash of its asset,
+// so any other line is one nothing pays into
+function checkExitTrustline(
+  node: Extract<PlanNode, { kind: "AddExitTrustline" }>,
+  tx: Transaction,
+  ctx: DefiAuthContext,
+): void {
+  const md = node.metadata;
+  const derived = new Asset(md.code, md.issuer).contractId(ctx.network.passphrase);
+  if (derived !== md.contractId) {
+    refuse(node.kind, `${md.code}:${md.issuer} is not the asset of token ${md.contractId}`);
+  }
+  assertSingleChangeTrust(node.kind, tx, ctx.user, { code: md.code, issuer: md.issuer });
 }
 
 // a step that only opens one trustline (BLND before an emissions claim, or a

@@ -111,7 +111,17 @@ export function fakeHorizon(accounts: Map<string, FakeAccount>, extra: Partial<H
     }
     return Object.assign(new Account(id, a.seq.toString()), { balances: a.balances });
   });
-  return { loadAccount, ...extra } as unknown as HorizonLike & {
+  // the latest ledger, closed now, as a live network serves it
+  const ledgers = () => ({
+    order: () => ({
+      limit: () => ({
+        call: async () => ({
+          records: [ledgerRecord({ closed_at: new Date(Date.now()).toISOString() })],
+        }),
+      }),
+    }),
+  });
+  return { loadAccount, ledgers, ...extra } as unknown as HorizonLike & {
     loadAccount: typeof loadAccount;
   };
 }
