@@ -19,6 +19,7 @@ import {
 import { applySlippageMin, resolveConfiguredSlippageBps } from "@/lib/safety/slippage";
 import { MAX_PRICE_IMPACT_BPS, priceImpactBps } from "@/lib/plan/price-impact";
 import { lookupRefusedDestination } from "@/lib/safety/cex-registry";
+import { shortAddress } from "@/lib/safe-display";
 import { isFrozenBalance } from "@/lib/stellar/account-audit";
 import { decimalToStroops as toStroops, stroopsToDecimal } from "@/lib/stellar/amount";
 
@@ -90,15 +91,12 @@ export function batchClassicDemolition(
   // payment to the destination has to ride in that batch with it
   const destinationPaymentsInTail = !options.useMediator && options.memo !== undefined;
 
-  // 1. liquidity pool withdraws
-  const poolWithdraws: BatchedOperation[] = [];
-  for (const pool of audit.poolShares) {
-    if (!hasPositive(pool.shareBalance)) continue;
-    const reserveA = pool.reserves[0];
-    const reserveB = pool.reserves[1];
-    if (!reserveA || !reserveB) continue;
-    poolWithdraws.push(poolWithdrawOp(pool));
-  }
+  // 1. liquidity pool withdraws, after raising any line their payout overflows
+  const pools = withdrawablePools(audit);
+  const poolWithdraws: BatchedOperation[] = [
+    ...poolPayoutRaiseOps(audit, pools),
+    ...pools.map(poolWithdrawOp),
+  ];
 
   // 2. cancel open offers
   const offerCancels: BatchedOperation[] = audit.offers.map(offerCancelOp);
@@ -229,7 +227,7 @@ export function batchClassicDemolition(
     const reserveB = pool?.reserves[1];
     removals.push({
       kind: "change_trust_remove",
-      summary: `Remove pool-share trustline ${poolId.slice(0, 8)}...`,
+      summary: `Remove pool-share trustline ${shortAddress(poolId, 8, 0)}`,
       metadata: {
         asset: balance.asset,
         poolShare: true,
@@ -281,7 +279,7 @@ export function batchClassicDemolition(
     if (signer.weight <= 0 || signer.key === audit.accountId) continue;
     mergeGroup.push({
       kind: "set_options_clear_signers",
-      summary: `Clear signer ${signer.key.slice(0, 6)}...`,
+      summary: `Clear signer ${shortAddress(signer.key)}`,
       metadata: {
         signerKey: signer.key,
         signerType: signer.type,
@@ -300,7 +298,7 @@ export function batchClassicDemolition(
   const mediatorOp: BatchedOperation | null = fundMediator
     ? {
         kind: "create_account_mediator",
-        summary: `Fund mediator ${(options.mediatorPublicKey as string).slice(0, 6)}... with ${MEDIATOR_FUNDING_XLM} XLM`,
+        summary: `Fund mediator ${shortAddress(options.mediatorPublicKey as string)} with ${MEDIATOR_FUNDING_XLM} XLM`,
         metadata: {
           destination: options.mediatorPublicKey,
           startingBalance: MEDIATOR_FUNDING_XLM,
@@ -310,8 +308,8 @@ export function batchClassicDemolition(
   const mergeOp: BatchedOperation = {
     kind: "account_merge",
     summary: options.useMediator
-      ? `Merge account into mediator ${mergeDestination.slice(0, 6)}...`
-      : `Merge account into ${mergeDestination.slice(0, 6)}...`,
+      ? `Merge account into mediator ${shortAddress(mergeDestination)}`
+      : `Merge account into ${shortAddress(mergeDestination)}`,
     metadata: {
       destination: mergeDestination,
       ultimateDestination: options.destination,
@@ -414,26 +412,28 @@ export function planClaimableBalances(
   }
   // the pool withdraws of the leading phase run ahead of the claims (in the same
   // transaction), so what they credit to a line is no longer room for a claim.
-  // core sizes each reserve's payout as reserve * shares / total, rounded down.
-  for (const pool of audit.poolShares) {
-    const shares = toStroops(pool.shareBalance);
-    const total = toStroops(pool.totalShares);
-    // the same pools batchClassicDemolition withdraws
-    if (shares <= 0n || total <= 0n || !pool.reserves[0] || !pool.reserves[1]) continue;
-    for (const reserve of pool.reserves) {
-      if (reserve.asset.kind !== "credit") continue;
-      const key = pathKey(reserve.asset);
-      const left = room.get(key);
-      if (left === undefined) continue;
-      const paid = (toStroops(reserve.amount) * shares) / total;
-      room.set(key, left > paid ? left - paid : 0n);
+  // a line their payout overflows is already raised to the maximum limit ahead
+  // of them, and a claim can't raise it again.
+  const payouts = poolPayouts(audit, withdrawablePools(audit));
+  for (const [key, payout] of payouts) {
+    const left = room.get(key);
+    if (left === undefined) continue;
+    if (payout.raise) {
+      const line = lines.get(key)!;
+      const raisedRoom = MAX_TRUSTLINE_LIMIT_STROOPS - toStroops(line.amount) - payout.paid;
+      room.set(key, raisedRoom > 0n ? raisedRoom : 0n);
+    } else {
+      room.set(key, left > payout.paid ? left - payout.paid : 0n);
     }
   }
+  const raisedForPools = new Set([...payouts].filter(([, p]) => p.raise).map(([key]) => key));
   // XLM free for new trustline reserves: the balance above the account's
   // current minimum and selling liabilities, less the fee of the ops that run
   // with the claims in the leading phase
   const leadingOps =
-    audit.poolShares.filter((p) => hasPositive(p.shareBalance)).length + audit.offers.length;
+    audit.poolShares.filter((p) => hasPositive(p.shareBalance)).length +
+    raisedForPools.size +
+    audit.offers.length;
   let spendable = spendableNative(audit) - feePerOp * BigInt(leadingOps);
 
   const claimed: ClaimableBalanceEntry[] = [];
@@ -481,7 +481,7 @@ export function planClaimableBalances(
       // a full line is raised to the maximum limit once; past that it stays full
       const raised =
         MAX_TRUSTLINE_LIMIT_STROOPS - (line ? toStroops(line.limit ?? "0") - left : 0n);
-      if (changes.has(key) || line === undefined || amount > raised) {
+      if (changes.has(key) || raisedForPools.has(key) || line === undefined || amount > raised) {
         leftBehind.push({ balance: cb, reason: "line_full" });
         continue;
       }
@@ -670,7 +670,7 @@ function rateDropped(
 function claimOp(cb: ClaimableBalanceEntry): BatchedOperation {
   return {
     kind: "claim_claimable_balance",
-    summary: `Claim claimable balance ${cb.id.slice(0, 12)}...`,
+    summary: `Claim claimable balance ${shortAddress(cb.id, 12, 0)}`,
     metadata: {
       balanceId: cb.id,
       asset: cb.asset,
@@ -711,7 +711,7 @@ function poolWithdrawOp(pool: AccountAudit["poolShares"][number]): BatchedOperat
   const proportionalMin = proportionalWithdrawMin(pool.shareBalance, pool.totalShares);
   return {
     kind: "liquidity_pool_withdraw",
-    summary: `Withdraw pool shares from ${pool.poolId.slice(0, 8)}...`,
+    summary: `Withdraw pool shares from ${shortAddress(pool.poolId, 8, 0)}`,
     metadata: {
       liquidityPoolId: pool.poolId,
       amount: pool.shareBalance,
@@ -721,6 +721,79 @@ function poolWithdrawOp(pool: AccountAudit["poolShares"][number]): BatchedOperat
       reserveB,
     },
   };
+}
+
+interface PoolPayout {
+  readonly asset: Extract<AssetIdentifier, { kind: "credit" }>;
+  // what the withdraws pay into the line, sized like core: reserve * shares /
+  // total per pool, rounded down
+  readonly paid: bigint;
+  // the payout does not fit under the line's limit, less its balance and buying
+  // liabilities (the offers are cancelled after the withdraws)
+  readonly raise: boolean;
+  // it does not fit even at the maximum limit
+  readonly overflow: boolean;
+}
+
+// what the pool withdraws pay into each credit trustline, by pathKey. core fails
+// a withdraw whose payout does not fit with LIQUIDITY_POOL_WITHDRAW_LINE_FULL,
+// so the payouts are checked against each line's room up front.
+function poolPayouts(
+  audit: AccountAudit,
+  pools: readonly AccountAudit["poolShares"][number][],
+): ReadonlyMap<string, PoolPayout> {
+  const paid = new Map<string, { asset: PoolPayout["asset"]; paid: bigint }>();
+  for (const pool of pools) {
+    const shares = toStroops(pool.shareBalance);
+    const total = toStroops(pool.totalShares);
+    if (shares <= 0n || total <= 0n) continue;
+    for (const reserve of pool.reserves) {
+      if (reserve.asset.kind !== "credit") continue;
+      const key = pathKey(reserve.asset);
+      const prior = paid.get(key)?.paid ?? 0n;
+      paid.set(key, {
+        asset: reserve.asset,
+        paid: prior + (toStroops(reserve.amount) * shares) / total,
+      });
+    }
+  }
+  const out = new Map<string, PoolPayout>();
+  for (const [key, p] of paid) {
+    const line = audit.balances.find((b) => b.asset.kind === "credit" && pathKey(b.asset) === key);
+    if (line?.limit === undefined) continue;
+    const used = toStroops(line.amount) + toStroops(line.buyingLiabilities);
+    out.set(key, {
+      ...p,
+      raise: p.paid > toStroops(line.limit) - used,
+      overflow: p.paid > MAX_TRUSTLINE_LIMIT_STROOPS - used,
+    });
+  }
+  return out;
+}
+
+// change_trusts at the maximum limit for the lines the withdraws would overflow,
+// to run ahead of them. a payout too big even for that can't land at all.
+function poolPayoutRaiseOps(
+  audit: AccountAudit,
+  pools: readonly AccountAudit["poolShares"][number][],
+): BatchedOperation[] {
+  const ops: BatchedOperation[] = [];
+  for (const payout of poolPayouts(audit, pools).values()) {
+    if (!payout.raise) continue;
+    if (payout.overflow) {
+      throw new Error(
+        `batchClassicDemolition: withdrawing the liquidity pool shares would pay ` +
+          `${stroopsToDecimal(payout.paid)} ${payout.asset.code}, more than its trustline can ` +
+          `hold even at the maximum limit; move some ${payout.asset.code} out of the account first`,
+      );
+    }
+    ops.push({
+      kind: "change_trust_add",
+      summary: `Raise the ${payout.asset.code} trustline limit so the pool withdraw can pay it out`,
+      metadata: { asset: payout.asset },
+    });
+  }
+  return ops;
 }
 
 function offerCancelOp(offer: AccountAudit["offers"][number]): BatchedOperation {
@@ -1028,7 +1101,11 @@ export function buildClassicUnwindBatches(
   targets: ClassicUnwindTargets,
 ): readonly ClassicBatch[] {
   const { offers, pools } = unwindEntries(audit, targets);
-  const ops = [...pools.map(poolWithdrawOp), ...offers.map(offerCancelOp)];
+  const ops = [
+    ...poolPayoutRaiseOps(audit, pools),
+    ...pools.map(poolWithdrawOp),
+    ...offers.map(offerCancelOp),
+  ];
   return packLeading(ops, { destination: targets.destination, useMediator: false });
 }
 
@@ -1061,10 +1138,14 @@ export function auditAfterUnwind(
     shift(pool.reserves[0]!.asset, "amount", toStroops(String(op.metadata["minAmountA"])));
     shift(pool.reserves[1]!.asset, "amount", toStroops(String(op.metadata["minAmountB"])));
   }
+  // the lines the withdraws would overflow are raised to the maximum limit first
+  const raised = new Set(
+    [...poolPayouts(audit, pools)].filter(([, p]) => p.raise).map(([key]) => key),
+  );
   shift(
     { kind: "native" },
     "amount",
-    -BigInt(feePerOpStroops) * BigInt(offers.length + pools.length),
+    -BigInt(feePerOpStroops) * BigInt(offers.length + pools.length + raised.size),
   );
   const atLeastZero = (v: bigint): string => stroopsToDecimal(v > 0n ? v : 0n);
   const cancelled = new Set(offers.map((o) => o.id));
@@ -1073,10 +1154,12 @@ export function auditAfterUnwind(
     ...audit,
     subentryCount: audit.subentryCount - offers.length,
     balances: audit.balances.map((b) => {
-      const d = delta.get(pathKey(b.asset));
+      const key = pathKey(b.asset);
+      const d = delta.get(key);
       if (d === undefined) return b;
       return {
         ...b,
+        ...(raised.has(key) ? { limit: stroopsToDecimal(MAX_TRUSTLINE_LIMIT_STROOPS) } : {}),
         amount: atLeastZero(toStroops(b.amount) + d.amount),
         sellingLiabilities: atLeastZero(toStroops(b.sellingLiabilities) + d.selling),
         buyingLiabilities: atLeastZero(toStroops(b.buyingLiabilities) + d.buying),
