@@ -1795,6 +1795,48 @@ describe("a credit the close claims is quoted with the claim", () => {
   });
 });
 
+describe("the merge claims only the claimable balances the review listed", () => {
+  const CB_EE = `00000000${"ee".repeat(32)}`;
+  // a claimable-now xlm balance the execute-time audit finds; the review either
+  // listed it or not
+  function auditWithCb() {
+    return makeAudit({
+      claimableBalances: [
+        {
+          id: CB_EE,
+          asset: { kind: "native" },
+          amount: "5.0000000",
+          sponsor: ATTACKER,
+          claimants: [USER],
+          claimantsRaw: [{ destination: USER, predicate: { unconditional: true } }],
+          claimableNow: true,
+        },
+      ],
+    });
+  }
+
+  it("claims none when the reviewed selection is empty, even though one is claimable now", async () => {
+    auditAccount.mockResolvedValue(auditWithCb());
+    const d = deps();
+    const t = tree(finalNode([], { claimableBalanceIds: [] }));
+    await run(t, d);
+    expect(t.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
+    const ops = d.connector.signed.flatMap((tx) => tx.operations.map((o) => o.type));
+    expect(ops).toContain("accountMerge");
+    expect(ops).not.toContain("claimClaimableBalance");
+  });
+
+  it("claims the balance once the review listed it", async () => {
+    auditAccount.mockResolvedValue(auditWithCb());
+    const d = deps();
+    const t = tree(finalNode([], { claimableBalanceIds: [CB_EE] }));
+    await run(t, d);
+    expect(t.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
+    const ops = d.connector.signed.flatMap((tx) => tx.operations.map((o) => o.type));
+    expect(ops).toContain("claimClaimableBalance");
+  });
+});
+
 describe("tokens the defi exits paid out are not merged away", () => {
   function exitedTree() {
     const lp = {

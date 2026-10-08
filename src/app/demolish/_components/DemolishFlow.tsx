@@ -74,7 +74,6 @@ import { LeftLoadingCard } from "./LoadingCard";
 import { MultisigContextBar } from "./MultisigContextBar";
 import { ResolvePanel, type CreditChoice, type HeldTokenChoice } from "./ResolvePanel";
 import { ReviewPanel } from "./ReviewPanel";
-import { SponsorshipAutoRevokeNotice } from "./SponsorshipAutoRevokeNotice";
 import { DemolishStatusWidget, type SigningMode } from "./StatusWidget";
 import { StepIndicator } from "./StepIndicator";
 import { shortAddress } from "@/lib/safe-display";
@@ -1309,9 +1308,6 @@ export function DemolishFlow(): React.JSX.Element {
                             signer keys needed here.
                           </p>
                         </>
-                      ) : null}
-                      {audit && numCoverable > 0 ? (
-                        <SponsorshipAutoRevokeNotice count={numCoverable} />
                       ) : null}
                       <ConfigurePanel
                         {...configureCommon}
