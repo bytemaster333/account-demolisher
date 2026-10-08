@@ -64,6 +64,7 @@ vi.mock("@/lib/mediator/forward", () => ({
 
 import {
   executePlanTreeOnChain,
+  MAX_PER_OP_FEE,
   type ConfirmationReceipt,
   type ExecutorDeps,
 } from "@/lib/orchestrator/executor";
@@ -1913,6 +1914,48 @@ describe("the BLND trustline step", () => {
     await run(tree(node), d);
     expect(node.status).toBe("confirmed");
     expect(d.connector.signed[0]!.operations[0]!.type).toBe("changeTrust");
+  });
+});
+
+describe("the trustline a pool exit pays into", () => {
+  const usdc = new Asset("USDC", USDC_ISSUER);
+  const lineNode = (): PlanNode =>
+    ({
+      id: "exit-line",
+      kind: "AddExitTrustline",
+      dependencies: [],
+      description: "open USDC trustline",
+      status: "simulated",
+      metadata: {
+        kind: "AddExitTrustline",
+        code: "USDC",
+        issuer: USDC_ISSUER,
+        contractId: USDC_SAC,
+      },
+    }) as unknown as PlanNode;
+  const rebuildAt = (fee: string) => async (n: PlanNode) => {
+    (n.metadata as { transaction?: Transaction }).transaction = new TransactionBuilder(
+      new Account(USER, "1"),
+      { fee, networkPassphrase: NETWORK.passphrase },
+    )
+      .addOperation(Operation.changeTrust({ asset: usdc }))
+      .setTimeout(300)
+      .build();
+  };
+
+  it("signs and submits exactly the change_trust at a classic bid", async () => {
+    const node = lineNode();
+    const d = deps({ rebuildSorobanNode: rebuildAt("100000") });
+    await run(tree(node), d);
+    expect(node.status).toBe("confirmed");
+    expect(d.connector.signed[0]!.operations[0]).toMatchObject({ type: "changeTrust" });
+  });
+
+  it("refuses a bid over the classic per-op ceiling before signing", async () => {
+    const node = lineNode();
+    const d = deps({ rebuildSorobanNode: rebuildAt(String(MAX_PER_OP_FEE + 1)) });
+    await expect(run(tree(node), d)).rejects.toThrow(/trustline bid over/);
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
   });
 });
 

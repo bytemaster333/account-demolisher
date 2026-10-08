@@ -594,7 +594,7 @@ export async function executePlanTreeOnChain(
         continue;
       }
       default: {
-        // a required defi exit (or the BLND trustline ahead of a claim): an
+        // a required defi exit (or a trustline ahead of a claim or exit): an
         // allow-listed contract and exactly the auth tree its call needs. a kind
         // the auth guard has no expected tree for is refused, so a step added to
         // the plan without one is never signed. a failure stops the close before
@@ -865,11 +865,11 @@ async function signAndSubmitSorobanNode(
 }
 
 // the fee the step's signature authorizes, refused (SorobanFeeCapError) when it
-// is above what its class of step legitimately costs. the classic trustline step
-// carries no soroban resources; one change_trust may bid at most the classic
-// per-op ceiling.
+// is above what its class of step legitimately costs. the classic trustline steps
+// (BLND, or a pool payout asset) carry no soroban resources; one change_trust may
+// bid at most the classic per-op ceiling.
 function stepFee(node: PlanNode, tx: Transaction): bigint {
-  if (node.kind === "AddBlndTrustline") {
+  if (node.kind === "AddBlndTrustline" || node.kind === "AddExitTrustline") {
     const fee = BigInt(tx.fee);
     if (fee > BigInt(MAX_PER_OP_FEE)) {
       throw new SorobanFeeCapError(
@@ -883,7 +883,7 @@ function stepFee(node: PlanNode, tx: Transaction): bigint {
   return assertSorobanFeeWithinCap(tx, feeClassOf(node)).totalFee;
 }
 
-// what every required step (a defi exit, the BLND trustline, a held-token
+// what every required step (a defi exit, a trustline it pays into, a held-token
 // conversion) must pass before it is signed: an allow-listed contract, exactly
 // the auth tree its call needs, and a fee within its class's cap. returns the
 // fee the signature authorizes. the preview runs it on each built step too, so
