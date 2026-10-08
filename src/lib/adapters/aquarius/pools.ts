@@ -601,6 +601,36 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
   }
 }
 
+// the pool contract the router keeps under (tokens, pool_index). a position
+// summary carries only the index, and the router is the one source that can't
+// be pointed at some other contract.
+export async function readAquariusPoolAddress(
+  server: rpc.Server,
+  network: NetworkConfig,
+  tokens: readonly string[],
+  poolIndex: string,
+  sourcePublicKey: string,
+): Promise<string> {
+  const { retval } = await simulateRead(
+    server,
+    getAquariusRouterIdFromAllowlist(network),
+    "get_pools",
+    [tokensToScVal(tokens)],
+    sourcePublicKey,
+    network,
+  );
+  const wanted = Array.from(poolIndexHexToBytes(poolIndex), (b) =>
+    b.toString(16).padStart(2, "0"),
+  ).join("");
+  const address = decodeBytesN32AddressMap(retval).get(wanted);
+  if (address === undefined) {
+    throw new Error(
+      `the Aquarius router lists no pool with index ${wanted} for tokens ${tokens.join(", ")}`,
+    );
+  }
+  return address;
+}
+
 // decode router.get_pools return value
 function decodeBytesN32AddressMap(v: xdr.ScVal): Map<string, string> {
   if (v.type !== "scvMap") {

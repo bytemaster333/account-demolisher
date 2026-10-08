@@ -16,8 +16,12 @@
 
 import { Address, Asset, xdr, type rpc } from "@stellar/stellar-sdk";
 
-import { getUserReward, readAquariusRewardToken } from "@/lib/adapters/aquarius/client";
-import { poolIndexHexToBytes } from "@/lib/adapters/aquarius/pools";
+import {
+  getUserReward,
+  readAquariusPoolRewardTokens,
+  readAquariusRewardToken,
+} from "@/lib/adapters/aquarius/client";
+import { poolIndexHexToBytes, readAquariusPoolAddress } from "@/lib/adapters/aquarius/pools";
 import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
 import type { NetworkConfig } from "@/lib/config/networks";
 import type { AuditBalance } from "@/lib/types/account";
@@ -118,7 +122,7 @@ function parseSacName(name: string): WrappedAsset {
 // position kept only for its reward pays none of its pool tokens.
 //
 // it does not include the aquarius reward token, which needs rpc reads; a
-// trustline check must use readExitPayoutTokens.
+// trustline check must use readExitPayouts.
 export function exitPayoutTokens(positions: ProtocolPositions): readonly string[] {
   const out = new Set<string>();
   for (const p of positions.soroswap) {
@@ -145,18 +149,87 @@ export function exitPayoutTokens(positions: ProtocolPositions): readonly string[
 export interface ExitPayoutDeps {
   readonly readRewardToken?: typeof readAquariusRewardToken;
   readonly readUserReward?: typeof getUserReward;
+  readonly readPoolAddress?: typeof readAquariusPoolAddress;
+  readonly readPoolRewardTokens?: typeof readAquariusPoolRewardTokens;
+}
+
+export interface ExitPayouts {
+  // every token a planned exit or reward claim pays out
+  readonly tokens: readonly string[];
+  // the one token every aquarius reward claim that pays anything pays, for
+  // GeneratePlanOptions.aquariusRewardToken; undefined when no claim pays
+  readonly aquariusRewardToken: string | undefined;
 }
 
 const REWARD_READ_CONCURRENCY = 4;
 
-// exitPayoutTokens plus the aquarius router's reward token when a planned claim
-// will pay some. a claim of a pending reward into a missing trustline traps
-// with Error(Contract, #13) like a withdraw; a claim with nothing pending runs
-// and pays 0 (both seen read-only on mainnet 2026-10-07), so the reward token
-// only counts when a reward is pending. the generator claims every standard
-// pool it withdraws, so each of those is asked through get_user_reward; a
-// concentrated position carries its own pendingReward. any failed read throws:
-// an unknown reward must not read as "no payout".
+// exitPayoutTokens plus the reward token of each aquarius pool whose claim will
+// pay some. a claim of a pending reward into a missing trustline traps with
+// Error(Contract, #13) like a withdraw; a claim with nothing pending runs and
+// pays 0 (both seen read-only on mainnet 2026-10-07), so a pool only counts
+// when a reward is pending there. the generator claims every standard pool it
+// withdraws, so each of those is asked through get_user_reward; a concentrated
+// position carries its own pendingReward.
+//
+// the pool pays its claim from its own RewardToken, while the plan links every
+// claim to one reward token, so a paying pool whose token is not the router's
+// is refused rather than planned against the wrong line. any failed read
+// throws: an unknown reward must not read as "no payout".
+export async function readExitPayouts(
+  server: rpc.Server,
+  network: NetworkConfig,
+  userAddress: string,
+  positions: ProtocolPositions,
+  deps: ExitPayoutDeps = {},
+): Promise<ExitPayouts> {
+  const tokens = exitPayoutTokens(positions);
+  const readUserReward = deps.readUserReward ?? getUserReward;
+  const readPoolAddress = deps.readPoolAddress ?? readAquariusPoolAddress;
+
+  const paying = positions.aquariusConcentrated
+    .filter((p) => p.pendingReward > 0n)
+    .map((p) => p.poolAddress);
+  const withdrawn = positions.aquarius.filter((p) => p.shareBalance > 0n);
+  const rewards = await mapConcurrent(withdrawn, REWARD_READ_CONCURRENCY, (p) =>
+    readUserReward(server, {
+      user: userAddress,
+      tokens: p.tokens,
+      poolIndex: poolIndexHexToBytes(p.poolIndex),
+      network,
+    }),
+  );
+  const rewarded = withdrawn.filter((_, i) => rewards[i]! > 0n);
+  paying.push(
+    ...(await mapConcurrent(rewarded, REWARD_READ_CONCURRENCY, (p) =>
+      readPoolAddress(server, network, p.tokens, p.poolIndex, userAddress),
+    )),
+  );
+  if (paying.length === 0) return { tokens, aquariusRewardToken: undefined };
+
+  const [routerToken, byPool] = await Promise.all([
+    (deps.readRewardToken ?? readAquariusRewardToken)(server, network),
+    (deps.readPoolRewardTokens ?? readAquariusPoolRewardTokens)(server, paying),
+  ]);
+  for (const pool of new Set(paying)) {
+    const poolTokens = byPool.get(pool);
+    if (poolTokens === undefined) {
+      throw new Error(`the reward token of Aquarius pool ${pool} was not read`);
+    }
+    if (poolTokens.length !== 1 || poolTokens[0] !== routerToken) {
+      throw new Error(
+        `Aquarius pool ${pool} pays its rewards in ${poolTokens.join(", ")}, not only in the ` +
+          `router's reward token ${routerToken}, so its reward claim can't be planned. Claim ` +
+          "that reward outside this app before closing.",
+      );
+    }
+  }
+  return {
+    tokens: tokens.includes(routerToken) ? tokens : [...tokens, routerToken],
+    aquariusRewardToken: routerToken,
+  };
+}
+
+// the token list of readExitPayouts
 export async function readExitPayoutTokens(
   server: rpc.Server,
   network: NetworkConfig,
@@ -164,24 +237,7 @@ export async function readExitPayoutTokens(
   positions: ProtocolPositions,
   deps: ExitPayoutDeps = {},
 ): Promise<readonly string[]> {
-  const tokens = exitPayoutTokens(positions);
-  let rewardPending = positions.aquariusConcentrated.some((p) => p.pendingReward > 0n);
-  if (!rewardPending) {
-    const readUserReward = deps.readUserReward ?? getUserReward;
-    const withdrawn = positions.aquarius.filter((p) => p.shareBalance > 0n);
-    const rewards = await mapConcurrent(withdrawn, REWARD_READ_CONCURRENCY, (p) =>
-      readUserReward(server, {
-        user: userAddress,
-        tokens: p.tokens,
-        poolIndex: poolIndexHexToBytes(p.poolIndex),
-        network,
-      }),
-    );
-    rewardPending = rewards.some((r) => r > 0n);
-  }
-  if (!rewardPending) return tokens;
-  const reward = await (deps.readRewardToken ?? readAquariusRewardToken)(server, network);
-  return tokens.includes(reward) ? tokens : [...tokens, reward];
+  return (await readExitPayouts(server, network, userAddress, positions, deps)).tokens;
 }
 
 export interface ExitTrustlineGap {

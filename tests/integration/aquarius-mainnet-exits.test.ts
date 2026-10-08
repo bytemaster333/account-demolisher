@@ -18,9 +18,11 @@ import {
   MAINNET_CONCENTRATED_POOL_WASM,
 } from "@/lib/adapters/aquarius/concentrated-pools";
 import { getAquariusRouterId } from "@/lib/adapters/aquarius/client";
-import { poolIndexHexToBytes } from "@/lib/adapters/aquarius/pools";
+import { poolIndexHexToBytes, readAquariusPoolAddress } from "@/lib/adapters/aquarius/pools";
+import { EMPTY_POSITIONS } from "@/lib/adapters/positions/interface";
 import { MAINNET } from "@/lib/config/networks";
 import { getRpc } from "@/lib/soroban/rpc-client";
+import { readExitPayouts } from "@/lib/soroban/stellar-asset";
 import { simulateRead } from "@/lib/soroban/simulate";
 import { u128 } from "@/lib/soroban/scval";
 
@@ -178,5 +180,31 @@ describe("integration: aquarius exits simulate against mainnet", () => {
       "GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA",
     ).contractId(MAINNET.passphrase);
     await expect(readAquariusRewardToken(getRpc(MAINNET), MAINNET)).resolves.toBe(aqua);
+  });
+
+  // GDD34D... holds archived shares in standard pool CAUCGD... with AQUA
+  // pending; the pool pays that claim from its own RewardToken (simulated
+  // 2026-10-08), so the payout read resolves the pool through the router and
+  // reads that token
+  it("reads the reward token from the paying pool, found through the router", async () => {
+    const server = getRpc(MAINNET);
+    const user = "GDD34DUAHJA4ZW26H7YUFKXZHS4TRVCU6G7NZ6JBFLTIMV6FNQCIEQ4O";
+    const pool = "CAUCGDPDPQL4EPMPPFST63VBDVN6H5LMDYM3OTBGJQZTCTM3DE4IWWWB";
+    const index = "37b955f3708dae748cad465441fcad70b26ffe272385227a4a737234ae429bdf";
+    const tokens = [
+      "CAESLMGW5LYTIEJI7FJHK6SFSWRELLNVX5Q4WR4UZEALMTRWQDBKDPAG",
+      "CAUIKL3IYGMERDRUN6YSCLWVAKIFG5Q4YJHUKM4S4NJZQIA3BAS6OJPK",
+    ];
+    const aqua = new Asset(
+      "AQUA",
+      "GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA",
+    ).contractId(MAINNET.passphrase);
+    await expect(readAquariusPoolAddress(server, MAINNET, tokens, index, user)).resolves.toBe(pool);
+    const payouts = await readExitPayouts(server, MAINNET, user, {
+      ...EMPTY_POSITIONS,
+      aquarius: [{ poolIndex: index, shareBalance: 1n, tokens }],
+    });
+    expect(payouts.aquariusRewardToken).toBe(aqua);
+    expect([...payouts.tokens].sort()).toEqual([...tokens].sort());
   });
 });
