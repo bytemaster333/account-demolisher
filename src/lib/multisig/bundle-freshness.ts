@@ -36,6 +36,10 @@ export interface LiveClaimableBalance {
   // "native" or "CODE:ISSUER", Horizon's format
   readonly asset: string;
   readonly amount: string;
+  // the account paying the balance's reserve. core counts it once per claimant
+  // in the sponsor's num_sponsoring, and claiming the balance releases all of them
+  readonly sponsor?: string;
+  readonly claimants: number;
 }
 
 export interface FreshnessInput {
@@ -146,6 +150,7 @@ export function checkBundleFreshness(input: FreshnessInput): FreshnessResult {
   // of that name the account already holds
   let markerDeleted = false;
   const liveCbs = new Map(input.claimableBalances.map((c) => [c.id, c]));
+  let releasedSponsoring = 0;
 
   for (const op of ops) {
     if ((op.source ?? tx.source) !== closing) continue;
@@ -176,8 +181,11 @@ export function checkBundleFreshness(input: FreshnessInput): FreshnessResult {
           reasons.push(
             `Claimable balance ${id.slice(0, 12)}… no longer exists, so claiming it would fail.`,
           );
-        } else if (cb.asset !== "native") {
-          claimedIn.set(cb.asset, (claimedIn.get(cb.asset) ?? 0n) + toStroops(cb.amount));
+        } else {
+          if (cb.asset !== "native") {
+            claimedIn.set(cb.asset, (claimedIn.get(cb.asset) ?? 0n) + toStroops(cb.amount));
+          }
+          if (cb.sponsor === closing) releasedSponsoring += cb.claimants;
         }
         break;
       }
@@ -239,6 +247,18 @@ export function checkBundleFreshness(input: FreshnessInput): FreshnessResult {
       reasons.push(`Data entry "${name}" no longer exists, so deleting it would fail.`);
   }
 
+  // a reserve this account still pays for any entry makes the merge fail with
+  // op_is_sponsor. an account can't sponsor its own subentries, so the only
+  // sponsorships the bundle releases are the claimable balances it claims. the
+  // others can appear without moving the sequence: a begin_sponsoring sandwich
+  // sourced by this account inside another account's transaction.
+  const unreleased = account.num_sponsoring - releasedSponsoring;
+  if (unreleased > 0) {
+    reasons.push(
+      `The account now sponsors ${unreleased} ledger ${unreleased === 1 ? "entry" : "entries"} the bundle doesn't release, so the merge would fail.`,
+    );
+  }
+
   return reasons.length === 0 ? { ok: true } : { ok: false, reasons };
 }
 
@@ -267,7 +287,13 @@ export async function loadBundleFreshness(
     if (op.type !== "claimClaimableBalance") continue;
     try {
       const cb = await horizon.claimableBalances().claimableBalance(op.balanceId).call();
-      claimableBalances.push({ id: op.balanceId, asset: cb.asset, amount: cb.amount });
+      claimableBalances.push({
+        id: op.balanceId,
+        asset: cb.asset,
+        amount: cb.amount,
+        ...(cb.sponsor !== undefined ? { sponsor: cb.sponsor } : {}),
+        claimants: cb.claimants.length,
+      });
     } catch (e) {
       // only a 404 means the balance is gone; anything else is a failed check
       if (!(e instanceof NotFoundError)) throw e;
