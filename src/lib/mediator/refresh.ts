@@ -8,6 +8,8 @@
 // fall inside a long close; the forward renews an expired token through the
 // re-issue route, so a late forward is not stranded by it.
 
+import { mediatorLabel } from "@/lib/plan/classic-batcher";
+
 export interface RefreshedFlow {
   readonly mediatorPublicKey: string;
   readonly flowToken: string;
@@ -36,19 +38,10 @@ interface MutableBatch {
   mediator?: { publicKey: string; fundingXlm: string };
 }
 
-// same short form the plan generator uses in descriptions
-function shortAddr(s: string): string {
-  return s.length <= 12 ? s : `${s.slice(0, 6)}...${s.slice(-4)}`;
-}
-
+// the plan names the mediator by its full key or by mediatorLabel, so matching
+// on the same function keeps this swap in step if the label's form changes
 function repointText(text: string, from: string, to: string): string {
-  return text
-    .split(from)
-    .join(to)
-    .split(shortAddr(from))
-    .join(shortAddr(to))
-    .split(`${from.slice(0, 6)}...`)
-    .join(`${to.slice(0, 6)}...`);
+  return text.split(from).join(to).split(mediatorLabel(from)).join(mediatorLabel(to));
 }
 
 // the batches carry the mediator as the funding target, the merge destination

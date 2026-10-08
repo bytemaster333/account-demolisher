@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { Keypair } from "@stellar/stellar-sdk";
 
 import { EMPTY_POSITIONS } from "@/lib/adapters/positions/interface";
+import { mediatorLabel } from "@/lib/plan/classic-batcher";
 import { generatePlan } from "@/lib/plan/generator";
 import type { AccountAudit } from "@/lib/types/account";
 import type { ClassicBatch } from "@/lib/types/plan";
@@ -102,7 +103,7 @@ describe("applyRefreshedMediatorFlow on a generated plan", () => {
       flowToken: "preview-token",
     });
     const final = tree.allNodes.get(FINAL_CLASSIC_TX_NODE_ID)!;
-    expect(final.description).toContain(previewMediator.slice(0, 6));
+    expect(final.description).toContain(mediatorLabel(previewMediator));
 
     expect(
       applyRefreshedMediatorFlow(tree, { mediatorPublicKey: freshMediator, flowToken: "fresh" }),
@@ -122,6 +123,6 @@ describe("applyRefreshedMediatorFlow on a generated plan", () => {
 
     const text = [final.description, ...ops.map((o) => o.summary)].join("\n");
     expect(text).not.toContain(previewMediator.slice(0, 6));
-    expect(text).toContain(freshMediator.slice(0, 6));
+    expect(text).toContain(mediatorLabel(freshMediator));
   });
 });
