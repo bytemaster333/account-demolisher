@@ -1608,6 +1608,32 @@ describe("backstop emissions that can't be claimed need the user's forfeit", () 
     );
     actor.stop();
   });
+
+  it("names the accrual a deposit queued outside the app carries, which no step claims", async () => {
+    // queue_withdrawal stored the accrual; no active shares remain, so the plan
+    // queues nothing and claims nothing for this pool
+    const queued = {
+      poolId: pool,
+      shares: 0n,
+      queuedForWithdrawal: 100n,
+      unlockedQueuedForWithdrawal: 0n,
+      accruedEmissions: 30_000_000n,
+      latestQueueUnlocksAt: new Date("2099-01-01T00:00:00Z"),
+    };
+    getPositions.mockResolvedValue({ ...EMPTY_POSITIONS, backstop: [queued] });
+    const actor = createActor(pageFlowMachine).start();
+    actor.send({ type: "START", input: input({ destination: DEST, useMediator: false }) });
+    await settle(actor, "awaiting_confirmation");
+    const ctx = actor.getSnapshot().context;
+    const kinds = [...ctx.tree!.allNodes.values()].map((n) => n.kind);
+    expect(kinds).not.toContain("ClaimBackstopEmissions");
+    expect(ctx.emissionForfeits).toEqual([]);
+    expect(ctx.discoveryWarnings).toContain(
+      `3 BLND of backstop emissions for pool ${pool} are forfeited: claiming them would mint ` +
+        "new backstop shares under a new withdrawal lock.",
+    );
+    actor.stop();
+  });
 });
 
 describe("the review plans the trustlines pool exits pay into", () => {

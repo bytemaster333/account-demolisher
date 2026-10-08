@@ -468,9 +468,19 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
     );
   }
 
-  // emissions accrued where nothing is deposited or queued any more are
-  // forfeited: claiming them would mint new backstop shares under a new lock
-  for (const left of input.positions.backstopUnclaimedEmissions) {
+  // emissions accrued where nothing is deposited any more are forfeited:
+  // claiming them would mint new backstop shares under a new lock. a deposit
+  // that is only queued still carries what queue_withdrawal stored, and the plan
+  // claims only for active shares, so that accrual is left behind the same way
+  const leftBehind: { readonly poolId: string; readonly accruedEmissions: bigint }[] = [
+    ...input.positions.backstopUnclaimedEmissions,
+  ];
+  for (const bs of input.positions.backstop) {
+    if (bs.shares === 0n && bs.accruedEmissions !== undefined && bs.accruedEmissions > 0n) {
+      leftBehind.push({ poolId: bs.poolId, accruedEmissions: bs.accruedEmissions });
+    }
+  }
+  for (const left of leftBehind) {
     reviewNotes.push(
       `${stroopsToTrimmedDecimal(left.accruedEmissions)} BLND of backstop emissions for pool ${left.poolId} are ` +
         "forfeited: claiming them would mint new backstop shares under a new withdrawal lock.",
