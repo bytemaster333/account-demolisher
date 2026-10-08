@@ -107,6 +107,25 @@ vi.mock("@/lib/adapters/blend/exit", async () => {
     buildBackstopQueueTx: (...a: unknown[]) => buildBackstopQueueTx(...a),
   };
 });
+// the real generator; each tree it returns is kept, with the final batches it
+// built, so a test can tell whether the preview built any of its own
+const generated: { tree: PlanTree; finalBatches: unknown }[] = [];
+vi.mock("@/lib/plan/generator", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/lib/plan/generator")>("@/lib/plan/generator");
+  return {
+    ...actual,
+    generatePlan: (...a: Parameters<typeof actual.generatePlan>) => {
+      const tree = actual.generatePlan(...a);
+      const final = tree.allNodes.get("final-classic-tx");
+      generated.push({
+        tree,
+        finalBatches: final?.kind === "FinalClassicTx" ? final.metadata.batches : undefined,
+      });
+      return tree;
+    },
+  };
+});
 vi.mock("@/lib/soroban/held-tokens", async () => {
   const actual = await vi.importActual<typeof import("@/lib/soroban/held-tokens")>(
     "@/lib/soroban/held-tokens",
@@ -1586,6 +1605,23 @@ describe("the review plans the trustlines pool exits pay into", () => {
       expect.stringMatching(/^An exchange close can only forward XLM/),
     ]);
     expect(ctx.tree!.allNodes.size).toBe(0);
+    actor.stop();
+  });
+});
+
+describe("the review shows the batches the generator built", () => {
+  it("keeps the generator's final batches instead of building them again", async () => {
+    generated.length = 0;
+    const actor = createActor(pageFlowMachine).start();
+    actor.send({ type: "START", input: input({ destination: DEST, useMediator: false }) });
+    await settle(actor, "awaiting_confirmation");
+    const ctx = actor.getSnapshot().context;
+    const final = ctx.tree!.allNodes.get("final-classic-tx");
+    expect(final?.kind).toBe("FinalClassicTx");
+    const last = generated.at(-1)!;
+    expect(ctx.tree!.allNodes).toBe(last.tree.allNodes);
+    expect(last.finalBatches).toBeDefined();
+    expect((final!.metadata as { batches: unknown }).batches).toBe(last.finalBatches);
     actor.stop();
   });
 });
