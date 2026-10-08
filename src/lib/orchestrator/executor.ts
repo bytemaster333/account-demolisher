@@ -448,8 +448,6 @@ export async function executePlanTreeOnChain(
   input: {
     publicKey: string;
     tree: PlanTree;
-    // receipts of nodes confirmed outside this tree's own record; seeded as done
-    previousReceipts?: Record<string, ConfirmationReceipt>;
     // fires after every node.status mutation so the ui can re-render
     onNodeUpdate?: (node: PlanNode) => void;
     // a best-effort step did not do what the plan asked, in words for the user
@@ -457,7 +455,7 @@ export async function executePlanTreeOnChain(
   },
   deps: ExecutorDeps,
 ): Promise<ExecutionOutput> {
-  const receipts: Record<string, ConfirmationReceipt> = { ...(input.previousReceipts ?? {}) };
+  const receipts: Record<string, ConfirmationReceipt> = {};
   const run: Run = {
     publicKey: input.publicKey,
     tree: input.tree,
@@ -474,13 +472,6 @@ export async function executePlanTreeOnChain(
   };
 
   for (const node of topologicalOrder(input.tree)) {
-    const prior = receipts[node.id];
-    if (prior !== undefined) {
-      node.status = "confirmed";
-      node.executed = { txHash: prior.txHash, ledger: prior.ledger };
-      run.notify(node);
-      continue;
-    }
     if (node.executed !== undefined) {
       node.status = "confirmed";
       receipts[node.id] = { txHash: node.executed.txHash, ledger: node.executed.ledger };

@@ -142,7 +142,7 @@ describe("integration: two-phase liquidity-pool close (testnet, SEC-13)", () => 
     const tree = buildPlanTree([node]);
 
     await executePlanTreeOnChain(
-      { publicKey: kp.publicKey(), tree, previousReceipts: {} },
+      { publicKey: kp.publicKey(), tree },
       {
         network: TESTNET,
         connector: new SecretKeyConnector(kp.secret()),
