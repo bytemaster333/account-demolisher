@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { Horizon, Keypair } from "@stellar/stellar-sdk";
+import { Asset, Horizon, Keypair } from "@stellar/stellar-sdk";
 
 import { blndTokenForNetwork } from "@/lib/adapters/blend/constants";
-import { buildBlndTrustlineTx } from "@/lib/adapters/blend/emissions-check";
 import { TESTNET } from "@/lib/config/networks";
+import { buildTrustlineTx } from "@/lib/stellar/trustline-tx";
 
 // live testnet check that the change_trust a close adds before a blend
 // emissions claim lands, and leaves a line the BLND SAC can pay into
@@ -15,11 +15,15 @@ describe("integration: BLND trustline for emissions claims on testnet", () => {
     const res = await fetch(`${TESTNET.friendbot}?addr=${encodeURIComponent(kp.publicKey())}`);
     if (!res.ok) throw new Error(`friendbot funding failed: ${res.status}`);
 
-    const tx = buildBlndTrustlineTx(TESTNET, await horizon.loadAccount(kp.publicKey()));
+    const blnd = blndTokenForNetwork(TESTNET);
+    const tx = buildTrustlineTx(
+      TESTNET,
+      await horizon.loadAccount(kp.publicKey()),
+      new Asset(blnd.code, blnd.issuer),
+    );
     tx.sign(kp);
     await horizon.submitTransaction(tx);
 
-    const blnd = blndTokenForNetwork(TESTNET);
     const account = await horizon.loadAccount(kp.publicKey());
     const line = account.balances.find(
       (b) =>

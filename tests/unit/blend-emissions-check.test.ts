@@ -1,16 +1,11 @@
-import { Keypair, type Asset } from "@stellar/stellar-sdk";
+import { Keypair } from "@stellar/stellar-sdk";
 import { describe, expect, it } from "vitest";
 
 import { blndTokenForNetwork } from "@/lib/adapters/blend/constants";
-import {
-  blndTrustlineRequirement,
-  buildBlndTrustlineTx,
-} from "@/lib/adapters/blend/emissions-check";
+import { blndTrustlineRequirement } from "@/lib/adapters/blend/emissions-check";
 import type { BlendPositionSummary } from "@/lib/adapters/positions/interface";
 import { MAINNET, TESTNET } from "@/lib/config/networks";
 import type { AccountAudit, AuditBalance } from "@/lib/types/account";
-
-import { horizonAccount } from "./blend-fixtures";
 
 const BLND = blndTokenForNetwork(MAINNET);
 const POOL_A = "CAJJZSGMMM3PD7N33TAPHGBUGTB43OC73HVIK2L2G6BNGGGYOSSYBXBD";
@@ -94,30 +89,5 @@ describe("blndTrustlineRequirement (M-26)", () => {
     const req = blndTrustlineRequirement(auditWith([]), [pool(POOL_A, [1])], TESTNET);
     expect(req?.issuer).toBe(testnetBlnd.issuer);
     expect(req?.contractId).toBe(testnetBlnd.contractId);
-  });
-});
-
-describe("buildBlndTrustlineTx (M-26)", () => {
-  const user = Keypair.random().publicKey();
-  const account = () =>
-    horizonAccount({ accountId: user, sequence: "4000", balances: [{ balance: "50.0000000" }] });
-
-  it("opens a trustline to the network's pinned BLND asset", () => {
-    const tx = buildBlndTrustlineTx(MAINNET, account());
-    expect(tx.operations).toHaveLength(1);
-    const op = tx.operations[0]!;
-    if (op.type !== "changeTrust") throw new Error(`expected changeTrust, got ${op.type}`);
-    const line = op.line as Asset;
-    expect(line.getCode()).toBe("BLND");
-    expect(line.getIssuer()).toBe(BLND.issuer);
-    expect(tx.source).toBe(user);
-    expect(tx.networkPassphrase).toBe(MAINNET.passphrase);
-  });
-
-  it("uses the next sequence without advancing the caller's account", () => {
-    const source = account();
-    expect(buildBlndTrustlineTx(MAINNET, source).sequence).toBe("4001");
-    expect(buildBlndTrustlineTx(MAINNET, source).sequence).toBe("4001");
-    expect(source.sequenceNumber()).toBe("4000");
   });
 });

@@ -2,13 +2,10 @@
 // carries its own (the soroban steps and the trustlines they pay into)
 
 import {
-  Account,
   Asset,
   Horizon,
   NotFoundError,
-  Operation,
   scValToNative,
-  TransactionBuilder,
   type Transaction,
   type rpc,
 } from "@stellar/stellar-sdk";
@@ -47,7 +44,7 @@ import { balance as readTokenBalance, buildTransfer } from "@/lib/soroban/sep41"
 import { simulate, SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
 import { stroopsToDecimal } from "@/lib/stellar/amount";
 import { withHorizonRetry } from "@/lib/stellar/horizon-retry";
-import { DEFAULT_TX_VALIDITY_SECONDS } from "@/lib/stellar/ledger-clock";
+import { buildTrustlineTx } from "@/lib/stellar/trustline-tx";
 import { applySlippageMin, resolveConfiguredSlippageBps } from "@/lib/safety/slippage";
 import type { AssetIdentifier } from "@/lib/types/account";
 import {
@@ -857,24 +854,6 @@ async function assertIssuerOpensAuthorized(
         `authorize a line for this account, or exit that position outside this app, before closing`,
     );
   }
-}
-
-// change_trust at the default (maximum) limit, so any payout fits. it bids the
-// same per-op fee as the soroban steps and the classic batches' signing window.
-// built off a copy of the account so the caller's sequence never moves.
-function buildTrustlineTx(
-  network: NetworkConfig,
-  sourceAccount: Horizon.AccountResponse,
-  asset: Asset,
-): Transaction {
-  const source = new Account(sourceAccount.accountId(), sourceAccount.sequenceNumber());
-  return new TransactionBuilder(source, {
-    fee: SOROBAN_INCLUSION_FEE,
-    networkPassphrase: network.passphrase,
-  })
-    .addOperation(Operation.changeTrust({ asset }))
-    .setTimeout(DEFAULT_TX_VALIDITY_SECONDS)
-    .build();
 }
 
 export function resolveContractIdForAsset(asset: AssetIdentifier, network: NetworkConfig): string {
