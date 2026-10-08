@@ -1,112 +1,158 @@
 ---
 title: Clear a blocked closure
-description: What to do about anything the app asks you to fix or acknowledge before you can sign.
+description: What to do about anything the app asks you to fix or read before you can sign.
 icon: TriangleAlert
 ---
 
-The app checks the account before it lets you sign, and stops for two different reasons.
-**Fix issues** means something needs an action from you. **Warnings** means something needs
-reading, not fixing.
-
-A few conditions stop a close entirely. Those are on this page too.
+The app checks the account and the plan before you sign anything, and stops for two different
+reasons. **Fix issues** lists what keeps the close from starting and needs an action from you.
+**Warnings** lists what you should know and needs only your acknowledgement. A few conditions stop
+a close entirely, and they are on this page too.
 
 ## Things you have to fix
 
-### A balance that cannot be converted to XLM
+Everything in **Fix issues** keeps **Continue** disabled until it is resolved. After you make your
+choices, select **Re-check and continue**: the app rebuilds the plan with them and checks again.
 
-The close turns every non-XLM balance into XLM. When no market path exists for one, the
-account cannot close while it still holds it, and you get a **Fix issues** step.
+### A balance with no market to XLM
 
-Choose per asset:
+The close converts every non-XLM balance to XLM through the Stellar DEX. When no market path
+exists for one, choose per asset:
 
-- **Send to your destination.** Offered only when your destination already accepts that
-  token.
-- **Return to issuer.** Sends it back to the address that created it. This is permanent and
-  you almost certainly get nothing back.
+- **Send to your destination.** Offered only when the destination already holds a trustline that
+  can take the whole amount. Not offered on an exchange close, because the payment would reach the
+  exchange without your deposit memo.
+- **Return to issuer (keep nothing).** Sends it back to the account that issued it.
 
-You can also sell or move the token in another app first, then select **Re-check and
-continue** to rebuild the plan.
+You can also sell or move the token in another app first and rebuild the plan.
 
-Until you choose something for each one, that balance keeps blocking the close.
+### A sale over the price-impact limit
+
+Before it sells a balance, the app quotes the whole balance and a small reference trade of one
+thousandth of it through the same market. When selling everything would get a rate more than 2%
+worse than the reference, or no reference price exists, nothing is sold without your answer.
+Choose per asset: **Sell anyway at this price**, **Send it as-is to your destination** (when the
+destination can take it), or **Return to issuer (keep nothing)**.
+
+### A token swap that was refused
+
+When you chose to convert standalone tokens to XLM, a swap is refused before signing when it is
+over the same 2% limit, cannot be priced, would pay less than the quote you reviewed, or has no
+route at all. Choose per token: **Swap anyway at this price** (not offered without a route),
+**Send it as-is to your destination**, or **Leave it on the account**. A token you leave stays on
+the deleted account and cannot be recovered.
+
+### Blend backstop rewards that cannot be claimed
+
+When the claim of your accrued backstop BLND fails in simulation on the network today, the plan
+cannot claim it before queueing the withdrawal. Tick **Leave ... BLND unclaimed and continue** to
+queue the withdrawal without it. These rewards never block the close once you have answered.
+
+### Everything else listed under **This close can't start yet**
+
+Some blockers have nothing to choose and say what to do in their own words. These include:
+
+- A balance frozen by its issuer. It cannot be sent, sold or returned, and its trustline cannot
+  be removed. Ask the issuer to unfreeze it or claw it back.
+- A sequence number bumped so far ahead that the network refuses the merge until a later ledger.
+  The message names the ledger and an estimate of the wait.
+- A DeFi protocol the app could not read. The close stays blocked until a rebuilt plan reads it,
+  because a position missed here would be left on the deleted account.
+- A pool exit that pays out an asset this account has no usable trustline for, and the plan
+  cannot open one (the issuer authorizes each trustline, or the issuer account is gone).
+- An exchange close where the account does not have the XLM to fund the temporary forwarding
+  account at the merge.
+- A step of the plan that could not be built or simulated, shown with its reason.
 
 ## Things you only have to read
 
-These appear in the **Warnings** step. None of them stop the close. Tick each box, then
-continue.
+These appear in the **Warnings** step. Tick each box, then select **Continue to review**.
 
 ### A token that looks suspicious
 
-Three checks run over the account's tokens and flag anything matching a known scam
-pattern:
+Four checks run over the account's tokens:
 
-| Flag                  | What tripped it                                                               |
-| --------------------- | ----------------------------------------------------------------------------- |
-| **Impersonation**     | Uses a well-known asset's symbol but a different issuer than the official one |
-| **Look-alike**        | The symbol is one or two characters away from a well-known one                |
-| **Hidden characters** | The symbol contains characters outside A to Z and 0 to 9                      |
-| **Unrecognized**      | The token is not on the list of known ones                                    |
+| Flag                  | What tripped it                                                                         |
+| --------------------- | --------------------------------------------------------------------------------------- |
+| **Impersonation**     | The symbol of a well-known asset, from a different issuer or contract than the real one |
+| **Look-alike**        | A symbol one or two characters away from a well-known one                               |
+| **Hidden characters** | A symbol with characters outside A to Z, a to z and 0 to 9, or a name with hidden text  |
+| **Unrecognized**      | A token contract the app does not list for this network                                 |
 
-The check is not proof. A real asset can trip it. It is flagged so you can confirm you
-recognize what you held before you continue.
+A flag is not proof. A real asset can trip it. It is there so you confirm you recognize the token
+before you continue.
 
-### The scan could not finish
+### A scan that did not finish
 
-When a scan does not complete, the app says so rather than proceeding as though the
-account were fully understood. You see which one fell short: token permissions, DeFi
-positions, or the optional standalone-token scan.
+When a scan does not complete, the app says which one: token spending permissions, DeFi
+positions, or the optional standalone-token scan. A DeFi discovery that failed also blocks the
+close in **Fix issues**.
 
-If you have used Blend, Aquarius, Soroswap, or FxDAO, check those apps before closing so
-nothing is left behind.
+### A Blend loan you cannot repay from the account
+
+Repaying a Blend loan needs the borrowed token in the account, because Blend has no built-in
+swap. When the account holds too little of it, the warning says so: top up that token in the
+account, or unwind the loan yourself before closing.
+
+### Tokens from contracts the app does not recognize
+
+The close unwinds Blend, Aquarius and Soroswap positions. When the account holds tokens from
+other contracts, the app warns that any of them can be a position in another app (a pool share, a
+loan or vault receipt, a staked balance). Unwind those in their own app first: the close can only
+move the token as-is.
 
 ### A large balance
 
-An account holding more than 1000 XLM gets its own acknowledgement. Check the amount and
-the destination once more before you continue.
+A close that moves more than 1000 XLM, counting native XLM, quoted credit conversions and claimed
+XLM, or that moves anything it cannot price, gets its own acknowledgement. Check the destination
+once more before you continue.
 
 ### Things handled for you
 
-Pending payments waiting for the account, and deposits the account locked for its own
-entries, are collected and released during the close. You keep the value and there is
-nothing to do.
+The close collects pending payments waiting for the account, releases reserves the account holds
+for entries it sponsors itself, and opens trustlines so pending payments in new assets can be
+collected. You keep the value and there is nothing to do.
+
+### Pending payments left behind
+
+A claimable balance that is not claimable yet, or that the close cannot collect (no trustline the
+close can open, an unauthorized trustline, a full trustline, or no XLM for the new trustline's
+reserve), is listed with the reason. Once the account is deleted it cannot collect them.
+
+### Standalone tokens
+
+A SEP-41 token held in its own contract does not block the close, and it stays on the deleted
+account unless you move it. The **Standalone tokens** card lists the ones the scan found in about
+the last 7 days and lets you add one by contract address. Ticked tokens are sent to your
+destination before the account closes, or converted to XLM through Soroswap when you choose that.
+Rebuild the plan to apply your choice. An exchange destination cannot receive these tokens, so
+move any you want to keep to a personal wallet first.
 
 ## Things that stop the close completely
 
 ### This account can't be closed
 
-The account has the `auth_immutable` flag set. Stellar forbids merging an account with
-that flag, and the flag is permanent, so no tool can close it.
-
-Your funds are safe and the account works normally. You can keep using it, or move the
-funds out to another account yourself.
+The account has the `auth_immutable` flag set. The network never merges such an account, and the
+flag is permanent, so no tool can close it. The account keeps working normally, and you can move
+the funds out yourself.
 
 ### This account is paying deposits for other accounts
 
-The account is sponsoring entries that belong to other accounts. Stellar does not allow an
-account to close while it does that.
+The account sponsors entries that belong to other accounts, and the network does not merge a
+sponsor. Those sponsorships have to be removed first with another tool, for example the Stellar
+Laboratory. Then come back and try again.
 
-The owner of those entries has to remove them, using another tool such as the Stellar
-Laboratory. Once they are gone, come back and try again.
+Claimable balances the account created for itself are different: the close claims them and that
+releases their sponsorship.
 
-Entries the account sponsors for _itself_ are different. Those are released during the
-close automatically and do not block anything.
+### A Blend backstop deposit
 
-### A Blend position you have to deal with first
-
-Two Blend cases need action before the account can close: a loan you cannot currently
-repay, and a backstop deposit with its 17-day queue. Both are covered in
-[Close an account that holds DeFi](/docs/users/close-with-defi).
-
-## Custom tokens that would be left behind
-
-A SEP-41 token held in its own contract does not block the close, and it stays on the
-deleted account unless you move it. The Warnings step lists these under **Standalone
-tokens** so you can tick the ones to sweep.
-
-An exchange destination cannot receive them at all. Move any you want to keep to a
-personal wallet first.
+A backstop withdrawal is locked for 17 days on the current backstop and 21 days on the earlier
+one. The close queues it and, while it is locked, only prepares the close.
+[Close an account that holds DeFi](/docs/users/close-with-defi) covers this.
 
 ## Still stuck
 
-- A step that failed during execution is covered in
+- A step that failed during the close is covered in
   [When a step fails](/docs/users/when-a-step-fails).
 - [FAQ](/docs/users/faq) has the short answers.

@@ -4,27 +4,27 @@ description: The full walkthrough, from entering a destination to the closed-acc
 icon: Trash2
 ---
 
-Closing an account clears everything attached to it, converts what is left to XLM, sends
-the whole balance to an address you choose, and deletes the account from the ledger. The
-released reserve is part of what you receive.
+Closing an account clears everything attached to it, converts what has a market to XLM, sends
+the whole balance to an address you choose, and deletes the account from the ledger. The XLM
+Stellar kept locked as reserve is part of what you receive.
 
-This cannot be undone. The app puts several deliberate checks in front of the final
-confirmation for that reason.
+A close cannot be undone, so the app puts several deliberate checks in front of the final
+confirmation.
 
 ## Before you start
 
 - Connect the account you want to close. See
   [Connect your wallet](/docs/users/connect-your-wallet).
-- Have the destination address ready. It must already exist and be funded on the network,
-  because a close merges into it.
-- Sending to an exchange? Read
-  [Send the funds to an exchange](/docs/users/send-to-an-exchange) first, because the
-  deposit memo matters.
+- Have the destination address ready. It must already exist on the network, because a close
+  merges into it.
+- Sending to an exchange? Read [Send the funds to an exchange](/docs/users/send-to-an-exchange)
+  first, because the deposit memo decides whether the exchange credits you.
 
 ## The steps
 
-Four steps always appear: **Connect**, **Configure**, **Review**, **Close**. Three more
-are inserted only when they apply.
+Four steps always appear: **Connect**, **Configure**, **Review** and **Close**. **Fix issues**
+and **Warnings** appear when the plan has something for you to resolve or read, and
+**Signatures** appears for a shared account.
 
 <Steps>
 
@@ -32,29 +32,31 @@ are inserted only when they apply.
 
 ### Configure
 
-Select where the funds go.
+Answer **Where should the funds go?**
 
-**Destination address.** Paste the `G` address that receives everything. The app checks
-the format, refuses your own account (Stellar rejects a self-merge), and confirms the
-destination exists on the network. If it does not exist yet, fund it first.
+**Destination address.** Paste the `G` address that receives everything. The app checks the
+format, refuses your own account (the network rejects a self-merge), and reads the destination
+from the network. A destination that does not exist yet blocks the close until you fund it.
 
-**Memo.** Optional for a personal wallet, and attached directly to the closing
-transaction when you set one. Required by most exchanges.
+**Memo.** Pick a type (Text, ID, Hash or Return) and paste the value. A personal wallet needs
+none. On a direct close the memo rides on the transaction that closes the account. A destination
+that requires a memo, a known exchange or an account flagged under SEP-29, keeps **Continue**
+disabled until you enter a well-formed one.
 
-**Payments waiting to be collected.** If the account has claimable balances, they appear
-here, pre-ticked, and are collected into your balance before the close. Untick any you
-want to leave behind, but note that unticked ones are lost when the account closes.
-
-Select **Continue, preview the plan**.
+Select **Continue, preview the plan**. The app reads the account, discovers its DeFi positions,
+token allowances and standalone tokens, builds the plan and simulates every Soroban step against
+the live network. Nothing is signed yet.
 
 </Step>
 
 <Step>
 
-### Fix issues, only if something blocks the close
+### Fix issues, when something keeps the close from starting
 
-This step appears when a balance cannot be converted to XLM and therefore blocks the
-merge. You decide what happens to each one, then select **Re-check and continue**.
+This step lists everything that stops the close, and each item that needs a choice gets one: a
+balance with no market to XLM, a sale over the 2% price-impact limit, a token swap that was
+refused, or Blend backstop rewards that cannot be claimed today. Make your choices, then select
+**Re-check and continue**, which rebuilds the plan with them.
 
 See [Clear a blocked closure](/docs/users/clear-a-blocked-closure).
 
@@ -62,13 +64,18 @@ See [Clear a blocked closure](/docs/users/clear-a-blocked-closure).
 
 <Step>
 
-### Warnings, only if there is something to read
+### Warnings, when there is something to read
 
-This step appears when there is something to acknowledge rather than fix: a suspicious
-looking token, an incomplete scan, a balance over 1000 XLM, or items the close handles
-for you automatically.
+This step collects what you should know but nothing you have to fix: a token that looks like a
+copy of a known one, a scan that did not finish, a close that moves over 1000 XLM or holdings it
+cannot price, payments the close collects for you, and notes about the plan.
 
-Nothing here stops the close. Tick each box, then select **Continue to review**.
+Here you also see **Pending payments this close collects**: every claimable balance the account
+can claim now, ticked. Untick one to leave it behind. A balance the account sponsors itself is
+always collected, because leaving it would keep the account a sponsor and block the merge. A
+change applies when you rebuild the plan.
+
+Tick each box, then select **Continue to review**.
 
 </Step>
 
@@ -76,26 +83,22 @@ Nothing here stops the close. Tick each box, then select **Continue to review**.
 
 ### Review
 
-The app has now read your account, built the plan, and simulated every Soroban step
-against the live network. Nothing has been signed.
+The heading reads **Review before closing**. At the top:
 
-You see three figures at the top:
+| Figure                          | Meaning                                                                                                           |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| **Destination receives**        | What arrives at the destination                                                                                   |
+| **Network fees**                | An estimate and the most the close can pay, shown as "about ... XLM, at most ... XLM". None of it goes to the app |
+| **Reserve released (included)** | The XLM the network kept locked in the account, already part of the amount above                                  |
 
-| Figure                   | Meaning                                                                         |
-| ------------------------ | ------------------------------------------------------------------------------- |
-| **Destination receives** | What arrives after network fees                                                 |
-| **Network fees**         | What the network charges to process the steps. It is not paid to the app        |
-| **Reserve released**     | The XLM Stellar had locked in the account, already included in the amount above |
+Below the figures is the plan, grouped by phase in the order it runs, such as **Token permissions**,
+**Repay loans**, **Withdraw from apps**, **Collect rewards**, **Leftover tokens**, **Close the
+account** and, for an exchange, **Deliver to destination**. A group appears only when the plan
+has steps in it, and a Blend backstop or a classic unwind ahead of a loan repayment adds its own
+group. The last two carry an **Irreversible** badge.
 
-Below that is the plan itself, grouped into phases and listed in the order it runs. Each
-step carries a plain-language label and a short explanation. A green check on a step means
-its dry run passed.
-
-The last groups, **Close the account** and **Deliver to destination**, carry an
-**Irreversible** badge.
-
-Check the destination address shown under **SENDING EVERYTHING TO**, then select
-**Continue to final confirmation**.
+Check the address under **SENDING EVERYTHING TO**, then select **Continue to final
+confirmation**. The button stays disabled while anything in the review still blocks the close.
 
 </Step>
 
@@ -103,14 +106,10 @@ Check the destination address shown under **SENDING EVERYTHING TO**, then select
 
 ### Confirm
 
-A dialog asks you to type the **last four characters** of the destination address. They
-are underlined in the address above the input.
-
-A four-second timer runs at the same time. The confirm button stays locked until both the
-timer finishes and the characters match. This catches a wrong paste and a hijacked
-clipboard.
-
-Select **Close account**.
+A dialog asks you to type the **last four characters** of the destination. They are underlined
+in the address above the input. A four-second timer runs at the same time, and **Close account**
+stays locked until the timer finishes and the characters match. This catches a wrong paste or a
+swapped clipboard.
 
 </Step>
 
@@ -118,16 +117,18 @@ Select **Close account**.
 
 ### Close
 
-Each transaction is signed in your wallet and submitted in order. Approve each prompt as
-it appears.
+The app signs and submits each transaction in order. Approve each prompt in your wallet as it
+appears.
 
-You sign once per transaction, not once for the whole plan, because Stellar cannot carry
-Soroban and classic operations in one signed transaction. An account with no DeFi and no
-more than 100 classic operations is a single signature.
+Every Soroban step is its own transaction, because Stellar does not combine Soroban and classic
+operations in one transaction. The classic close is one transaction for most accounts. It takes
+more when it holds over 100 operations, and an account with a classic liquidity pool share
+withdraws it in a transaction of its own first. Right before each Soroban signature the progress
+line shows the network fee that signature allows.
 
 <Callout type="warn">
-  Keep the tab open until it finishes. Leaving partway through can stop the close with some steps
-  done and the account still open.
+  Keep the tab open until it finishes. Closing the tab stops the close partway. Steps that already
+  landed stay on chain, and [When a step fails](/docs/users/when-a-step-fails) covers how to finish.
 </Callout>
 
 </Step>
@@ -136,31 +137,31 @@ more than 100 classic operations is a single signature.
 
 ## When it finishes
 
-The heading reads **Account closed** and shows the amount sent and the destination. You
-get:
+The heading reads **Account closed** with the amount sent and the destination. You get:
 
 - A **PROOF** link to the merge transaction on a block explorer.
-- **Save a receipt**, which copies a text record of the closure and a link for every
-  transaction it ran.
+- **Copy a receipt**, which copies a text record of the closure with a link for every
+  transaction it ran. Where the browser does not allow copying, the receipt text is shown on the
+  page instead.
+- **Download .txt**, which saves the same receipt as a text file.
 
-Save the receipt. A closed account cannot be looked up afterwards, so this is your record.
+Keep the receipt. A closed account cannot be looked up by its address afterwards.
 
 ## What it costs
 
-The app is free and takes no cut. You pay Stellar network fees for the transactions it
-submits.
+The app is free and takes no cut. You pay the Stellar network fees of the transactions it
+submits, and Review shows their estimate and maximum before you sign.
 
-Every operation costs at least the network's base fee of 100 stroops. The closing
-transaction bids above that when the network is busy, and raises the bid if a submission
-comes back rejected for a fee that was too low. Each Soroban step also pays a resource fee
-worked out from its simulation.
-
-The Review step shows the total before you sign anything.
+The classic transactions bid from what recent ledgers charged, and raise the bid when the network
+rejects it as too low, up to 0.1 XLM per operation. Each Soroban step bids a 0.01 XLM inclusion
+fee plus the resource fee its simulation priced, and the app refuses to sign a step whose fee is
+over the cap for its kind of step.
 
 ## If a step fails
 
-Your funds stay safe and the account stays open. See
-[When a step fails](/docs/users/when-a-step-fails).
+Steps that landed stay on chain. Whether the account is still open depends on how far the close
+got. [When a step fails](/docs/users/when-a-step-fails) explains each case and what **Retry** and
+**Start over** do.
 
 ## How it works underneath
 

@@ -1,94 +1,122 @@
 ---
 title: When a step fails
-description: What happens when a closure stops partway through, and how to finish it.
+description: What a close that stopped partway leaves behind, and how to finish it.
 icon: RotateCcw
 ---
 
-A closure that stops does not lose funds. The account stays open, its balance is untouched,
-and every step that already completed is recorded on Stellar.
+When a close stops, the heading reads **Couldn't finish closing the account** and the plan shows
+which step stopped. Steps that landed on chain stay on chain: a repaid loan stays repaid and a
+converted balance stays converted. What that means for your account depends on how far the close
+got, and the page tells you which case you are in.
 
-The header reads **Couldn't finish closing the account** and the plan shows exactly which
-step stopped.
+## Where your funds are
 
-## What to do
+| What the page says                                                               | What it means                                                                                                                                                    |
+| -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Your account is still open.** No step of this close finished on chain.         | Nothing ran. When the close needed several classic transactions, the page asks you to check the account on the explorer, because an earlier one can have landed. |
+| **Some steps already ran and changed your balances.**                            | The account is still open. The page lists the steps that finished and links each classic transaction that landed.                                                |
+| **The account merge landed, so this account is closed.**                         | The close is done on chain, even though the run reported a problem afterwards.                                                                                   |
+| **Your account was closed and the funds are in a temporary forwarding account.** | An exchange close merged the account into its temporary forwarding account, and the forward to the exchange did not land. See below.                             |
 
-Select **Retry**. The closure continues from where it stopped rather than starting again,
-so completed steps are not repeated.
+## Retry or start over
 
-If you would rather begin from a fresh reading of the account, select **Start over**.
-Nothing has been lost either way.
+**Retry** depends on why the close stopped. The line under the failure says which of the two it
+does:
+
+- **"Press Retry to run the remaining steps again; steps marked done are not repeated."** The
+  close runs the same reviewed plan again with the wallet you have connected. Steps that landed
+  are skipped, and everything else runs again, including the merge.
+- **"Retry re-checks the account and builds a fresh plan before anything else runs."** The close
+  starts from a fresh reading of the account, and you review the new plan before anything is
+  signed.
+
+Retry runs the same plan again when the account's sequence number moved, a Soroban step's ledger
+state changed, the network or a service did not answer, your wallet did not sign, a submission's
+outcome is not known yet, the exchange forward did not land, the close was stopped between
+steps, or another run of the close for this account is still going. Any other failure rebuilds
+the plan.
+
+**Start over** discards the run and takes you back to Configure.
+
+Retry needs the account and network the close was running on. When you switched either, the
+button asks you to reconnect them first.
 
 ## Read the reason
 
-Under the heading you get a plain-language summary, such as which step of how many could
-not complete and why.
-
-Below the plan, result-code chips show the outcome per operation: green for the ones that
-succeeded, red for the one that did not. A collapsed **raw error** section holds the exact
-error text.
-
-These are the phrases the app uses and what each one means:
+Under the heading you get a summary in plain words, such as which step stopped and why. For a
+classic transaction, result-code chips show each operation's outcome, and a collapsed **raw
+error** section holds the exact error text. These are the phrases the summary uses:
 
 | What you see                                                    | What happened                                         |
 | --------------------------------------------------------------- | ----------------------------------------------------- |
 | the fee offered was below the network's minimum                 | The network got busier than the bid allowed for       |
 | the account's transaction number was out of date                | The account changed between building and submitting   |
 | the time window to submit it passed                             | The transaction took too long to reach the network    |
-| one of the steps was rejected, so nothing was applied           | A step failed, so the whole transaction was discarded |
-| there wasn't enough balance to cover it                         | The account no longer holds enough for that step      |
-| it would drop the account below its minimum reserve             | The step would leave less than Stellar requires       |
-| the destination can't hold that asset (no trustline)            | The destination has no trustline for that token       |
-| the account no longer holds the asset this step tried to send   | The balance moved between planning and submitting     |
-| the destination can't hold any more of that asset               | The destination's trustline is at its limit           |
-| the destination account doesn't exist                           | The destination is not funded on this network         |
+| one of the steps was rejected, so nothing was applied           | One operation failed, so the whole transaction failed |
+| there wasn't enough balance to cover it                         | The account no longer holds enough for that operation |
+| it would drop the account below its minimum reserve             | The operation would leave less than Stellar requires  |
+| the destination can't hold that asset (no trustline)            | The receiving account has no trustline for that asset |
+| the account no longer holds the asset this step tried to send   | The trustline is gone since the plan was built        |
+| the destination can't hold any more of that asset               | The receiving trustline is at its limit               |
+| the destination account doesn't exist                           | The receiving account is not on this network          |
 | the swap would have returned less than allowed, the price moved | The market moved past the slippage limit              |
 | the step was built incorrectly                                  | The operation was malformed                           |
 | the token's issuer no longer exists                             | The issuing account is gone                           |
 
-## What retries on its own
+## What the close retries on its own
 
-Some failures never reach you, because the closure handles them while it runs:
+Some failures never reach you, because the close handles them while it runs:
 
-- **A fee that was too low** is retried with a higher bid.
-- **A price that moved** is retried after re-resolving paths and recomputing the minimums
-  against fresh state.
-- **A stale transaction number** corrects itself, because the closing transaction is
-  rebuilt from the account's current state on every attempt.
-- **A brief network read error** is retried with a short delay.
+- **A fee bid that was too low** is raised threefold, up to 0.1 XLM per operation.
+- **A classic transaction the network refused for a stale sequence number, an expired time
+  window, a moved price or a changed ledger entry** is rebuilt from a fresh reading of the
+  account and submitted again. After a price refusal the balances are quoted again; when the fresh
+  quotes are the ones that just failed, the close stops before selling anything.
+- **A Soroban step refused for a stale sequence number, changed ledger state or a stale resource
+  fee** is rebuilt and simulated again before it is signed again.
+- **A brief Horizon error** (a rate limit or a server error) on a read is retried with a short
+  delay.
 
-Retries are bounded, so a genuinely stuck step surfaces to you instead of looping.
-
-Failures with a definite cause, such as a missing trustline, are not retried. Retrying
-would produce the same result, so the app reports the exact error instead.
+Each of these is bounded at three attempts, so a step that keeps failing reaches you instead of
+looping. A failure with a definite cause, such as a missing trustline, is not retried, because
+it would fail the same way.
 
 ## What never happens
 
-**The account is not merged around an open position.** If a DeFi exit fails, the steps
-depending on it are skipped rather than worked around, and the merge does not run. Closing
-an account with a position still open would strand those funds, so the app refuses.
+**The account is not merged around an open position.** Right before the merge, the close
+discovers your Blend, Aquarius and Soroswap positions again and refuses to merge while any is
+open or cannot be read.
 
-**A step is not reported as done unless it confirmed on chain.** Each step waits for its
-receipt before the row ticks over.
+**A step is not reported as done unless it confirmed on chain.** An exchange close counts as
+finished only once the forward to the exchange landed.
+
+**A submission with an unknown outcome is not sent twice.** Retry looks it up on chain first.
 
 ## If it stopped before the plan was built
 
-You see **Couldn't prepare this close** instead. This happens before anything is signed.
-
-If the message mentions the account not being found, check the network selector in the top
-right. An account funded on mainnet does not exist on testnet, and vice versa.
-
-Select **Try again**, or **Start over** to begin fresh.
+You see **Couldn't prepare this close** instead, before anything is signed. When the message says
+the account has no record on this network, check the network selector in the top right: an
+account funded on mainnet does not exist on testnet, and the other way round. Select **Try
+again**, or **Start over**.
 
 ## If an exchange forward was interrupted
 
-When a close to an exchange stops after your account merged into the helper account but
-before the final delivery, the funds sit in the helper account.
+A close to an exchange merges your account into a temporary forwarding account, then forwards the
+balance to the exchange with your deposit memo. When the forward does not land, the balance sits
+in the forwarding account.
 
-Next time you open the app with that account connected, a banner reads **An exchange
-forward was interrupted**. Select **Resume the forward** to sweep them on to your
-destination.
+The failure screen offers **Resume the forward**. When you come back later with that account
+connected, a banner reads **An exchange forward was interrupted** with the same button. Resuming
+sends the balance on to your destination with your memo, and it works after any amount of time:
+the app renews the forward's authorization through the server while the forwarding account
+exists.
+
+The record that makes resuming possible is saved in this browser before the merge is signed. A
+close does not start when the browser cannot store it. Resume from the same browser profile, and
+do not clear its site data while a forward is pending: the forwarding account's key is derived
+from a value that only that record holds, so without it nobody can finish the forward.
 
 ## How it works underneath
 
-[Execution and recovery](/docs/developers/internals/execution) covers the retry rules, the
-guards that refuse a merge, and the exact bounds on each attempt.
+[Execution and recovery](/docs/developers/internals/execution) covers the retry rules, the checks
+that refuse a merge, and the bounds on each attempt.
