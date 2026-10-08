@@ -1463,6 +1463,40 @@ describe("the review plans the trustlines pool exits pay into", () => {
     actor.stop();
   });
 
+  it("blocks a missing line the close could open but the payout could not use", async () => {
+    const machine = pageFlowMachine.provide({
+      actors: {
+        discover: fromPromise(async () => ({
+          ...discovered,
+          positions: {
+            ...EMPTY_POSITIONS,
+            soroswap: [{ pair: { tokenA: USDC_SAC, tokenB: XLM_SAC }, shareBalance: 10n }],
+          },
+          exitTrustlineGaps: [],
+          unopenableExitLines: [
+            {
+              contractId: USDC_SAC,
+              code: "USDC",
+              issuer: USDC_ISSUER,
+              reason: "missing",
+              why: "issuer_auth_required",
+            },
+          ],
+        })) as never,
+      },
+    });
+    const actor = createActor(machine).start();
+    actor.send({ type: "START", input: input() });
+    await settle(actor, "awaiting_confirmation");
+    const ctx = actor.getSnapshot().context;
+    expect(startMediatorFlow).not.toHaveBeenCalled();
+    expect(ctx.tree!.allNodes.size).toBe(0);
+    expect(ctx.reviewBlockers).toEqual([
+      expect.stringMatching(/USDC.*issuer authorizes each new trustline/),
+    ]);
+    actor.stop();
+  });
+
   it("refuses an exchange close whose exit pays a token it can't forward, before minting a flow", async () => {
     const actor = reviewWith([HOSTILE_TOKEN, XLM_SAC], [], input());
     await settle(actor, "awaiting_confirmation");

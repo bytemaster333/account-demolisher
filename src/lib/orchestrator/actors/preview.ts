@@ -53,6 +53,7 @@ import { blndTrustlineRequirement } from "@/lib/adapters/blend/emissions-check";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import type { HeldToken } from "@/lib/soroban/held-tokens";
 import type { ExitTrustlineGap } from "@/lib/soroban/stellar-asset";
+import type { UnopenableExitLine } from "@/lib/orchestrator/actors/discover";
 
 export interface PreviewInput {
   readonly audit: AccountAudit;
@@ -84,6 +85,8 @@ export interface PreviewInput {
   readonly exitTrustlineGaps?: readonly ExitTrustlineGap[];
   // the token the aquarius reward claims pay (discovery), when a claim pays some
   readonly aquariusRewardToken?: string;
+  // missing payout lines the close can't open usefully (discovery)
+  readonly unopenableExitLines?: readonly UnopenableExitLine[];
 }
 
 // why a held-token conversion needs the user's answer
@@ -237,6 +240,11 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
   // a plan that can only prepare the close (a backstop queue stays locked after
   // this run) never merges: it needs no mediator flow and no classic batches
   const prepare = preparePlanFor(input.positions);
+
+  // an exit that pays into a line the close can't open usefully would trap
+  // after the steps ahead of it ran, so nothing is planned
+  const unopenable = unopenableExitLineBlockers(input.unopenableExitLines ?? []);
+  if (unopenable.length > 0) return blockedPreview(...unopenable);
 
   // a frozen balance blocks the merge outright, and the batcher refuses to plan
   // around it, so the review shows the freeze instead of a plan that would run
@@ -515,13 +523,13 @@ function sameIds(a: readonly string[], b: readonly string[]): boolean {
 }
 
 // a review with nothing to run and one reason it can't
-function blockedPreview(blocker: string): PreviewOutput {
+function blockedPreview(...blockers: string[]): PreviewOutput {
   return {
     tree: buildPlanTree([]),
     unroutableCredits: [],
     heldTokenWarnings: [],
     reviewNotes: [],
-    reviewBlockers: [blocker],
+    reviewBlockers: blockers,
     refusedConversions: [],
     emissionForfeits: [],
   };
@@ -638,6 +646,23 @@ export function exitTrustlineBlockers(tree: PlanTree, gaps: readonly ExitTrustli
     );
   }
   return out;
+}
+
+// a missing payout line whose issuer authorizes each new trustline, or whose
+// issuer account is gone: the close can't open one the exit could pay into
+export function unopenableExitLineBlockers(lines: readonly UnopenableExitLine[]): string[] {
+  return lines.map(
+    (l) =>
+      `A pool exit in this plan pays out ${l.code} (issuer ${l.issuer}), and this account has ` +
+      `no ${l.code} trustline. ` +
+      (l.why === "issuer_auth_required"
+        ? "Its issuer authorizes each new trustline, so a line the close opened could not " +
+          "receive the payout. Add the trustline from your wallet, have the issuer authorize " +
+          "it, then rebuild the plan."
+        : "The issuer account no longer exists, so no trustline for it can be opened and the " +
+          "exit can't pay it to this account. The account can't be closed while that position " +
+          "is open."),
+  );
 }
 
 // the payout trustlines the close opens. the final batches remove every line

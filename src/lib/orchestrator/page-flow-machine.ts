@@ -14,7 +14,11 @@ import type { PhaseReceipt } from "@/lib/orchestrator/journal";
 import { prepareTreeForExecution, previewBlockers } from "@/lib/orchestrator/retry";
 import { txHashHex } from "@/lib/orchestrator/submit";
 import { discoveryWarningFor } from "@/lib/orchestrator/warnings";
-import { discoverActor, type DiscoverInput } from "@/lib/orchestrator/actors/discover";
+import {
+  discoverActor,
+  type DiscoverInput,
+  type UnopenableExitLine,
+} from "@/lib/orchestrator/actors/discover";
 import {
   previewActor,
   type EmissionForfeit,
@@ -117,6 +121,8 @@ export interface PageFlowContext {
   // pool payouts this account has no usable trustline for; the preview turns
   // the ones its exits pay into blockers
   readonly exitTrustlineGaps: readonly ExitTrustlineGap[];
+  // missing payout lines the close can't open usefully; the review blocks on them
+  readonly unopenableExitLines: readonly UnopenableExitLine[];
   // the token the aquarius reward claims pay, when discovery found a claim that
   // pays some; the plan opens a missing line for it ahead of the claims
   readonly aquariusRewardToken: string | null;
@@ -190,6 +196,7 @@ const initialContext: PageFlowContext = {
   discoveryWarnings: [],
   discoveryDiagnostics: [],
   exitTrustlineGaps: [],
+  unopenableExitLines: [],
   aquariusRewardToken: null,
   unroutableCredits: [],
   reviewBlockers: [],
@@ -444,6 +451,7 @@ export const pageFlowMachine = setup({
             discoveryWarnings: ({ event }) => event.output.discoveryWarnings,
             discoveryDiagnostics: ({ event }) => event.output.discoveryDiagnostics,
             exitTrustlineGaps: ({ event }) => event.output.exitTrustlineGaps,
+            unopenableExitLines: ({ event }) => event.output.unopenableExitLines,
             aquariusRewardToken: ({ event }) => event.output.aquariusRewardToken ?? null,
           }),
         },
@@ -499,6 +507,7 @@ export const pageFlowMachine = setup({
             ...(i.leaveHeldTokens ? { leaveHeldTokens: i.leaveHeldTokens } : {}),
             ...(i.deterministicDisposal ? { deterministicDisposal: true } : {}),
             exitTrustlineGaps: context.exitTrustlineGaps,
+            unopenableExitLines: context.unopenableExitLines,
             ...(context.aquariusRewardToken !== null
               ? { aquariusRewardToken: context.aquariusRewardToken }
               : {}),

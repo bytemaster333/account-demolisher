@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createActor, toPromise } from "xstate";
-import { Asset } from "@stellar/stellar-sdk";
+import { Asset, NotFoundError } from "@stellar/stellar-sdk";
 
 import { EMPTY_POSITIONS } from "@/lib/adapters/positions/interface";
 
@@ -15,6 +15,11 @@ const readWrappedAssets = vi.fn();
 const getUserReward = vi.fn();
 const readAquariusRewardToken = vi.fn();
 const scanAllowances = vi.fn();
+const loadIssuer = vi.fn();
+
+vi.mock("@/lib/stellar/horizon-client", () => ({
+  getHorizon: () => ({ loadAccount: (...a: unknown[]) => loadIssuer(...a) }),
+}));
 
 vi.mock("@/lib/stellar/account-audit", async () => {
   const actual = await vi.importActual<typeof import("@/lib/stellar/account-audit")>(
@@ -111,6 +116,7 @@ beforeEach(() => {
   );
   getUserReward.mockResolvedValue(0n);
   readAquariusRewardToken.mockResolvedValue(AQUA_SAC);
+  loadIssuer.mockResolvedValue({ flags: { auth_required: false } });
 });
 
 describe("discovery finds the trustlines a pool exit pays into", () => {
@@ -178,6 +184,50 @@ describe("discovery finds the trustlines a pool exit pays into", () => {
       /Could not check which trustlines your pool exits pay into \(processing limit\)/,
     );
     expect(readWrappedAssets).not.toHaveBeenCalled();
+  });
+});
+
+describe("discovery sets apart a payout line the close could not use", () => {
+  it("keeps a line whose issuer authorizes every new trustline out of the plan", async () => {
+    getPositions.mockResolvedValue(lpPosition);
+    loadIssuer.mockResolvedValue({ flags: { auth_required: true } });
+    const out = await discover();
+    expect(loadIssuer).toHaveBeenCalledWith(USDC_ISSUER);
+    expect(out.exitTrustlineGaps).toEqual([]);
+    expect(out.unopenableExitLines).toEqual([
+      {
+        contractId: USDC_SAC,
+        code: "USDC",
+        issuer: USDC_ISSUER,
+        reason: "missing",
+        why: "issuer_auth_required",
+      },
+    ]);
+  });
+
+  it("keeps a line whose issuer account is gone out of the plan", async () => {
+    getPositions.mockResolvedValue(lpPosition);
+    loadIssuer.mockRejectedValue(
+      new NotFoundError("Not Found", { status: 404, statusText: "Not Found", data: {} }),
+    );
+    const out = await discover();
+    expect(out.exitTrustlineGaps).toEqual([]);
+    expect(out.unopenableExitLines.map((l) => l.why)).toEqual(["issuer_missing"]);
+  });
+
+  it("plans a line whose issuer lets anyone hold the asset", async () => {
+    getPositions.mockResolvedValue(lpPosition);
+    const out = await discover();
+    expect(out.exitTrustlineGaps).toHaveLength(1);
+    expect(out.unopenableExitLines).toEqual([]);
+  });
+
+  it("stops discovery when the issuer can't be read", async () => {
+    getPositions.mockResolvedValue(lpPosition);
+    loadIssuer.mockRejectedValue(new Error("horizon 503"));
+    await expect(discover()).rejects.toThrow(
+      /Could not check which trustlines your pool exits pay into \(horizon 503\)/,
+    );
   });
 });
 

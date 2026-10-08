@@ -17,6 +17,7 @@ import {
   exitTrustlineBlockers,
   exitTrustlineNotes,
   refusedHeldTokenConversions,
+  unopenableExitLineBlockers,
   refuseUnsafeSteps,
 } from "@/lib/orchestrator/actors/preview";
 import { previewBlockers } from "@/lib/orchestrator/retry";
@@ -348,6 +349,34 @@ describe("a pool exit that pays into a missing or unauthorized trustline blocks 
         "trustline.",
     ]);
     expect(exitTrustlineNotes(buildPlanTree([lp()]))).toEqual([]);
+  });
+});
+
+describe("a payout line the close can't open usefully blocks the review", () => {
+  const line = (why: "issuer_auth_required" | "issuer_missing") => ({
+    contractId: USDC_SAC,
+    code: "USDC",
+    issuer: USDC_ISSUER,
+    reason: "missing" as const,
+    why,
+  });
+
+  it("says the issuer has to authorize a line the account opens itself", () => {
+    expect(unopenableExitLineBlockers([line("issuer_auth_required")])).toEqual([
+      `A pool exit in this plan pays out USDC (issuer ${USDC_ISSUER}), and this account has no ` +
+        "USDC trustline. Its issuer authorizes each new trustline, so a line the close opened " +
+        "could not receive the payout. Add the trustline from your wallet, have the issuer " +
+        "authorize it, then rebuild the plan.",
+    ]);
+  });
+
+  it("says no line can be opened when the issuer account is gone", () => {
+    expect(unopenableExitLineBlockers([line("issuer_missing")])).toEqual([
+      `A pool exit in this plan pays out USDC (issuer ${USDC_ISSUER}), and this account has no ` +
+        "USDC trustline. The issuer account no longer exists, so no trustline for it can be " +
+        "opened and the exit can't pay it to this account. The account can't be closed while " +
+        "that position is open.",
+    ]);
   });
 });
 
