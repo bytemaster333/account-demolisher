@@ -75,12 +75,20 @@ const b = Keypair.random();
 const c = Keypair.random();
 const destination = Keypair.random().publicKey();
 
+// every extra signer is a subentry, so the real batcher removes each one before
+// the merge; a merge-only bundle against a multi-signer account would fail on chain
 function buildClose(dest = destination, memo?: Memo): Transaction {
   const builder = new TransactionBuilder(new Account(initiator.publicKey(), "100"), {
     fee: BASE_FEE,
     networkPassphrase: NET,
     timebounds: { minTime: 0, maxTime: 0 },
-  }).addOperation(Operation.accountMerge({ destination: dest }));
+  });
+  for (const k of [a, b, c]) {
+    builder.addOperation(
+      Operation.setOptions({ signer: { ed25519PublicKey: k.publicKey(), weight: 0 } }),
+    );
+  }
+  builder.addOperation(Operation.accountMerge({ destination: dest }));
   if (memo) builder.addMemo(memo);
   return builder.build();
 }
