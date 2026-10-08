@@ -140,6 +140,7 @@ import {
 } from "@/lib/orchestrator/page-flow-machine";
 import { latestPendingForward, savePendingForward } from "@/lib/mediator/pending-flow";
 import { simulatePreviewTree } from "@/lib/orchestrator/actors/preview";
+import { journalFor } from "@/lib/orchestrator/journal";
 
 const RUN = { publicKey: USER, networkId: NETWORK.id };
 const recordFor = () => latestPendingForward(USER, NETWORK.id);
@@ -1061,6 +1062,20 @@ describe("one close per account runs in a tab", () => {
     expect(held.closeRequests()).toHaveLength(1);
     expect(held.closeRequests()[0]![1]).toEqual({ mode: "exclusive", ifAvailable: true });
     expect(net.horizon.submitted).toHaveLength(0);
+    actor.stop();
+  });
+
+  it("still reports the batches an earlier attempt landed when another tab holds the close", async () => {
+    vi.stubGlobal("navigator", { ...navigator, locks: closeLocks(["exclusive"]).locks });
+    const actor = withPlan(finalOnly, input({ destination: DEST, useMediator: false }));
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    // an earlier attempt of this close landed its first batch, then stopped
+    const final = actor.getSnapshot().context.tree!.allNodes.get("final-classic-tx")!;
+    journalFor(final).landedPhases.push({ txHash: "PHASE0", ledger: 7 });
+    actor.send({ type: "CONFIRM", typed: DEST.slice(-4), expected: RUN });
+    await settle(actor, "failed");
+    expect(actor.getSnapshot().context.failureKind).toBe("close_running");
+    expect(actor.getSnapshot().context.landedPhases).toEqual([{ txHash: "PHASE0", ledger: 7 }]);
     actor.stop();
   });
 

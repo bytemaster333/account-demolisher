@@ -312,7 +312,7 @@ export const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ in
       tree: input.tree,
       failureKind: "close_running",
       notes: [],
-      landedPhases: [],
+      landedPhases: landedClassicPhases(input.tree),
     };
   }
   inFlight.add(runKey);
@@ -331,7 +331,9 @@ export const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ in
         tree: input.tree,
         failureKind: "close_running",
         notes: [],
-        landedPhases: [],
+        // nothing ran this time, but batches an earlier attempt landed are on
+        // chain and the failure note must still show them
+        landedPhases: landedClassicPhases(input.tree),
       };
     }
     return attempt.value;
