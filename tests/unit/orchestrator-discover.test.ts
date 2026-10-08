@@ -200,9 +200,15 @@ describe("discovery finds the trustlines a pool exit pays into", () => {
     getPositions.mockResolvedValue(aquariusPosition);
     getUserReward.mockResolvedValue(768_599_147n);
     readAquariusPoolRewardTokens.mockResolvedValue(new Map([[AQUARIUS_POOL, [USDC_SAC]]]));
-    await expect(discover()).rejects.toThrow(
-      new RegExp(`Aquarius pool ${AQUARIUS_POOL} pays its rewards in ${USDC_SAC}`),
+    const err = await discover().then(
+      () => null,
+      (e: unknown) => e as Error,
     );
+    expect(err?.message).toMatch(
+      new RegExp(`^Aquarius pool ${AQUARIUS_POOL} pays its rewards in ${USDC_SAC}`),
+    );
+    // the pool's own token is a fact on chain, so a retry can't change it
+    expect(err?.message).not.toMatch(/Retry once the network is responsive/);
     expect(readWrappedAssets).not.toHaveBeenCalled();
   });
 

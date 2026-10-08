@@ -30,6 +30,7 @@ import {
   exitTrustlineGaps,
   readExitPayoutTokens,
   readWrappedAssets,
+  UnplannableRewardClaimError,
   type ExitTrustlineGap,
 } from "@/lib/soroban/stellar-asset";
 import { readAquariusRewardToken } from "@/lib/adapters/aquarius/client";
@@ -348,7 +349,8 @@ async function gaugeRewardsLeftBehind(
 
 // the payout tokens include the aquarius reward token when a planned claim will
 // pay some, so its token is kept for the plan: a missing line for it is opened
-// ahead of the reward claims
+// ahead of the reward claims. a reward claim the plan can't link to that token
+// is the pool's own state, so it is not passed off as a network failure.
 async function exitGaps(
   input: DiscoverInput,
   audit: AccountAudit,
@@ -384,6 +386,7 @@ async function exitGaps(
       ...(rewardToken !== undefined ? { aquariusRewardToken: rewardToken } : {}),
     };
   } catch (e) {
+    if (e instanceof UnplannableRewardClaimError) throw e;
     throw new Error(
       `Could not check which trustlines your pool exits pay into (${errorMessage(e)}). ` +
         "Nothing was planned. Retry once the network is responsive.",

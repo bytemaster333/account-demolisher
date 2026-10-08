@@ -225,6 +225,15 @@ export interface ExitPayouts {
 
 const REWARD_READ_CONCURRENCY = 4;
 
+// a paying pool whose reward token the plan can't link its claim to. this is
+// the pool's own state on chain, not a failed read, so a retry won't change it.
+export class UnplannableRewardClaimError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UnplannableRewardClaimError";
+  }
+}
+
 // exitPayoutTokens plus the reward token of each aquarius pool whose claim will
 // pay some. a claim of a pending reward into a missing trustline traps with
 // Error(Contract, #13) like a withdraw; a claim with nothing pending runs and
@@ -278,7 +287,7 @@ export async function readExitPayouts(
       throw new Error(`the reward token of Aquarius pool ${pool} was not read`);
     }
     if (poolTokens.length !== 1 || poolTokens[0] !== routerToken) {
-      throw new Error(
+      throw new UnplannableRewardClaimError(
         `Aquarius pool ${pool} pays its rewards in ${poolTokens.join(", ")}, not only in the ` +
           `router's reward token ${routerToken}, so its reward claim can't be planned. Claim ` +
           "that reward outside this app before closing.",

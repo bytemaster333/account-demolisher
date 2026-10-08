@@ -17,6 +17,7 @@ import {
   readExitPayoutTokens,
   readExitPayouts,
   readWrappedAssets,
+  UnplannableRewardClaimError,
   type WrappedAsset,
 } from "@/lib/soroban/stellar-asset";
 import type { AuditBalance } from "@/lib/types/account";
@@ -457,7 +458,7 @@ describe("readExitPayouts", () => {
         positions,
         deps(rewards, () => [REWARD, USDC]),
       ),
-    ).rejects.toThrow(/pays its rewards in/);
+    ).rejects.toThrow(UnplannableRewardClaimError);
   });
 
   it("fails rather than leave out a reward it could not read", async () => {
