@@ -67,7 +67,8 @@ import type { AccountAudit } from "@/lib/types/account";
 import { pathKey, type ClassicBatch, type ClassicMemo, type PathResultRef } from "@/lib/types/plan";
 import { AmbiguousSubmitError, CloseFailure, rejectionCodes } from "@/lib/orchestrator/failures";
 import { journalFor, type NodeJournal } from "@/lib/orchestrator/journal";
-import { residueLineProblem, toStroops, type DestinationLine } from "@/lib/orchestrator/residue";
+import { residueLineProblem, type DestinationLine } from "@/lib/orchestrator/residue";
+import { decimalToStroops as toStroops } from "@/lib/stellar/amount";
 import { shortAddress } from "@/lib/safe-display";
 
 export interface ConfirmationReceipt {

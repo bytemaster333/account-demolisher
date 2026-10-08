@@ -3,6 +3,8 @@
 // classic batch, so the line is checked before the option is offered and again
 // right before the batch is signed.
 
+import { decimalToStroops as toStroops } from "@/lib/stellar/amount";
+
 export interface DestinationLine {
   readonly asset_type: string;
   readonly asset_code?: string;
@@ -38,17 +40,4 @@ export function residueLineProblem(
     toStroops(line.limit) - toStroops(line.balance) - toStroops(line.buying_liabilities ?? "0");
   if (room < toStroops(amount)) return "the destination trustline does not have room for it";
   return null;
-}
-
-// horizon amounts carry at most 7 decimals
-export function toStroops(amount: string): bigint {
-  const trimmed = amount.trim();
-  const negative = trimmed.startsWith("-");
-  const body = negative ? trimmed.slice(1) : trimmed;
-  const [whole = "0", frac = ""] = body.split(".");
-  if (!/^\d+$/.test(whole) || !/^\d*$/.test(frac) || frac.length > 7) {
-    throw new Error(`not a 7-decimal amount: ${amount}`);
-  }
-  const value = BigInt(whole) * 10_000_000n + BigInt((frac + "0000000").slice(0, 7));
-  return negative ? -value : value;
 }
