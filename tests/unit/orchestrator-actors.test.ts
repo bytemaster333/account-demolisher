@@ -1516,3 +1516,87 @@ describe("the review quotes each credit with what the close claims into it", () 
     actor.stop();
   });
 });
+
+describe("the review quotes the claims the plan makes once the unwind ran", () => {
+  it("quotes and lists a claim only the unwind's freed reserve makes affordable", async () => {
+    const EURT_ISSUER = "GAP5LETOV6YIE62YAM56STDANPRDO7ZFDBGSNHJQIYGGKSMOZAHOOS2S";
+    const cb = `00000000${"cc".repeat(32)}`;
+    const usdc = { kind: "credit" as const, code: "USDC", issuer: USDC_ISSUER };
+    // 2.2 XLM over a 2 XLM minimum can't add the EURT line a claim needs; once
+    // the unwind cancels the offer, the minimum drops to 1.5 XLM and it can
+    const audit = makeAudit({
+      subentryCount: 2,
+      balances: [
+        {
+          asset: { kind: "native" },
+          amount: "2.2000000",
+          buyingLiabilities: "0.0000000",
+          sellingLiabilities: "0.0000000",
+        },
+        {
+          asset: usdc,
+          amount: "1.0000000",
+          buyingLiabilities: "0.0000000",
+          sellingLiabilities: "1.0000000",
+          limit: "1000.0000000",
+          isAuthorized: true,
+        },
+      ],
+      offers: [
+        {
+          id: "77",
+          selling: usdc,
+          buying: { kind: "native" },
+          amount: "1.0000000",
+          priceR: { n: 1, d: 1 },
+        },
+      ],
+      claimableBalances: [
+        {
+          id: cb,
+          asset: { kind: "credit", code: "EURT", issuer: EURT_ISSUER },
+          amount: "1.0000000",
+          sponsor: DEST,
+          claimants: [USER],
+          predicate: [{ destination: USER, predicate: { unconditional: true } }],
+          claimableNow: true,
+          issuerAuthRequired: false,
+        },
+      ],
+    });
+    // a usdc debt the repay pays from the balance the offer holds
+    const positions = {
+      ...EMPTY_POSITIONS,
+      blend: [
+        {
+          poolId: allowlisted("blend", "BlendPool"),
+          liabilities: new Map([[USDC_SAC, 5n]]),
+          collateral: new Map(),
+          supply: new Map(),
+          emissionReserveTokenIds: [],
+        },
+      ],
+    };
+    const machine = pageFlowMachine.provide({
+      actors: {
+        discover: fromPromise(async () => ({
+          ...discovered,
+          audit,
+          positions,
+          exitTrustlineGaps: [],
+        })) as never,
+      },
+    });
+    const actor = createActor(machine).start();
+    actor.send({ type: "START", input: input({ destination: DEST, useMediator: false }) });
+    await settle(actor, "awaiting_confirmation");
+    const ctx = actor.getSnapshot().context;
+    const final = ctx.tree!.allNodes.get("final-classic-tx")!;
+    expect(final.kind === "FinalClassicTx" && final.metadata.claimableBalanceIds).toEqual([cb]);
+    expect(resolveCreditPaths).toHaveBeenLastCalledWith(expect.anything(), NETWORK, {
+      claimedBalanceIds: [cb],
+    });
+    expect(ctx.unroutableCredits.map((c) => c.key)).toContain(`EURT:${EURT_ISSUER}`);
+    actor.stop();
+  });
+});
