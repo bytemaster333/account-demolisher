@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { MONO, RADIUS } from "./tokens";
+import { useCopyToClipboard } from "./use-copy";
 import { shortAddress } from "@/lib/safe-display";
 
 // truncated monospace address with an inline copy button; the full value is in
@@ -25,23 +26,11 @@ export function CopyableAddress({
   // show the whole address instead of a middle-truncated form
   readonly full?: boolean;
 }): React.JSX.Element {
-  const [copied, setCopied] = useState(false);
+  const clip = useCopyToClipboard();
   // the copy / explorer buttons stay invisible until the chip is hovered or a
   // control inside it is focused, so a page full of addresses isn't peppered
   // with icons. focus keeps them keyboard-reachable (tab reveals them).
   const [active, setActive] = useState(false);
-
-  const copy = (): void => {
-    void navigator.clipboard
-      ?.writeText(value)
-      .then(() => {
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1400);
-      })
-      .catch(() => {
-        /* clipboard blocked, ignore */
-      });
-  };
 
   return (
     <span
@@ -71,48 +60,11 @@ export function CopyableAddress({
           alignItems: "center",
           gap: 6,
           flexShrink: 0,
-          opacity: active || copied ? 1 : 0,
+          opacity: active || clip.state !== "idle" ? 1 : 0,
           transition: "opacity 0.12s ease",
         }}
       >
-        <button
-          type="button"
-          onClick={copy}
-          title={copied ? "Copied" : "Copy full address"}
-          aria-label={copied ? "Copied to clipboard" : `Copy ${label ?? "address"}`}
-          style={{ ...ACTION_BTN, color: copied ? "var(--success)" : "var(--fg-3)" }}
-        >
-          {copied ? (
-            <svg
-              width="13"
-              height="13"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={2.4}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden
-            >
-              <path d="M20 6L9 17l-5-5" />
-            </svg>
-          ) : (
-            <svg
-              width="13"
-              height="13"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={2}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden
-            >
-              <rect x="9" y="9" width="12" height="12" rx="2" />
-              <path d="M5 15V5a2 2 0 0 1 2-2h10" />
-            </svg>
-          )}
-        </button>
+        <CopyButton value={value} label={label} clip={clip} />
         {href !== undefined ? <ExplorerLinkButton href={href} label={label} /> : null}
       </span>
     </span>
@@ -132,58 +84,10 @@ export function AddressActions({
   readonly href?: string | undefined;
   readonly label?: string | undefined;
 }): React.JSX.Element {
-  const [copied, setCopied] = useState(false);
-  const copy = (): void => {
-    void navigator.clipboard
-      ?.writeText(value)
-      .then(() => {
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1400);
-      })
-      .catch(() => {
-        /* clipboard blocked, ignore */
-      });
-  };
+  const clip = useCopyToClipboard();
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-      <button
-        type="button"
-        onClick={copy}
-        title={copied ? "Copied" : "Copy full address"}
-        aria-label={copied ? "Copied to clipboard" : `Copy ${label ?? "address"}`}
-        style={{ ...ACTION_BTN, color: copied ? "var(--success)" : "var(--fg-3)" }}
-      >
-        {copied ? (
-          <svg
-            width="13"
-            height="13"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2.4}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden
-          >
-            <path d="M20 6L9 17l-5-5" />
-          </svg>
-        ) : (
-          <svg
-            width="13"
-            height="13"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden
-          >
-            <rect x="9" y="9" width="12" height="12" rx="2" />
-            <path d="M5 15V5a2 2 0 0 1 2-2h10" />
-          </svg>
-        )}
-      </button>
+      <CopyButton value={value} label={label} clip={clip} />
       {href !== undefined ? <ExplorerLinkButton href={href} label={label} /> : null}
     </span>
   );
@@ -202,6 +106,64 @@ const ACTION_BTN: React.CSSProperties = {
   cursor: "pointer",
   textDecoration: "none",
 };
+
+function CopyButton({
+  value,
+  label,
+  clip,
+}: {
+  readonly value: string;
+  readonly label?: string | undefined;
+  readonly clip: ReturnType<typeof useCopyToClipboard>;
+}): React.JSX.Element {
+  const what = label ?? "address";
+  const copied = clip.state === "copied";
+  // error is set exactly when the last copy failed
+  const failedText = clip.error === null ? null : `Couldn't copy the ${what}: ${clip.error}.`;
+  return (
+    <button
+      type="button"
+      onClick={() => void clip.copy(value)}
+      title={copied ? "Copied" : (failedText ?? "Copy full address")}
+      aria-label={copied ? "Copied to clipboard" : (failedText ?? `Copy ${what}`)}
+      style={{
+        ...ACTION_BTN,
+        color: copied ? "var(--success)" : failedText !== null ? "var(--danger)" : "var(--fg-3)",
+      }}
+    >
+      {copied ? (
+        <svg
+          width="13"
+          height="13"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2.4}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <path d="M20 6L9 17l-5-5" />
+        </svg>
+      ) : (
+        <svg
+          width="13"
+          height="13"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <rect x="9" y="9" width="12" height="12" rx="2" />
+          <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+        </svg>
+      )}
+    </button>
+  );
+}
 
 function ExplorerLinkButton({
   href,

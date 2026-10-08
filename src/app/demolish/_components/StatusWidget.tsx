@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
-import { AddressActions } from "@/components/ui";
+import { AddressActions, useCopyToClipboard } from "@/components/ui";
 import { PendingForwardBanner } from "@/components/wallet/PendingForwardBanner";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
@@ -143,22 +143,10 @@ export function DemolishStatusWidget({
     ordered: planGroups.flatMap((g) => g.nodes),
     ...(state === "prepared" && prepared !== null ? { preparedUntil: prepared.unlocksAt } : {}),
   });
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
-  const copyReceipt = async (): Promise<void> => {
-    const clipboard = typeof navigator !== "undefined" ? navigator.clipboard : undefined;
-    if (!clipboard || typeof clipboard.writeText !== "function") {
-      setCopyState("failed");
-      return;
-    }
-    try {
-      await clipboard.writeText(receiptText);
-      setCopyState("copied");
-      window.setTimeout(() => setCopyState((s) => (s === "copied" ? "idle" : s)), 1600);
-    } catch {
-      // blocked by permissions or an in-app browser: show the text instead
-      setCopyState("failed");
-    }
-  };
+  // a blocked copy (permissions, an in-app browser) shows the text instead
+  const receiptCopy = useCopyToClipboard(1600);
+  const copyState = receiptCopy.state;
+  const copyReceipt = (): Promise<void> => receiptCopy.copy(receiptText);
   const downloadReceipt = (): void => {
     const url = URL.createObjectURL(new Blob([receiptText], { type: "text/plain" }));
     const a = document.createElement("a");

@@ -34,6 +34,7 @@ import {
   Progress,
   SectionLabel,
   Spinner,
+  useCopyToClipboard,
 } from "@/components/ui";
 import { SEED_INPUT_ATTRS } from "@/components/wallet/seed-input";
 import type { NetworkConfig } from "@/lib/config/networks";
@@ -102,8 +103,12 @@ export function CollectSignatures({
   const [relayPlan, setRelayPlan] = useState<RelayPlan | null>(null);
   // the relay's request can't be used at all (another account)
   const [planError, setPlanError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-  const [copyError, setCopyError] = useState<string | null>(null);
+  const linkCopy = useCopyToClipboard();
+  const copied = linkCopy.state === "copied";
+  const copyError =
+    linkCopy.error === null
+      ? null
+      : `Couldn't copy the link (${linkCopy.error}). Select it and copy it manually.`;
   const [secret, setSecret] = useState("");
   const [secretError, setSecretError] = useState<string | null>(null);
   const [lastAdded, setLastAdded] = useState<string | null>(null);
@@ -341,23 +346,8 @@ export function CollectSignatures({
   // away, so a seed never lingers in memory after the step unmounts
   useEffect(() => () => setSecret(""), []);
 
-  const onCopy = useCallback(async () => {
-    setCopyError(null);
-    // navigator.clipboard is missing on plain-http origins
-    if (typeof navigator === "undefined" || navigator.clipboard === undefined) {
-      setCopyError("Copying isn't available here. Select the link and copy it manually.");
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(link);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1400);
-    } catch (e: unknown) {
-      setCopyError(
-        `Couldn't copy the link (${errorMessage(e, "clipboard refused")}). Select it and copy it manually.`,
-      );
-    }
-  }, [link]);
+  const { copy } = linkCopy;
+  const onCopy = useCallback(() => copy(link), [copy, link]);
 
   // sign locally with a pasted signer key, then publish the signature to the
   // relay so the merged envelope (and progress) stays canonical for everyone.

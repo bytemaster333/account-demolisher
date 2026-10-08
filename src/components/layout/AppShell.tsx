@@ -11,7 +11,7 @@ import {
   useSyncExternalStore,
   type CSSProperties,
 } from "react";
-import { Select } from "@/components/ui";
+import { Select, useCopyToClipboard } from "@/components/ui";
 import { describeConnectError } from "@/components/wallet/connect-error";
 import { walletTeardownNotice } from "@/components/wallet/teardown-message";
 import { hasMainnetAck, recordMainnetAck, subscribeMainnetAck } from "./mainnet-ack";
@@ -460,7 +460,7 @@ function WalletMenu({
   readonly lockReason: string | null;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const clip = useCopyToClipboard();
   const ref = useRef<HTMLDivElement | null>(null);
   const short = shortAddress(publicKey);
 
@@ -480,19 +480,8 @@ function WalletMenu({
     };
   }, [open]);
 
-  const onCopy = useCallback(() => {
-    // only flag "Copied" if the write actually succeeded, and swallow the rejection
-    // (clipboard access can be blocked) so it isn't an unhandled promise rejection
-    navigator.clipboard
-      ?.writeText(publicKey)
-      .then(() => {
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1400);
-      })
-      .catch(() => {
-        // clipboard blocked; leave the label unchanged
-      });
-  }, [publicKey]);
+  const { copy } = clip;
+  const onCopy = useCallback(() => void copy(publicKey), [copy, publicKey]);
 
   const onDisconnectClick = useCallback(() => {
     // re-read the store: the run may have taken the lock since this rendered
@@ -594,7 +583,11 @@ function WalletMenu({
             </div>
           </div>
           <MenuItem onClick={onCopy} testId="wallet-copy-address">
-            {copied ? "Copied" : "Copy address"}
+            {clip.state === "copied"
+              ? "Copied"
+              : clip.error !== null
+                ? `Couldn't copy: ${clip.error}`
+                : "Copy address"}
           </MenuItem>
           <MenuItem href={explorerAccountUrl(network, publicKey)} onClick={() => setOpen(false)}>
             View on explorer

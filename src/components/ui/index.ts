@@ -18,6 +18,8 @@ export type { FieldProps } from "./Field";
 export { Select } from "./Select";
 export type { SelectOption } from "./Select";
 export { CopyableAddress, AddressActions } from "./Address";
+export { useCopyToClipboard } from "./use-copy";
+export type { CopyState } from "./use-copy";
 export { InfoTip } from "./InfoTip";
 export { Spinner, Progress, EmptyState, SearchGlyph } from "./feedback";
 export { RADIUS, MONO, TONE_FG, VISUALLY_HIDDEN, toneBorder } from "./tokens";
