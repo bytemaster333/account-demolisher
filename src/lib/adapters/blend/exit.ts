@@ -408,6 +408,18 @@ export class BackstopClaimUnavailableError extends Error {
   }
 }
 
+// the backstop reads no accrued BLND for this pool, usually because it was
+// claimed outside the app after review. typed so hydration can tell it from a
+// claim that fails without matching on the message.
+export class BackstopNothingAccruedError extends Error {
+  readonly poolId: string;
+  constructor(poolId: string) {
+    super(`no accrued backstop emissions to claim for Blend pool ${poolId}`);
+    this.name = "BackstopNothingAccruedError";
+    this.poolId = poolId;
+  }
+}
+
 // claim backstop emissions. both backstop versions pay the claimed BLND into the
 // BLND-USDC comet pool and credit the LP back as new backstop shares for the
 // user (v1: claim(from, pool_addresses, to); v2: claim(from, pool_addresses,
@@ -424,7 +436,7 @@ export async function buildBackstopClaimTx(
 ): Promise<BackstopClaimBuild> {
   const { backstop, state } = await readBackstop(network, target.poolId, userPublicKey, deps);
   if (state.accruedEmissions <= 0n) {
-    throw new Error(`no accrued backstop emissions to claim for Blend pool ${target.poolId}`);
+    throw new BackstopNothingAccruedError(target.poolId);
   }
   const server = deps.server ?? getRpc(network);
   const from = nativeToScVal(userPublicKey, { type: "address" });

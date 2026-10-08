@@ -14,6 +14,7 @@ import {
 
 import {
   BackstopClaimUnavailableError,
+  BackstopNothingAccruedError,
   BlndTrustlineMissingError,
   buildBackstopClaimTx,
   buildBackstopQueueTx,
@@ -727,25 +728,35 @@ describe("Blend emissions claims (M-26, L-49)", () => {
   });
 
   it("refuses a backstop claim when nothing has accrued", async () => {
-    await expect(
-      buildBackstopClaimTx(
-        MAINNET,
-        { poolId: POOL_V2 },
-        USER,
-        account([{ balance: "10.0000000" }]),
-        deps({
-          poolLoader: loaderFor(
-            makePool({
-              version: "V2",
-              poolId: POOL_V2,
-              backstop: BLEND_BACKSTOP_MAINNET_ID,
-              reserves: [{ assetId: XLM_SAC, index: 0, dRate: V2_RATE_1, bRate: V2_RATE_1 }],
-            }),
-          ),
-          backstopLoader: backstopLoader({}),
-        }),
-      ),
-    ).rejects.toThrow(/no accrued backstop emissions/);
+    const built = buildBackstopClaimTx(
+      MAINNET,
+      { poolId: POOL_V2 },
+      USER,
+      account([{ balance: "10.0000000" }]),
+      deps({
+        poolLoader: loaderFor(
+          makePool({
+            version: "V2",
+            poolId: POOL_V2,
+            backstop: BLEND_BACKSTOP_MAINNET_ID,
+            reserves: [{ assetId: XLM_SAC, index: 0, dRate: V2_RATE_1, bRate: V2_RATE_1 }],
+          }),
+        ),
+        backstopLoader: backstopLoader({}),
+      }),
+    );
+    // typed so hydration can tell "claimed elsewhere since review" apart from a
+    // broken claim without matching on the message
+    const err: unknown = await built.then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(BackstopNothingAccruedError);
+    expect(err).not.toBeInstanceOf(BackstopClaimUnavailableError);
+    expect((err as BackstopNothingAccruedError).poolId).toBe(POOL_V2);
+    expect((err as Error).message).toBe(
+      `no accrued backstop emissions to claim for Blend pool ${POOL_V2}`,
+    );
   });
 });
 
