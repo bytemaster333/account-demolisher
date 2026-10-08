@@ -31,6 +31,7 @@ import {
   USDC_SAC,
   USER,
   USER_KP,
+  XLM_SAC,
   allowlisted,
   makeAudit,
   signingConnector,
@@ -948,46 +949,64 @@ describe("one close per account runs in a tab", () => {
     second.stop();
   });
 
-  it("says so at once when another tab holds the close, instead of waiting on its lock", async () => {
-    // another tab's close holds the exclusive lock; a request for it would never
-    // be granted while that close runs
-    const request = vi.fn(() => new Promise(() => {}));
-    vi.stubGlobal("navigator", {
-      ...navigator,
-      locks: {
-        query: async () => ({ held: [{ name: `account-demolisher:close:${USER}` }], pending: [] }),
-        request,
+  // another tab's close holds the exclusive lock: a request that waits for it is
+  // never granted while that close runs. `queryShowsHold` false is the moment
+  // between a check and the request, when the other tab has just taken it.
+  function heldLocks(queryShowsHold: boolean) {
+    const name = `account-demolisher:close:${USER}`;
+    const waited: string[] = [];
+    const request = vi.fn(
+      (lockName: string, opts: { ifAvailable?: boolean }, cb: (lock: unknown) => unknown) => {
+        if (lockName !== name) return Promise.resolve(cb({ name: lockName, mode: "exclusive" }));
+        if (opts.ifAvailable === true) return Promise.resolve(cb(null));
+        waited.push(lockName);
+        return new Promise(() => {});
       },
+    );
+    const query = async () => ({
+      held: queryShowsHold ? [{ name, mode: "exclusive" }] : [],
+      pending: [],
     });
-    try {
-      const actor = withPlan(
-        () =>
-          tree({
-            id: "final-classic-tx",
-            kind: "FinalClassicTx",
-            dependencies: [],
-            description: "close account",
-            status: "simulated",
-            metadata: {
-              kind: "FinalClassicTx",
-              batches: [],
-              destination: DEST,
-              useMediator: false,
-            },
-          } as PlanNode),
-        input({ destination: DEST, useMediator: false }),
-      );
-      await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
-      actor.send({ type: "CONFIRM", typed: DEST.slice(-4), expected: RUN });
-      await settle(actor, "failed");
-      expect(actor.getSnapshot().context.failureKind).toBe("close_running");
-      expect(actor.getSnapshot().context.error).toMatch(/another tab/);
-      expect(request).not.toHaveBeenCalled();
-      actor.stop();
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
+    return { locks: { request, query }, waited };
+  }
+
+  const finalOnly = () =>
+    tree({
+      id: "final-classic-tx",
+      kind: "FinalClassicTx",
+      dependencies: [],
+      description: "close account",
+      status: "simulated",
+      metadata: {
+        kind: "FinalClassicTx",
+        batches: [],
+        destination: DEST,
+        useMediator: false,
+      },
+    } as PlanNode);
+
+  for (const [label, queryShowsHold] of [
+    ["while another tab holds the close", true],
+    ["when another tab takes the lock right after a check", false],
+  ] as const) {
+    it(`says so at once ${label}, instead of waiting on its lock`, async () => {
+      const held = heldLocks(queryShowsHold);
+      vi.stubGlobal("navigator", { ...navigator, locks: held.locks });
+      try {
+        const actor = withPlan(finalOnly, input({ destination: DEST, useMediator: false }));
+        await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+        actor.send({ type: "CONFIRM", typed: DEST.slice(-4), expected: RUN });
+        await settle(actor, "failed");
+        expect(actor.getSnapshot().context.failureKind).toBe("close_running");
+        expect(actor.getSnapshot().context.error).toMatch(/another tab/);
+        expect(held.waited).toEqual([]);
+        expect(net.horizon.submitted).toHaveLength(0);
+        actor.stop();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+  }
 });
 
 describe("discovery reports partial scans and drops spent allowances", () => {
@@ -1203,6 +1222,89 @@ describe("a run that only prepares the close never reads as a closed account", (
     actor.stop();
   });
 
+  // an offer the unwind cancels, so its one batch is signed and lands
+  const offer = {
+    id: "77",
+    selling: { kind: "credit" as const, code: "USDC", issuer: USDC_ISSUER },
+    buying: { kind: "native" as const },
+    amount: "1.0000000",
+    priceR: { n: 1, d: 1 },
+  };
+  const unwindingPlan = (queueEndsAt: Date): PlanTree => {
+    const unwind = {
+      id: "classic-unwind",
+      kind: "ClassicUnwind",
+      dependencies: [],
+      description: "unwind offers",
+      status: "simulated",
+      metadata: {
+        kind: "ClassicUnwind",
+        batches: [],
+        offerIds: ["77"],
+        poolIds: [],
+        repayAssets: [USDC_SAC],
+        destination: DEST,
+      },
+    } as unknown as PlanNode;
+    // the queue landed on an earlier attempt, with the unlock its build read
+    const queue = {
+      id: "backstop-queue",
+      kind: "BackstopQueue",
+      dependencies: [],
+      description: "queue the backstop",
+      status: "confirmed",
+      executed: { txHash: "ab".repeat(32), ledger: 40 },
+      metadata: {
+        kind: "BackstopQueue",
+        poolId: allowlisted("blend", "BlendPool"),
+        shares: 10n,
+        queueEndsAt,
+      },
+    } as unknown as PlanNode;
+    return {
+      ...tree(unwind, queue),
+      prepareOnly: { unlocksAt, reason: "A Blend backstop withdrawal stays locked." },
+    };
+  };
+
+  it("dates the unlock from the queue that landed and lists the unwind it signed", async () => {
+    const queueEndsAt = new Date("2026-11-05T09:00:00Z");
+    auditAccount
+      .mockResolvedValueOnce(makeAudit({ offers: [offer], subentryCount: 1 }))
+      .mockResolvedValue(makeAudit());
+    const actor = withPlan(
+      () => unwindingPlan(queueEndsAt),
+      input({ destination: DEST, useMediator: false }),
+    );
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    actor.send({ type: "CONFIRM", typed: DEST.slice(-4), expected: RUN });
+    await settle(actor, "prepared");
+    const ctx = actor.getSnapshot().context;
+    expect(ctx.preparedClose?.unlocksAt).toEqual(queueEndsAt);
+    expect(ctx.progress.at(-1)?.message).toMatch(/Come back after 2026-11-05/);
+    const unwindHash = Buffer.from(net.horizon.submitted[0]!.hash()).toString("hex");
+    expect(ctx.landedPhases.map((p) => p.txHash)).toEqual([unwindHash]);
+    actor.stop();
+  });
+
+  it("keeps the unwind batch that landed when the run stops after it", async () => {
+    auditAccount
+      .mockResolvedValueOnce(makeAudit({ offers: [offer], subentryCount: 1 }))
+      .mockRejectedValue(new Error("audit refused"));
+    const actor = withPlan(
+      () => unwindingPlan(new Date("2026-11-05T09:00:00Z")),
+      input({ destination: DEST, useMediator: false }),
+    );
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    actor.send({ type: "CONFIRM", typed: DEST.slice(-4), expected: RUN });
+    await settle(actor, "failed");
+    const ctx = actor.getSnapshot().context;
+    expect(net.horizon.submitted).toHaveLength(1);
+    const unwindHash = Buffer.from(net.horizon.submitted[0]!.hash()).toString("hex");
+    expect(ctx.landedPhases.map((p) => p.txHash)).toEqual([unwindHash]);
+    actor.stop();
+  });
+
   it("fails a plan that has neither a merge nor a prepare-only reason", async () => {
     const actor = withPlan(
       () => {
@@ -1301,6 +1403,66 @@ describe("backstop emissions that can't be claimed need the user's forfeit", () 
     expect(ctx.discoveryWarnings.join(" ")).toMatch(
       /711\.4578242 BLND of backstop emissions for pool .* are forfeited, as you chose/,
     );
+    actor.stop();
+  });
+});
+
+describe("the review plans the trustlines pool exits pay into", () => {
+  // the real preview behind a discovery that found an lp position and its gaps
+  function reviewWith(
+    pair: readonly [string, string],
+    gaps: readonly { contractId: string; code: string; issuer: string; reason: string }[],
+    i: PageFlowInput,
+  ) {
+    const machine = pageFlowMachine.provide({
+      actors: {
+        discover: fromPromise(async () => ({
+          ...discovered,
+          positions: {
+            ...EMPTY_POSITIONS,
+            soroswap: [{ pair: { tokenA: pair[0], tokenB: pair[1] }, shareBalance: 10n }],
+          },
+          exitTrustlineGaps: gaps,
+        })) as never,
+      },
+    });
+    const actor = createActor(machine).start();
+    actor.send({ type: "START", input: i });
+    return actor;
+  }
+
+  it("opens a missing line ahead of the exit instead of blocking the review", async () => {
+    const gap = { contractId: USDC_SAC, code: "USDC", issuer: USDC_ISSUER, reason: "missing" };
+    const actor = reviewWith(
+      [USDC_SAC, XLM_SAC],
+      [gap],
+      input({ destination: DEST, useMediator: false }),
+    );
+    await settle(actor, "awaiting_confirmation");
+    const ctx = actor.getSnapshot().context;
+    const line = [...ctx.tree!.allNodes.values()].find((n) => n.kind === "AddExitTrustline");
+    expect(line?.metadata).toEqual({
+      kind: "AddExitTrustline",
+      code: "USDC",
+      issuer: USDC_ISSUER,
+      contractId: USDC_SAC,
+    });
+    const exit = [...ctx.tree!.allNodes.values()].find((n) => n.kind === "WithdrawSoroswapLp");
+    expect(exit?.dependencies).toContain(line!.id);
+    expect(ctx.reviewBlockers.join(" ")).not.toMatch(/no USDC trustline/);
+    expect(ctx.discoveryWarnings.join(" ")).toMatch(/The close first opens a USDC trustline/);
+    actor.stop();
+  });
+
+  it("refuses an exchange close whose exit pays a token it can't forward, before minting a flow", async () => {
+    const actor = reviewWith([HOSTILE_TOKEN, XLM_SAC], [], input());
+    await settle(actor, "awaiting_confirmation");
+    const ctx = actor.getSnapshot().context;
+    expect(startMediatorFlow).not.toHaveBeenCalled();
+    expect(ctx.reviewBlockers).toEqual([
+      expect.stringMatching(/^An exchange close can only forward XLM/),
+    ]);
+    expect(ctx.tree!.allNodes.size).toBe(0);
     actor.stop();
   });
 });
