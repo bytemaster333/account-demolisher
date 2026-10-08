@@ -24,6 +24,7 @@ import { address as scvAddress, i128 as scvI128, vec as scvVec } from "@/lib/sor
 import { balance, buildApprove } from "@/lib/soroban/sep41";
 import { assembleSubmittable, simulateRead } from "@/lib/soroban/simulate";
 import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
+import { getHorizon } from "@/lib/stellar/horizon-client";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
 import { shortAddress } from "@/lib/safe-display";
 
@@ -186,7 +187,7 @@ export async function runDemoSetup(opts: RunDemoOptions): Promise<DemoAccountRes
     throw e;
   }
 
-  const horizon = new Horizon.Server(network.horizon);
+  const horizon = getHorizon(network);
 
   // step 3: trustlines (best-effort)
   let aquaIssuerKp: Keypair | null = null;
@@ -508,7 +509,7 @@ async function approveSep41(
   publicKey: string,
   spender: string,
 ): Promise<string> {
-  const horizon = new Horizon.Server(network.horizon);
+  const horizon = getHorizon(network);
   const server = getRpc(network);
   const account = await horizon.loadAccount(publicKey);
   const latest = await server.getLatestLedger();
@@ -561,7 +562,7 @@ async function blendSupplyXlm(
   secret: string,
   publicKey: string,
 ): Promise<string> {
-  const horizon = new Horizon.Server(network.horizon);
+  const horizon = getHorizon(network);
   const server = getRpc(network);
   const account = await horizon.loadAccount(publicKey);
 
@@ -656,7 +657,7 @@ async function soroswapSwap(
   // 2% under the quote, so another trade in the same ledger can't revert it
   const amountOutMin = (expectedOut * 98n) / 100n;
 
-  const horizon = new Horizon.Server(network.horizon);
+  const horizon = getHorizon(network);
   const server = getRpc(network);
   const account = await horizon.loadAccount(publicKey);
   const tx = new TransactionBuilder(account, {
@@ -725,7 +726,7 @@ async function soroswapAddLiquidity(
   secret: string,
   publicKey: string,
 ): Promise<string> {
-  const horizon = new Horizon.Server(network.horizon);
+  const horizon = getHorizon(network);
   const server = getRpc(network);
   const xlmSac = nativeSac(network);
   const usdcId = usdcSac(network);

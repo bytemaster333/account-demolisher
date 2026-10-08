@@ -3,8 +3,6 @@
 
 import { Horizon, NotFoundError } from "@stellar/stellar-sdk";
 
-import type { NetworkConfig } from "@/lib/config/networks";
-
 // an account_merge of the closed account into the mediator
 export interface MergeIntoMediator {
   readonly txHash: string;
@@ -30,10 +28,6 @@ export interface MediatorHistory {
 // it payments, so read a few pages before concluding a merge is not there.
 const HISTORY_PAGE_SIZE = 200;
 const HISTORY_MAX_PAGES = 5;
-
-export function horizonFor(network: NetworkConfig): Horizon.Server {
-  return new Horizon.Server(network.horizon, { allowHttp: false });
-}
 
 // newest-first scan of the mediator's successful operations. `from` narrows the
 // merge-in to the account being closed, so a stranger merging some other

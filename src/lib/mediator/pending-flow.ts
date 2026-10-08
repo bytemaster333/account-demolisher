@@ -18,7 +18,6 @@
 import { parseNetworkId, type NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import {
-  horizonFor,
   loadMediatorAccount,
   nativeBalance,
   readMediatorHistory,
@@ -29,6 +28,7 @@ import {
   type MediatorForwardResult,
 } from "@/lib/mediator/forward";
 import { isMediatorNetworkId } from "@/lib/mediator/forward-terms";
+import { getHorizon } from "@/lib/stellar/horizon-client";
 import type { ClassicMemo } from "@/lib/types/plan";
 
 export interface PendingMediatorForward {
@@ -288,7 +288,7 @@ export async function inspectPendingForward(
   if (network === null) {
     throw new Error(`The recovery record names an unknown network "${pending.networkId}".`);
   }
-  const server = horizonFor(network);
+  const server = getHorizon(network);
   const history = await readMediatorHistory(server, pending.mediatorPublicKey, pending.publicKey);
   if (history.mergedOut !== null) {
     return history.mergedOut.into === pending.ultimateDestination

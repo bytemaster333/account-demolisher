@@ -15,7 +15,6 @@ import {
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import {
-  horizonFor,
   loadMediatorAccount,
   readMediatorHistory,
   type MediatorHistory,
@@ -32,6 +31,7 @@ import {
   forwardMemoToSdk,
 } from "@/lib/mediator/forward-terms";
 import { decimalToStroops, stroopsToDecimal } from "@/lib/stellar/amount";
+import { getHorizon } from "@/lib/stellar/horizon-client";
 import type { ClassicMemo } from "@/lib/types/plan";
 
 export interface MediatorForwardInput {
@@ -92,7 +92,7 @@ export async function submitMediatorForward(
 ): Promise<MediatorForwardResult> {
   const sleep = deps.sleep ?? defaultSleep;
   const now = deps.now ?? Date.now;
-  const server = horizonFor(input.network);
+  const server = getHorizon(input.network);
   let flowToken = input.flowToken;
   const fail = (error: string): MediatorForwardResult => ({ ok: false, error, flowToken });
 

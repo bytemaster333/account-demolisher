@@ -1,9 +1,10 @@
 // renews a mediator flow token for a mediator that already exists on chain, so
 // an interrupted forward can be finished after the token's 15 minutes are up
 
-import { Horizon, NotFoundError } from "@stellar/stellar-sdk";
+import { NotFoundError } from "@stellar/stellar-sdk";
 
 import { requireNetwork } from "@/lib/config/networks";
+import { getHorizon } from "@/lib/stellar/horizon-client";
 import { reissueMediatorFlow } from "@/server/mediator-secret";
 import { createLimiter, rateLimitByIp, rateLimitByKey } from "@/server/rate-limit";
 import { readJsonCapped, MAX_JSON_BODY_BYTES, BodyTooLargeError } from "@/server/read-body";
@@ -91,7 +92,7 @@ export async function POST(request: Request): Promise<Response> {
   const limited = rateLimitByKey(flowLimiter, `flow:${reissue.flowId}`);
   if (limited !== null) return withMediatorHeaders(limited, cors);
 
-  const horizon = new Horizon.Server(requireNetwork(reissue.terms.networkId).horizon);
+  const horizon = getHorizon(requireNetwork(reissue.terms.networkId));
   try {
     await horizon.loadAccount(reissue.flow.mediatorPublicKey);
   } catch (err) {
