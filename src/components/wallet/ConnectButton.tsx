@@ -10,15 +10,11 @@ import type { NetworkConfig } from "@/lib/config/networks";
 import { WalletKitConnector } from "@/lib/wallet/connector";
 import { disconnectSession, setActiveConnector } from "@/lib/wallet/active-connector";
 import { useWalletStore } from "@/stores/wallet";
+import { shortAddress } from "@/lib/safe-display";
 
 export interface ConnectButtonProps {
   network: NetworkConfig;
   onConnector?: (connector: WalletKitConnector | null) => void;
-}
-
-function truncate(publicKey: string): string {
-  if (publicKey.length <= 12) return publicKey;
-  return `${publicKey.slice(0, 6)}…${publicKey.slice(-4)}`;
 }
 
 export function ConnectButton({ network, onConnector }: ConnectButtonProps): React.JSX.Element {
@@ -76,7 +72,7 @@ export function ConnectButton({ network, onConnector }: ConnectButtonProps): Rea
       ? "Disconnecting…"
       : "Connecting…"
     : isConnected
-      ? truncate(publicKey)
+      ? shortAddress(publicKey)
       : "Connect wallet";
 
   return (

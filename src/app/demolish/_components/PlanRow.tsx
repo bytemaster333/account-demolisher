@@ -9,8 +9,8 @@ import { SR_ONLY } from "../_lib/a11y";
 import { errorMessage } from "@/lib/errors";
 
 import { nodeFeeStroops, nodeMaxFeeStroops, stroopsToXlm } from "../_lib/fees";
-import { truncateHash } from "../_lib/format";
 import { nodeExplainer, nodeLabel, nodePlainLabel, simulatedBadgeLabel } from "../_lib/plan-copy";
+import { shortAddress } from "@/lib/safe-display";
 
 export function PlanRow({
   node,
@@ -407,7 +407,7 @@ export function PlanRow({
                 title={`Open the public record of this step on a block explorer (${node.executed.txHash})`}
                 onClick={(e) => e.stopPropagation()}
               >
-                <span>proof {truncateHash(node.executed.txHash)}</span>
+                <span>proof {shortAddress(node.executed.txHash, 8, 6)}</span>
                 <svg
                   width="10"
                   height="10"

@@ -18,6 +18,7 @@ import { confirmRevoke, submitRevoke } from "@/lib/soroban/revoke";
 import { lookupSpender } from "@/lib/soroban/spender-registry";
 import type { Connector } from "@/lib/wallet/connector";
 import { useNetworkStore } from "@/stores/network";
+import { shortAddress } from "@/lib/safe-display";
 
 export interface BulkRevokeBarProps {
   readonly records: readonly AllowanceRecord[];
@@ -192,7 +193,7 @@ export function BulkRevokeBar({
           >
             <Spinner size={14} />
             {current !== null
-              ? `Revoking ${doneCount + 1} of ${total}: approve your wallet prompt for ${short(current.spender)}`
+              ? `Revoking ${doneCount + 1} of ${total}: approve your wallet prompt for ${shortAddress(current.spender)}`
               : stopping
                 ? "Finishing current revoke…"
                 : "Working…"}
@@ -245,7 +246,7 @@ export function BulkRevokeBar({
                   fontFamily: '"Geist Mono", monospace',
                 }}
               >
-                <span style={{ color: "var(--danger)" }}>✕</span> {short(f.record.spender)}:{" "}
+                <span style={{ color: "var(--danger)" }}>✕</span> {shortAddress(f.record.spender)}:{" "}
                 <span style={{ fontFamily: "Geist, sans-serif" }}>{f.error}</span>
               </div>
             ))}
@@ -359,8 +360,4 @@ export function BulkRevokeBar({
       </div>
     </Card>
   );
-}
-
-function short(addr: string): string {
-  return addr.length > 12 ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : addr;
 }

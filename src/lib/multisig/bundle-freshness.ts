@@ -24,6 +24,7 @@ import {
   decimalToStroops as toStroops,
   stroopsToDecimal as fromStroops,
 } from "@/lib/stellar/amount";
+import { shortAddress } from "@/lib/safe-display";
 
 export interface SignerSnapshot {
   readonly signers: readonly { readonly key: string; readonly weight: number }[];
@@ -97,9 +98,9 @@ function balanceLineKey(b: Record<string, unknown>): string | null {
 }
 
 function label(key: string): string {
-  if (key.startsWith("pool:")) return `pool share ${key.slice(5, 13)}…`;
+  if (key.startsWith("pool:")) return `pool share ${shortAddress(key.slice(5), 8, 0)}`;
   const [code, issuer] = key.split(":");
-  return `${code} (${issuer?.slice(0, 6)}…${issuer?.slice(-4)})`;
+  return `${code} (${shortAddress(issuer ?? "")})`;
 }
 
 export function checkBundleFreshness(input: FreshnessInput): FreshnessResult {
@@ -179,7 +180,7 @@ export function checkBundleFreshness(input: FreshnessInput): FreshnessResult {
         const cb = liveCbs.get(id);
         if (cb === undefined) {
           reasons.push(
-            `Claimable balance ${id.slice(0, 12)}… no longer exists, so claiming it would fail.`,
+            `Claimable balance ${shortAddress(id, 12, 0)} no longer exists, so claiming it would fail.`,
           );
         } else {
           if (cb.asset !== "native") {

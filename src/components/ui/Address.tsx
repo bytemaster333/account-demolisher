@@ -2,11 +2,7 @@
 
 import { useState } from "react";
 import { MONO, RADIUS } from "./tokens";
-
-function middleTruncate(value: string, head = 6, tail = 6): string {
-  if (value.length <= head + tail + 1) return value;
-  return `${value.slice(0, head)}…${value.slice(-tail)}`;
-}
+import { shortAddress } from "@/lib/safe-display";
 
 // truncated monospace address with an inline copy button; the full value is in
 // the title and the copy
@@ -67,7 +63,7 @@ export function CopyableAddress({
           textOverflow: "ellipsis",
         }}
       >
-        {full ? value : middleTruncate(value, head, tail)}
+        {full ? value : shortAddress(value, head, tail)}
       </code>
       <span
         style={{

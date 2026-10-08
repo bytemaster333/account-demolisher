@@ -18,15 +18,12 @@ import {
   type PendingForwardStatus,
   type PendingMediatorForward,
 } from "@/lib/mediator/pending-flow";
+import { shortAddress } from "@/lib/safe-display";
 
 // how often a row that has nothing to offer yet asks the chain again. nothing
 // writes storage when a merge lands and the forward after it fails, so without
 // this a row that looked too early would stay quiet for good.
 export const PENDING_FORWARD_RECHECK_MS = 30_000;
-
-function shorten(addr: string): string {
-  return addr.length > 12 ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : addr;
-}
 
 function describeError(err: unknown, fallback: string): string {
   return errorMessage(err, fallback);
@@ -154,7 +151,7 @@ export function PendingForwardBanner({
           return (
             <Notice key={d.txHash} tone="success" role="status" title="Exchange forward delivered">
               The balance from {current ? "this" : "your earlier"} close reached{" "}
-              {shorten(d.record.ultimateDestination)}.{" "}
+              {shortAddress(d.record.ultimateDestination)}.{" "}
               {network !== null ? (
                 <a href={explorerTxUrl(network, d.txHash)} target="_blank" rel="noreferrer">
                   View the forward transaction
@@ -284,7 +281,7 @@ function PendingForwardRow({
     case "check-failed":
       return (
         <Notice tone="warning" role="alert" title="Could not check an interrupted exchange forward">
-          {subject} to {shorten(record.ultimateDestination)} on {networkName} left a recovery
+          {subject} to {shortAddress(record.ultimateDestination)} on {networkName} left a recovery
           record, but its state could not be read from Horizon: {state.error}
           <div style={{ marginTop: 12 }}>
             <Button variant="secondary" onClick={() => setCheck((n) => n + 1)}>
@@ -297,8 +294,8 @@ function PendingForwardRow({
       return (
         <Notice tone="warning" role="alert" title="An exchange forward was interrupted">
           {subject} merged your account&apos;s balance into the temporary account{" "}
-          {shorten(record.mediatorPublicKey)} on {networkName}, but the forward to{" "}
-          {shorten(record.ultimateDestination)} has not gone out.{" "}
+          {shortAddress(record.mediatorPublicKey)} on {networkName}, but the forward to{" "}
+          {shortAddress(record.ultimateDestination)} has not gone out.{" "}
           {legacy ? (
             <>
               The record was saved by an earlier version of the app, whose flow token can no longer
@@ -341,12 +338,12 @@ function PendingForwardRow({
     case "misdirected":
       return (
         <Notice tone="danger" role="alert" title="Exchange forward went to another address">
-          The temporary account {shorten(record.mediatorPublicKey)} was merged into{" "}
-          {shorten(state.into)}, not {shorten(record.ultimateDestination)}. Contact the operator
-          with transaction{" "}
+          The temporary account {shortAddress(record.mediatorPublicKey)} was merged into{" "}
+          {shortAddress(state.into)}, not {shortAddress(record.ultimateDestination)}. Contact the
+          operator with transaction{" "}
           {network !== null ? (
             <a href={explorerTxUrl(network, state.txHash)} target="_blank" rel="noreferrer">
-              {shorten(state.txHash)}
+              {shortAddress(state.txHash)}
             </a>
           ) : (
             state.txHash
@@ -357,10 +354,10 @@ function PendingForwardRow({
     case "not-merged":
       return (
         <Notice tone="neutral" title="An earlier exchange close stopped before the merge">
-          {subject} to {shorten(record.ultimateDestination)} on {networkName} ended before your
+          {subject} to {shortAddress(record.ultimateDestination)} on {networkName} ended before your
           account was merged into its temporary account, so your balance did not move.
           {state.mediatorBalance !== null
-            ? ` The temporary account ${shorten(record.mediatorPublicKey)} still holds ${state.mediatorBalance} XLM of funding from that attempt. This record is the only way the app can reach it; dismissing it gives that amount up.`
+            ? ` The temporary account ${shortAddress(record.mediatorPublicKey)} still holds ${state.mediatorBalance} XLM of funding from that attempt. This record is the only way the app can reach it; dismissing it gives that amount up.`
             : null}
           {errorLine}
           <div style={{ marginTop: 12 }}>

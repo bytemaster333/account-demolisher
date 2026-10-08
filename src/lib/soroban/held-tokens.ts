@@ -33,6 +33,7 @@ import {
   type EventScanIncomplete,
 } from "@/lib/soroban/event-scan";
 import { balance } from "@/lib/soroban/sep41";
+import { shortAddress } from "@/lib/safe-display";
 
 export interface HeldToken {
   readonly contractId: string;
@@ -158,7 +159,7 @@ export async function discoverHeldTokens(
       const bal = await withTimeout(
         balance(server, contractId, userAddress, userAddress, network),
         PROBE_TIMEOUT_MS,
-        `balance(${contractId.slice(0, 6)}…)`,
+        `balance(${shortAddress(contractId, 6, 0)})`,
       );
       return { contractId, bal };
     } catch {

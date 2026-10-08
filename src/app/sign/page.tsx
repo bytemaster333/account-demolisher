@@ -55,6 +55,7 @@ import {
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { withScopedKitSession } from "@/lib/wallet/connector";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
+import { shortAddress } from "@/lib/safe-display";
 
 type Load =
   | { readonly kind: "loading" }
@@ -333,7 +334,7 @@ export default function SignPage(): React.JSX.Element {
         // it, so the relay never sees it
         if (!signerKeys.includes(signerPublicKey)) {
           setSignError(
-            `That key (${signerPublicKey.slice(0, 6)}…${signerPublicKey.slice(-4)}) is not a signer on this request. Nothing was submitted; connect a signer key and try again.`,
+            `That key (${shortAddress(signerPublicKey)}) is not a signer on this request. Nothing was submitted; connect a signer key and try again.`,
           );
           return;
         }

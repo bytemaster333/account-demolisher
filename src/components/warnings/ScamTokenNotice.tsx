@@ -12,6 +12,7 @@ import type { NetworkConfig } from "@/lib/config/networks";
 import { explorerAccountUrl, explorerContractUrl } from "@/lib/explorer";
 import type { ScamFinding, ScamFlag } from "@/lib/safety/scam-heuristics";
 import type { AssetIdentifier } from "@/lib/types/account";
+import { shortAddress } from "@/lib/safe-display";
 
 export interface ScamTokenNoticeProps {
   readonly findings: readonly ScamFinding[];
@@ -30,7 +31,7 @@ function assetCode(asset: AssetIdentifier): string {
       return "pool shares";
     case "contract":
       // symbol is an untrusted display hint; fall back to a shortened contract id
-      return asset.symbol ?? `${asset.contractId.slice(0, 4)}…${asset.contractId.slice(-4)}`;
+      return asset.symbol ?? shortAddress(asset.contractId, 4, 4);
   }
 }
 

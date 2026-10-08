@@ -30,6 +30,7 @@ import { restoreKitSession } from "@/lib/wallet/kit";
 import { useCloseBusy } from "@/stores/close-busy";
 import { useNetworkStore } from "@/stores/network";
 import { useWalletStore } from "@/stores/wallet";
+import { shortAddress } from "@/lib/safe-display";
 
 // leaving /demolish unmounts the running close, which then stops before its next
 // step and leaves the account part way closed
@@ -461,7 +462,7 @@ function WalletMenu({
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
-  const short = `${publicKey.slice(0, 6)}…${publicKey.slice(-4)}`;
+  const short = shortAddress(publicKey);
 
   useEffect(() => {
     if (!open) return;

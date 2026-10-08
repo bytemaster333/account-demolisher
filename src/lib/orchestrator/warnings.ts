@@ -1,6 +1,7 @@
 // user-facing notes the close flow shows before anything is signed
 
 import type { PlanTree } from "@/lib/plan/tree";
+import { shortAddress } from "@/lib/safe-display";
 
 // protocol key for a discovery that did not finish at all
 export const ALL_PROTOCOLS = "all";
@@ -61,9 +62,7 @@ export function heldTokenDispositionWarnings(
       continue;
     }
     const label =
-      asset.kind === "contract"
-        ? `${asset.contractId.slice(0, 4)}…${asset.contractId.slice(-4)}`
-        : "a standalone token";
+      asset.kind === "contract" ? shortAddress(asset.contractId, 4, 4) : "a standalone token";
     const reason = node.error ?? "the simulation failed";
     if (node.kind === "TransferAsIs") {
       out.push(

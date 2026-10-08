@@ -68,6 +68,7 @@ import { pathKey, type ClassicBatch, type ClassicMemo, type PathResultRef } from
 import { AmbiguousSubmitError, CloseFailure, rejectionCodes } from "@/lib/orchestrator/failures";
 import { journalFor, type NodeJournal } from "@/lib/orchestrator/journal";
 import { residueLineProblem, toStroops, type DestinationLine } from "@/lib/orchestrator/residue";
+import { shortAddress } from "@/lib/safe-display";
 
 export interface ConfirmationReceipt {
   readonly txHash: string;
@@ -431,10 +432,6 @@ function maxTimeOf(tx: Transaction): number | null {
   return Number.isFinite(max) && max > 0 ? max : null;
 }
 
-function short(id: string): string {
-  return `${id.slice(0, 4)}…${id.slice(-4)}`;
-}
-
 interface Run {
   readonly publicKey: string;
   readonly tree: PlanTree;
@@ -569,10 +566,10 @@ export async function executePlanTreeOnChain(
           run.notify(node);
           run.note(
             (err instanceof AmbiguousSubmitError
-              ? `The revoke of the allowance for spender ${short(md.spender)} on token ` +
-                `${short(md.contractId)} was submitted as ${err.txHash}, but the network has not ` +
+              ? `The revoke of the allowance for spender ${shortAddress(md.spender, 4, 4)} on token ` +
+                `${shortAddress(md.contractId, 4, 4)} was submitted as ${err.txHash}, but the network has not ` +
                 "confirmed whether it landed. If it did not, "
-              : `The allowance for spender ${short(md.spender)} on token ${short(md.contractId)} was not ` +
+              : `The allowance for spender ${shortAddress(md.spender, 4, 4)} on token ${shortAddress(md.contractId, 4, 4)} was not ` +
                 `revoked (${errorMessage(err)}). `) +
               "Closing the account does not remove it: any balance of that token held at this " +
               "address stays spendable by that spender.",
@@ -768,13 +765,13 @@ function stopUnlessSettled(node: PlanNode, err: unknown, run: Run): void {
 function tokenLabel(asset: TransferAsIsNode["metadata"]["asset"]): string {
   switch (asset.kind) {
     case "contract":
-      return short(asset.contractId);
+      return shortAddress(asset.contractId, 4, 4);
     case "credit":
       return asset.code;
     case "native":
       return "XLM";
     case "liquidity_pool_shares":
-      return short(asset.poolId);
+      return shortAddress(asset.poolId, 4, 4);
   }
 }
 
@@ -905,7 +902,7 @@ export function isUnsafeStepError(err: unknown): boolean {
 function claimUnavailable(err: BackstopEmissionsClaimError): CloseFailure {
   return new CloseFailure(
     "claim_unavailable",
-    `The Blend backstop emissions claim for pool ${short(err.poolId)} can no longer run, so ` +
+    `The Blend backstop emissions claim for pool ${shortAddress(err.poolId, 4, 4)} can no longer run, so ` +
       `nothing further was signed. Rebuild the plan to review the ` +
       `${formatTokenAmount(err.accruedEmissions)} BLND it would leave unclaimed.`,
     { cause: err },
@@ -951,7 +948,7 @@ async function accountExists(horizon: HorizonLike, id: string): Promise<boolean>
     if (isNotFound(err) || err instanceof AccountNotFoundError) return false;
     throw new CloseFailure(
       "network",
-      `Could not confirm whether account ${short(id)} exists (${errorMessage(err)}); nothing was signed.`,
+      `Could not confirm whether account ${shortAddress(id, 4, 4)} exists (${errorMessage(err)}); nothing was signed.`,
       { cause: err },
     );
   }
@@ -1011,8 +1008,8 @@ function mediatorSession(run: Run) {
         if (prev.ultimateDestination !== destination) {
           throw new CloseFailure(
             "not_mergeable",
-            `An earlier exchange close left funds in temporary account ${short(prev.mediatorPublicKey)}, ` +
-              `bound to ${short(prev.ultimateDestination)}. Resume that forward before closing to a ` +
+            `An earlier exchange close left funds in temporary account ${shortAddress(prev.mediatorPublicKey, 4, 4)}, ` +
+              `bound to ${shortAddress(prev.ultimateDestination, 4, 4)}. Resume that forward before closing to a ` +
               "different destination.",
           );
         }
@@ -1021,7 +1018,7 @@ function mediatorSession(run: Run) {
         if (!sameMemo(prev.memo, forward.metadata.memo)) {
           throw new CloseFailure(
             "not_mergeable",
-            `An earlier exchange close left funds in temporary account ${short(prev.mediatorPublicKey)} ` +
+            `An earlier exchange close left funds in temporary account ${shortAddress(prev.mediatorPublicKey, 4, 4)} ` +
               "with a different deposit memo. Resume that forward from the pending-forward notice " +
               "first; it delivers with the memo it was started with.",
           );
@@ -1045,7 +1042,7 @@ function mediatorSession(run: Run) {
     if (remainingMs() < MEDIATOR_TOKEN_MARGIN_MS) {
       throw new CloseFailure(
         "mediator_expired",
-        `The authorization to forward from temporary account ${short(forward.metadata.mediatorPublicKey)} ` +
+        `The authorization to forward from temporary account ${shortAddress(forward.metadata.mediatorPublicKey, 4, 4)} ` +
           "is about to expire, so the merge was not signed. The funds already in that account are " +
           "recoverable through the pending-forward notice or the operator.",
       );
@@ -1461,7 +1458,7 @@ async function mergeAlreadyLanded(
   throw new CloseFailure(
     "not_mergeable",
     landed !== null
-      ? `The account was already merged into ${short(landed.into)} by transaction ${landed.txHash}, ` +
+      ? `The account was already merged into ${shortAddress(landed.into, 4, 4)} by transaction ${landed.txHash}, ` +
           "not by this close."
       : "The account no longer exists on the network, so there is nothing left to merge.",
     { cause },
@@ -1595,7 +1592,7 @@ async function assertExitPayoutsSwept(
     } catch (err) {
       throw new CloseFailure(
         "network",
-        `account_merge blocked: could not read the balance of token ${short(id)} paid out by ` +
+        `account_merge blocked: could not read the balance of token ${shortAddress(id, 4, 4)} paid out by ` +
           `your DeFi exits (${errorMessage(err)}). Retry once the network is responsive.`,
         { cause: err },
       );
@@ -1603,7 +1600,7 @@ async function assertExitPayoutsSwept(
     if (held > 0n) {
       throw new CloseFailure(
         "not_mergeable",
-        `account_merge blocked: token ${short(id)} paid out by your DeFi exits is still on the ` +
+        `account_merge blocked: token ${shortAddress(id, 4, 4)} paid out by your DeFi exits is still on the ` +
           "account. Merging now would delete it with the account.",
       );
     }
@@ -1662,7 +1659,7 @@ async function runForward(node: MediatorForwardNode, run: Run): Promise<void> {
     if (delivered === null) {
       node.status = "failed";
       node.error =
-        `The temporary account ${short(md.mediatorPublicKey)} no longer exists and no forward ` +
+        `The temporary account ${shortAddress(md.mediatorPublicKey, 4, 4)} no longer exists and no forward ` +
         "out of it was found.";
       run.notify(node);
       throw new CloseFailure("unknown", node.error);
@@ -1735,7 +1732,7 @@ async function runForward(node: MediatorForwardNode, run: Run): Promise<void> {
     throw new CloseFailure(
       "forward_pending",
       `Your account was merged into the temporary exchange-forward account ` +
-        `${short(md.mediatorPublicKey)}, but the forward to the exchange did not finish: ` +
+        `${shortAddress(md.mediatorPublicKey, 4, 4)}, but the forward to the exchange did not finish: ` +
         `${result.error}. Retry resumes the forward.`,
     );
   }

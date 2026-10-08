@@ -25,6 +25,7 @@ import { balance, buildApprove } from "@/lib/soroban/sep41";
 import { assembleSubmittable, simulateRead } from "@/lib/soroban/simulate";
 import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
+import { shortAddress } from "@/lib/safe-display";
 
 // circle testnet usdc: issuer published in https://testanchor.stellar.org/.well-known/stellar.toml
 const USDC_TESTNET_ISSUER = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
@@ -172,7 +173,7 @@ export async function runDemoSetup(opts: RunDemoOptions): Promise<DemoAccountRes
   onFinish({
     id: "keypair",
     status: "done",
-    detail: `${publicKey.slice(0, 6)}…${publicKey.slice(-4)}`,
+    detail: shortAddress(publicKey),
   });
 
   // step 2: friendbot (fatal on failure)
@@ -273,7 +274,7 @@ export async function runDemoSetup(opts: RunDemoOptions): Promise<DemoAccountRes
       id: "co-signer",
       status: "done",
       txHash: hash,
-      detail: `${cosigner.slice(0, 6)}…${cosigner.slice(-4)} @ weight 1`,
+      detail: `${shortAddress(cosigner)} @ weight 1`,
     });
   } catch (e) {
     onFinish({ id: "co-signer", status: "failed", error: errorMessage(e) });
@@ -309,7 +310,7 @@ export async function runDemoSetup(opts: RunDemoOptions): Promise<DemoAccountRes
       id: "credit-balances",
       status: "done",
       txHash: aquaHash,
-      detail: `1000 AQUA + 500 YXLM minted (last tx ${yxlmHash.slice(0, 8)}…)`,
+      detail: `1000 AQUA + 500 YXLM minted (last tx ${shortAddress(yxlmHash, 8, 0)})`,
     });
   } catch (e) {
     onFinish({ id: "credit-balances", status: "skipped", error: errorMessage(e) });
@@ -871,7 +872,7 @@ export async function submitAndPollSoroban(
     }
   }
   throw new Error(
-    `${stepLabel} tx ${hash.slice(0, 8)}… was accepted but not in a ledger after ${
+    `${stepLabel} tx ${shortAddress(hash, 8, 0)} was accepted but not in a ledger after ${
       poll.timeoutMs / 1000
     }s`,
   );

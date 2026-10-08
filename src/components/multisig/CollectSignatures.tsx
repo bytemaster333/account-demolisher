@@ -52,6 +52,7 @@ import { inspectClose, signedSigners, thresholdForClose } from "@/lib/multisig/s
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import type { AccountAudit } from "@/lib/types/account";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
+import { shortAddress } from "@/lib/safe-display";
 
 export interface CollectSignaturesProps {
   readonly planId: string;
@@ -693,8 +694,7 @@ export function CollectSignatures({
               role="status"
               style={{ margin: 0, fontSize: 12, color: "var(--success)", fontWeight: 600 }}
             >
-              ✓ Signed as {lastAdded.slice(0, 8)}…{lastAdded.slice(-6)}. Paste the next key to add
-              another signer.
+              ✓ Signed as {shortAddress(lastAdded, 8, 6)}. Paste the next key to add another signer.
             </p>
           ) : null}
           <p style={{ margin: 0, fontSize: 11.5, color: "var(--fg-3)", lineHeight: 1.5 }}>

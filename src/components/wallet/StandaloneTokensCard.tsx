@@ -9,10 +9,7 @@ import { MAX_PRICE_IMPACT_BPS } from "@/lib/plan/price-impact";
 import type { HeldToken } from "@/lib/soroban/held-tokens";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { balance } from "@/lib/soroban/sep41";
-
-function shortId(id: string): string {
-  return id.length > 10 ? `${id.slice(0, 5)}…${id.slice(-5)}` : id;
-}
+import { shortAddress } from "@/lib/safe-display";
 
 // standalone SEP-41 tokens the account holds directly (custom tokens someone
 // transferred to it). they live in each token contract's own storage, so unlike
@@ -106,7 +103,7 @@ export function StandaloneTokensCard({
 
   const idLabel = (token: HeldToken, manualTag: boolean): React.JSX.Element => (
     <span style={{ fontFamily: "'Geist Mono', monospace", fontSize: 12.5, color: "var(--fg)" }}>
-      {shortId(token.contractId)}
+      {shortAddress(token.contractId, 5, 5)}
       {manualTag ? (
         <span style={{ color: "var(--fg-3)", marginLeft: 8, fontSize: 11 }}>added</span>
       ) : null}

@@ -1,5 +1,7 @@
 "use client";
 
+import { shortAddress } from "@/lib/safe-display";
+
 // reusable live-progress list used by the demo-account flow
 
 export type DemoStepRowStatus = "pending" | "active" | "done" | "failed" | "skipped";
@@ -141,9 +143,7 @@ function Row({ row, isLast }: { readonly row: DemoStepRow; readonly isLast: bool
             }}
             title="View on Stellar.expert"
           >
-            <span>
-              {row.txHash.slice(0, 6)}…{row.txHash.slice(-4)}
-            </span>
+            <span>{shortAddress(row.txHash)}</span>
             <svg
               width="10"
               height="10"
@@ -237,9 +237,7 @@ function Row({ row, isLast }: { readonly row: DemoStepRow; readonly isLast: bool
               gap: 5,
             }}
           >
-            <span>
-              tx {row.txHash.slice(0, 8)}…{row.txHash.slice(-6)}
-            </span>
+            <span>tx {shortAddress(row.txHash, 8, 6)}</span>
             <svg
               width="11"
               height="11"

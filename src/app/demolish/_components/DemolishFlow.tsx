@@ -77,6 +77,7 @@ import { ReviewPanel } from "./ReviewPanel";
 import { SponsorshipAutoRevokeNotice } from "./SponsorshipAutoRevokeNotice";
 import { DemolishStatusWidget, type SigningMode } from "./StatusWidget";
 import { StepIndicator } from "./StepIndicator";
+import { shortAddress } from "@/lib/safe-display";
 
 function finalNodeOf(tree: PlanTree | null): Extract<PlanNode, { kind: "FinalClassicTx" }> | null {
   const node = tree?.allNodes.get("final-classic-tx");
@@ -1554,8 +1555,7 @@ function ResumeRequestCard({
       title="You have a signing request in progress"
       data-testid="resume-signing-request"
     >
-      A close of this account to {record.destination.slice(0, 6)}…{record.destination.slice(-4)} was
-      published for co-signers on{" "}
+      A close of this account to {shortAddress(record.destination)} was published for co-signers on{" "}
       {new Date(record.createdAt).toLocaleString(undefined, {
         dateStyle: "medium",
         timeStyle: "short",

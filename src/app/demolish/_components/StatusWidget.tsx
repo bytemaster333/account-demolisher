@@ -17,10 +17,10 @@ import { EVENT_RETENTION_WINDOW_LEDGERS } from "@/lib/soroban/event-retention";
 import { SR_ONLY } from "../_lib/a11y";
 import { parseDemolishError } from "../_lib/demolish-error";
 import { failureNoteFor, type FailureNote } from "../_lib/failure-note";
-import { truncateHash } from "../_lib/format";
 import { nodePlainLabel, phasePlainLabel, type PlanGroup } from "../_lib/plan-copy";
 import { buildReceiptText } from "../_lib/receipt";
 import { PlanRow } from "./PlanRow";
+import { shortAddress } from "@/lib/safe-display";
 
 export type DeliveredAmount =
   | { readonly status: "loading" }
@@ -330,9 +330,7 @@ export function DemolishStatusWidget({
                     title={destination}
                     style={{ fontFamily: "'Geist Mono', monospace", color: "var(--fg-2)" }}
                   >
-                    {destination.length > 10
-                      ? `${destination.slice(0, 6)}…${destination.slice(-4)}`
-                      : destination}
+                    {destination.length > 10 ? shortAddress(destination) : destination}
                   </span>{" "}
                   <AddressActions
                     value={destination}
@@ -449,7 +447,7 @@ export function DemolishStatusWidget({
             title="Open the public record of this transaction on a block explorer"
           >
             <span style={{ fontSize: 10, color: "var(--fg-3)" }}>PROOF</span>
-            <span>{truncateHash(mergeHash)}</span>
+            <span>{shortAddress(mergeHash, 8, 6)}</span>
             <svg
               width="11"
               height="11"
@@ -830,10 +828,6 @@ export function DemolishStatusWidget({
   );
 }
 
-function shortKey(key: string): string {
-  return key.length > 12 ? `${key.slice(0, 6)}…${key.slice(-4)}` : key;
-}
-
 // the failure note, branched on what the tree's receipts prove happened. It
 // never claims the balance is untouched once any step has a receipt, and after
 // the merge into the helper account it points at the one recovery action.
@@ -902,12 +896,12 @@ function FailureNoteView({
             rel="noreferrer noopener"
             style={{ color: "var(--fg)" }}
           >
-            {truncateHash(note.mergeHash)}
+            {shortAddress(note.mergeHash, 8, 6)}
           </a>
-          ) moved the whole balance into the helper account {shortKey(note.mediatorPublicKey)}
+          ) moved the whole balance into the helper account {shortAddress(note.mediatorPublicKey)}
           {forwardDelivered
-            ? `, and the forward has now delivered it to ${shortKey(destination)}.`
-            : `, but the delivery to ${shortKey(destination)} didn't finish.`}{" "}
+            ? `, and the forward has now delivered it to ${shortAddress(destination)}.`
+            : `, but the delivery to ${shortAddress(destination)} didn't finish.`}{" "}
           {hadRecord ? (
             <>
               {forwardDelivered
@@ -952,7 +946,7 @@ function FailureNoteView({
             rel="noreferrer noopener"
             style={{ color: "var(--fg)" }}
           >
-            {truncateHash(note.mergeHash)}
+            {shortAddress(note.mergeHash, 8, 6)}
           </a>
           .
           <LandedList phases={note.landed} network={network} />
@@ -1037,7 +1031,7 @@ function LandedList({
               rel="noreferrer noopener"
               style={{ color: "var(--fg)" }}
             >
-              {truncateHash(p.txHash)}
+              {shortAddress(p.txHash, 8, 6)}
             </a>{" "}
             in ledger {p.ledger}
           </li>

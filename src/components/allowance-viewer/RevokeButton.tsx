@@ -12,6 +12,7 @@ import { explorerTxUrl } from "@/lib/explorer";
 import { type AllowanceRecord } from "@/lib/soroban/allowances";
 import { confirmRevoke, submitRevoke } from "@/lib/soroban/revoke";
 import type { Connector } from "@/lib/wallet/connector";
+import { shortAddress } from "@/lib/safe-display";
 
 export interface RevokeButtonProps {
   readonly record: AllowanceRecord;
@@ -96,7 +97,7 @@ export function RevokeButton({
           textDecoration: "none",
         }}
       >
-        tx {txHash.slice(0, 8)}…{txHash.slice(-4)}
+        tx {shortAddress(txHash, 8, 4)}
         <svg
           width="10"
           height="10"
