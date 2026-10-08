@@ -1,131 +1,208 @@
 ---
 title: Security model
-description: What the deployment can and cannot do, the trust boundaries, the adversaries the design assumes, and the code that defends each one.
+description: What the deployment can and cannot do, the trust boundaries, the adversaries the design assumes, what each party can see, and the code that defends each boundary.
 ---
 
-Closing an account is irreversible. The design keeps the trust the app asks of you as small
-as it can, and puts the remaining trust behind narrow, verifiable boundaries.
+Closing an account is irreversible. The app keeps your key in your browser or wallet, checks every
+transaction it asks you to sign against what that step needs, and puts the trust it does ask for
+behind boundaries you can verify in the code.
 
-## What the deployment can do
+## What the deployment runs
 
-The server side has three jobs:
-
-| Route                         | What it does                                                                                                                                                       |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `/api/mediator/sign`          | Mints an ephemeral mediator for one closure and co-signs a strictly validated two-operation forward with that flow's own key                                       |
-| `/api/plan` and its subroutes | Collects signatures for a multisig close and merges them into one canonical envelope, in memory                                                                    |
-| `/api/soroswap`               | Proxies the Soroswap aggregator, concealing the upstream API key, allowing only a fixed set of aggregator operations, rate limited to 5 requests per minute per IP |
+| Route                                         | What it does                                                                                                                    |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `/api/mediator/sign`, `/api/mediator/reissue` | Mints an ephemeral mediator for one exchange close, renews its token, and co-signs one strictly validated two-operation forward |
+| `/api/plan` and its subroutes                 | Collects signatures for a shared-account close and merges them into one envelope, in memory                                     |
+| `/api/metrics`                                | Records page visits, funnel steps and verified closes; serves the aggregate behind a bearer token                               |
+| `/api/soroswap`                               | A same-origin proxy to the Soroswap aggregator's quote and build endpoints. No code in the app calls it                         |
 
 The deployment does **not**:
 
-- Hold your secret key. It never reaches the server.
-- Build transactions on your behalf without you reviewing them first.
-- Submit transactions on your behalf. Your wallet signs and your browser submits.
+- receive your secret key, from a wallet or from the pasted-key path;
+- build a transaction for you to sign, or submit one on your behalf. Your browser builds every
+  transaction, your wallet signs it, and your browser submits it. The mediator forward is built
+  and submitted by your browser too; the server only adds the mediator's co-signature.
 
-Position discovery runs entirely client-side. There is no server-side positions proxy and no
-positions API key.
+Position discovery, planning, simulation, the allow-list and authorization checks, and the safety
+gates all run in the browser. There is no server-side positions proxy.
 
-## The mediator key
+## Server secrets
 
-The only privileged secret is `MEDIATOR_SECRET`, and it is not stored as a ready-to-use
-signing key. It is a Stellar seed used **purely as an HMAC master key**. A fresh ephemeral
-keypair is derived from it per closure, and the master itself signs nothing and holds no
-balance.
+| Variable              | Power                                                                                                                             |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `MEDIATOR_SECRET`     | An HMAC master that derives every mediator key and signs flow tokens. It never signs a transaction itself and is never an account |
+| `METRICS_ADMIN_TOKEN` | Reads the aggregate metrics                                                                                                       |
+| `SOROSWAP_API_KEY`    | Spends the deployment's Soroswap aggregator quota through the proxy                                                               |
 
-Its power is bounded three ways: a validator that accepts exactly one envelope shape, both
-operations bound to the destination committed in the flow token, and a 15-minute token
-lifetime.
+## The mediator and the operator
+
+An honest server co-signs only a forward that pays the destination and memo bound into the flow
+token, on the network bound into it, with a capped fee and a short time bound. That bound protects
+you against a leaked token. It does not hold against the server itself:
+
+- The server holds `MEDIATOR_SECRET` and chooses every nonce, so it derives every mediator key and
+  can move any balance that sits in a mediator.
+- The server serves the app code, so a compromised server can change the destination and memo the
+  page builds against before you sign.
+
+An exchange close therefore trusts the operator with the balance while it is in transit. The
+exposure is bounded by time, not by cryptography: the merge into the mediator and the forward out
+of it run back to back. A direct close, to an address that needs no memo, never uses the mediator.
 
 Full detail in [Mediator forward protocol](/docs/developers/protocol/mediator).
 
 ## Trust boundaries
 
-| Boundary                    | Trust                           | Why                                                                                                                                                                                                          |
-| --------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Client browser**          | Highest                         | Your key lives here and nowhere else. Discovery, planning, simulation, the allow-list check, the safety gates, and signing all happen here                                                                   |
-| **Server**                  | Bounded                         | Holds the HMAC master but never your key. A fully compromised server still cannot move funds anywhere except the destination you committed to                                                                |
-| **Horizon and Soroban RPC** | Untrusted for integrity         | Read results are treated as hints. The classic close is re-audited and rebuilt from fresh state at submit, Soroban nodes are re-simulated, and event-derived allowances are confirmed against on-chain reads |
-| **Wallet**                  | Trusted signer, separate domain | Shows its own confirmation and signs on its own. The app hands it an XDR and gets an envelope back                                                                                                           |
-| **On-chain contracts**      | Untrusted                       | Any contract a position points at is untrusted until it is allow-listed, and even an allow-listed call is re-checked immediately before signing                                                              |
+| Boundary                    | Trust                       | What bounds it                                                                                                                                                                                                                                                                         |
+| --------------------------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Browser**                 | Highest                     | Your key lives here or in your wallet and nowhere else                                                                                                                                                                                                                                 |
+| **Wallet**                  | Separate signer             | Shows its own confirmation. The app submits only an envelope whose hash equals the transaction it built and checked, carrying a valid signature from the connected key                                                                                                                 |
+| **Server**                  | Trusted for exchange closes | Holds the HMAC master that derives every mediator key, and serves the app code. A compromised server can redirect an exchange close in flight. It never receives a user key                                                                                                            |
+| **Horizon and Soroban RPC** | Untrusted for integrity     | They supply the state and simulations a plan is built from. Each classic batch is rebuilt from a fresh audit, each Soroban step is re-simulated, and before every signature the target, the authorization tree and the fee are checked, so a lying endpoint cannot widen what you sign |
+| **On-chain contracts**      | Untrusted                   | Only pinned entry points can be the root of a signed call, each held to the exact authorization tree its call needs and a fee cap                                                                                                                                                      |
 
 ## Assets
 
 In rough order of severity:
 
-- **Your account and its funds.** A close is irreversible, so getting the destination and
-  the disposal right is the primary asset.
-- **The mediator HMAC master.** A server-only seed. It never signs directly and never holds
-  a balance.
-- **Signing keys.** Your wallet key, which never reaches the server, and each flow's
-  ephemeral mediator key, derived on demand and never stored.
-- **Allow-list integrity.** If the set of signable contracts could widen at runtime, a
-  malicious position could smuggle an arbitrary call into a signature.
-- **Plan correctness.** That what you sign matches the plan you reviewed against current
-  state, and that a merge never runs while a position is open.
+- **Your account and its funds.** A close is irreversible, so the destination, the memo and the
+  disposal of every balance are the primary asset.
+- **A balance in transit through a mediator.** Exposed to the operator for the time between the
+  merge and the forward.
+- **The mediator HMAC master.** Whoever holds it can derive every mediator key.
+- **Signing keys.** Your key, which never reaches the server, and each flow's mediator key,
+  derived on demand and never stored.
+- **Allow-list integrity.** If the set of signable contracts could widen at runtime, a malicious
+  position could smuggle an arbitrary call into a signature.
+- **Plan correctness.** What you sign matches what you reviewed, against current state, and a merge
+  never runs while a position is open.
 
 ## Adversaries and what stops them
 
-| Adversary                                                                                                                                            | Mitigation                                                                                                                                                                                                                                                                                            |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **A malicious dApp or token contract** emitting fabricated `approve` or `transfer` events, or returning a hostile authorization tree from simulation | A revoke is held to an exact zero-approval with no smuggled auth, source-account credentials only, and no sub-invocations. A token drain is held to an exact `transfer` the same way. A fabricated approve event is caught by confirming the allowance against the token's own on-chain `allowance()` |
-| **A compromised or hostile RPC or Horizon** returning wrong balances, stale footprints, or a manipulated simulation                                  | Reads are re-verified rather than trusted: fresh re-audit and rebuild at submit, re-simulation of footprints, and a fail-closed merge guard that refuses when positions cannot be confirmed closed. Transient 5xx reads retry with backoff while a 404 is fatal                                       |
-| **A network attacker in the middle**                                                                                                                 | A strict CSP restricts `connect-src` to a fixed upstream list, with `object-src 'none'`, `frame-ancestors 'none'`, and `form-action 'self'`. HTTPS is enforced by the TLS-terminating proxy                                                                                                           |
-| **A malicious co-signer** trying to get a different transaction signed, or to bloat the request                                                      | Signatures merge only when the partial's transaction hash equals the canonical hash and the signature verifies against an expected signer. Deduplication keys on the recovered public key, not the attacker-chosen hint                                                                               |
-| **A hostile exchange or a redirected forward**                                                                                                       | The mediator co-signs one envelope shape only, with both operations bound to the destination committed in the flow token                                                                                                                                                                              |
-| **A supply-chain attacker**                                                                                                                          | A committed lockfile, no third-party analytics or telemetry SDKs in the dependency graph, and a CSP that loads no external script origin                                                                                                                                                              |
-| **The operator**                                                                                                                                     | The server never receives your key and cannot build or submit on your behalf. API routes are rate limited per client IP, and the relay requires a transaction already signed by an authorized on-chain signer                                                                                         |
+| Adversary                                                                                                     | Mitigation                                                                                                                                                                                                                                                                                                                                                                           |
+| ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **A hostile token contract** emitting fabricated events, or adding calls to a simulated authorization tree    | A revoke is held to exactly `approve(user, spender, 0, ledger)` and a token transfer to exactly `transfer(user, destination, amount)`, each with source-account credentials and no sub-invocations. Every DeFi step is held to the exact tree its call needs. Untrusted-token steps carry a fee and write cap. A token reporting more than 20 spenders is cut and flagged as hostile |
+| **A compromised or hostile RPC or Horizon** returning wrong balances, stale state or a manipulated simulation | Fresh audit and rebuild before each classic batch, re-simulation of each Soroban step, the sign-time target, tree and fee checks, and a merge guard that refuses while any DeFi position is open or a protocol could not be read. A failed fee read fails the step instead of bidding the minimum                                                                                    |
+| **A hostile wallet or extension** returning a different envelope                                              | `verifySignedEnvelope` refuses any envelope whose hash differs from the transaction the app built, or that carries no valid signature from the connected key                                                                                                                                                                                                                         |
+| **A network attacker in the middle**                                                                          | HTTPS from the TLS-terminating proxy, HSTS in production, and a CSP that lists every host the browser may contact                                                                                                                                                                                                                                                                    |
+| **A malicious co-signer** trying to get a different transaction signed, or to bloat the request               | Signatures merge only when the transaction hash matches the stored one and the signature verifies against one of the account's signers. Deduplication keys on the recovered signer, the envelope stops at the threshold, and the app checks the bundle against the live account before submitting                                                                                    |
+| **Someone holding a leaked flow token**                                                                       | The co-signer signs only a forward to the committed destination, with the committed memo, on the committed network, with a fee of at most 2,000,000 stroops and no preconditions beyond a short time bound                                                                                                                                                                           |
+| **A manipulated market**                                                                                      | A conversion whose full-size price is more than 2% worse than a reference trade of 1/1000 of the balance is never sold without your per-token decision. Minimum outputs carry the configured slippage (1% by default), and a fresh quote worse than the reviewed one stops the close                                                                                                 |
+| **A supply-chain attacker**                                                                                   | A committed lockfile installed with `--frozen-lockfile`, a dependency audit in CI, a digest-pinned base image, and a CSP that loads no third-party script origin                                                                                                                                                                                                                     |
+| **Abuse of the API routes**                                                                                   | Every route is rate-limited per client address, request bodies are capped (and capped again at the proxy), and the relay accepts only a close already signed by one of the account's signers                                                                                                                                                                                         |
 
 ## Safety gates before signing
 
-- **Typed confirmation.** You type the last four characters of the destination, and a
-  four-second timer must elapse, before the confirm button enables. This catches a wrong
-  paste and a hijacked clipboard.
-- **High-value acknowledgement** above 1000 XLM.
-- **Scam-token heuristics** flagging symbol collisions with well-known assets from
-  non-canonical issuers, look-alike symbols within a small edit distance, and symbols
-  containing characters outside A-Z and 0-9.
-- **Memo enforcement** for known exchanges, refusing to start on a missing, wrong-typed, or
-  malformed memo.
+- **Typed confirmation.** You type the last four characters of the destination, compared without
+  regard to case, and a four-second timer has to run out before the confirm button enables. The
+  same screen shows the memo. This catches a wrong paste and a swapped clipboard.
+- **High-value acknowledgement.** Required when the close moves more than 1,000 XLM, counting
+  native XLM, quoted conversions of credit balances, and XLM claimed from claimable balances, or
+  when it moves any holding the app cannot price.
+- **Scam-token checks.** Four checks run over the account's assets and standalone tokens:
+  - _Symbol collision_: a well-known symbol (XLM, USDC, EURC, AQUA, BLND) from an issuer other
+    than its canonical one on this network, including any credit asset coded XLM.
+  - _Look-alike symbol_: within an edit distance of 2 of one of those symbols.
+  - _Suspicious characters_: a symbol with characters outside A to Z, a to z and 0 to 9, or a token
+    name with hidden or text-reordering characters.
+  - _Unrecognized contract_: a token contract that is not on this network's curated list and is not
+    the asset contract of one of the well-known assets.
+- **Memo enforcement.** A destination in the exchange registry, or one that publishes the SEP-29
+  memo flag, needs a well-formed memo of an accepted type before the close can start. Exchange
+  internal wallets are refused outright.
+- **Mainnet notice.** Whenever the app is on mainnet (the build default, a restored selection or a
+  switch), the browser must have acknowledged that the code has not had an independent audit. The
+  acknowledgement is stored in local storage. A co-signer on `/sign` signs on the request's network
+  and does not see this notice.
 
 ## Contract allow-list
 
-Every Soroban transaction is checked against a compiled-in, network-specific contract set
-immediately before signing, and contract-creation and WASM-upload host functions are always
-rejected.
+Every DeFi-protocol Soroban transaction is checked against a compiled-in, network-specific list of
+entry points before it is signed, together with its authorization tree and its fee. Contract
+creation and wasm upload are always refused. See
+[Contract allow-list](/docs/developers/security/contract-allowlist).
 
-See [Contract allow-list](/docs/developers/security/contract-allowlist).
+## What the app and its providers can see
+
+The browser talks directly to these hosts, and to nothing else outside the deployment:
+
+| Host                                                           | When                                                                           | What it sees                                                                                                                                                  |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Horizon (`horizon.stellar.org`, `horizon-testnet.stellar.org`) | Every audit, read and classic submission                                       | Your address, the accounts you read, every transaction you submit                                                                                             |
+| Soroban RPC (the primary for the network and its failovers)    | Discovery, simulation and Soroban submission                                   | Your address and every Soroban transaction                                                                                                                    |
+| `friendbot.stellar.org`                                        | Creating a testnet demo account                                                | The new testnet address                                                                                                                                       |
+| `amm-api.aqua.network`, `amm-api-testnet.aqua.network`         | Aquarius pool discovery                                                        | Your address                                                                                                                                                  |
+| WalletConnect and Reown hosts                                  | Only when you pick WalletConnect or sign with a restored WalletConnect session | The relay carries the encrypted session. AppKit sends its mandatory initialization and connection events to `pulse.walletconnect.org`, including the page URL |
+| Your wallet's own services                                     | Whatever the wallet you pick does                                              | Outside the app's control                                                                                                                                     |
+
+`api.soroswap.finance` is also in the CSP's `connect-src`, but no code in the browser calls it.
+
+### Usage metrics
+
+The app sends first-party usage events to its own `/api/metrics`, never to a third party:
+
+| Event    | Sent when                                                                     | Carries                                      |
+| -------- | ----------------------------------------------------------------------------- | -------------------------------------------- |
+| `visit`  | The landing, `/demolish`, `/allowances` or `/sign` page loads                 | The page, and the network where it applies   |
+| `funnel` | You connect a wallet, discovery completes, a plan is built, or a close starts | The step and the network                     |
+| `close`  | A close completes                                                             | The network and the merge transaction's hash |
+
+No address, wallet identifier or amount is sent, but the merge hash identifies the closed account
+on the public ledger. The server stores visits as daily counts per page and network, funnel steps as
+counts per network and step, and a close only after `verifyCloseTx` (`src/server/close-verify.ts`) confirms on Horizon that the hash is a
+successful merge, shaped like a close this app builds, that carries the on-chain close marker: a
+`manageData` set and delete of `account-demolisher.close` right before the merge. The marker is
+public, so anyone can copy it into their own merge; the count means merges that carried it, and
+per-network daily caps (1,000 on mainnet, 200 on testnet) bound what copying adds. The store keeps
+the verified closes in `closes.jsonl` and the counts in `counters.json` under `METRICS_DB_DIR`.
+
+`GET /api/metrics` answers 503 until `METRICS_ADMIN_TOKEN` is set to at least 16 characters, and 401
+without the matching `Authorization: Bearer` token.
+
+### The Soroswap proxy
+
+`POST /api/soroswap` forwards two operations, `quote` and `build`, to the aggregator, adding the
+server's API key so it never reaches the browser. It refuses a request without an `Origin` header
+or from another origin (403), allows 5 requests per 60 seconds per client address, caps the request
+body at 16,384 bytes, abandons an upstream that has not answered in 15 seconds, and refuses an
+upstream answer over 1,000,000 bytes. The app itself does not call it: conversions go through the
+pinned Soroswap router on chain.
 
 ## Content Security Policy
 
-Built in `src/lib/config/csp.ts` and applied per response in `src/proxy.ts`, which is Next
-16's renamed middleware convention. `next.config.ts` sets only the static headers such as
-HSTS.
+Built in `src/lib/config/csp.ts` and set on every document response by `src/proxy.ts` (Next 16's
+name for middleware). `/api` is outside the proxy's matcher, so route bodies are not buffered before
+their caps apply. `next.config.ts` sets the static headers on every response: `X-Frame-Options:
+DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, a `Permissions-Policy`
+that denies camera, microphone and geolocation, and HSTS in production.
 
-`connect-src` allows `'self'` plus a fixed list: Horizon on all three networks, Soroban RPC
-on all three plus the pinned failover hosts, the Aquarius API on mainnet and testnet, the
-Soroswap API, friendbot on testnet and futurenet, and the WalletConnect and Reown hosts.
+| Directive                 | Production value                                                                                                                                                                     |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `default-src`             | `'self'`                                                                                                                                                                             |
+| `connect-src`             | `'self'`, Horizon, Soroban RPC and its failovers and friendbot (derived from `NETWORKS`), the Aquarius API on both networks, the Soroswap API, and the WalletConnect and Reown hosts |
+| `script-src`              | `'self' 'unsafe-inline' 'wasm-unsafe-eval'`                                                                                                                                          |
+| `style-src`               | `'self' 'unsafe-inline'`                                                                                                                                                             |
+| `img-src`                 | `'self' data:` and the wallet-icon hosts                                                                                                                                             |
+| `font-src`                | `'self'` and `fonts.reown.com`                                                                                                                                                       |
+| `frame-src`               | `'self'` and the WalletConnect verify hosts                                                                                                                                          |
+| `object-src`              | `'none'`                                                                                                                                                                             |
+| `frame-ancestors`         | `'none'`                                                                                                                                                                             |
+| `base-uri`, `form-action` | `'self'`                                                                                                                                                                             |
 
-The WalletConnect hosts are always in the policy; the browser contacts them only when you
-connect a WalletConnect wallet.
+`connect-src` is derived from `NETWORKS` in `src/lib/config/networks.ts`, so adding a network
+endpoint there adds it to the policy.
 
-`script-src` is `'self' 'unsafe-inline' 'wasm-unsafe-eval'`. The inline allowance is there
-because Next's hydration scripts are not nonce-stamped in this deployment and a nonce-only
-policy would block hydration entirely, as well as forcing every page out of static
-prerendering. No third-party script origin is allowed, and `default-src`, `object-src`,
-`frame-ancestors`, and `base-uri` are all locked down, which bounds the residual risk.
+`script-src` allows `'unsafe-inline'` because Next's inline hydration scripts are not nonce-stamped
+in this deployment, and a nonce-only policy blocks hydration. This is a real tradeoff: the policy
+loads no third-party script origin, but an injected inline script would run, and could reach every
+origin `connect-src` allows, including Horizon, which accepts any signed transaction, and the
+WalletConnect relay. The CSP limits where scripts load from, not where data can go.
 
-`object-src` is `'none'`, framing is denied, and `form-action` is restricted to `'self'`.
-Any request to an endpoint not on the list is blocked by the browser.
-
-Development adds exactly four things: `ws:` and `wss:` to `connect-src`, `'unsafe-eval'` to
-`script-src`, `blob:` to `img-src`, and `data:` to `font-src`.
-
-To add an upstream, add its URL to `CONNECT_SRC_ENDPOINTS`.
+Development adds `ws:` and `wss:` to `connect-src`, `'unsafe-eval'` to `script-src`, `blob:` to
+`img-src`, and `data:` to `font-src`.
 
 ## Origin verification
 
-`public/stellar.toml` is a SEP-1 declaration served at the canonical
-`/.well-known/stellar.toml` path, letting embedders verify the origin. It declares no signing
-key by design, because the mediator uses per-flow ephemeral keys.
-
-See [SEP support](/docs/developers/protocol/sep-support).
+`public/stellar.toml` is a SEP-1 declaration served at `/.well-known/stellar.toml`, so embedders can
+verify the origin. It declares no signing key, because the mediator uses per-flow keys. See
+[SEP support](/docs/developers/protocol/sep-support).

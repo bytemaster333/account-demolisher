@@ -1,27 +1,46 @@
 ---
 title: Contract allow-list
-description: The compiled-in set of contracts the app will sign an invocation against, and how it is enforced.
+description: The compiled-in set of contracts a signed DeFi call can target, the authorization-tree and fee checks that run with it, and the two token paths held to their own exact shapes.
 ---
 
-Every Soroban transaction is checked against a network-specific allow-list of contract ids
-immediately before signing. A transaction invoking a contract that is not on the list is
-refused and the closure halts.
+Every DeFi-protocol Soroban transaction is checked against a network-specific allow-list before
+it is signed: the adapter that builds it checks it, and the executor checks it again right before
+signing. Allowance revokes and standalone-token transfers target your own token contracts and are
+held to an exact call shape by their own guards instead.
 
-The list is a compile-time constant in `src/lib/config/contracts.ts`. There is no
-environment variable, no fetch, and no runtime mutation path. **A position discovered on
-chain cannot extend it.** Only editing the source file changes it.
+The list is a compile-time constant in `src/lib/config/contracts.ts`. There is no environment
+variable, no fetch, and no runtime mutation path. **A position discovered on chain cannot extend
+it.** Only editing the source file changes it.
 
 ## Contents
 
-| Network   | Entries | Breakdown                                               |
-| --------- | ------- | ------------------------------------------------------- |
-| mainnet   | **25**  | Soroswap 2, Blend 15, Aquarius 1, FxDAO 7               |
-| testnet   | **19**  | Soroswap 2, Blend 9, Aquarius 2, FxDAO 6                |
-| futurenet | **0**   | The allow-list is empty, so every invocation is refused |
+Each entry has a role. Only an **entry point** can be the root of a call the app asks you to sign.
+Tokens and infrastructure are kept for labelling (the spender registry, the scam heuristics) and
+are refused as a root target, so a bug that builds, say, a direct call on a token is refused at
+signing.
 
-Blend's mainnet 15 is 4 pools plus 11 infrastructure contracts (two pool factories, two
-backstops, the emitter, BLND, USDC, the XLM contract, the Comet factory, the BLND/USDC LP,
-and the bootstrapper). Testnet's 9 is 1 pool plus 8 infrastructure contracts.
+| Network | Entries | Entry points                                                                                    | Tokens and infrastructure                                                                   |
+| ------- | ------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| mainnet | **64**  | Soroswap router; 7 Blend pools and 2 Blend backstops; Aquarius router and 43 concentrated pools | Soroswap factory; 4 Blend tokens and 5 Blend infrastructure contracts                       |
+| testnet | **50**  | Soroswap router; 1 Blend pool and the Blend backstop; Aquarius router and 37 concentrated pools | Soroswap factory; 4 Blend tokens and 3 Blend infrastructure contracts; the Aquarius batcher |
+
+Sources, recorded per entry:
+
+- **Soroswap**: the protocol's own `mainnet.contracts.json` and `testnet.contracts.json` in
+  `soroswap/core`.
+- **Blend**: `blend-capital/blend-utils` at a pinned commit, plus three V1 pools read from the V1
+  backstop's on-chain reward zone.
+- **Aquarius router**: the Aquarius developer documentation, cross-checked against the wasm the
+  router runs on each network.
+- **Aquarius concentrated pools**: enumerated on chain through the pinned router, keeping every
+  pool whose instance runs the concentrated-pool wasm, and cross-checked against the Aquarius API's
+  concentrated listing (2026-10-08). A concentrated pool deployed later is not on the list, and
+  discovery reports it as an error so the merge stays blocked.
+
+Standard and stable Aquarius pools are not on the list: the app reaches them through the router.
+
+FxDAO has no entries. The protocol shut down on chain, so there is nothing left to exit; see
+[Audit and review status](/docs/developers/security/audit#fxdao) for the evidence.
 
 ## Entry shape
 
@@ -29,105 +48,124 @@ and the bootstrapper). Testnet's 9 is 1 pool plus 8 infrastructure contracts.
 interface AllowedContract {
   readonly id: string; // C... contract id
   readonly name: string; // e.g. "SoroswapRouter", "BlendPool::FixedV2"
-  readonly protocol: string; // "soroswap" | "blend" | "aquarius" | "fxdao"
-  readonly verified_at: string; // ISO date the id was checked upstream
-  readonly source: string; // the upstream citation
+  readonly protocol: string; // "soroswap" | "blend" | "aquarius"
+  readonly role: "entrypoint" | "token" | "infrastructure";
+  readonly verified_at: string; // ISO date the id was checked
+  readonly source: string; // the citation
 }
 ```
 
-`verified_at` and `source` exist so every id is auditable against the protocol's own
-published deployment files rather than taken on trust.
+`verified_at` and `source` make every id auditable against the protocol's published deployment or
+the chain.
 
-## When the check runs
+## Where the check runs
 
-`assertTransactionAllowed` is called from exactly one place: inside the Soroban sign-and-
-submit path, **after** any node-specific guard and **immediately before** the connector
-signs.
+`assertTransactionAllowed(tx, network)` requires the network explicitly, so no caller can fall back
+to the other network's list. It runs:
 
-Running it at signing time rather than only at build time is deliberate defense in depth on
-top of each adapter's own build-time check.
+- at build time in each adapter (`soroswap/lp.ts`, `soroswap/swap.ts`, `aquarius/client.ts`,
+  `blend/exit.ts`) and in the testnet demo-account builder, and
+- at signing time in `checkRequiredSorobanStep` (`src/lib/orchestrator/executor.ts`), together
+  with the authorization-tree guard and the fee cap. The preview runs the same function on every
+  simulated step, so a step that would be refused is marked failed before you confirm, instead of
+  stopping the close after independent exits already ran.
 
-| Node kind                           | Allow-list checked                        |
-| ----------------------------------- | ----------------------------------------- |
-| `ConvertSorobanToXLM`               | Yes                                       |
-| All remaining DeFi nodes            | Yes                                       |
-| `TransferAsIs`                      | No                                        |
-| `RevokeAllowance`                   | No                                        |
-| `FinalClassicTx`, `MediatorForward` | Not applicable, they never take this path |
+| Node kind                                                     | At signing                                                                                                                                                                    |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Blend, Aquarius and Soroswap exits, and their trustline steps | Allow-list, authorization tree, fee cap. A refusal stops the close                                                                                                            |
+| `ConvertSorobanToXLM`                                         | The same checks. A refusal falls back to sending the token as-is on a direct close, under the transfer guard, and stops the close on an exchange close or when that fails too |
+| `TransferAsIs`                                                | `assertSafeTransferInvocation` and the `untrusted-token` fee cap                                                                                                              |
+| `RevokeAllowance`                                             | `assertSafeRevokeInvocation` and the `untrusted-token` fee cap. A refusal skips the revoke                                                                                    |
+| `FinalClassicTx`, `MediatorForward`                           | Not applicable: classic transactions                                                                                                                                          |
 
 ### Why two kinds are exempt
 
-Both target the **user's own token contract**, chosen from the user's own scan rather than
-from the DeFi allow-list, so the protocol allow-list does not apply to them.
+`TransferAsIs` and `RevokeAllowance` target **your own token contract**, chosen from your own scan,
+so the protocol list does not apply to them. Each is held to one exact call instead:
 
-They are not unguarded. Each is held to an exact call shape instead:
+- `TransferAsIs` to exactly `transfer(user, destination, amount)`.
+- `RevokeAllowance` to exactly `approve(user, spender, 0, ledger)`.
 
-- `TransferAsIs` is pinned to an exact `transfer(user, destination, amount)` by
-  `assertSafeTransferInvocation`.
-- `RevokeAllowance` is pinned to an exact zero-approval by `assertSafeRevokeInvocation`.
+Both require one `invokeHostFunction` operation and authorization entries that use source-account
+credentials, have no sub-invocations, and authorize that same call. A hostile token cannot widen
+what your signature covers by adding a nested call.
 
-The reasoning in source is explicit: a revoke's contract id and its simulation-supplied
-authorization tree are attacker-influenceable, so it must be guarded exactly like a
-transfer.
+## What the allow-list refuses
 
-`ConvertSorobanToXLM` is different because it invokes the allow-listed router, so the gate
-does apply.
+`inspectOperation` passes every classic operation and inspects every `invokeHostFunction`:
 
-## What gets refused
+| Host function                                         | Outcome                            |
+| ----------------------------------------------------- | ---------------------------------- |
+| `invokeContract` on an entry point for this network   | Allowed                            |
+| `invokeContract` on any other address                 | Refused, naming the network's list |
+| `invokeContract` whose target is not a `C...` address | Refused                            |
+| `createContract`, `createContractV2`                  | Always refused                     |
+| `uploadContractWasm`                                  | Always refused                     |
+| An unknown or unreadable discriminant                 | Refused                            |
 
-`inspectOperation` passes every classical operation and inspects every
-`invokeHostFunction`:
+Refusal reasons name the list, for example `Contract is not on TESTNET_ALLOWLIST.` A fee-bump
+wrapper is unwrapped, so it cannot hide an invocation.
 
-| Host function                                        | Outcome                            |
-| ---------------------------------------------------- | ---------------------------------- |
-| `invokeContract` on an allow-listed `C...` address   | Allowed                            |
-| `invokeContract` on a non-allow-listed address       | Refused, naming the network's list |
-| `invokeContract` whose target is not a `C...` strkey | Refused                            |
-| `createContract`, `createContractV2`                 | Always refused                     |
-| `uploadContractWasm`                                 | Always refused                     |
-| An unknown discriminant                              | Refused                            |
-| An unparseable discriminant                          | Refused                            |
-
-Refusal reasons name the specific list, for example `Contract is not on TESTNET_ALLOWLIST.`
-On futurenet the reason states the list is empty.
+Before the host-function check, every authorization entry's invocation tree is walked, and an entry
+that authorizes contract creation or wasm upload anywhere in the tree is refused. An entry that
+cannot be read is refused too: signing blind is worse than stopping.
 
 ### The Aquarius gauge reward claim
 
-An Aquarius gauge reward claim calls `gauges_claim(user)` on the pool itself, and Aquarius
-pools are permissionless, so no pool is on the list. `checkRequiredSorobanStep` passes the
-pool to `assertTransactionAllowed` as the one extra allowed target only when the build that
-made the transaction read that same address from the pinned Aquarius router's
-`get_pools` for the pool's tokens and index (`routerPool` on the node equals
-`poolAddress`). The extra target lives only for that one check and never joins the list.
-The auth guard then holds the call to exactly one source-account entry,
-`pool.gauges_claim(user)`, with nothing nested beneath it.
+A gauge reward claim calls `gauges_claim(user)` on the Aquarius pool itself, and pools are
+permissionless, so no standard pool is on the list. `checkRequiredSorobanStep` passes the pool as
+the one extra allowed root only when the build read that same address from the pinned router's
+`get_pools` for the position's tokens and pool index (`routerPool` on the node equals
+`poolAddress`). The extra root lives for that one check and never joins the list.
 
-Fee-bump wrappers are unwrapped transparently, so a fee-bump cannot hide an invocation from
-the check.
+## The authorization-tree guard
 
-## The authorization-entry guard
+The allow-list checks the contract an operation invokes. The authorization tree the simulation
+records is copied into the operation, and with source-account credentials one signature authorizes
+all of it. A token running inside a swap or a withdrawal can call another token with you as `from`,
+and a hostile RPC can add entries outright.
 
-Operation-level inspection alone is not enough, because a Soroban authorization tree can
-authorize actions the top-level call does not name.
+`assertDefiAuthTree` (`src/lib/soroban/defi-auth-guard.ts`) therefore requires the exact tree each
+call needs:
 
-`inspectAuthEntries` runs **first**, before the host-function switch, and walks every
-authorization entry's invocation tree recursively. It refuses when any node in the tree
-names a function matching `createContract` or `uploadContractWasm`, case-insensitively.
+| Call                                                                 | The only nested call allowed                                               |
+| -------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Soroswap `swap_exact_tokens_for_tokens`                              | `path[0].transfer(user, pair, amount_in)`                                  |
+| Soroswap `remove_liquidity`                                          | `pair.transfer(user, pair, liquidity)`                                     |
+| Aquarius router `withdraw`                                           | `pool.withdraw(user, shares, mins)`, then `share_token.burn(user, shares)` |
+| Aquarius router `claim`                                              | `pool.claim(user)`                                                         |
+| Blend pool `submit` with a repay                                     | `asset.transfer(user, pool, amount)`                                       |
+| Blend pool `submit` withdraw, pool `claim`                           | Nothing nested                                                             |
+| Blend backstop `queue_withdrawal`, `withdraw`, `claim`               | Nothing nested                                                             |
+| Aquarius concentrated `withdraw_position`, `claim_all_position_fees` | Nothing nested                                                             |
+| Aquarius pool `gauges_claim`                                         | Nothing nested                                                             |
 
-An authorization entry that cannot be parsed is also refused, because an unparseable entry
-is suspicious and signing blind is worse than stopping.
+The BLND trustline a Blend emissions claim needs, and the trustline a pool exit pays a classic
+asset into, are held to exactly one `change_trust` for that asset with a nonzero limit; an exit
+trustline's asset has to be the one whose contract id is the payout token.
 
-### A documented scope limit
+A second authorization entry, address credentials, an extra or deeper node, or different
+arguments is refused as `UnsafeDefiAuthError`, and so is a tree that cannot be parsed.
 
-Sub-invocations to token contracts that are not on the allow-list are intentionally **not**
-flagged. They are a normal part of any swap or withdrawal: a real exit authorizes token
-transfers on the account owner's own token contracts, which are not protocol contracts.
-Hard-gating them would break legitimate closes.
+## The fee cap
+
+`assertSorobanFeeWithinCap` (`src/lib/soroban/fee-cap.ts`) refuses a prepared transaction whose
+resource fee, or declared writes, are above what its class of step legitimately costs. The caps
+are two to three times the largest fee measured for each class on testnet and mainnet:
+
+| Class               | Steps                                         | Resource fee cap | Write bound              |
+| ------------------- | --------------------------------------------- | ---------------- | ------------------------ |
+| `untrusted-token`   | Revoke, standalone-token transfer             | 0.2 XLM          | 8,192 bytes, 16 entries  |
+| `untrusted-convert` | Standalone-token conversion, Soroswap LP exit | 1.4 XLM          | 8,192 bytes, 16 entries  |
+| `pool-exit`         | Aquarius exits and their reward claims        | 3.3 XLM          | 32,768 bytes, 40 entries |
+| `defi-exit`         | Blend steps                                   | 3.3 XLM          | None                     |
+
+A one-operation trustline step carries no Soroban resources and may bid at most 1,000,000 stroops.
+Before each Soroban signature the progress line shows the fee that signature allows.
 
 ## The error
 
-A violation raises `AllowlistViolation`, carrying every violation rather than only the
-first, so the UI can display them all:
+A violation raises `AllowlistViolation`, carrying every violation rather than only the first:
 
 ```
 Allow-list violation: 2 contract invocation(s) blocked.
@@ -135,7 +173,7 @@ Allow-list violation: 2 contract invocation(s) blocked.
   2. <auth-entry>: A Soroban authorization entry authorizes contract creation or wasm upload.
 ```
 
-A non-throwing variant returns the same list for display.
+`getViolations` returns the same list without throwing.
 
-This is a deliberate hard stop. If closing a position needs an unknown contract, the safe
-move is to escalate, not to sign blindly.
+This is a hard stop by design. When closing a position needs a contract that is not on the list,
+the safe move is to add it to the source after checking it, not to sign blindly.

@@ -1,46 +1,58 @@
 ---
 title: Wallet integration
-description: For wallet developers. The signing surface the app uses, how a wallet gets listed, and what is required of it.
+description: For wallet developers. The signing surface the app uses, how a wallet gets listed, how the signed envelope is checked, and what Ledger and WalletConnect do.
 ---
 
-The app never sees a secret key. It builds an unsigned transaction, hands it to the
-connected wallet, and receives a signed envelope back.
+The app never sees a wallet's secret key. It builds an unsigned transaction, hands it to the
+connected wallet, checks the signed envelope that comes back, and only then submits it.
 
-That handoff goes through
-[Stellar Wallets Kit](https://github.com/Creit-Tech/Stellar-Wallets-Kit)
+That handoff goes through [Stellar Wallets Kit](https://github.com/Creit-Tech/Stellar-Wallets-Kit)
 (`@creit.tech/stellar-wallets-kit`, pinned at 2.7.0), wired in `src/lib/wallet/kit.ts`.
 
 ## What the app calls
 
-The app's own `Connector` abstraction wraps three kit calls and nothing else:
+The app's `Connector` interface (`src/lib/wallet/connector.ts`) signs whole transactions only:
 
-| Call              | Used for                              |
-| ----------------- | ------------------------------------- |
-| `getAddress`      | Reading the connected public key      |
-| `signTransaction` | Every classic and Soroban transaction |
-| `signAuthEntry`   | Soroban authorization entries         |
+| Connector method  | Kit call                                                      |
+| ----------------- | ------------------------------------------------------------- |
+| `connect`         | `authModal`, the wallet picker                                |
+| `getPublicKey`    | `getAddress`, the address the kit stored                      |
+| `signTransaction` | `signTransaction` with the network passphrase and the address |
+| `disconnect`      | The app's own teardown (see below)                            |
 
-`signTransaction` receives the transaction XDR plus the network passphrase and the address,
-and returns `{ signedTxXdr, signerAddress }`. When a wallet omits `signerAddress`, the app
-defaults it to the connected address.
+The kit is also initialized, themed and switched between networks (`init`, `setTheme`,
+`setNetwork`). The app never calls `signAuthEntry` or `signMessage`. Every Soroban call the app
+builds is authorized by the source account, so the envelope signature covers it.
 
-Underlying wallet errors are deliberately allowed to propagate rather than being swallowed,
-so the orchestrator can fall back.
+The requirement on a wallet is the SEP-43 transaction-signing surface: return the address, and sign
+a transaction XDR for a given network passphrase. Nothing app-specific is needed.
 
-The requirement on a wallet is therefore exactly the SEP-43 signing surface: return the
-address, sign a transaction XDR against a given network passphrase, and sign an auth entry.
-Nothing app-specific is needed.
+## The signed envelope is checked
+
+Every guard the app runs before signing (the contract allow-list, the authorization-tree checks,
+the revoke and transfer shapes, the fee caps) runs on the transaction the app built. The bytes that
+reach the network are whatever the wallet returns, so `verifySignedEnvelope`
+(`src/lib/wallet/signed-envelope.ts`) refuses to pass them on unless:
+
+- the wallet returned a non-empty string that parses as an envelope for the same network,
+- it is the same kind of envelope (a fee bump only when a fee bump was asked for),
+- its transaction hash equals the hash of the transaction the app built, and
+- it carries a signature from the connected key, under that key's hint, that verifies over that
+  hash.
+
+The signer reported onward is the key whose signature verified, never an address the wallet echoes
+back. The secret-key connector runs the same check on its own signature.
 
 ## How a wallet gets listed
 
-The module list is assembled in `buildModules`:
+The picker's module list is built in `buildModules`:
 
 ```ts
 const modules = [...defaultModules(), new LedgerModule()];
 // plus WalletConnect when NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID is set
 ```
 
-`defaultModules()` in the pinned version returns fifteen wallets, in this order:
+`defaultModules()` in kit 2.7.0 returns fifteen wallets, in this order:
 
 | #   | Wallet        | Product id     |
 | --- | ------------- | -------------- |
@@ -60,68 +72,80 @@ const modules = [...defaultModules(), new LedgerModule()];
 | 14  | MetaMask      | `metamask`     |
 | 15  | GHOSTSIG      | `ghostsig`     |
 
-A wallet that ships a module in the kit's defaults appears automatically once the app moves
-to a kit version including it. **There is nothing to register on the app's side.**
+A wallet that ships a module in the kit's defaults appears once the app moves to a kit version that
+includes it. **There is nothing to register on the app's side.**
 
 Two modules are added on top:
 
-- **Ledger** is added unconditionally, over WebUSB. It needs a browser `Buffer` global,
-  which the app polyfills additively without overwriting an existing one.
-- **WalletConnect** is added only when `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` is set.
+- **Ledger** (`LEDGER`), over WebUSB, always. It needs a browser `Buffer` global, which the app
+  adds only when none exists.
+- **WalletConnect** (`wallet_connect`), only when `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` is set.
 
-That makes the picker 16 entries without WalletConnect configured, and 17 with it.
+The picker shows 16 entries without WalletConnect and 17 with it. The kit's Trezor and HOT Wallet
+modules are not in `defaultModules()` and are not added, so they do not appear.
 
-Trezor ships in the package but is not in `defaultModules()` and is not added here, so it
-does not appear.
+Wallets that are not installed stay in the list with an install link, so the list is predictable.
+The picker's colors follow the page's light or dark theme.
 
-Wallets that are not installed stay in the list with an install link rather than being
-hidden, so the list is predictable.
+## Ledger
 
-## WalletConnect specifics
+The app signs on a Ledger with `nonBlindTx: true`, so the device parses and shows the operations and
+the merge destination instead of signing a 32-byte hash. There is no fallback to hash signing.
+Device refusals become messages a user can act on (`src/lib/wallet/ledger-errors.ts`):
 
-The module is constructed lazily, on first use, never during passive session restore.
-Constructing it eagerly opens a relay socket, and the app avoids contacting the relay before
-someone chooses to connect.
+| Device answer                        | Message                                                                         |
+| ------------------------------------ | ------------------------------------------------------------------------------- |
+| Rejected on the device               | You rejected the transaction on your Ledger                                     |
+| Hash signing not enabled             | Update the Stellar app on your Ledger and try again                             |
+| Transaction too large for the device | Close this account with another wallet                                          |
+| Transaction not parseable            | Update the Stellar app on the device, or close this account with another wallet |
 
-Chain mapping covers the public and test networks. Futurenet has no WalletConnect namespace,
-so the entry stays in the picker and its `getAddress` rejects with an accurate unsupported
-message rather than silently connecting to the wrong chain.
+A transaction too large for the device to show cannot be signed on a Ledger.
 
-Before the picker opens, the app polls the module's availability every 100 ms for up to
-2500 ms. WalletConnect only reports itself available once its client finishes initializing,
-and the kit samples availability once when the picker renders. Opening too early makes the
-kit treat a click as "not installed". On timeout it falls through rather than hanging.
+## WalletConnect
 
-## Adding a wallet in a self-hosted build
+The picker lists WalletConnect through a lightweight stand-in that needs no network. The real
+module, which opens the relay connection and starts Reown AppKit, is built only when WalletConnect
+is used: when you pick it, or when you sign with a restored WalletConnect session. Restoring a
+saved session after a reload reads the stored address and does not start it.
 
-An operator running their own copy can add a custom module to `buildModules`, so a wallet
-not yet in the kit's defaults can still be listed by whoever runs the deployment.
+Once started, AppKit sends its mandatory events (the initialization and a successful connection)
+to `pulse.walletconnect.org`, including the page URL. The
+[security model](/docs/developers/security/model#what-the-app-and-its-providers-can-see) lists every
+host the browser contacts.
 
-## Auth-entry signing on the non-wallet paths
+Picking WalletConnect waits up to 15 seconds for the relay handshake and then fails with
+_WalletConnect could not reach its relay_. The chain is the public or test network to match the app;
+switching the app's network updates the allowed chain.
 
-Two connectors deliberately refuse `signAuthEntry` rather than signing incorrectly:
+## Signing for someone else on `/sign`
 
-- The **secret-key** connector refuses, because SEP-43 requires signing the SHA-256 hash of
-  a network-bound preimage, and signing raw entry bytes would not produce a valid
-  network-bound Soroban auth signature.
-- The **multi-signer** connector refuses, because per-signer auth-entry signing is not part
-  of the closure flow (source-account authorization is carried by the envelope signatures)
-  and doing it correctly for multisig is non-trivial.
+A co-signer on `/sign` signs through `withScopedKitSession`: the wallet picked for that one
+signature never becomes the app's connected wallet. The session that existed before is put back
+afterwards, or the kit is disconnected when there was none, whether the signature succeeded or not.
+A teardown failure is shown to the co-signer and never replaces the signing outcome.
 
 ## Session lifetime
 
-The active connector lives in module scope, not in the persisted store, because a
-pasted-seed connector holds the seed and must never be serialized.
+The active connector lives in module scope, not in the persisted store, because a pasted-seed
+connector holds the seed and must never be serialized.
 
-That state survives client-side navigation, so a connection made on `/demolish` stays usable
-on `/allowances`. It is intentionally lost on a hard reload, and only a wallet-kit connection
-can be rebuilt afterwards.
+That state survives client-side navigation, so a connection made on `/demolish` stays usable on
+`/allowances`. A hard reload loses it, and only a wallet-kit connection can be restored afterwards,
+from the kit's own stored selection and address.
 
-Disconnecting tears down the module-scope connector, the store, the connector itself, and
-the kit's own session. A store-only disconnect would leave the extension still authorizing
-the site, and a later connect could silently reuse the stale session.
+Disconnecting clears the connector and the display store first, then tears down the kit: the
+selected wallet is disconnected and every WalletConnect session is closed through the sign client.
+A store-only disconnect would leave the extension authorizing the site, and a later connect could
+silently reuse that session. A wallet that refuses the teardown is reported to you, and the app is
+disconnected either way.
+
+## Adding a wallet in your own deployment
+
+When you run your own copy, you can add a custom module to `buildModules`, so a wallet that is not
+yet in the kit's defaults can be listed by your deployment.
 
 ## Related
 
-[SEP support](/docs/developers/protocol/sep-support) for the full list of proposals this
+[SEP support](/docs/developers/protocol/sep-support) for the full list of proposals the app
 implements.

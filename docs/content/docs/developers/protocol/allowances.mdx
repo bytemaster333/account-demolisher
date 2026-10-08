@@ -1,145 +1,141 @@
 ---
 title: SEP-41 allowances
-description: How allowances are enumerated from on-chain events, confirmed against the token contract, and revoked.
+description: How allowances are found from on-chain events, confirmed against the token contract, capped, and revoked under an exact-shape guard.
 ---
 
-SEP-41 is Stellar's Soroban token interface. An allowance is a standing approval letting a
-spender move a holder's tokens up to a limit, until an expiry ledger passes or the holder
-revokes it.
+SEP-41 is Stellar's Soroban token interface. An allowance is a standing approval that lets a
+spender move a holder's tokens up to a limit until an expiry ledger passes or the holder revokes
+it.
 
-`src/lib/soroban/allowances.ts` enumerates them, confirms them, and builds revokes.
+`src/lib/soroban/allowances.ts` finds them and builds revokes. Two places use it: the allowance
+viewer at `/allowances`, and the discovery step of a close, which plans one `RevokeAllowance` per
+allowance it finds.
 
 ## The scan window
 
 ```
-DEFAULT_SCAN_WINDOW_LEDGERS = 120_960
+DEFAULT_SCAN_WINDOW_LEDGERS = EVENT_RETENTION_WINDOW_LEDGERS = 120_960
 ```
 
-Soroban RPC providers retain events for roughly seven days. The constant is derived
-directly from that: `7 * 24 * 60 * 60 / 5 = 120,960` ledgers, at five seconds per ledger.
+Soroban RPC keeps events for about seven days by default: `7 × 24 × 60 × 60 / 5 = 120,960`
+ledgers at five seconds a ledger. Every event scan in the app looks back this far at most, and an
+allowance whose last approve is older than the window cannot be found by an event scan. The allowance
+viewer, the Review step and the status panel all state this seven-day limit.
 
-A companion constant, `SCAN_WINDOW_DESCRIPTION` (`"about the last 7 days"`), sits beside it
-so the copy and the behaviour cannot drift apart.
+## Scanning
 
-Two other windows exist for related scans: held-token discovery uses 120,000 ledgers, and
-the demolish flow carries its own copy of the 120,960 figure.
+The scan asks for contract events whose topics are `approve` and your address, with three topics or
+four (`["approve", from, *]` and `["approve", from, *, *]`). The window is cut into slices of
+10,000 ledgers, the most one `getEvents` request covers, and four slices run at once. A slice the
+RPC refuses as too costly is split down to 625 ledgers. The scan stops at a 20-second budget,
+inside the 30-second discovery timeout.
 
-## Paging
+When the RPC rejects a start ledger older than it retains, the scan reads the floor from the
+`ledger range: N - M` error, moves the start to the floor plus 60 ledgers, and retries, up to three
+times.
 
-| Constant     | Value                  |
-| ------------ | ---------------------- |
-| `PAGE_LIMIT` | 10,000 events per page |
-| `MAX_PAGES`  | 100                    |
+A scan that does not cover the whole window reports what it covered and why it stopped (the
+budget, the processing limit, an RPC error, or the page cap). The viewer shows the partial list
+with that note. A close carries the partial list into the plan and warns that an older permission
+can be missing, pointing you at the Allowances page.
 
-The first request supplies `startLedger`; every later request supplies only the cursor.
+## Folding events into allowances
 
-The loop exits **only when there is no forward cursor**, or when the cursor stops
-advancing. An empty page that still carries a cursor means "no matches in this slice, keep
-paging" and must not break the loop.
+Events arrive in on-chain order (ledger, transaction, operation, event), and the last approve seen
+for a token-and-spender pair is the one in force, even when two land in the same ledger. Each pair
+becomes one record with the amount and expiry ledger of that approve.
 
-## Retention clamping
+By default the scan leaves out:
 
-When the RPC rejects the requested start ledger as older than it retains, the scan re-clamps
-and retries.
+- records whose expiry ledger has passed, and
+- records whose latest approve set the amount to zero, which is how a revoke looks.
 
-`parseRetentionFloor` concatenates the error message and its cause, then matches
-`/ledger range:\s*(\d+)\s*-\s*(\d+)/`, taking the first number as the floor.
+The approve data decodes from the SEP-41 tuple `(amount: i128, expiration_ledger: u32)`, or from a
+map with `amount` and `live_until_ledger` or `expiration_ledger` keys. An event that does not decode
+cleanly, or that names a different owner, is ignored.
 
-- Clamping is attempted **only on the first page**. On any later page the floor is forced to
-  null and the error rethrows.
-- A non-range error, or a floor that would not advance the start ledger, rethrows unchanged.
-- The new start is `min(currentLedger, floor + 60)`. That 60-ledger margin
-  (`RETENTION_RETRY_MARGIN_LEDGERS`) exists because the floor advances about one ledger
-  every five seconds, so clamping to the exact floor races a ledger closing between the
-  error and the retry.
-- At most three retries (`MAX_RETENTION_RETRIES`), each re-clamping on a fresh floor.
+### The per-contract cap
 
-## Deduplication
-
-Records accumulate into a map keyed by `` `${contractId}|${spender}` ``.
-
-A record replaces the previous one only when its event ledger is **strictly higher**. Ledgers
-are compared explicitly rather than relying on arrival order, because pagination can deliver
-events out of order. A tie does not replace.
-
-The result is one record per token-and-spender pair, carrying the highest-ledger approve
-event, so you see current state rather than a stale one.
+Any contract can emit approve events naming you, for spenders it chooses, and its `allowance()` is
+its own code too. A contract with more than 20 spenders in the window is cut to its 20 most recent,
+and the cut is reported with a note that the token is hostile. A Stellar Asset Contract is never
+cut: it runs no token code, so each of its approve events is an approval you signed. The cap bounds
+the confirm reads, the revokes a close plans, and the rows the viewer renders.
 
 ## On-chain confirmation
 
-An approve event is only evidence that an event was emitted. A malicious contract can emit a
-fabricated one.
+An approve event is evidence that an event was emitted, and a malicious contract can emit a
+fabricated one. `confirmAllowancesOnChain` reads the token's own `allowance(from, spender)` for every
+record, six at a time. The record's `onChainAmount` then holds one of three states:
 
-`confirmAllowancesOnChain` reads the token's own `allowance(from, spender)` for every
-record, concurrently. The record's `onChainAmount` then carries one of three states:
+| Value       | Meaning                 |
+| ----------- | ----------------------- |
+| `undefined` | Not confirmed           |
+| `null`      | The confirm read failed |
+| `bigint`    | The current allowance   |
 
-| Value       | Meaning                    |
-| ----------- | -------------------------- |
-| `undefined` | Not confirmed              |
-| `null`      | The confirm read failed    |
-| `bigint`    | The real current allowance |
+A failed read keeps the row and marks it unconfirmed. `allowanceAmountMismatch` is true only when a
+successful read differs from the event amount, and the viewer then shows the on-chain figure.
 
-A failed read never drops the row. It is shown as unconfirmed instead.
+Both paths confirm. The viewer shows every confirmed row. Discovery for a close drops rows whose
+on-chain read is zero (`withoutConfirmedZero`), because an allowance spent through `transfer_from`
+or already revoked leaves nothing to revoke. When the confirm step fails as a whole, the close keeps
+the event-derived list and records the failure as a discovery warning.
 
-The simulation source is any valid `G` address. The read moves no funds and the source does
-not need to exist on chain.
-
-### Mismatch
-
-`allowanceAmountMismatch` is true only when a **successful** read returned a value differing
-from the event-derived amount. Neither `undefined` nor `null` is ever a mismatch.
-
-A mismatch means the event was fabricated or stale, so the displayed limit is not the real
-one. The viewer surfaces the on-chain figure alongside it and points you at that value.
+A hostile token's `allowance()` can answer non-zero for spenders it invented, so confirmation does
+not filter fabricated rows on its own. The cap above and the revoke guard below bound what such a
+token can make you sign.
 
 ## Revoking
 
-A revoke is an ordinary approve set to zero:
+A revoke is an approve set to zero:
 
 ```
 approve(from, spender, 0, currentLedger)
 ```
 
-Arguments are `[address(from), address(spender), i128(amount), u32(liveUntilLedger)]`.
+The arguments are `[address(from), address(spender), i128(0), u32(currentLedger)]`. The expiry
+argument is the current ledger sequence.
 
-The expiration ledger argument is the **current ledger sequence**, not zero and not a future
-ledger.
+The transaction carries the Soroban inclusion fee of 100,000 stroops and a 300-second time bound,
+and is assembled from simulation. An assembled fee bump is refused.
 
-Every invocation is built with the Soroban inclusion fee of 100,000 stroops and a 300-second
-timeout, assembled through simulation, and a returned fee-bump is rejected.
+### Checks before signing
 
-### The ownership check
+- **The signer is the owner.** SEP-41 requires the transaction source to be the approval's owner.
+  The revoke re-reads the connector's public key and refuses when it changed:
+  _Your wallet's active account changed. Switch back to the account that owns this address, or
+  reconnect it, to revoke._ The viewer also requires a connected wallet whose key equals the
+  address being viewed.
+- **The call has exactly one shape.** `assertSafeRevokeInvocation`
+  (`src/lib/soroban/revoke-guard.ts`) requires one `invokeHostFunction` operation calling
+  `approve` on the expected contract with four arguments: the expected owner, the expected spender,
+  an amount of exactly 0, and a ledger. Every authorization entry must use source-account
+  credentials, have no sub-invocations, and authorize that same call. Anything else throws
+  `Refusing to sign revoke: <reason>`. This blocks a hostile token from adding a nested transfer of
+  your other balances to the authorization your signature covers.
+- **The fee has a ceiling.** The transaction is held to the `untrusted-token` class in
+  `src/lib/soroban/fee-cap.ts`: a resource fee of at most 2,000,000 stroops, at most 8,192 declared
+  write bytes, and at most 16 read-write entries.
 
-SEP-41 requires the transaction source to be the approval's owner. A wallet extension signs
-with whatever account it currently holds, so a user switching accounts inside the wallet
-after connecting would otherwise sign as the wrong key and fail opaquely at submit.
+These checks are why `RevokeAllowance` is not held to the DeFi contract allow-list: the token
+contract comes from your own allowance scan, and the call is pinned to a zero approval on it.
 
-The revoke path therefore re-reads the connector's public key and refuses when it does not
-match:
+On the allowance viewer, revokes for one account run one at a time. The next revoke is built only
+after the previous one is included, reading the sequence number from the same RPC, so two quick
+revokes never collide on a sequence number. A row shows **Revoked** only after the ledger confirms
+it.
 
-> Your wallet's active account changed. Switch back to the account that owns this address,
-> or reconnect it, to revoke.
-
-At the page level, revoking additionally requires a connected wallet whose key equals the
-address being viewed, and a live connector.
-
-### The auth-smuggling guard
-
-Before signing, `assertSafeRevokeInvocation` holds the transaction to an exact shape and
-throws `Refusing to sign revoke: <reason>` otherwise. It refuses when the transaction is not
-exactly one operation, when that operation is not `invokeHostFunction`, when the host
-function is not `invokeContract`, and on the further shape checks that pin the call to the
-expected contract, owner, and spender.
-
-This is why `RevokeAllowance` is exempt from the DeFi contract allow-list: it is constrained
-to a safe zero-approval on the user's own token contract, chosen from their own allowance
-scan.
+In a close, a revoke that fails is skipped with a note, and the allowance stays on the token
+contract. A merge does not remove allowances: they live in the token's storage.
 
 ## Held tokens
 
-A parallel scan discovers standalone SEP-41 balances the account holds. Those are moved with
-`TransferAsIs` or `ConvertSorobanToXLM`, and `assertSafeTransferInvocation` holds the
-transfer to an exact shape the same way the revoke guard does.
+A separate scan in `src/lib/soroban/held-tokens.ts` finds standalone SEP-41 balances: it reads
+`transfer` and `mint` events crediting the account in the same seven-day window, then probes
+`balance(address)` on each emitting contract. The close moves those balances with `TransferAsIs`,
+or sells them with `ConvertSorobanToXLM`. `assertSafeTransferInvocation` holds a transfer to exactly
+`transfer(user, destination, amount)` the same way the revoke guard holds an approve.
 
 ## Related
 

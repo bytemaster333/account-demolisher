@@ -1,170 +1,261 @@
 ---
 title: Mediator forward protocol
-description: Per-flow key derivation, the flow token, and the single envelope shape the server will co-sign.
+description: Per-flow key derivation, the flow token and its terms, the one envelope shape the server co-signs, renewal, and recovery.
 ---
 
-Stellar's `ACCOUNT_MERGE` is not credited as a deposit by most exchanges, and the memo an
-exchange needs to attribute a deposit rides on the transaction. For a memo-required
-exchange the close routes through an ephemeral **mediator** account: the user's account
-merges into the mediator, then a separate two-operation forward carries the memo to the
-exchange.
+Most exchanges do not credit an `ACCOUNT_MERGE` as a deposit, and the memo that attributes a
+deposit to a customer rides on the transaction. For a destination that needs a memo, the close
+routes through an ephemeral **mediator** account: your account merges into the mediator, then a
+two-operation forward pays the exchange with your memo and merges the mediator into it.
 
-The server co-signs that forward, and only that exact shape.
+The server co-signs that forward, and only a forward that meets the terms bound into the flow.
 
-## The endpoint
+## The routes
 
-One route: `/api/mediator/sign`. It runs on the Node.js runtime because key derivation and
-the validator pull in `node:crypto` and the Stellar SDK.
+Both routes run on the Node.js runtime (`node:crypto` and the Stellar SDK), answer every response
+with `cache-control: no-store`, and add CORS headers only for an origin listed in
+`MEDIATOR_ALLOWED_ORIGIN`. Outside production, `http://localhost:3000`, `:3001` and `:3002` are
+allowed instead.
 
-| Method                           | Behaviour                            | Rate limit       |
-| -------------------------------- | ------------------------------------ | ---------------- |
-| `GET`                            | Mint a flow                          | None             |
-| `POST`                           | Co-sign a forward envelope           | 5 per 60s per IP |
-| `OPTIONS`                        | Preflight, 204                       |                  |
-| `PUT`, `PATCH`, `DELETE`, `HEAD` | 405 with `allow: POST, GET, OPTIONS` |                  |
+| Route                        | Purpose                                                | Rate limit                                                                        |
+| ---------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------- |
+| `GET /api/mediator/sign`     | Mint a flow                                            | 30 per 60 s per client address                                                    |
+| `POST /api/mediator/sign`    | Co-sign one forward envelope                           | 10 per 60 s per flow; requests without an authentic token, 5 per 60 s per address |
+| `POST /api/mediator/reissue` | Renew a flow token for a mediator that exists on chain | 5 per 60 s per flow; requests without an authentic token, 5 per 60 s per address  |
+| `OPTIONS` on both            | CORS preflight, 204                                    |                                                                                   |
+
+Any other method answers 405 `METHOD_NOT_ALLOWED` with an `allow` header. A rate-limited request
+answers 429 `RATE_LIMITED` with `retry-after` in seconds. The limits are keyed as described in
+[Self-hosting](/docs/developers/operations/self-hosting#proxy-and-rate-limits); a deployment that
+cannot identify the client answers 500 `PROXY_MISCONFIGURED`.
+
+A request body over 16,384 bytes answers 413 `BODY_TOO_LARGE`. Malformed JSON or a missing field
+answers 400 `BAD_REQUEST`. An unset or malformed `MEDIATOR_SECRET` answers 500
+`MEDIATOR_NOT_CONFIGURED`; the detail goes to the server log, with any seed in it redacted.
 
 ## 1. Mint a flow
 
 ```http
-GET /api/mediator/sign?destination=G...
+GET /api/mediator/sign?destination=G...&network=mainnet&memo=<base64 xdr>
 ```
 
-A missing or invalid destination returns **400** with code `INVALID_DESTINATION`.
+| Parameter     | Rule                                                                                                         | Error                 |
+| ------------- | ------------------------------------------------------------------------------------------------------------ | --------------------- |
+| `destination` | A valid `G...` public key                                                                                    | `INVALID_DESTINATION` |
+|               | Not one of the exchange internal wallets the registry refuses                                                | `REFUSED_DESTINATION` |
+| `network`     | `mainnet` or `testnet`                                                                                       | `INVALID_NETWORK`     |
+| `memo`        | The base64 XDR of exactly one Stellar memo, in canonical form; `MemoNone` when the destination takes no memo | `INVALID_MEMO`        |
 
-Success returns **200** with exactly two fields, and no `ok` field:
+Success answers 200:
 
 ```json
-{ "flowToken": "<token>", "mediatorPublicKey": "G..." }
+{ "ok": true, "flowToken": "v2....", "mediatorPublicKey": "G...", "expiresAt": 1760000000000 }
 ```
 
-An unconfigured or malformed master seed returns **500** with code
-`MEDIATOR_NOT_CONFIGURED`. The underlying configuration detail is deliberately scrubbed
-from the response.
-
-Each `GET` mints a fresh, independent flow.
+Each `GET` mints a fresh, independent flow. The browser client (`src/lib/mediator/client.ts`)
+checks that the returned token names the network, destination and memo it asked for, and that
+`mediatorPublicKey` is a valid public key, and refuses the flow otherwise (`FLOW_TERMS_MISMATCH`,
+`INVALID_MEDIATOR`).
 
 ## 2. Fund and merge into the mediator
 
-Plan generation refuses to build a mediator plan without both the mediator public key and
-the flow token. Without the token the forward could never be co-signed, which would strand
-the funds in the mediator account.
-
-The first classic batch is led by a `create_account` funding the mediator with 2 XLM, and
-the final merge targets the mediator instead of the destination. See
+Plan generation refuses a mediator plan without both the mediator public key and the flow token.
+The batch that carries the merge also carries a `create_account` that funds the mediator with
+2 XLM, placed right before the `account_merge` into it. A close that already funded the mediator in
+an earlier phase leaves the funding operation out. See
 [The classic batch](/docs/developers/internals/classic-batch).
 
-## 3. Co-sign the forward
+The preview mints a flow so the plan can show and simulate the merge, and that token is never used
+for the merge. The executor mints a new flow right before the batch that funds the mediator, saves
+the recovery record, and only then signs. A mediator that an earlier phase or an earlier run already
+funded is adopted instead, and its token is renewed through `/api/mediator/reissue` when fewer than
+eight minutes (the merge's 300 seconds plus the forward's 180) remain. [Execution and recovery](/docs/developers/internals/execution#the-forwarding-account-on-an-exchange-close)
+covers the probe, adoption of an already-funded mediator, and the refusals.
+
+## 3. Build and co-sign the forward
+
+The browser builds the forward (`src/lib/mediator/forward.ts`):
+
+1. It reads the mediator's history until it sees the merge from your account. When the mediator
+   was already merged out, it reports that forward instead of sending a new one.
+2. It waits until the Horizon account view includes the merge, so the payment is never sized from
+   a view that shows only the 2 XLM funding.
+3. It pays everything above the mediator's minimum balance
+   (`(2 + subentries + sponsoring - sponsored) × base reserve`), minus selling liabilities and the
+   fee. The merge leg then carries only that minimum and any unused fee.
+4. It asks the server to co-sign and checks that the signed transaction has the same hash as the
+   one it built.
+5. It runs the SEP-29 memo check, submits, and reconciles by hash whenever the outcome is unknown.
 
 ```http
 POST /api/mediator/sign
 Content-Type: application/json
 
-{ "envelopeXdr": "...", "flowToken": "...", "network": "..." }
+{ "envelopeXdr": "...", "flowToken": "v2....", "network": "mainnet" }
 ```
 
-The request body is capped at 16,384 bytes. The server resolves the flow from the token,
-re-derives that flow's signing key, validates the envelope, and only then signs.
+The route authenticates the token, applies the rate limit, and then:
+
+| Code                 | Status | Condition                                                 |
+| -------------------- | ------ | --------------------------------------------------------- |
+| `INVALID_FLOW_TOKEN` | 400    | The token is malformed or its MAC does not verify         |
+| `FLOW_TOKEN_EXPIRED` | 400    | The token is authentic but expired; renew it and retry    |
+| `INVALID_NETWORK`    | 400    | `network` is present and is not `mainnet` or `testnet`    |
+| `NETWORK_MISMATCH`   | 400    | `network` differs from the network bound into the token   |
+| validator codes      | 400    | See [Validation failure codes](#validation-failure-codes) |
+| `SIGNING_FAILED`     | 500    | Signing a validated envelope threw                        |
+
+Success answers `{ "ok": true, "signedXdr": "..." }`.
+
+### Fee and attempts
+
+The starting bid reads Horizon `fee_stats`: `fee_charged.mode` while ledgers run below 50%
+capacity, `fee_charged.p90` above it, clamped between 100 and 1,000,000 stroops per operation. An
+unreadable answer fails the forward. The forward makes up to four attempts. A forward that expires
+unseen, or a `tx_insufficient_fee` refusal, triples the bid up to the 1,000,000-stroop ceiling.
+`tx_bad_seq`, `tx_too_late` and `tx_no_source_account` reload the mediator, which detects a forward
+another tab already landed. A 429 or an unreachable mediator route is retried three times with
+backoff, honoring `retry-after` up to 60 seconds.
 
 ## Key derivation
 
-`MEDIATOR_SECRET` is a Stellar seed used **purely as an HMAC master key, never as a signing
-key**. It holds no balance and signs nothing directly.
+`MEDIATOR_SECRET` is a Stellar seed used only as an HMAC master key. It is never a signing key and
+never an account. The master is its 32-byte raw ed25519 seed, cached after first use.
 
-The master is the 32-byte raw ed25519 seed, memoized after first load. Two
-domain-separation labels keep the two uses apart:
+| Purpose               | HMAC-SHA-256 message                  |
+| --------------------- | ------------------------------------- |
+| Per-flow keypair seed | `mediator-flow-key:<nonceHex>`        |
+| Flow token MAC        | `mediator-flow-token-v2:<token body>` |
 
-| Purpose               | HMAC-SHA-256 message                                    |
-| --------------------- | ------------------------------------------------------- |
-| Per-flow keypair seed | `mediator-flow-key:<nonceHex>`                          |
-| Flow token MAC        | `mediator-flow-token:<nonceHex>.<expiry>.<destination>` |
+The 32-byte digest becomes the flow's ed25519 seed. Derivation is deterministic and stateless: the
+same nonce and master always give the same keypair, so no per-flow seed is stored and any server
+instance with the same master serves every flow.
 
-The 32-byte digest becomes the flow's keypair directly. Derivation is deterministic and
-stateless: the same nonce and master always produce the same keypair, so no per-flow seed
-is ever stored, and the scheme survives across server instances.
+The environment schema accepts an unset or empty `MEDIATOR_SECRET`, and requires an `S` prefix and
+56 characters otherwise. The full ed25519 seed check runs on first use.
 
-### Seed validation
+## The flow token
 
-Two layers. The environment schema requires an `S` prefix and exactly 56 characters, and
-treats an empty string as unset, so the app runs without a mediator configured. The
-stricter ed25519-seed check runs at first use, throwing a specific message for an unset
-versus a malformed seed.
-
-### The flow token
-
-Four dot-separated parts:
+Seven dot-separated parts:
 
 ```
-<nonceHex>.<expiryMillis>.<destination>.<macHex>
+v2.<nonceHex>.<expiryMillis>.<network>.<destination>.<memoXdr>.<macHex>
 ```
 
-The nonce is 16 random bytes rendered as 32 hex characters. The MAC is 64 hex characters.
-The token lives for **15 minutes**.
+The nonce is 16 random bytes as 32 hex characters, and the MAC is 64 hex characters over the first
+six parts. A token lives for **15 minutes** from its mint or renewal.
 
-Verification returns null on every rejection rather than throwing, and checks in order:
-the token is a string, it has four parts, the nonce matches `^[0-9a-f]{32}$`, the
-destination is a valid public key, the expiry is finite and in the future, the MAC lengths
-match, and the MACs are equal under a constant-time comparison.
+Verification parses the parts, checks the version, the nonce, expiry and MAC formats, compares the
+MAC in constant time, and only then checks that the network, destination and memo are values this
+build serves. An expired token is reported as expired only after its MAC verifies, so the client is
+pointed at the renewal route only for a token the server issued.
 
-The destination is committed **into the token**, which is what stops a leaked token from
-redirecting a flow's funds.
+The token is a bearer credential: it can be used again until it expires, and the client keeps it
+in browser storage for recovery. What it unlocks is a forward to the committed destination with
+the committed memo on the committed network, and nothing else.
+
+## Renewing a token
+
+```http
+POST /api/mediator/reissue
+Content-Type: application/json
+
+{ "flowToken": "v2...." }
+```
+
+The route accepts an authentic token, expired or not, and re-signs it for the same nonce, so the
+same mediator, with the same network, destination and memo and a new 15-minute expiry. Renewal never
+widens what the token allows. It answers only while the mediator account exists:
+
+| Code                  | Status | Condition                                         |
+| --------------------- | ------ | ------------------------------------------------- |
+| `INVALID_FLOW_TOKEN`  | 400    | The token is malformed or its MAC does not verify |
+| `MEDIATOR_NOT_FOUND`  | 404    | The mediator account does not exist on chain      |
+| `HORIZON_UNAVAILABLE` | 502    | Horizon could not be read                         |
+
+The forward renews automatically when the sign route answers `FLOW_TOKEN_EXPIRED`, and refuses a
+renewed token that names a different mediator.
 
 ## The accepted envelope
 
 Exactly one shape is signable:
 
 ```
-op0: PAYMENT       native XLM, sourced by the mediator, to destination D
-op1: ACCOUNT_MERGE sourced by the mediator, to destination D  (the same D)
+op0: PAYMENT       native XLM, source omitted or the mediator, to destination D
+op1: ACCOUNT_MERGE source omitted or the mediator, to destination D (the same D)
+memo:              exactly the committed memo
+fee:               at most 2,000,000 stroops (1,000,000 per operation)
+preconditions:     time bounds only, maxTime within 3600 seconds
 ```
 
-Binding both operations to one destination is the core of the design. Without it a
-tampered envelope could pay the balance to one address and merge the reserve to another.
+Binding both operations to one destination stops a tampered envelope from paying the balance to one
+address and merging the reserve to another. Binding the memo as tightly as the destination matters
+because an exchange destination is a shared address and the memo decides whose account is credited.
 
 ## Validation failure codes
 
-Thirteen codes, surfaced verbatim in 400 responses. The first failure short-circuits, so
-the order matters.
+`validateMediatorForwardEnvelope` in `src/lib/mediator/validator.ts` returns the first failure, in
+this order:
 
-| #   | Code                                | Triggering condition                                                            |
-| --- | ----------------------------------- | ------------------------------------------------------------------------------- |
-| 1   | `MALFORMED_XDR`                     | The envelope does not parse                                                     |
-| 2   | `FEE_BUMP_NOT_ALLOWED`              | The envelope is a fee-bump                                                      |
-| 3   | `FORWARD_TX_SOURCE_NOT_MEDIATOR`    | The transaction source is not the mediator                                      |
-| 4   | `WRONG_OPERATION_COUNT`             | The operation count is not exactly 2                                            |
-| 5   | `FORWARD_OP0_NOT_PAYMENT`           | Operation 0 is not a payment                                                    |
-| 6   | `FORWARD_OP0_ASSET_NOT_NATIVE`      | The payment asset is not native XLM                                             |
-| 7   | `FORWARD_OP0_SOURCE_NOT_MEDIATOR`   | Operation 0 has a source that is not the mediator                               |
-| 8   | `FORWARD_OP1_NOT_ACCOUNT_MERGE`     | Operation 1 is not an account merge                                             |
-| 9   | `FORWARD_OP1_SOURCE_NOT_MEDIATOR`   | Operation 1 has a source that is not the mediator                               |
-| 10  | `FORWARD_DESTINATION_MISMATCH`      | The two operations target different destinations                                |
-| 11  | `FORWARD_DESTINATION_NOT_COMMITTED` | The destination differs from the one in the flow token                          |
-| 12  | `MISSING_TIME_BOUNDS`               | Time bounds absent, or `maxTime` absent, empty, zero, or not a positive integer |
-| 13  | `TIME_BOUNDS_EXCESSIVE`             | `maxTime` is more than 3600 seconds in the future                               |
+| #   | Code                                | Condition                                                                |
+| --- | ----------------------------------- | ------------------------------------------------------------------------ |
+| 1   | `MALFORMED_XDR`                     | The envelope does not parse for the flow's network                       |
+| 2   | `FEE_BUMP_NOT_ALLOWED`              | The envelope is a fee bump                                               |
+| 3   | `FORWARD_TX_SOURCE_NOT_MEDIATOR`    | The transaction source is not the mediator                               |
+| 4   | `WRONG_OPERATION_COUNT`             | The operation count is not exactly 2                                     |
+| 5   | `FORWARD_OP0_NOT_PAYMENT`           | Operation 0 is not a payment                                             |
+| 6   | `FORWARD_OP0_ASSET_NOT_NATIVE`      | The payment asset is not native XLM                                      |
+| 7   | `FORWARD_OP0_SOURCE_NOT_MEDIATOR`   | Operation 0 names a source other than the mediator                       |
+| 8   | `FORWARD_OP1_NOT_ACCOUNT_MERGE`     | Operation 1 is not an account merge                                      |
+| 9   | `FORWARD_OP1_SOURCE_NOT_MEDIATOR`   | Operation 1 names a source other than the mediator                       |
+| 10  | `FORWARD_DESTINATION_MISMATCH`      | The two operations target different destinations                         |
+| 11  | `FORWARD_DESTINATION_NOT_COMMITTED` | The destination differs from the token's                                 |
+| 12  | `FORWARD_MEMO_NOT_COMMITTED`        | The memo's XDR differs from the token's, in type or bytes                |
+| 13  | `FORWARD_FEE_TOO_HIGH`              | The fee is above 2,000,000 stroops                                       |
+| 14  | `FORWARD_PRECONDITION_NOT_ALLOWED`  | Ledger bounds, a minimum sequence, sequence age or gap, or extra signers |
+| 15  | `MISSING_TIME_BOUNDS`               | No time bounds, or a `maxTime` that is absent, zero or not positive      |
+| 16  | `TIME_BOUNDS_EXCESSIVE`             | `maxTime` is more than 3600 seconds in the future                        |
 
-An operation source that is simply omitted inherits the transaction source and is accepted;
-only a source that is present and _different_ is rejected.
+## Trust: what the server can do
 
-`MISSING_TIME_BOUNDS` is emitted from two places with two different reason strings, so
-there are 13 codes across 14 rejection sites.
+An honest server co-signs only a forward that meets the flow's terms. That bound holds against a
+leaked token, not against the server itself:
 
-Check order: parse, fee-bump, transaction source, operation count, op0 type, op0 asset, op0
-source, op1 type, op1 source, destination match, destination committed, time bounds
-present, time bounds horizon. Note that all destination binding is verified before time
-bounds.
+- The server holds the master secret and chooses every nonce, so it derives every mediator key and
+  can move any balance that sits in a mediator.
+- The server serves the app code, so a compromised server can change the destination and memo the
+  page builds against before you sign.
 
-## What a compromised server can do
-
-If the validator passes, the derived key can do exactly what the envelope already spells
-out: send the funds to the destination committed in the flow token. That destination is the
-one chosen before the flow was minted.
-
-A fully compromised server still cannot redirect funds elsewhere.
+The client checks above (the returned terms, a valid mediator key, the signed hash) catch a bug or
+a cache answering for other terms. They do not stop a malicious server. An exchange close trusts
+the operator with the balance while it is in transit, and the exposure is bounded by how long the
+balance sits in the mediator: the merge and the forward run back to back. A direct close, to an
+address that needs no memo, never uses the mediator.
 
 ## Interrupted forwards
 
-When a close merges into the mediator but the forward does not complete, a recovery record
-lets the app offer a **Resume the forward** action on the next visit with that account
-connected.
+Before it signs the batch that funds the mediator, the app writes a recovery record to browser
+storage (`account-demolisher:pending-mediator-forwards`): the account, the mediator, the flow token,
+the destination, the memo and the network. Records are keyed by network, account and mediator, so
+one close never overwrites another's. A close whose record cannot be stored does not start.
+
+On later visits with that account connected, the app reads each record against the chain:
+
+| What the chain shows                             | What the app does                                                    |
+| ------------------------------------------------ | -------------------------------------------------------------------- |
+| Your account merged in, balance still there      | **An exchange forward was interrupted**, with **Resume the forward** |
+| The mediator merged out to the committed address | **Exchange forward delivered**, and the record is removed            |
+| The mediator merged out anywhere else            | **Exchange forward went to another address**                         |
+| No merge from your account                       | **An earlier exchange close stopped before the merge**               |
+
+Resume runs the same forward, renewing the token through the re-issue route when it has expired, so
+recovery has no time limit while the mediator exists. A record whose close is still running in
+another tab is left to that tab.
+
+Records saved by builds before the memo and network were bound into the token hold a four-part
+token. The routes refuse those tokens, because renewing one would let whoever holds it choose the
+memo. The app asks you to contact the operator with the mediator account, your deposit memo and the
+token, and the operator finishes the forward with `scripts/mediator-legacy-forward.mjs`.
 
 ## Related
 
