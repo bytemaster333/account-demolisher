@@ -25,7 +25,7 @@ describe("failure note derived from the tree (H-30)", () => {
     final.executed = { txHash: "a".repeat(64), ledger: 10 };
     const forward = tree.allNodes.get("mediator-forward")!;
     forward.status = "failed";
-    const note = failureNoteFor(tree);
+    const note = failureNoteFor(tree, []);
     expect(note.kind).toBe("in-mediator");
     if (note.kind === "in-mediator") {
       expect(note.mergeHash).toBe("a".repeat(64));
@@ -39,7 +39,7 @@ describe("failure note derived from the tree (H-30)", () => {
     final.executed = { txHash: "b".repeat(64), ledger: 10 };
     // applyProgressToTree marks the final node failed on a blocked event
     final.status = "failed";
-    expect(failureNoteFor(tree).kind).toBe("in-mediator");
+    expect(failureNoteFor(tree, []).kind).toBe("in-mediator");
   });
 
   it("lists the steps that already ran when the account is still open", () => {
@@ -47,13 +47,26 @@ describe("failure note derived from the tree (H-30)", () => {
     const repay = topologicalOrder(tree).find((n) => n.kind === "RepayBlend")!;
     repay.status = "confirmed";
     repay.executed = { txHash: "c".repeat(64), ledger: 5 };
-    const note = failureNoteFor(tree);
+    const note = failureNoteFor(tree, []);
     expect(note.kind).toBe("partial");
     if (note.kind === "partial") expect(note.ran.map((n) => n.id)).toEqual([repay.id]);
   });
 
   it("only says nothing ran when no step has a receipt", () => {
-    expect(failureNoteFor(makeTree()).kind).toBe("nothing-ran");
+    expect(failureNoteFor(makeTree(), []).kind).toBe("nothing-ran");
+  });
+
+  // an unwind whose first phase landed and whose next one failed leaves no
+  // receipt on any node, only the phase the executor journaled (L-17)
+  it("reports a landed phase that no node carries a receipt for", () => {
+    const phase = { txHash: "e".repeat(64), ledger: 12 };
+    const note = failureNoteFor(makeTree(), [phase]);
+    expect(note.kind).toBe("partial");
+    if (note.kind === "partial") {
+      expect(note.ran).toEqual([]);
+      expect(note.landed).toEqual([phase]);
+    }
+    expect(failureNoteFor(null, [phase]).kind).toBe("partial");
   });
 });
 

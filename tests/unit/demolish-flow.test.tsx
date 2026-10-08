@@ -16,6 +16,7 @@ import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
 import type { HeldToken } from "@/lib/soroban/held-tokens";
 import type { EmissionForfeit, RefusedConversion } from "@/lib/orchestrator/page-flow-machine";
 import type { SignerSnapshot } from "@/lib/multisig/bundle-freshness";
+import type { ExecuteOutput } from "@/lib/orchestrator/actors/execute";
 
 import {
   ACC,
@@ -56,7 +57,8 @@ const ctl = vi.hoisted(() => ({
   preflightAudit: null as AccountAudit | null,
   discover: null as null | (() => Promise<Discovered>),
   preview: null as null | ((input: Record<string, unknown>) => Promise<Previewed>),
-  execute: null as null | ((tree: PlanTree, input: Record<string, unknown>) => Promise<unknown>),
+  execute: null as
+    null | ((tree: PlanTree, input: Record<string, unknown>) => Promise<ExecuteOutput>),
   previewInputs: [] as Record<string, unknown>[],
   // what the publish-time position re-probe answers
   probe: null as null | (() => Promise<ProtocolPositions>),
@@ -74,6 +76,8 @@ const ctl = vi.hoisted(() => ({
   resolvePathCalls: [] as unknown[],
   // the look-alike check over standalone tokens fails with this, when set
   heldScamError: null as string | null,
+  // the wallets kit's own disconnect fails with this, when set
+  kitDisconnectError: null as string | null,
 }));
 
 vi.mock("@/components/wallet/ConnectButton", () => ({
@@ -87,7 +91,9 @@ vi.mock("@/components/wallet/CreateTestAccountButton", () => ({
 vi.mock("@/lib/wallet/kit", () => ({
   getKit: () => ({}),
   ensureWalletConnectReady: async () => {},
-  disconnectKit: async () => {},
+  disconnectKit: async () => {
+    if (ctl.kitDisconnectError !== null) throw new Error(ctl.kitDisconnectError);
+  },
   restoreKitSession: async () => null,
 }));
 vi.mock("@/lib/metrics/beacon", () => ({
@@ -337,6 +343,7 @@ beforeEach(() => {
   ctl.resolvePaths = null;
   ctl.resolvePathCalls = [];
   ctl.heldScamError = null;
+  ctl.kitDisconnectError = null;
 });
 
 afterEach(() => {
@@ -350,6 +357,8 @@ describe("retry after a non-retryable failure (M-36)", () => {
     ctl.execute = async (tree) => ({
       result: { ok: false, errors: ["WithdrawBlend failed on-chain: contract reverted"] },
       tree,
+      notes: [],
+      landedPhases: [],
     });
     connect();
     render(<DemolishFlow />);
@@ -569,7 +578,12 @@ describe("a run keeps its own network after a navbar switch (M-35)", () => {
       const final = tree.allNodes.get("final-classic-tx")!;
       final.status = "confirmed";
       final.executed = { txHash: merge, ledger: 7 };
-      return { result: { ok: true, errors: [], mergedTxHash: merge }, tree };
+      return {
+        result: { ok: true, errors: [], mergedTxHash: merge },
+        tree,
+        notes: [],
+        landedPhases: [],
+      };
     };
     ctl.effects = [
       { type: "account_credited", account: DEST, asset_type: "native", amount: "99.9000000" },
@@ -800,7 +814,12 @@ describe("the claim window is checked on the ledger clock when publishing (L-25)
 describe("the collected bundle is submitted bound to the reviewed close (M-41, M-63)", () => {
   it("sends the typed tail, the request id and the relay's signer set", async () => {
     setUpSharedAccount();
-    ctl.execute = async (tree) => ({ result: { ok: true, errors: [], mergedTxHash: "aa" }, tree });
+    ctl.execute = async (tree) => ({
+      result: { ok: true, errors: [], mergedTxHash: "aa" },
+      tree,
+      notes: [],
+      landedPhases: [],
+    });
     const seen: Record<string, unknown>[] = [];
     const run = ctl.execute;
     ctl.execute = async (tree, input) => {
@@ -844,6 +863,8 @@ describe("a wallet that doesn't disconnect cleanly is said on the page", () => {
     ctl.execute = async (tree) => ({
       result: { ok: false, errors: ["WithdrawBlend failed on-chain: contract reverted"] },
       tree,
+      notes: [],
+      landedPhases: [],
     });
     setActiveConnector({
       ...connector,
@@ -861,6 +882,33 @@ describe("a wallet that doesn't disconnect cleanly is said on the page", () => {
         /could not be fully disconnected: .*end the session in your wallet app/,
       ),
     ).toBeTruthy();
+  }, 20_000);
+
+  // the connector and the kit can both fail to let go; the notice names each
+  // reason instead of the generic message of the error that wraps them
+  it("lists every reason when more than one part fails to disconnect", async () => {
+    ctl.execute = async (tree) => ({
+      result: { ok: false, errors: ["WithdrawBlend failed on-chain: contract reverted"] },
+      tree,
+      notes: [],
+      landedPhases: [],
+    });
+    ctl.kitDisconnectError = "the walletconnect relay did not answer";
+    setActiveConnector({
+      ...connector,
+      disconnect: async () => {
+        throw new Error("end the session in your wallet app");
+      },
+    });
+    useWalletStore.getState().setConnected(ACC, "secret");
+    render(<DemolishFlow />);
+    await configureAndStart();
+    await confirmTyped();
+    fireEvent.click(await screen.findByTestId("demolish-failed-reset"));
+    const notice = await screen.findByText(/could not be fully disconnected/);
+    expect(notice.textContent).toMatch(/end the session in your wallet app/);
+    expect(notice.textContent).toMatch(/the walletconnect relay did not answer/);
+    expect(notice.textContent).toMatch(/disconnect it in the wallet/);
   }, 20_000);
 });
 
@@ -1080,6 +1128,28 @@ describe("refused conversions are decided per asset (decision 3, M-18, M-19)", (
     await waitFor(() => expect(ctl.previewInputs).toHaveLength(3));
     expect(ctl.previewInputs[2]!["acceptedPriceImpactAssetKeys"]).toBeUndefined();
   });
+
+  it("forgets an accepted rate when a run-guard cancel is followed by Start over", async () => {
+    await refuse("price_impact");
+    fireEvent.click(screen.getByTestId(`refused-accept-${TOKEN_C}`));
+    // a network switch cancels the run; switching back leaves the cancelled screen
+    act(() => useNetworkStore.getState().setNetwork("mainnet"));
+    await waitFor(() => expect(state()).toBe("cancelled"));
+    act(() => useNetworkStore.getState().setNetwork("testnet"));
+    fireEvent.click(await screen.findByTestId("demolish-cancelled-reset"));
+    await waitFor(() => expect(state()).toBe("idle"));
+
+    ctl.preview = async () => ({ tree: makeTree(), unroutableCredits: [] });
+    const start = screen.getByTestId("demolish-start") as HTMLButtonElement;
+    await waitFor(() => expect(start.disabled).toBe(false), { timeout: 3000 });
+    fireEvent.click(start);
+    await waitFor(() => expect(ctl.previewInputs).toHaveLength(3));
+    const input = ctl.previewInputs[2]!;
+    expect(input["acceptedPriceImpactAssetKeys"]).toBeUndefined();
+    expect(input["sendHeldTokensAsIs"]).toBeUndefined();
+    expect(input["leaveHeldTokens"]).toBeUndefined();
+    expect(input["forfeitBackstopEmissionPoolIds"]).toBeUndefined();
+  });
 });
 
 describe("unclaimable backstop emissions need a forfeit acknowledgement (L-49)", () => {
@@ -1142,8 +1212,19 @@ describe("a retry signs with the wallet connected now (M-10)", () => {
     ctl.execute = async (tree) => {
       calls += 1;
       return calls === 1
-        ? { result: { ok: false, errors: ["horizon 503"] }, tree, failureKind: "network" }
-        : { result: { ok: true, errors: [], mergedTxHash: "bb" }, tree };
+        ? {
+            result: { ok: false, errors: ["horizon 503"] },
+            tree,
+            failureKind: "network",
+            notes: [],
+            landedPhases: [],
+          }
+        : {
+            result: { ok: true, errors: [], mergedTxHash: "bb" },
+            tree,
+            notes: [],
+            landedPhases: [],
+          };
     };
     connect();
     render(<DemolishFlow />);
@@ -1159,7 +1240,12 @@ describe("a retry signs with the wallet connected now (M-10)", () => {
     const gate = deferred<void>();
     ctl.execute = async (tree) => {
       await gate.promise;
-      return { result: { ok: true, errors: [], mergedTxHash: "cc" }, tree };
+      return {
+        result: { ok: true, errors: [], mergedTxHash: "cc" },
+        tree,
+        notes: [],
+        landedPhases: [],
+      };
     };
     connect();
     render(<DemolishFlow />);
@@ -1207,6 +1293,12 @@ describe("a run that only prepares the close (M-25)", () => {
     expect((await screen.findByTestId("review-prepare-only")).textContent).toMatch(
       /doesn't delete the account/,
     );
+    // the final gate must not say this run closes the account
+    fireEvent.click(await screen.findByTestId("demolish-confirm"));
+    const gate = await screen.findByTestId("typed-confirmation");
+    expect(gate.textContent).toMatch(/only prepares the close/);
+    expect(gate.textContent).not.toMatch(/permanently closes the account/);
+    fireEvent.click(screen.getByTestId("typed-confirmation-cancel"));
     await confirmTyped();
     await waitFor(() => expect(state()).toBe("prepared"));
     const widget = await screen.findByTestId("demolish-status-widget");

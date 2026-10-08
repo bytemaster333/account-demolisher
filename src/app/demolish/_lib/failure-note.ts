@@ -1,5 +1,5 @@
 // what the failure screen may honestly say about the account, read from the
-// plan tree's receipts and the close batches the executor saw land, rather than
+// plan tree's receipts and the classic batches the executor saw land, rather than
 // assumed. A failure can land after the merge into the exchange helper account,
 // after DeFi steps already moved funds, or after an earlier batch of the close
 // itself (path payments, trustline removals), so "nothing changed" is only true
@@ -33,11 +33,12 @@ export type FailureNote =
   // no step has a receipt and no close batch landed
   | { readonly kind: "nothing-ran"; readonly multiBatch: boolean };
 
-// landedPhases: the close batches (final-classic-tx) the executor saw land,
-// merge included, whatever the node's status says now
+// landedPhases: every classic batch the executor saw land in this run (unwind
+// phases and close batches, merge included), whatever the nodes' status says
+// now. required so a caller can't drop it and end up saying nothing ran
 export function failureNoteFor(
   tree: PlanTree | null,
-  landedPhases: readonly PhaseReceipt[] = [],
+  landedPhases: readonly PhaseReceipt[],
 ): FailureNote {
   if (tree === null) {
     return landedPhases.length > 0

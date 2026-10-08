@@ -82,8 +82,8 @@ export function DemolishStatusWidget({
   readonly failureKind?: FailureKind | null;
   // best-effort steps that did not do what the plan asked
   readonly executionNotes?: readonly string[];
-  // classic phases of the close that landed, including those of a close that
-  // did not finish
+  // classic batches that landed in this run (unwind phases and close batches),
+  // including those of a close that did not finish
   readonly landedPhases?: readonly PhaseReceipt[];
   // technical detail behind the discovery warnings
   readonly discoveryDiagnostics?: readonly string[];
@@ -1013,9 +1013,10 @@ const FAILURE_KIND_COPY: Partial<Record<FailureKind, string>> = {
     "A close for this account is already running in this tab. Wait for it to finish, then Retry runs only what didn't land.",
 };
 
-// the close's own classic transactions that reached the chain (an earlier
-// batch, or the merge), so the user knows what is already final when a later
-// one failed. Nothing is said when none landed: the failure note covers that.
+// the run's own classic transactions that reached the chain (an unwind phase,
+// an earlier close batch, or the merge), so the user knows what is already
+// final when a later one failed. Nothing is said when none landed: the failure
+// note covers that.
 function LandedList({
   phases,
   network,
@@ -1026,7 +1027,7 @@ function LandedList({
   if (phases.length === 0) return null;
   return (
     <div data-testid="landed-phases" data-count={phases.length} style={{ marginTop: 6 }}>
-      These transactions of the account close are on chain and are not undone:
+      These transactions of this close are on chain and are not undone:
       <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
         {phases.map((p) => (
           <li key={p.txHash}>
