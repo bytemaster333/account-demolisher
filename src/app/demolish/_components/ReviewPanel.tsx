@@ -13,6 +13,7 @@ import {
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import { explorerAccountUrl } from "@/lib/explorer";
+import { hasHiddenCharacters, safeDisplay } from "@/lib/safe-display";
 import type { BundleabilityResult } from "@/lib/multisig/signing-request";
 import type { PlanNode, PreparePlan } from "@/lib/plan/tree";
 import { EVENT_RETENTION_WINDOW_LEDGERS } from "@/lib/soroban/event-retention";
@@ -358,8 +359,9 @@ export function ReviewPanel({
               <>
                 Memo ({MEMO_TYPE_LABEL[memo.type]}):{" "}
                 <span style={{ font: "600 13px 'Geist Mono', monospace", color: "var(--fg)" }}>
-                  {memo.value}
+                  {safeDisplay(memo.value)}
                 </span>
+                {hasHiddenCharacters(memo.value) ? " (contains hidden characters)" : null}
                 {useMediator ? ", applied on the delivery payment from the helper account" : ""}
               </>
             ) : (

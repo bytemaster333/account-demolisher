@@ -8,12 +8,12 @@ import { TypedConfirmation } from "@/components/confirmations/TypedConfirmation"
 import { AuthImmutableBlock } from "@/components/warnings/AuthImmutableBlock";
 import { PendingForwardBanner } from "@/components/wallet/PendingForwardBanner";
 import { StandaloneTokensCard } from "@/components/wallet/StandaloneTokensCard";
+import { walletTeardownNotice } from "@/components/wallet/teardown-message";
 import type { HeldToken } from "@/lib/soroban/held-tokens";
 import { SponsoringBlock } from "@/components/warnings/SponsoringBlock";
 import { CollectSignatures } from "@/components/multisig/CollectSignatures";
 import { openPositionCount } from "@/lib/adapters/positions/interface";
 import { explorerAccountUrl } from "@/lib/explorer";
-import { errorMessage } from "@/lib/errors";
 import { useNetworkStore } from "@/stores/network";
 import { useCloseBusy } from "@/stores/close-busy";
 import { NETWORKS, type NetworkConfig } from "@/lib/config/networks";
@@ -162,7 +162,7 @@ export function DemolishFlow(): React.JSX.Element {
   // live on the phone); said on the page, not only in the console
   const [teardownError, setTeardownError] = useState<string | null>(null);
   const onTeardownError = useCallback((err: unknown) => {
-    setTeardownError(errorMessage(err));
+    setTeardownError(walletTeardownNotice(err));
   }, []);
 
   // whether the connected account is shared, read before the plan is built so a
@@ -564,6 +564,7 @@ export function DemolishFlow(): React.JSX.Element {
         isSucceeded: isSucceeded || isPrepared,
         hasCollect: multisigRequired,
         collecting,
+        prepareOnly: tree?.prepareOnly !== undefined,
       }),
     [
       showFlow,
@@ -576,6 +577,7 @@ export function DemolishFlow(): React.JSX.Element {
       isPrepared,
       multisigRequired,
       collecting,
+      tree,
     ],
   );
 
@@ -873,11 +875,15 @@ export function DemolishFlow(): React.JSX.Element {
     send({ type: "RESET" });
   }, [send, signing, clearChoices]);
 
-  // start over after a cancel: back to Configure for the same connection
+  // start over after a cancel: back to Configure for the same connection. the
+  // cancel came from a wallet or network switch, so the answers given for the
+  // old plan (accepted rates, held-token choices, forfeits) may belong to
+  // another account and must be asked again
   const onStartOverAfterCancel = useCallback(() => {
+    clearChoices();
     signing.reset();
     send({ type: "RESET" });
-  }, [send, signing]);
+  }, [send, signing, clearChoices]);
 
   // a retry signs with the wallet connected now; without one the machine can
   // only rebuild the plan from fresh discovery
@@ -1073,7 +1079,7 @@ export function DemolishFlow(): React.JSX.Element {
       {teardownError !== null ? (
         <div style={{ marginBottom: 14 }}>
           <Notice tone="warning" title="The wallet wasn't fully disconnected" role="status">
-            {`The wallet could not be fully disconnected: ${teardownError}`}
+            {teardownError}
             <div style={{ marginTop: 10 }}>
               <Button
                 variant="ghost"
@@ -1485,6 +1491,7 @@ export function DemolishFlow(): React.JSX.Element {
               explorerUrl={explorerAccountUrl(runNetwork, runInput.destination)}
               memo={runInput.memo ?? null}
               memoViaMediator={runInput.useMediator}
+              prepareOnly={tree?.prepareOnly !== undefined}
               onCancel={() => setShowConfirmDialog(false)}
               onConfirm={confirmClose}
             />

@@ -20,7 +20,8 @@ function isClassicNode(node: PlanNode): boolean {
   return (
     node.kind === "FinalClassicTx" ||
     node.kind === "ClassicUnwind" ||
-    node.kind === "AddBlndTrustline"
+    node.kind === "AddBlndTrustline" ||
+    node.kind === "AddExitTrustline"
   );
 }
 
@@ -28,7 +29,7 @@ function classicOpCount(node: PlanNode): number {
   if (node.kind === "FinalClassicTx" || node.kind === "ClassicUnwind") {
     return node.metadata.batches.reduce((n, b) => n + b.operations.length, 0);
   }
-  if (node.kind === "AddBlndTrustline") return 1;
+  if (node.kind === "AddBlndTrustline" || node.kind === "AddExitTrustline") return 1;
   return 0;
 }
 

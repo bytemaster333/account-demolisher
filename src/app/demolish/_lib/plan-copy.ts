@@ -68,6 +68,7 @@ export function phaseForNode(node: PlanNode): string {
     case "WithdrawAquarius":
     case "WithdrawAquariusConcentrated":
     case "WithdrawSoroswapLp":
+    case "AddExitTrustline":
       return "DeFi withdrawals";
     case "AddBlndTrustline":
     case "ClaimBlendEmissions":
@@ -107,6 +108,8 @@ export function nodeLabel(node: PlanNode): string {
       return "Withdraw Soroswap LP";
     case "AddBlndTrustline":
       return "Add BLND trustline";
+    case "AddExitTrustline":
+      return "Add payout trustline";
     case "ClaimBlendEmissions":
       return "Claim Blend emissions";
     case "ClaimAquariusRewards":
@@ -150,6 +153,8 @@ export function nodePlainLabel(node: PlanNode): string {
       return "Withdraw from a Soroswap pool";
     case "AddBlndTrustline":
       return "Let the account hold BLND for the Blend rewards";
+    case "AddExitTrustline":
+      return "Let the account hold a token a pool pays out";
     case "ClaimBlendEmissions":
       return "Collect Blend rewards";
     case "ClaimAquariusRewards":
@@ -200,6 +205,8 @@ export function nodeExplainer(
       return "Pulls your share of a Soroswap liquidity pool back into your account.";
     case "AddBlndTrustline":
       return "Opens a BLND trustline so the Blend rewards can be paid to this account. It holds a small XLM reserve, which comes back when the close removes the trustline again.";
+    case "AddExitTrustline":
+      return "Opens a trustline for an asset a pool pays out, since the pool can only pay it into a trustline. It holds a small XLM reserve, which comes back when the close removes the trustline again.";
     case "ClaimBlendEmissions":
       return "Collects the reward tokens Blend owes you before you leave, so you don't leave them behind.";
     case "ClaimAquariusRewards":
