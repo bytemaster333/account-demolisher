@@ -46,6 +46,7 @@ import { balance as readTokenBalance, buildTransfer } from "@/lib/soroban/sep41"
 import { simulate, SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
 import { stroopsToDecimal } from "@/lib/stellar/amount";
 import { withHorizonRetry } from "@/lib/stellar/horizon-retry";
+import { DEFAULT_TX_VALIDITY_SECONDS } from "@/lib/stellar/ledger-clock";
 import { applySlippageMin, resolveConfiguredSlippageBps } from "@/lib/safety/slippage";
 import type { AssetIdentifier } from "@/lib/types/account";
 import {
@@ -858,7 +859,7 @@ async function assertIssuerOpensAuthorized(
 }
 
 // change_trust at the default (maximum) limit, so any payout fits. it bids the
-// same per-op fee as the soroban steps and gets the same five-minute timeout.
+// same per-op fee as the soroban steps and the classic batches' signing window.
 // built off a copy of the account so the caller's sequence never moves.
 function buildTrustlineTx(
   network: NetworkConfig,
@@ -871,11 +872,9 @@ function buildTrustlineTx(
     networkPassphrase: network.passphrase,
   })
     .addOperation(Operation.changeTrust({ asset }))
-    .setTimeout(TRUSTLINE_TIMEOUT_SECONDS)
+    .setTimeout(DEFAULT_TX_VALIDITY_SECONDS)
     .build();
 }
-
-const TRUSTLINE_TIMEOUT_SECONDS = 300;
 
 export function resolveContractIdForAsset(asset: AssetIdentifier, network: NetworkConfig): string {
   switch (asset.kind) {
