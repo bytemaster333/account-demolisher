@@ -16,6 +16,8 @@ import {
   type Transaction,
 } from "@stellar/stellar-sdk";
 
+import { BLEND_TESTNET_POOLS } from "@/lib/adapters/blend/pools";
+import { getSoroswapRouterId } from "@/lib/adapters/soroswap/router";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import { explorerAccountUrl } from "@/lib/explorer";
@@ -36,10 +38,13 @@ import { shortAddress } from "@/lib/safe-display";
 
 // circle testnet usdc: issuer published in https://testanchor.stellar.org/.well-known/stellar.toml
 const USDC_TESTNET_ISSUER = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
-// blend testnet pool TestnetV2: from BLEND_TESTNET_POOLS in src/lib/adapters/blend/pools.ts
-const BLEND_POOL_TESTNET = "CCEBVDYM32YNYCVNRXQKDFFPISJJCV557CDZEIRBEE4NCV4KHPQ44HGF";
-// soroswap testnet router: from TESTNET_SOROSWAP_ENTRIES in src/lib/config/contracts.ts
-const SOROSWAP_ROUTER_TESTNET = "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD";
+
+// the blend pool the demo supplies to, read from the pinned testnet pool list
+function blendDemoPool(): string {
+  const pool = BLEND_TESTNET_POOLS.find((p) => p.name === "TestnetV2");
+  if (pool === undefined) throw new Error("Blend pool TestnetV2 is not in the testnet pool list");
+  return pool.pool_id;
+}
 
 // the demo creates real testnet state, so it runs on testnet and nowhere else
 export function isDemoNetwork(network: NetworkConfig): boolean {
@@ -588,7 +593,8 @@ async function blendSupplyXlm(
     }),
   ]);
 
-  const contract = new Contract(BLEND_POOL_TESTNET);
+  const poolId = blendDemoPool();
+  const contract = new Contract(poolId);
   const fromScVal = new Address(publicKey).toScVal();
   const tx = new TransactionBuilder(account, {
     fee: "1000",
@@ -608,7 +614,7 @@ async function blendSupplyXlm(
 
   const prepared = await assembleSubmittable(server, tx);
   assertDemoSorobanTx(prepared, publicKey, network, {
-    contractId: BLEND_POOL_TESTNET,
+    contractId: poolId,
     fn: "submit",
   });
   prepared.sign(Keypair.fromSecret(secret));
@@ -624,7 +630,7 @@ async function routerRead(
 ): Promise<unknown> {
   const { retval } = await simulateRead(
     getRpc(network),
-    SOROSWAP_ROUTER_TESTNET,
+    getSoroswapRouterId(network),
     fn,
     args,
     publicKey,
@@ -661,13 +667,14 @@ async function soroswapSwap(
 
   const horizon = getHorizon(network);
   const server = getRpc(network);
+  const routerId = getSoroswapRouterId(network);
   const account = await horizon.loadAccount(publicKey);
   const tx = new TransactionBuilder(account, {
     fee: "1000",
     networkPassphrase: network.passphrase,
   })
     .addOperation(
-      new Contract(SOROSWAP_ROUTER_TESTNET).call(
+      new Contract(routerId).call(
         "swap_exact_tokens_for_tokens",
         scvI128(amountIn),
         scvI128(amountOutMin),
@@ -681,7 +688,7 @@ async function soroswapSwap(
 
   const prepared = await assembleSubmittable(server, tx);
   assertDemoSorobanTx(prepared, publicKey, network, {
-    contractId: SOROSWAP_ROUTER_TESTNET,
+    contractId: routerId,
     fn: "swap_exact_tokens_for_tokens",
   });
   prepared.sign(Keypair.fromSecret(secret));
@@ -730,6 +737,7 @@ async function soroswapAddLiquidity(
 ): Promise<string> {
   const horizon = getHorizon(network);
   const server = getRpc(network);
+  const routerId = getSoroswapRouterId(network);
   const xlmSac = nativeSac(network);
   const usdcId = usdcSac(network);
 
@@ -750,7 +758,7 @@ async function soroswapAddLiquidity(
     networkPassphrase: network.passphrase,
   })
     .addOperation(
-      new Contract(SOROSWAP_ROUTER_TESTNET).call(
+      new Contract(routerId).call(
         "add_liquidity",
         scvAddress(xlmSac),
         scvAddress(usdcId),
@@ -767,7 +775,7 @@ async function soroswapAddLiquidity(
 
   const prepared = await assembleSubmittable(server, tx);
   assertDemoSorobanTx(prepared, publicKey, network, {
-    contractId: SOROSWAP_ROUTER_TESTNET,
+    contractId: routerId,
     fn: "add_liquidity",
   });
   prepared.sign(Keypair.fromSecret(secret));

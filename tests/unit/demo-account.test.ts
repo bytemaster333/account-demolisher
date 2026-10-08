@@ -16,6 +16,7 @@ import {
   type Transaction,
 } from "@stellar/stellar-sdk";
 
+import { getSoroswapRouterId } from "@/lib/adapters/soroswap/router";
 import { MAINNET, TESTNET, type NetworkConfig } from "@/lib/config/networks";
 import {
   FRIENDBOT_TIMEOUT_MS,
@@ -27,7 +28,7 @@ import {
   submitAndPollSoroban,
 } from "@/lib/wallet/demo-account";
 
-const ROUTER = "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD";
+const ROUTER = getSoroswapRouterId(TESTNET);
 const NATIVE_SAC = Asset.native().contractId(Networks.TESTNET);
 const demo = Keypair.random();
 
