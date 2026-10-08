@@ -3,9 +3,11 @@
 
 import {
   Account,
+  Asset,
   BASE_FEE,
   Horizon,
   Keypair,
+  MuxedAccount,
   NotFoundError,
   Operation,
   TransactionBuilder,
@@ -120,6 +122,42 @@ function live(state: LiveState = {}): Horizon.AccountResponse {
   } as unknown as ConstructorParameters<typeof Horizon.AccountResponse>[0]);
 }
 
+// the merge destination as Horizon reports it, with an optional credit line
+interface DestLine {
+  code: string;
+  balance?: string;
+  limit?: string;
+  buying?: string;
+  authorized?: boolean;
+}
+
+function destAccount(lines: DestLine[] = [], id = dest): Horizon.AccountResponse {
+  const balances: Record<string, unknown>[] = [{ asset_type: "native", balance: "10.0000000" }];
+  for (const l of lines) {
+    balances.push({
+      asset_type: "credit_alphanum4",
+      asset_code: l.code,
+      asset_issuer: issuer,
+      balance: l.balance ?? "0.0000000",
+      limit: l.limit ?? "922337203685.4775807",
+      buying_liabilities: l.buying ?? "0.0000000",
+      selling_liabilities: "0.0000000",
+      is_authorized: l.authorized ?? true,
+      is_authorized_to_maintain_liabilities: l.authorized ?? true,
+    });
+  }
+  return new Horizon.AccountResponse({
+    id,
+    account_id: id,
+    sequence: "1",
+    balances,
+    signers: [{ key: id, weight: 1, type: "ed25519_public_key" }],
+    thresholds: { low_threshold: 0, med_threshold: 0, high_threshold: 0 },
+    data_attr: {},
+    num_sponsoring: 0,
+  } as unknown as ConstructorParameters<typeof Horizon.AccountResponse>[0]);
+}
+
 const bundle: Transaction = buildCloseTransaction({
   audit,
   destination: dest,
@@ -145,6 +183,7 @@ function check(state: LiveState, offerIds: string[] = [OFFER_ID]) {
     offerIds,
     claimableBalances: [],
     snapshot,
+    destination: destAccount(),
   });
 }
 
@@ -257,6 +296,7 @@ describe("bundle freshness edge cases", () => {
       account: bare({ [CLOSE_MARKER_NAME]: "MQ==" }),
       offerIds: [],
       claimableBalances: [],
+      destination: destAccount(),
     });
     expect(res).toEqual({ ok: true });
   });
@@ -265,7 +305,7 @@ describe("bundle freshness edge cases", () => {
     const id = `00000000${"3".repeat(64)}`;
     const xdrStr = markerBundle([Operation.claimClaimableBalance({ balanceId: id })]);
     const horizon = {
-      loadAccount: () => Promise.resolve(bare({})),
+      loadAccount: (id: string) => Promise.resolve(id === dest ? destAccount() : bare({})),
       offers: () => ({
         forAccount: () => ({
           limit: () => ({ call: () => Promise.resolve({ records: [] }) }),
@@ -303,6 +343,7 @@ describe("bundle freshness edge cases", () => {
       account: bare({}, 2),
       offerIds: [],
       claimableBalances: [ownCb(2)],
+      destination: destAccount(),
     });
     expect(res).toEqual({ ok: true });
   });
@@ -314,6 +355,7 @@ describe("bundle freshness edge cases", () => {
       account: bare({}, 3),
       offerIds: [],
       claimableBalances: [ownCb(2)],
+      destination: destAccount(),
     });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reasons.join(" ")).toMatch(/sponsors 1 ledger entry/);
@@ -326,6 +368,7 @@ describe("bundle freshness edge cases", () => {
       account: bare({}, 2),
       offerIds: [],
       claimableBalances: [{ ...ownCb(2), sponsor: dest }],
+      destination: destAccount(),
     });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reasons.join(" ")).toMatch(/sponsors 2 ledger entries/);
@@ -335,7 +378,8 @@ describe("bundle freshness edge cases", () => {
     const xdrStr = markerBundle([Operation.claimClaimableBalance({ balanceId: CB_ID })]);
     const horizonWith = (claimants: number, numSponsoring: number) =>
       ({
-        loadAccount: () => Promise.resolve(bare({}, numSponsoring)),
+        loadAccount: (id: string) =>
+          Promise.resolve(id === dest ? destAccount() : bare({}, numSponsoring)),
         offers: () => ({
           forAccount: () => ({
             limit: () => ({ call: () => Promise.resolve({ records: [] }) }),
@@ -362,5 +406,148 @@ describe("bundle freshness edge cases", () => {
     });
     const short = await loadBundleFreshness(horizonWith(1, 2), xdrStr, TESTNET.passphrase);
     expect(short.ok).toBe(false);
+  });
+});
+
+// the merge destination is outside this account's control for the whole
+// signing window: it can merge away (op_no_destination) or drop, lose
+// authorization on or fill a trustline a residue payment needs (op_no_trust,
+// op_not_authorized, op_line_full), and any of those sinks the signed bundle
+describe("bundle freshness: the merge destination", () => {
+  const eur = new Asset("EUR", issuer);
+
+  function eurBundle(to = dest): string {
+    const tx = new TransactionBuilder(new Account(owner.publicKey(), "5000"), {
+      fee: BASE_FEE,
+      networkPassphrase: TESTNET.passphrase,
+      timebounds: { minTime: 0, maxTime: 0 },
+    })
+      .addOperation(Operation.payment({ destination: to, asset: eur, amount: "3.0000000" }))
+      .addOperation(Operation.changeTrust({ asset: eur, limit: "0" }));
+    for (const op of closeMarkerOperations()) tx.addOperation(op);
+    tx.addOperation(Operation.accountMerge({ destination: to }));
+    return tx.build().toXdr();
+  }
+
+  function closing(): Horizon.AccountResponse {
+    return new Horizon.AccountResponse({
+      id: owner.publicKey(),
+      account_id: owner.publicKey(),
+      sequence: "5000",
+      balances: [
+        { asset_type: "native", balance: "100.0000000" },
+        {
+          asset_type: "credit_alphanum4",
+          asset_code: "EUR",
+          asset_issuer: issuer,
+          balance: "3.0000000",
+        },
+      ],
+      signers: [{ key: owner.publicKey(), weight: 1, type: "ed25519_public_key" }],
+      thresholds: { low_threshold: 0, med_threshold: 0, high_threshold: 0 },
+      data_attr: {},
+      num_sponsoring: 0,
+    } as unknown as ConstructorParameters<typeof Horizon.AccountResponse>[0]);
+  }
+
+  function checkWith(destination: Horizon.AccountResponse | null, xdrStr = eurBundle()) {
+    return checkBundleFreshness({
+      xdr: xdrStr,
+      passphrase: TESTNET.passphrase,
+      account: closing(),
+      offerIds: [],
+      claimableBalances: [],
+      destination,
+    });
+  }
+
+  function reasonsOf(res: ReturnType<typeof checkBundleFreshness>): string {
+    expect(res.ok).toBe(false);
+    return res.ok ? "" : res.reasons.join(" ");
+  }
+
+  it("accepts a destination that still trusts what the bundle sends it", () => {
+    expect(checkWith(destAccount([{ code: "EUR" }]))).toEqual({ ok: true });
+    // exactly enough room left
+    expect(
+      checkWith(destAccount([{ code: "EUR", balance: "7.0000000", limit: "10.0000000" }])),
+    ).toEqual({ ok: true });
+  });
+
+  it("detects a destination that no longer exists", () => {
+    expect(reasonsOf(checkWith(null))).toContain(`The destination ${dest} no longer exists`);
+  });
+
+  it("detects a destination that dropped the trustline", () => {
+    expect(reasonsOf(checkWith(destAccount()))).toMatch(/no longer trusts EUR/);
+  });
+
+  it("detects a destination trustline the issuer deauthorized", () => {
+    expect(reasonsOf(checkWith(destAccount([{ code: "EUR", authorized: false }])))).toMatch(
+      /EUR .* is no longer authorized/,
+    );
+  });
+
+  it("detects a destination trustline without room for the payment", () => {
+    const full = destAccount([
+      { code: "EUR", balance: "5.0000000", limit: "10.0000000", buying: "2.0000001" },
+    ]);
+    expect(reasonsOf(checkWith(full))).toMatch(
+      /room for 2\.9999999 EUR but the bundle sends 3\.0000000/,
+    );
+  });
+
+  it("does not need a trustline when the destination is the issuer", () => {
+    expect(checkWith(destAccount([], issuer), eurBundle(issuer))).toEqual({ ok: true });
+  });
+
+  it("reads a muxed destination by its base account", () => {
+    const muxed = new MuxedAccount(new Account(dest, "1"), "42").accountId();
+    expect(checkWith(destAccount([{ code: "EUR" }]), eurBundle(muxed))).toEqual({ ok: true });
+    expect(reasonsOf(checkWith(destAccount(), eurBundle(muxed)))).toMatch(/no longer trusts EUR/);
+  });
+
+  function horizonFor(destLoad: () => Promise<Horizon.AccountResponse>, loaded: string[]) {
+    return {
+      loadAccount: (id: string) => {
+        loaded.push(id);
+        return id === owner.publicKey() ? Promise.resolve(closing()) : destLoad();
+      },
+      offers: () => ({
+        forAccount: () => ({
+          limit: () => ({ call: () => Promise.resolve({ records: [] }) }),
+        }),
+      }),
+    } as unknown as Horizon.Server;
+  }
+
+  it("loads the destination after the closing account", async () => {
+    const loaded: string[] = [];
+    const fresh = await loadBundleFreshness(
+      horizonFor(() => Promise.resolve(destAccount([{ code: "EUR" }])), loaded),
+      eurBundle(),
+      TESTNET.passphrase,
+    );
+    expect(fresh).toEqual({ ok: true });
+    expect(loaded).toEqual([owner.publicKey(), dest]);
+  });
+
+  it("reports a destination Horizon answers 404 for as gone", async () => {
+    const gone = await loadBundleFreshness(
+      horizonFor(() => Promise.reject(new NotFoundError("Not Found", {})), []),
+      eurBundle(),
+      TESTNET.passphrase,
+    );
+    expect(reasonsOf(gone)).toContain(`The destination ${dest} no longer exists`);
+  });
+
+  it("fails the check when the destination can't be loaded for another reason", async () => {
+    await expect(
+      loadBundleFreshness(
+        horizonFor(() => Promise.reject(new Error("horizon is down")), []),
+        eurBundle(),
+        TESTNET.passphrase,
+      ),
+    ).rejects.toThrow("horizon is down");
   });
 });

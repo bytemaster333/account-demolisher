@@ -156,4 +156,66 @@ describe("integration: bundle freshness (testnet)", () => {
     );
     expect(JSON.stringify(failed)).toMatch(/op_is_sponsor/);
   });
+
+  it("reports a merge destination that dropped a trustline the bundle pays into or merged away", async () => {
+    const owner = Keypair.random();
+    const issuer = Keypair.random();
+    const destination = Keypair.random();
+    await Promise.all([
+      friendbotFund(owner.publicKey()),
+      friendbotFund(issuer.publicKey()),
+      friendbotFund(destination.publicKey()),
+    ]);
+    const usd = new Asset("USD", issuer.publicKey());
+    await submit(owner, Operation.changeTrust({ asset: usd }));
+    await submit(destination, Operation.changeTrust({ asset: usd }));
+    await submit(
+      issuer,
+      Operation.payment({ destination: owner.publicKey(), asset: usd, amount: "5" }),
+    );
+
+    const audit = await auditAccount(owner.publicKey(), TESTNET);
+    const tx = buildCloseTransaction({
+      audit,
+      destination: destination.publicKey(),
+      network: TESTNET,
+      sourceAccount: await server.loadAccount(owner.publicKey()),
+      disposal: {
+        claimableBalanceIds: [],
+        sendToDestinationAssetKeys: [`USD:${issuer.publicKey()}`],
+      },
+      ledgerCloseTime: audit.ledger.closedAt,
+    });
+    tx.sign(owner);
+    const xdr = tx.toXdr();
+    expect(await loadBundleFreshness(server, xdr, TESTNET.passphrase)).toEqual({ ok: true });
+
+    // the destination's owner drops the line the residue payment needs
+    await submit(destination, Operation.changeTrust({ asset: usd, limit: "0" }));
+    const untrusted = await loadBundleFreshness(server, xdr, TESTNET.passphrase);
+    expect(untrusted.ok).toBe(false);
+    if (!untrusted.ok) {
+      expect(untrusted.reasons).toHaveLength(1);
+      expect(untrusted.reasons[0]).toMatch(/no longer trusts USD/);
+    }
+
+    // and then merges away
+    await submit(destination, Operation.accountMerge({ destination: issuer.publicKey() }));
+    const gone = await loadBundleFreshness(server, xdr, TESTNET.passphrase);
+    expect(gone.ok).toBe(false);
+    if (!gone.ok) {
+      expect(gone.reasons.join(" ")).toContain(
+        `The destination ${destination.publicKey()} no longer exists`,
+      );
+    }
+
+    // the chain agrees: the residue payment has nowhere to land
+    const failed = await server.submitTransaction(tx).then(
+      () => null,
+      (e: unknown) =>
+        (e as { response?: { data?: { extras?: { result_codes?: unknown } } } }).response?.data
+          ?.extras?.result_codes,
+    );
+    expect(JSON.stringify(failed)).toMatch(/op_no_destination/);
+  });
 });

@@ -40,12 +40,13 @@ vi.mock("@/lib/multisig/plan-client", async (importOriginal) => ({
 }));
 
 // horizon is the other network boundary: the freshness check reads the live
-// account, its offers and the claimable balances the bundle claims
-const horizon = { account: null as Horizon.AccountResponse | null, loads: 0 };
+// account, its offers, the claimable balances the bundle claims and the merge
+// destination
+const horizon = { account: null as Horizon.AccountResponse | null, loads: [] as string[] };
 vi.mock("@/lib/stellar/horizon-client", () => ({
   getHorizon: () => ({
-    loadAccount: async () => {
-      horizon.loads += 1;
+    loadAccount: async (id: string) => {
+      horizon.loads.push(id);
       if (horizon.account === null) throw new Error("no account");
       return horizon.account;
     },
@@ -75,8 +76,8 @@ const b = Keypair.random();
 const c = Keypair.random();
 const destination = Keypair.random().publicKey();
 
-// every extra signer is a subentry, so the real batcher removes each one before
-// the merge; a merge-only bundle against a multi-signer account would fail on chain
+// the real batcher removes each extra signer before the merge, so the fixture
+// bundle does the same
 function buildClose(dest = destination, memo?: Memo): Transaction {
   const builder = new TransactionBuilder(new Account(initiator.publicKey(), "100"), {
     fee: BASE_FEE,
@@ -208,7 +209,7 @@ beforeEach(() => {
   relay.fetchPlan.mockReset();
   relay.publishPlan.mockReset();
   horizon.account = null;
-  horizon.loads = 0;
+  horizon.loads = [];
 });
 
 afterEach(() => {
@@ -314,7 +315,8 @@ describe("CollectSignatures freshness", () => {
     await flush();
     frame(p, signedBy(initiator, a, b, c));
     await flush();
-    expect(horizon.loads).toBe(1);
+    // one check reads the closing account and then the merge destination
+    expect(horizon.loads).toEqual([initiator.publicKey(), destination]);
   });
 });
 

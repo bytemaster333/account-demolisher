@@ -461,6 +461,10 @@ describe("a merge whose reply was lost is never re-minted around", () => {
 });
 
 describe("the bundle path submits only what everyone signed", () => {
+  // the merge destination exists, as it did when the bundle was built
+  beforeEach(() => {
+    net.horizon.accounts.set(DEST, 1n);
+  });
   const snapshot = {
     signers: [{ key: USER, weight: 1 }],
     thresholds: { low: 0, med: 0, high: 0 },
@@ -730,6 +734,10 @@ describe("send-to-destination is offered only where the payment can land", () =>
 });
 
 describe("a signed bundle is checked against the account as it is now", () => {
+  // the merge destination exists, as it did when the bundle was built
+  beforeEach(() => {
+    net.horizon.accounts.set(DEST, 1n);
+  });
   const OTHER_KP = Keypair.fromRawEd25519Seed(new Uint8Array(32).fill(31));
   const snapshot = {
     signers: [{ key: USER, weight: 1 }],
@@ -799,6 +807,19 @@ describe("a signed bundle is checked against the account as it is now", () => {
     const ctx = actor.getSnapshot().context;
     expect(ctx.failureKind).toBe("bundle_stale");
     expect(ctx.error).toMatch(/sequence number moved/);
+    expect(net.horizon.submitTransaction).not.toHaveBeenCalled();
+    actor.stop();
+  });
+
+  it("refuses a bundle whose merge destination is gone instead of submitting it", async () => {
+    net.horizon.accounts.delete(DEST);
+    const actor = withPlan(mergeOnly, direct());
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    actor.send(event());
+    await settle(actor, "failed");
+    const ctx = actor.getSnapshot().context;
+    expect(ctx.failureKind).toBe("bundle_stale");
+    expect(ctx.error).toContain(`The destination ${DEST} no longer exists`);
     expect(net.horizon.submitTransaction).not.toHaveBeenCalled();
     actor.stop();
   });

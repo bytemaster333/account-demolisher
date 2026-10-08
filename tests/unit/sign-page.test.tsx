@@ -246,7 +246,11 @@ describe("/sign relay envelopes", () => {
     await settle();
     frame(signedBy(owner, a, b));
     await settle();
-    expect(horizon.loadAccount).toHaveBeenCalledTimes(1);
+    // one check reads the closing account and then the merge destination
+    expect(horizon.loadAccount.mock.calls.map((c) => c[0])).toEqual([
+      owner.publicKey(),
+      destination,
+    ]);
   });
 });
 

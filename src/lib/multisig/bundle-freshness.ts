@@ -1,7 +1,8 @@
 // a bundled close is built from one snapshot of the account and then collects
 // signatures for up to 72 hours. if the account changes meanwhile (another
 // transaction bumps the sequence, someone sends a dust payment to a trustline
-// the bundle removes, an offer fills, a signer is rotated) the fully signed
+// the bundle removes, an offer fills, a signer is rotated, the destination
+// drops a trustline the bundle pays into or merges away) the fully signed
 // bundle fails on chain and everyone has to start over.
 //
 // this compares a bundle against the live account before anyone is asked for
@@ -12,6 +13,7 @@ import {
   LiquidityPoolAsset,
   NotFoundError,
   TransactionBuilder,
+  extractBaseAddress,
   getLiquidityPoolId,
   type FeeBumpTransaction,
   type Horizon,
@@ -53,6 +55,9 @@ export interface FreshnessInput {
   readonly claimableBalances: readonly LiveClaimableBalance[];
   // the signer set the relay checked signatures against, when there is one
   readonly snapshot?: SignerSnapshot;
+  // the merge destination as Horizon reports it now, null when it doesn't exist.
+  // a bundle without a merge has no destination to compare
+  readonly destination: Horizon.AccountResponse | null;
   readonly nowMs?: number;
 }
 
@@ -147,6 +152,10 @@ export function checkBundleFreshness(input: FreshnessInput): FreshnessResult {
   const removed = new Set<string>();
   const cancelled = new Set<string>();
   const deleted = new Set<string>();
+  // credit the bundle pays to each account, to find what the merge destination
+  // has to be able to receive
+  const sentTo = new Map<string, Map<string, bigint>>();
+  let mergeDestination: string | undefined;
   // the close marker is set and then deleted, so the pair also removes an entry
   // of that name the account already holds
   let markerDeleted = false;
@@ -159,8 +168,18 @@ export function checkBundleFreshness(input: FreshnessInput): FreshnessResult {
       case "payment":
         if (op.asset && !op.asset.isNative() && op.amount) {
           const k = assetKey(op.asset);
-          paidOut.set(k, (paidOut.get(k) ?? 0n) + toStroops(op.amount));
+          const amount = toStroops(op.amount);
+          paidOut.set(k, (paidOut.get(k) ?? 0n) + amount);
+          if (op.destination !== undefined) {
+            const to = extractBaseAddress(op.destination);
+            const sent = sentTo.get(to) ?? new Map<string, bigint>();
+            sent.set(k, (sent.get(k) ?? 0n) + amount);
+            sentTo.set(to, sent);
+          }
         }
+        break;
+      case "accountMerge":
+        if (op.destination !== undefined) mergeDestination = extractBaseAddress(op.destination);
         break;
       case "changeTrust":
         if (op.line && op.limit !== undefined && toStroops(op.limit) === 0n) {
@@ -193,6 +212,16 @@ export function checkBundleFreshness(input: FreshnessInput): FreshnessResult {
       default:
         break;
     }
+  }
+
+  if (mergeDestination !== undefined) {
+    reasons.push(
+      ...destinationDrift(
+        mergeDestination,
+        input.destination,
+        sentTo.get(mergeDestination) ?? new Map(),
+      ),
+    );
   }
 
   const liveLines = new Map<string, bigint>();
@@ -263,6 +292,52 @@ export function checkBundleFreshness(input: FreshnessInput): FreshnessResult {
   return reasons.length === 0 ? { ok: true } : { ok: false, reasons };
 }
 
+// the merge destination is outside this account's control for the whole
+// signing window. it can merge away (op_no_destination) or drop, lose
+// authorization on or fill a trustline a residue payment needs, and each of
+// those sinks the signed bundle
+function destinationDrift(
+  id: string,
+  live: Horizon.AccountResponse | null,
+  sent: ReadonlyMap<string, bigint>,
+): string[] {
+  if (live === null) {
+    return [`The destination ${id} no longer exists, so the merge would fail.`];
+  }
+  const reasons: string[] = [];
+  const lines = new Map<string, Record<string, unknown>>();
+  for (const b of live.balances as unknown as Record<string, unknown>[]) {
+    const k = balanceLineKey(b);
+    if (k !== null) lines.set(k, b);
+  }
+  for (const [k, amount] of sent) {
+    // a payment to the issuer burns the asset and needs no trustline
+    if (k.split(":")[1] === id) continue;
+    const line = lines.get(k);
+    if (line === undefined) {
+      reasons.push(`The destination no longer trusts ${label(k)}, so sending it would fail.`);
+      continue;
+    }
+    if (line.is_authorized !== true) {
+      reasons.push(
+        `The destination's ${label(k)} trustline is no longer authorized, so sending it would fail.`,
+      );
+      continue;
+    }
+    const room =
+      toStroops(String(line.limit)) -
+      toStroops(String(line.balance)) -
+      toStroops(String(line.buying_liabilities));
+    if (room < amount) {
+      const [code] = k.split(":");
+      reasons.push(
+        `The destination's ${label(k)} trustline now has room for ${fromStroops(room > 0n ? room : 0n)} ${code} but the bundle sends ${fromStroops(amount)}, so the payment would fail.`,
+      );
+    }
+  }
+  return reasons;
+}
+
 // load everything checkBundleFreshness needs from Horizon and run it
 export async function loadBundleFreshness(
   horizon: Horizon.Server,
@@ -301,12 +376,24 @@ export async function loadBundleFreshness(
     }
   }
 
+  // read after the closing account, so a 404 for the closing account still
+  // reaches the caller as an error and only the destination's becomes a reason
+  let destination: Horizon.AccountResponse | null = null;
+  if (merge !== undefined) {
+    try {
+      destination = await horizon.loadAccount(extractBaseAddress(merge.destination));
+    } catch (e) {
+      if (!(e instanceof NotFoundError)) throw e;
+    }
+  }
+
   return checkBundleFreshness({
     xdr,
     passphrase,
     account,
     offerIds,
     claimableBalances,
+    destination,
     ...(snapshot ? { snapshot } : {}),
   });
 }
