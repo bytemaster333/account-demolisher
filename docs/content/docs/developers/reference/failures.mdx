@@ -1,92 +1,127 @@
 ---
 title: Failure reference
-description: The failure taxonomy, which kinds are retryable, and every typed error the codebase raises.
+description: The failure kinds a close can end with, what Retry does with each, and the typed errors the codebase raises.
 ---
 
-There is no central error-code enum. Failures are classified at the flow level by
-`FailureKind`, and individual subsystems raise their own typed errors.
+A close that stops ends with a `FailureKind` (`src/lib/orchestrator/failures.ts`). The kind decides
+what **Retry** does:
 
-## The failure taxonomy
+- **Retryable**: Retry runs the same plan again with the wallet connected now. Steps that already
+  landed are skipped, and failed or skipped steps are reset and run again. A submission whose
+  outcome was unknown is looked up first.
+- **Not retryable**: Retry rebuilds the plan from fresh discovery, so you review it again.
 
-`classifyFailure` lowercases the message and matches in this **exact order**. Order is
-load-bearing.
+A Retry without a connected wallet also rebuilds.
 
-| #   | Matched substrings                                                                                    | Kind                | Retryable |
-| --- | ----------------------------------------------------------------------------------------------------- | ------------------- | --------- |
-| 1   | `tx_bad_seq`, `bad_seq`                                                                               | `bad_seq`           | Yes       |
-| 2   | `position(s) still open`, `still open`, `defi position`                                               | `position_open`     | **No**    |
-| 3   | `account_merge blocked`, `not mergeable`, `mergeable`                                                 | `not_mergeable`     | **No**    |
-| 4   | `footprint`, `restorepreamble`, `restore`, `archived`, `entry_expired`                                | `changed_footprint` | Yes       |
-| 5   | `failed on-chain`                                                                                     | `reverted`          | **No**    |
-| 6   | `signing_failed`, `failed to sign`, `sign the`                                                        | `signing`           | Yes       |
-| 7   | `timed out`, `timeout`, `network`, `fetch`, `502`, `503`, `504`, `bad gateway`, `service unavailable` | `network`           | Yes       |
-| 8   | anything else                                                                                         | `unknown`           | Yes       |
+## Failure kinds
 
-Diverged-state stops are checked **before** the footprint bucket on purpose. A "positions
-still open" or "not mergeable" message whose protocol detail happens to mention `archived`
-or `restore` must trigger rediscovery, not be retried as a footprint race.
+| Kind                 | Raised when                                                                                                                                                                                                                            | Retryable |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| `bad_seq`            | The account's sequence moved under a step (`tx_bad_seq`)                                                                                                                                                                               | Yes       |
+| `changed_footprint`  | The ledger entries a Soroban step declared changed or were archived before it landed                                                                                                                                                   | Yes       |
+| `network`            | Horizon, RPC or the mediator did not answer usefully: a timeout, a rate limit, a 5xx, an unreadable error page, `tx_too_late`, `tx_insufficient_fee`, unreadable fee stats, or a DeFi protocol that could not be read before the merge | Yes       |
+| `signing`            | The wallet did not sign                                                                                                                                                                                                                | Yes       |
+| `ambiguous`          | A submission's outcome is unknown; Retry checks it on chain before signing anything again                                                                                                                                              | Yes       |
+| `forward_pending`    | The merge into the forwarding account landed but the forward did not; Retry runs the forward                                                                                                                                           | Yes       |
+| `interrupted`        | You stopped the close at a step boundary                                                                                                                                                                                               | Yes       |
+| `close_running`      | Another run of the close for this account is still going, in this tab or another                                                                                                                                                       | Yes       |
+| `not_mergeable`      | The account can no longer be merged as planned (`account_merge blocked: ...`), or Horizon refused a transaction with a code a replay cannot fix                                                                                        | No        |
+| `position_open`      | A DeFi position is still open at the merge, or a token could be neither converted nor sent as-is                                                                                                                                       | No        |
+| `reverted`           | A Soroban step failed on chain                                                                                                                                                                                                         | No        |
+| `unsafe`             | A step's transaction asked for more than the step needs (allow-list, authorization tree, exact shape or fee cap) and was not signed                                                                                                    | No        |
+| `bundle_stale`       | A collected shared-account bundle can no longer land, or Horizon refused it; signatures are collected again                                                                                                                            | No        |
+| `mediator_expired`   | The forwarding authorization ran too low to sign the merge safely                                                                                                                                                                      | No        |
+| `conversion_refused` | A conversion would now sell over the price-impact cap or below the reviewed quote, or has no route; the rebuilt plan asks you per token                                                                                                | No        |
+| `claim_unavailable`  | A Blend backstop emissions claim that simulated at review can no longer run; the rebuilt plan asks you to forfeit the BLND                                                                                                             | No        |
+| `unknown`            | Anything unclassified                                                                                                                                                                                                                  | No        |
 
-The three non-retryable kinds are the ones where retrying cannot help: the account is not
-mergeable, a position is still open, or the contract reverted.
+## How an error gets its kind
+
+`classifyFailure` resolves the kind in this order:
+
+1. A `CloseFailure` carries its kind.
+2. A Horizon rejection with result codes: `tx_bad_seq` is `bad_seq`; `tx_too_late` and
+   `tx_insufficient_fee` are `network`, because a rebuild with a fresh time bound or a higher bid
+   can land; every other code is `not_mergeable`.
+3. A Horizon `NetworkError` (not a 404) with status 429, a 5xx, or no readable status is `network`.
+4. The message, lowercased, matched in this order:
+
+| #   | Phrases                                                                                                                                                                                                          | Kind                |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| 1   | `tx_bad_seq`, `txbadseq`                                                                                                                                                                                         | `bad_seq`           |
+| 2   | `position(s) still open`                                                                                                                                                                                         | `position_open`     |
+| 3   | `account_merge blocked`                                                                                                                                                                                          | `not_mergeable`     |
+| 4   | `footprint`, `restorepreamble`, `entryarchived`, `entry_archived`, `entry_expired`                                                                                                                               | `changed_footprint` |
+| 5   | `failed on-chain`                                                                                                                                                                                                | `reverted`          |
+| 6   | `timed out`, `timeout of`, `fetch failed`, `failed to fetch`, `network error`, `networkerror`, `econnreset`, `econnrefused`, `429`, `502`, `503`, `504`, `bad gateway`, `service unavailable`, `gateway timeout` | `network`           |
+| 7   | Anything else                                                                                                                                                                                                    | `unknown`           |
+
+The diverged-state stops (2 and 3) are checked before the footprint phrases, so a merge refusal
+whose detail mentions an archived entry is never retried as a footprint race.
+
+## Merge refusals
+
+The close loop refuses the merge with messages that start `account_merge blocked:`. Each is
+`not_mergeable`, except the two below:
+
+```
+account_merge blocked: N Soroban DeFi position(s) still open (blend=…, backstop=…, aquarius=…,
+aquarius concentrated=…, soroswap=…). Close them before merging, or the funds will be stranded on
+the deleted account.
+```
+
+This one is `position_open`.
+
+```
+account_merge blocked: could not confirm your DeFi positions are all closed (…). This is a safety
+stop so an unreadable position isn't merged around and stranded. Retry once the network is
+responsive.
+```
+
+This one is `network`, so Retry runs the same plan once the protocol can be read.
 
 ## Typed errors
 
-| Error                      | Raised by                           | Carries                                                          |
-| -------------------------- | ----------------------------------- | ---------------------------------------------------------------- |
-| `AllowlistViolation`       | The signing-time contract gate      | `violations`, a list of every blocked invocation with its reason |
-| `UnsafeRevokeError`        | The revoke guard                    | A reason, prefixed `Refusing to sign revoke:`                    |
-| `UnsafeTransferError`      | The token-transfer guard            | A reason, prefixed `Refusing to sign token transfer:`            |
-| `SimulationError`          | Soroban simulation                  | `errorCode`, `diagnostic` events                                 |
-| `SimulationFailedError`    | Plan simulation                     | `nodeId`, `upstreamError`                                        |
-| `AccountNotFoundError`     | The account audit, on a Horizon 404 | `publicKey`                                                      |
-| `SlippageGuardTripped`     | The slippage guard                  | `expected`, `minimumAccepted`, `actual`, `slippageBps`           |
-| `AquariusBudgetError`      | Aquarius chained swaps              | `hops`, `limit` (4, the Soroban budget cap)                      |
-| `SoroswapProxyError`       | The Soroswap proxy client           | `code`, `status`, `op`                                           |
-| `FxDAOClientNotConfigured` | The FxDAO client                    | A message                                                        |
-| `BodyTooLargeError`        | Server body reading                 | `limit` (16,384 bytes)                                           |
+| Error                                                        | Raised by                                                                            | Carries                                                                             |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| `CloseFailure`                                               | The executor and the execute actor                                                   | `kind`                                                                              |
+| `AmbiguousSubmitError`                                       | A submission Horizon or RPC never confirmed either way                               | `txHash`, `maxTime`; kind `ambiguous`                                               |
+| `SubmitRejectedError`                                        | A classic submission Horizon refused                                                 | `codes`, `httpStatus`                                                               |
+| `AllowlistViolation`                                         | The contract allow-list                                                              | `violations`, every blocked invocation with its reason                              |
+| `UnsafeDefiAuthError`                                        | The DeFi authorization-tree guard                                                    | `nodeKind` and a reason                                                             |
+| `UnsafeRevokeError`, `UnsafeTransferError`                   | The revoke and token-transfer guards                                                 | A reason, prefixed `Refusing to sign revoke:` or `Refusing to sign token transfer:` |
+| `SorobanFeeCapError`                                         | The Soroban fee cap                                                                  | `feeClass` and the fee `breakdown`                                                  |
+| `SignedEnvelopeError`                                        | The check on a wallet's signed envelope                                              | A reason                                                                            |
+| `LedgerSigningError`                                         | A Ledger refusal                                                                     | `refusal`: `rejected`, `hash-signing-disabled`, `too-large` or `unparseable`        |
+| `PriceImpactRefusedError`                                    | A conversion over the price-impact cap or worse than the reviewed quote              | `reason`, `priceImpactBps`, `expectedOut`                                           |
+| `NoSoroswapRouteError`                                       | A held-token conversion with no router path to XLM                                   | A message                                                                           |
+| `BackstopEmissionsClaimError`                                | A backstop emissions claim that no longer simulates                                  | `poolId`, `accruedEmissions`                                                        |
+| `SimulationError`                                            | Soroban simulation                                                                   | `errorCode`, diagnostic events                                                      |
+| `SimulationFailedError`, `NodeNotBuiltError`                 | Plan simulation                                                                      | The node and the upstream error                                                     |
+| `SorobanNotQueuedError`                                      | An RPC that did not queue a Soroban transaction                                      | `status`, `resultCode`                                                              |
+| `AccountNotFoundError`                                       | The account audit, on a Horizon 404                                                  | `publicKey`                                                                         |
+| `AllowanceScanIncompleteError`, `AllowanceScanOverflowError` | An allowance scan that did not cover its window, or a contract cut to 20 spenders    | The partial list and what was left out                                              |
+| `TooManySignaturesError`                                     | An envelope already at the 20-signature limit                                        | A message                                                                           |
+| `PendingForwardStorageError`                                 | Browser storage refusing a forward recovery record                                   | A message; the close does not start                                                 |
+| `SlippageConfigError`                                        | A set but invalid `NEXT_PUBLIC_SLIPPAGE_BPS` or `NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS` | A message; the build fails                                                          |
+| `ClientIpUnavailableError`                                   | A `TRUSTED_PROXY_HOPS` or proxy setup that cannot identify the client                | A message; the server refuses to start, or the route answers 500                    |
+| `BodyTooLargeError`                                          | A request body over its route's cap                                                  | `limit`                                                                             |
+| `SoroswapProxyError`                                         | The Soroswap proxy client                                                            | `code`, `status`, `op`                                                              |
 
 ## Reading an unknown error
 
-`errorMessage(err, fallback)` resolves a message in this order: an `Error` with a non-empty
-message, a non-empty string, a non-null object with a string `message` property, then the
-fallback.
+`errorMessage(err, fallback)` in `src/lib/errors.ts` returns, in order: an `Error`'s non-empty
+message, a non-empty string, the non-empty string `message` of a plain object, then the fallback,
+or `String(err)` when there is none.
 
-The third case exists for a specific reason. The Soroban RPC client in the Stellar SDK
-rejects with a plain `{ code, message }` object rather than an `Error`, so a bare
-`instanceof Error` check silently discards the real message, such as
-`startLedger must be within the ledger range: 3517481 - 3638440`, and `String(err)` renders
-the useless `[object Object]`.
+The plain-object case exists because the Soroban RPC client rejects with a `{ code, message }`
+object rather than an `Error`, so an `instanceof Error` check alone discards the real message.
 
-## Submission-level classification
+## Slippage and price bounds
 
-Two narrower classifiers run inside the executor, separate from `FailureKind`:
-
-- **Classic rejections** map Horizon result codes to `fee`, `resequence`, `reprice`, or
-  terminal.
-- **Soroban rejections** map messages to `resequence`, `footprint`, or terminal.
-
-Both are documented with their exact matched strings in
-[Execution and recovery](/docs/developers/internals/execution).
-
-## Guard messages that stop a merge
-
-These are plain errors thrown by the merge guard, and all three are non-retryable:
-
-```
-account_merge blocked: <reason>[: <detail>]
-
-account_merge blocked: N Soroban DeFi position(s) still open (...).
-Close them before merging, or the funds will be stranded on the deleted account.
-
-account_merge blocked: could not confirm your DeFi positions are all closed (...).
-This is a safety stop so an unreadable position isn't merged around and stranded.
-```
-
-## Slippage bounds
-
-| Constant               | Value  |
-| ---------------------- | ------ |
-| `DEFAULT_SLIPPAGE_BPS` | 100    |
-| `MIN_SLIPPAGE_BPS`     | 10     |
-| `MAX_SLIPPAGE_BPS`     | 500    |
-| `BPS_DENOMINATOR`      | 10,000 |
+| Constant                               | Value   | Meaning                                                                          |
+| -------------------------------------- | ------- | -------------------------------------------------------------------------------- |
+| `DEFAULT_SLIPPAGE_BPS`                 | 100     | 1% below the quote is the minimum accepted output                                |
+| `MIN_SLIPPAGE_BPS`, `MAX_SLIPPAGE_BPS` | 10, 500 | The range `NEXT_PUBLIC_SLIPPAGE_BPS` accepts                                     |
+| `MAX_PRICE_IMPACT_BPS`                 | 200     | A full-size conversion more than 2% below the reference rate needs your decision |
+| `REFERENCE_TRADE_DIVISOR`              | 1000    | The reference trade is 1/1000 of the balance                                     |

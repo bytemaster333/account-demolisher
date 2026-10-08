@@ -1,75 +1,77 @@
 ---
 title: Networks and endpoints
-description: Horizon, Soroban RPC, passphrase, and friendbot per network, and how RPC failover works.
+description: Horizon, Soroban RPC, passphrase and friendbot per network, how RPC failover works, and how the app picks a network.
 ---
 
-Endpoints are pinned in `src/lib/config/networks.ts`. They are **not** environment
-variables. Editing that file is how you point a deployment at different providers.
+The app supports two networks, **mainnet** and **testnet**. Their endpoints are pinned in
+`src/lib/config/networks.ts` and are **not** environment variables: editing that file is how you
+point a deployment at different providers.
 
 ## The table
 
-|                        | mainnet                                                                      | testnet                                          | futurenet                                 |
-| ---------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------ | ----------------------------------------- |
-| **Horizon**            | `https://horizon.stellar.org`                                                | `https://horizon-testnet.stellar.org`            | `https://horizon-futurenet.stellar.org`   |
-| **Soroban RPC**        | `https://soroban-rpc.mainnet.stellar.gateway.fm`                             | `https://soroban-testnet.stellar.org`            | `https://rpc-futurenet.stellar.org`       |
-| **RPC failovers**      | `https://mainnet.sorobanrpc.com`, `https://stellar.api.onfinality.io/public` | `https://soroban-rpc.testnet.stellar.gateway.fm` | none                                      |
-| **Passphrase**         | `Networks.PUBLIC`                                                            | `Networks.TESTNET`                               | `Networks.FUTURENET`                      |
-| **Friendbot**          | none                                                                         | `https://friendbot.stellar.org`                  | `https://friendbot-futurenet.stellar.org` |
-| **Allow-list entries** | 25                                                                           | 19                                               | 0                                         |
+|                        | mainnet                                                                      | testnet                                          |
+| ---------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------ |
+| **Horizon**            | `https://horizon.stellar.org`                                                | `https://horizon-testnet.stellar.org`            |
+| **Soroban RPC**        | `https://soroban-rpc.mainnet.stellar.gateway.fm`                             | `https://soroban-testnet.stellar.org`            |
+| **RPC failovers**      | `https://mainnet.sorobanrpc.com`, `https://stellar.api.onfinality.io/public` | `https://soroban-rpc.testnet.stellar.gateway.fm` |
+| **Passphrase**         | `Networks.PUBLIC`                                                            | `Networks.TESTNET`                               |
+| **Friendbot**          | none                                                                         | `https://friendbot.stellar.org`                  |
+| **Allow-list entries** | 64 (54 entry points)                                                         | 50 (41 entry points)                             |
 
-The mainnet Soroban RPC default is a third-party gateway rather than an SDF-run endpoint.
-Review it, or replace it with an RPC you operate or trust, before mainnet use.
+The mainnet Soroban RPC default is a third-party gateway, not an SDF-run endpoint. Review it, or
+replace it with an RPC you operate or trust, before mainnet use.
+
+## Looking a network up
+
+`parseNetworkId(id)` returns the config for `mainnet` or `testnet` and `null` for anything else.
+`requireNetwork(id)` throws on anything else. Nothing guesses: a stored recovery record, a relay
+request or a metrics event that names another network is refused, never resolved to a default.
 
 ## RPC failover
 
-`getRpc()` memoizes one failover client per primary URL over the primary plus its
-fallbacks, all with plain HTTP disabled.
+`getRpc(network)` returns one memoized client per primary URL that fails over across the primary
+and its fallbacks, with plain HTTP disabled and a 20-second timeout on every request.
 
-Only rate-limit responses, server errors, and transport errors trigger a failover. A
-deterministic error is returned as-is rather than retried against another host.
+Only a rate limit (429), a 5xx, the RPC's processing-limit answer (JSON-RPC code `-32001`), or a
+named transport failure moves a call to the next host. A deterministic error is returned as-is,
+because every host would answer it the same way. Once a host answers, the client stays on it.
 
-Each fallback was selected on two criteria: it returns a CORS header so a browser can use
-it, and it tracks the same ledger as the primary, so a failover does not read a stale chain
-state. Networks with no vetted second endpoint have none listed.
+A failed-over `sendTransaction` that comes back `txBadSeq` might be the same transaction already
+applied through the first host, so the client looks the hash up on every host and reports a
+transaction any host knows as `DUPLICATE`, for the caller to poll.
 
-## Network resolution
+Each fallback returns a CORS header, so a browser can use it, and tracks the same ledger as the
+primary, so a failover does not read stale state.
 
-`resolveNetwork(id)` returns the matching config for `mainnet`, `testnet`, or `futurenet`,
-and **falls back to testnet** for anything else, including `undefined`.
+## Which network the app is on
 
-That fallback is why the signing relay compares the resolved id back against the caller's
-string before accepting a publish. Otherwise an unrecognized network name would silently
-become testnet.
+The starting network is `NEXT_PUBLIC_STELLAR_NETWORK`, `testnet` by default. The header selector
+offers **TESTNET** and **MAINNET**, and the choice persists in the browser under
+`demolisher.network`; only those two values are read back.
 
-Note the contrast with environment parsing, which throws on an invalid value instead of
-falling back. See [Configuration](/docs/developers/reference/configuration).
+- Switching networks tears down the wallet session, because a connected account belongs to one
+  network.
+- Switching is disabled while a close runs or signatures are being collected.
+- Being on mainnet, from the build default, a restored choice or a switch, needs the browser to
+  have acknowledged that the code has not had an independent audit. Switching back to testnet
+  applies at once.
 
-## What the UI offers
-
-The network selector offers exactly two options, **TESTNET** and **MAINNET**. The choice
-persists in the browser under the key `demolisher.network`, and only those two values are
-accepted when reading it back.
-
-Futurenet is defined in configuration and reachable by building with
-`NEXT_PUBLIC_STELLAR_NETWORK=futurenet`, but it is not offered in the selector.
-
-Switching networks tears down the wallet session, because a connected account is scoped to
-one network. Switching to mainnet is gated behind a confirmation dialog; switching back to
-testnet applies immediately.
+A co-signer on `/sign` signs on the network the signing request names, whatever the header shows.
 
 ## Friendbot
 
-Friendbot presence is what gates the demo account. It is offered on networks that have one,
-which means testnet, and never on mainnet.
+The testnet demo account is funded through friendbot, so it is offered on testnet only.
 
 ## Explorer links
 
-Transaction, account, and contract links point at stellar.expert. The URL slug is `public`
-for mainnet and the network id otherwise.
+Transaction, account and contract links point at stellar.expert, with the slug `public` for mainnet
+and `testnet` for testnet.
 
 ## Adding an endpoint
 
-Any host the browser contacts also has to be in the Content Security Policy. Add its URL to
-`CONNECT_SRC_ENDPOINTS` in `src/lib/config/csp.ts`, or the browser blocks the request.
+The browser may only contact hosts in the Content Security Policy. `connect-src` is derived from
+`NETWORKS` (each network's Horizon, RPC, failovers and friendbot), so an endpoint you add in
+`src/lib/config/networks.ts` joins the policy with it. Any other host the browser needs goes into
+`src/lib/config/csp.ts`.
 
-See [Security model](/docs/developers/security/model).
+See [Security model](/docs/developers/security/model#content-security-policy).
