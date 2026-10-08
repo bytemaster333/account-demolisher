@@ -99,6 +99,21 @@ describe("simulator: FinalClassicTx in-memory validation", () => {
     if (out.kind !== "classic") throw new Error("expected classic");
     expect(out.estimatedFee).toBe("35000");
   });
+
+  // the network's clock, not the browser's, bounds the envelope like the executor's
+  it("bounds the envelope by the ledger close time the caller passes", async () => {
+    const closedAt = 1_800_000_000;
+    const out = await simulateNode(finalNode([batch(2)]), baseDeps({ ledgerCloseTime: closedAt }));
+    if (out.kind !== "classic") throw new Error("expected classic");
+    const tx = TransactionBuilder.fromXDR(out.xdr, TESTNET.passphrase);
+    expect(tx.timeBounds).toEqual({ minTime: "0", maxTime: String(closedAt + 300) });
+  });
+
+  it("refuses a ledger close time that is not a positive whole second", async () => {
+    await expect(
+      simulateNode(finalNode([batch(1)]), baseDeps({ ledgerCloseTime: Number.NaN })),
+    ).rejects.toBeInstanceOf(SimulationFailedError);
+  });
 });
 
 describe("simulator: MediatorForward structural validation", () => {

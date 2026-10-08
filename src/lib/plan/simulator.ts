@@ -8,6 +8,7 @@ import { errorMessage } from "@/lib/errors";
 import { FORWARD_OPERATION_COUNT, MAX_FORWARD_FEE } from "@/lib/mediator/forward-terms";
 import { simulate, type SimulationResult } from "@/lib/soroban/simulate";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
+import { DEFAULT_TX_VALIDITY_SECONDS } from "@/lib/stellar/ledger-clock";
 import type { ClassicBatch } from "@/lib/types/plan";
 
 import type { PlanNode, SimulationOutcome } from "./tree";
@@ -25,6 +26,9 @@ export interface SimulationDeps {
   // surge-aware base, so callers that know it pass it; otherwise the network
   // minimum (BASE_FEE) is used and the figure is a lower bound.
   readonly classicFeePerOp?: number;
+  // close time (unix seconds) of the latest ledger, from the audit, so the
+  // classic envelopes are bounded by the network's clock like the executor's
+  readonly ledgerCloseTime?: number;
 }
 
 // simulate one node. throws on structural issues or simulation failure
@@ -112,7 +116,14 @@ async function simulateClassicBatches(
   const built: Transaction[] = [];
   try {
     for (const batch of batches) {
-      const tx = buildClassicTransaction(batch, source, deps.network, feePerOp).transaction;
+      const tx = buildClassicTransaction(
+        batch,
+        source,
+        deps.network,
+        feePerOp,
+        DEFAULT_TX_VALIDITY_SECONDS,
+        deps.ledgerCloseTime,
+      ).transaction;
       if ("innerTransaction" in tx) {
         throw new Error("buildClassicTransaction returned a fee-bump transaction unexpectedly");
       }
