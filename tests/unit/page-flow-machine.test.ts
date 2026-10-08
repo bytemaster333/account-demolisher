@@ -817,6 +817,49 @@ describe("RETRY", () => {
   });
 });
 
+describe("a rebuild starts from an empty discovery", () => {
+  it("drops the last run's scan results while the new discovery runs", async () => {
+    const token = { contractId: "CTOKEN", balance: 5n };
+    let discoveries = 0;
+    const { actor } = machineWith({
+      execute: hang,
+      discover: async () => {
+        discoveries += 1;
+        if (discoveries > 1) return hang();
+        return {
+          audit: fakeAudit,
+          positions: { ...EMPTY_POSITIONS, soroswap: [{ pair: {}, shareBalance: 1n }] },
+          allowances: [{ contractId: "CTOKEN", spender: "CSPENDER", amount: 1n }],
+          heldTokens: [token],
+          unreadableHeldTokens: ["CUNREAD"],
+          heldTokenScanFailed: true,
+          discoveryWarnings: ["warned"],
+          discoveryDiagnostics: ["diag"],
+          exitTrustlineGaps: [
+            { contractId: "CUSDC", code: "USDC", issuer: "GI", reason: "missing" },
+          ],
+          unopenableExitLines: [],
+          aquariusRewardToken: "CAQUA",
+        };
+      },
+    });
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    expect(actor.getSnapshot().context.heldTokens).toEqual([token]);
+    actor.send({ type: "START", input: fakeInput });
+    expect(actor.getSnapshot().matches("discovering")).toBe(true);
+    const ctx = actor.getSnapshot().context;
+    expect(ctx.audit).toBeNull();
+    expect(ctx.positions).toBe(EMPTY_POSITIONS);
+    expect(ctx.allowances).toEqual([]);
+    expect(ctx.heldTokens).toEqual([]);
+    expect(ctx.unreadableHeldTokens).toEqual([]);
+    expect(ctx.heldTokenScanFailed).toBe(false);
+    expect(ctx.exitTrustlineGaps).toEqual([]);
+    expect(ctx.aquariusRewardToken).toBeNull();
+    actor.stop();
+  });
+});
+
 describe("a rejected execute still reports the batches that landed", () => {
   it("shows every classic phase on chain, not the list an earlier attempt left", async () => {
     const unwind = node("classic-unwind", "ClassicUnwind");

@@ -350,6 +350,22 @@ const clearedPlan = {
   preparedClose: null,
 } as const;
 
+// what a new START leaves of the last discovery: nothing, so the page shows no
+// scan result of the earlier run while the new one runs
+const clearedDiscovery = {
+  audit: null,
+  positions: EMPTY_POSITIONS,
+  allowances: [],
+  heldTokens: [],
+  unreadableHeldTokens: [],
+  heldTokenScanFailed: false,
+  discoveryWarnings: [],
+  discoveryDiagnostics: [],
+  exitTrustlineGaps: [],
+  unopenableExitLines: [],
+  aquariusRewardToken: null,
+} as const;
+
 export const pageFlowMachine = setup({
   types: {
     context: {} as PageFlowContext,
@@ -412,9 +428,7 @@ export const pageFlowMachine = setup({
           actions: assign({
             input: ({ event }) => storeInput(event.input),
             connector: ({ event }) => event.input.connector,
-            audit: null,
-            discoveryWarnings: [],
-            discoveryDiagnostics: [],
+            ...clearedDiscovery,
             error: null,
             failureKind: null,
             ...clearedPlan,
@@ -552,9 +566,7 @@ export const pageFlowMachine = setup({
           actions: assign({
             input: ({ event }) => storeInput(event.input),
             connector: ({ event }) => event.input.connector,
-            audit: null,
-            discoveryWarnings: [],
-            discoveryDiagnostics: [],
+            ...clearedDiscovery,
             error: null,
             failureKind: null,
             ...clearedPlan,
