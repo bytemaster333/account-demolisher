@@ -40,7 +40,7 @@ import {
   SubmitRejectedError,
   type FailureKind,
 } from "@/lib/orchestrator/failures";
-import { landedPhasesOf, type PhaseReceipt } from "@/lib/orchestrator/journal";
+import { landedClassicPhases, type PhaseReceipt } from "@/lib/orchestrator/journal";
 import {
   createClassicSubmitter,
   createSorobanSubmitter,
@@ -347,13 +347,7 @@ async function runClose(input: ExecuteInput, signal: AbortSignal): Promise<Execu
   const stop = eitherSignal(signal, input.interrupt);
   const submitClassic = createClassicSubmitter(horizon, input.network.passphrase);
   const finalNode = tree.allNodes.get(FINAL_CLASSIC_TX_NODE_ID);
-  // every classic batch that landed, the unwind's ahead of the close's: each is
-  // on chain whatever happens to the run after it
-  const unwinds = [...tree.allNodes.values()].filter((n) => n.kind === "ClassicUnwind");
-  const landed = (): readonly PhaseReceipt[] => [
-    ...unwinds.flatMap((n) => landedPhasesOf(n)),
-    ...(finalNode ? landedPhasesOf(finalNode) : []),
-  ];
+  const landed = (): readonly PhaseReceipt[] => landedClassicPhases(tree);
 
   if (input.bundle) {
     return submitBundle(input, input.bundle, submitClassic, horizon, stop);

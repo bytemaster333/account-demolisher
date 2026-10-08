@@ -3,7 +3,7 @@
 // submission whose outcome is not known yet, and the receipts of classic phases
 // that landed before the close finished.
 
-import type { PlanNode } from "@/lib/plan/tree";
+import { topologicalOrder, type PlanNode, type PlanTree } from "@/lib/plan/tree";
 
 export interface PendingSubmission {
   readonly hash: string;
@@ -40,4 +40,13 @@ export function journalFor(node: PlanNode): NodeJournal {
 // read-only view for callers that report what already landed
 export function landedPhasesOf(node: PlanNode): readonly PhaseReceipt[] {
   return journals.get(node)?.landedPhases ?? [];
+}
+
+// every classic batch of the tree that landed, the unwind's ahead of the
+// close's. each is on chain whatever happened to the run after it, so this is
+// read from the nodes, never from what an earlier attempt reported.
+export function landedClassicPhases(tree: PlanTree): readonly PhaseReceipt[] {
+  return topologicalOrder(tree)
+    .filter((n) => n.kind === "ClassicUnwind" || n.kind === "FinalClassicTx")
+    .flatMap((n) => landedPhasesOf(n));
 }

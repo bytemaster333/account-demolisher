@@ -10,7 +10,7 @@ import type { PlanTree, PreparePlan } from "@/lib/plan/tree";
 import type { UnroutableCredit } from "@/lib/plan/classic-batcher";
 import type { SignerSnapshot } from "@/lib/multisig/bundle-freshness";
 import { classifyFailure, isRetryableFailure, type FailureKind } from "@/lib/orchestrator/failures";
-import type { PhaseReceipt } from "@/lib/orchestrator/journal";
+import { landedClassicPhases, type PhaseReceipt } from "@/lib/orchestrator/journal";
 import { prepareTreeForExecution, previewBlockers } from "@/lib/orchestrator/retry";
 import { txHashHex } from "@/lib/orchestrator/submit";
 import { discoveryWarningFor } from "@/lib/orchestrator/warnings";
@@ -658,6 +658,9 @@ export const pageFlowMachine = setup({
             error: ({ event }) => errorMessage(event.error),
             failureKind: ({ event }) => classifyFailure(event.error),
             tree: ({ context }) => (context.tree ? { ...context.tree } : null),
+            // the actor returned no list, and the one in context is from an
+            // earlier attempt; the nodes record what landed in this one too
+            landedPhases: ({ context }) => (context.tree ? landedClassicPhases(context.tree) : []),
             connector: null,
             executionAbort: null,
           }),

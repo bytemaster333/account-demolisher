@@ -20,6 +20,7 @@ import type { DemolishResult } from "@/lib/types/plan";
 import type { Connector } from "@/lib/wallet/connector";
 import { EMPTY_POSITIONS } from "@/lib/adapters/positions/interface";
 import { txHashHex } from "@/lib/orchestrator/submit";
+import { journalFor, landedPhasesOf } from "@/lib/orchestrator/journal";
 
 import { DEST, NETWORK, USER, USER_KP } from "./orchestrator-fixtures";
 
@@ -812,6 +813,55 @@ describe("RETRY", () => {
     expect(snap.error).toBe("executing: missing tree from preview");
     expect(snap.failureKind).toBe("unknown");
     expect(snap.tree!.allNodes).toBe(tree.allNodes);
+    actor.stop();
+  });
+});
+
+describe("a rejected execute still reports the batches that landed", () => {
+  it("shows every classic phase on chain, not the list an earlier attempt left", async () => {
+    const unwind = node("classic-unwind", "ClassicUnwind");
+    const final = node("final-classic-tx", "FinalClassicTx", { dependencies: ["classic-unwind"] });
+    const tree = treeOf(unwind, final);
+    let calls = 0;
+    const { actor } = machineWith({
+      tree: () => tree,
+      execute: async (input) => {
+        calls += 1;
+        if (calls === 1) {
+          journalFor(unwind).landedPhases.push({ txHash: "UNWIND", ledger: 1 });
+          return {
+            ...failedOutput(input.tree, ["Bad Gateway (502)"], "network"),
+            landedPhases: landedPhasesOf(unwind),
+          };
+        }
+        // phase 0 of the close lands, then the actor itself rejects
+        journalFor(final).landedPhases.push({ txHash: "PHASE0", ledger: 2 });
+        throw new Error("executing: lost the wallet session");
+      },
+    });
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
+    await waitFor(actor, (s) => s.matches("failed"));
+    actor.send({ type: "RETRY", connector });
+    await waitFor(actor, (s) => s.matches("failed") && calls === 2);
+    expect(actor.getSnapshot().context.landedPhases.map((p) => p.txHash)).toEqual([
+      "UNWIND",
+      "PHASE0",
+    ]);
+    actor.stop();
+  });
+
+  it("reports none when nothing landed before the rejection", async () => {
+    const { actor } = machineWith({
+      tree: () => treeOf(node("final-classic-tx", "FinalClassicTx")),
+      execute: async () => {
+        throw new Error("executing: missing abort controller");
+      },
+    });
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
+    await waitFor(actor, (s) => s.matches("failed"));
+    expect(actor.getSnapshot().context.landedPhases).toEqual([]);
     actor.stop();
   });
 });
