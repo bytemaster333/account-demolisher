@@ -1,5 +1,13 @@
 import { describe, it, expect, vi } from "vitest";
-import { Address, Asset, Keypair, xdr, type rpc } from "@stellar/stellar-sdk";
+import {
+  Address,
+  Asset,
+  AuthRequiredFlag,
+  Keypair,
+  StrKey,
+  xdr,
+  type rpc,
+} from "@stellar/stellar-sdk";
 
 import { MAINNET } from "@/lib/config/networks";
 import { EMPTY_POSITIONS, type ProtocolPositions } from "@/lib/adapters/positions/interface";
@@ -9,6 +17,7 @@ import {
   readExitPayoutTokens,
   readExitPayouts,
   readWrappedAssets,
+  type WrappedAsset,
 } from "@/lib/soroban/stellar-asset";
 import type { AuditBalance } from "@/lib/types/account";
 
@@ -45,10 +54,46 @@ function instanceEntry(contractId: string, sac: boolean): rpc.Api.LedgerEntryRes
   return { key, val, lastModifiedLedgerSeq: 1, liveUntilLedgerSeq: 100 };
 }
 
-function server(entries: Record<string, boolean>) {
+function accountEntry(accountId: string, flags: number): rpc.Api.LedgerEntryResult {
+  const id = Keypair.fromPublicKey(accountId).xdrPublicKey();
+  const key = xdr.LedgerKey.account(new xdr.LedgerKeyAccount({ accountId: id }));
+  const val = xdr.LedgerEntryData.account(
+    new xdr.AccountEntry({
+      accountId: id,
+      balance: 10_000_000n,
+      seqNum: 1n,
+      numSubEntries: 0,
+      inflationDest: null,
+      flags,
+      homeDomain: "",
+      thresholds: new Uint8Array([1, 0, 0, 0]),
+      signers: [],
+      ext: xdr.AccountEntryExt.v0(),
+    }),
+  );
+  return { key, val, lastModifiedLedgerSeq: 1 };
+}
+
+// contract instances by id (true for a SAC), and issuer accounts by key with
+// their flags; anything not listed is not returned, like a missing entry
+function server(
+  entries: Record<string, boolean>,
+  issuers: Record<string, number> = { [AQUA_ISSUER]: 0, [YBX_ISSUER]: 0 },
+) {
   const getLedgerEntries = vi.fn(async (...keys: xdr.LedgerKey[]) => ({
     latestLedger: 1,
     entries: keys.flatMap((k) => {
+      if (k.type === "account") {
+        const id = StrKey.encodeEd25519PublicKey(
+          xdr
+            .expectUnionVariant(
+              xdr.expectUnionVariant(k, "account").account.accountId,
+              "publicKeyTypeEd25519",
+            )
+            .ed25519.toBytes(),
+        );
+        return id in issuers ? [accountEntry(id, issuers[id]!)] : [];
+      }
       const id = Address.fromScAddress(
         xdr.expectUnionVariant(k, "contractData").contractData.contract,
       ).toString();
@@ -86,8 +131,18 @@ describe("readWrappedAssets", () => {
     const got = await readWrappedAssets(s, MAINNET, [AQUA, YBX, XLM, WASM_TOKEN, AQUA], USER, {
       simulateRead: nameRead,
     });
-    expect(got.get(AQUA)).toEqual({ kind: "credit", code: "AQUA", issuer: AQUA_ISSUER });
-    expect(got.get(YBX)).toEqual({ kind: "credit", code: "YBX", issuer: YBX_ISSUER });
+    expect(got.get(AQUA)).toEqual({
+      kind: "credit",
+      code: "AQUA",
+      issuer: AQUA_ISSUER,
+      issuerAuthRequired: false,
+    });
+    expect(got.get(YBX)).toEqual({
+      kind: "credit",
+      code: "YBX",
+      issuer: YBX_ISSUER,
+      issuerAuthRequired: false,
+    });
     expect(got.get(XLM)).toEqual({ kind: "native" });
     expect(got.get(WASM_TOKEN)).toBeNull();
     // the wasm token's own code is never run to answer the question
@@ -119,21 +174,31 @@ describe("readWrappedAssets", () => {
     ).rejects.toThrow(new RegExp(`not returned by the rpc: ${YBX}`));
   });
 
-  it("batches the instance reads", async () => {
+  it("batches the instance reads and the issuer reads", async () => {
     const s = server({ [AQUA]: true, [YBX]: true, [XLM]: true });
     await readWrappedAssets(s, MAINNET, [AQUA, YBX, XLM], USER, {
       simulateRead: nameRead,
       batchSize: 2,
     });
-    expect(s.getLedgerEntries).toHaveBeenCalledTimes(2);
+    // two instance batches, then the two issuers in one
+    expect(s.getLedgerEntries).toHaveBeenCalledTimes(3);
+  });
+
+  // a new line to an auth_required issuer starts unauthorized, and an issuer
+  // account that is gone takes no new lines (change_trust fails no_issuer)
+  it("reads whether each issuer lets the account open a usable line", async () => {
+    const s = server({ [AQUA]: true, [YBX]: true }, { [AQUA_ISSUER]: AuthRequiredFlag | 2 });
+    const got = await readWrappedAssets(s, MAINNET, [AQUA, YBX], USER, { simulateRead: nameRead });
+    expect(got.get(AQUA)).toMatchObject({ issuerAuthRequired: true });
+    expect(got.get(YBX)).toMatchObject({ issuerAuthRequired: null });
   });
 });
 
 describe("exitTrustlineGaps", () => {
-  const wrapped = new Map([
-    [AQUA, { kind: "credit" as const, code: "AQUA", issuer: AQUA_ISSUER }],
-    [YBX, { kind: "credit" as const, code: "YBX", issuer: YBX_ISSUER }],
-    [XLM, { kind: "native" as const }],
+  const wrapped = new Map<string, WrappedAsset | null>([
+    [AQUA, { kind: "credit", code: "AQUA", issuer: AQUA_ISSUER, issuerAuthRequired: false }],
+    [YBX, { kind: "credit", code: "YBX", issuer: YBX_ISSUER, issuerAuthRequired: false }],
+    [XLM, { kind: "native" }],
     [WASM_TOKEN, null],
   ]);
 
@@ -153,6 +218,34 @@ describe("exitTrustlineGaps", () => {
     expect(exitTrustlineGaps(USER, [credit("YBX", YBX_ISSUER, false)], [YBX], wrapped)).toEqual([
       { contractId: YBX, code: "YBX", issuer: YBX_ISSUER, reason: "unauthorized" },
     ]);
+  });
+
+  it("reports a missing line whose issuer requires authorization as one the app can't fix", () => {
+    const authRequired = new Map(wrapped).set(YBX, {
+      kind: "credit",
+      code: "YBX",
+      issuer: YBX_ISSUER,
+      issuerAuthRequired: true,
+    });
+    expect(exitTrustlineGaps(USER, [], [YBX], authRequired)).toEqual([
+      { contractId: YBX, code: "YBX", issuer: YBX_ISSUER, reason: "unauthorized" },
+    ]);
+    // an authorized existing line is fine whatever the issuer's flags
+    expect(exitTrustlineGaps(USER, [credit("YBX", YBX_ISSUER)], [YBX], authRequired)).toEqual([]);
+  });
+
+  it("refuses a missing line whose issuer account no longer exists", () => {
+    const gone = new Map(wrapped).set(YBX, {
+      kind: "credit",
+      code: "YBX",
+      issuer: YBX_ISSUER,
+      issuerAuthRequired: null,
+    });
+    expect(() => exitTrustlineGaps(USER, [], [YBX], gone)).toThrow(
+      /issuer account .* no longer exists/,
+    );
+    // a line the account already has still receives the payout
+    expect(exitTrustlineGaps(USER, [credit("YBX", YBX_ISSUER)], [YBX], gone)).toEqual([]);
   });
 
   it("refuses a token it was not given an answer for", () => {

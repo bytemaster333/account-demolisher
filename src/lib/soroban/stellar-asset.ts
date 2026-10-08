@@ -14,7 +14,15 @@
 // derives back to its own contract id: a SAC's id is the hash of its asset, so
 // the asset it names cannot be wrong without the id differing.
 
-import { Address, Asset, xdr, type rpc } from "@stellar/stellar-sdk";
+import {
+  Address,
+  Asset,
+  AuthRequiredFlag,
+  Keypair,
+  StrKey,
+  xdr,
+  type rpc,
+} from "@stellar/stellar-sdk";
 
 import {
   getUserReward,
@@ -31,7 +39,19 @@ import { simulateRead } from "@/lib/soroban/simulate";
 
 export type WrappedAsset =
   | { readonly kind: "native" }
-  | { readonly kind: "credit"; readonly code: string; readonly issuer: string };
+  | {
+      readonly kind: "credit";
+      readonly code: string;
+      readonly issuer: string;
+      // the issuer's auth_required flag: a line opened now starts unauthorized
+      // and can't receive a payout until the issuer authorizes it. null when the
+      // issuer account no longer exists, so change_trust fails (no_issuer) and
+      // no new line can be opened at all.
+      readonly issuerAuthRequired: boolean | null;
+    };
+
+type SacName =
+  { readonly kind: "native" } | { readonly kind: "credit"; code: string; issuer: string };
 
 export interface StellarAssetDeps {
   readonly simulateRead?: typeof simulateRead;
@@ -42,9 +62,9 @@ export interface StellarAssetDeps {
 const DEFAULT_BATCH_SIZE = 190;
 
 // maps each contract id to the classic asset it wraps, or null for a contract
-// that is not a stellar asset contract. throws when an instance is missing or a
-// SAC's name does not derive to its id, so a caller never plans an exit on a
-// guess.
+// that is not a stellar asset contract, with whether its issuer lets a new line
+// receive. throws when an instance is missing or a SAC's name does not derive
+// to its id, so a caller never plans an exit on a guess.
 export async function readWrappedAssets(
   server: rpc.Server,
   network: NetworkConfig,
@@ -79,10 +99,10 @@ export async function readWrappedAssets(
     throw new Error(`token contract instances not returned by the rpc: ${missing.join(", ")}`);
   }
 
-  const out = new Map<string, WrappedAsset | null>();
+  const named = new Map<string, SacName | null>();
   for (const id of ids) {
     if (isSac.get(id) !== true) {
-      out.set(id, null);
+      named.set(id, null);
       continue;
     }
     const { retval } = await read(server, id, "name", [], sourcePublicKey, network);
@@ -96,13 +116,55 @@ export async function readWrappedAssets(
         `stellar asset contract ${id} names an asset whose contract is ${derived}, refusing to trust it`,
       );
     }
-    out.set(id, asset);
+    named.set(id, asset);
+  }
+
+  const issuers = [
+    ...new Set([...named.values()].flatMap((a) => (a?.kind === "credit" ? [a.issuer] : []))),
+  ];
+  const authRequired = await readIssuerAuthRequired(server, issuers, batchSize);
+  const out = new Map<string, WrappedAsset | null>();
+  for (const [id, asset] of named) {
+    out.set(
+      id,
+      asset === null || asset.kind === "native"
+        ? asset
+        : { ...asset, issuerAuthRequired: authRequired.get(asset.issuer) ?? null },
+    );
+  }
+  return out;
+}
+
+// each issuer's auth_required flag from its account entry. an issuer the rpc
+// does not return has no account (merged away); it is left out of the map.
+async function readIssuerAuthRequired(
+  server: rpc.Server,
+  issuers: readonly string[],
+  batchSize: number,
+): Promise<Map<string, boolean>> {
+  const out = new Map<string, boolean>();
+  for (let i = 0; i < issuers.length; i += batchSize) {
+    const keys = issuers
+      .slice(i, i + batchSize)
+      .map((id) =>
+        xdr.LedgerKey.account(
+          new xdr.LedgerKeyAccount({ accountId: Keypair.fromPublicKey(id).xdrPublicKey() }),
+        ),
+      );
+    const resp = await server.getLedgerEntries(...keys);
+    for (const entry of resp.entries) {
+      const account = xdr.expectUnionVariant(entry.val, "account").account;
+      const id = StrKey.encodeEd25519PublicKey(
+        xdr.expectUnionVariant(account.accountId, "publicKeyTypeEd25519").ed25519.toBytes(),
+      );
+      out.set(id, (account.flags & AuthRequiredFlag) !== 0);
+    }
   }
   return out;
 }
 
 // a SAC's name() is "native" or "CODE:ISSUER"
-function parseSacName(name: string): WrappedAsset {
+function parseSacName(name: string): SacName {
   if (name === "native") return { kind: "native" };
   const sep = name.indexOf(":");
   if (sep <= 0 || sep !== name.lastIndexOf(":")) {
@@ -245,13 +307,15 @@ export interface ExitTrustlineGap {
   readonly code: string;
   readonly issuer: string;
   // missing: a change_trust before the exit fixes it. unauthorized: the issuer
-  // has to authorize the existing line; the app cannot.
+  // has to authorize the line (the existing one, or the one a change_trust would
+  // open when the issuer requires authorization); the app cannot.
   readonly reason: "missing" | "unauthorized";
 }
 
 // the credit assets among an exit's payout tokens that the account cannot
 // receive right now. native and non-SAC tokens need no trustline, and neither
-// does an asset the account issues itself.
+// does an asset the account issues itself. a missing line whose issuer account
+// is gone can't be opened at all, which stops the plan here.
 export function exitTrustlineGaps(
   accountId: string,
   balances: readonly AuditBalance[],
@@ -271,7 +335,19 @@ export function exitTrustlineGaps(
         b.asset.kind === "credit" && b.asset.code === asset.code && b.asset.issuer === asset.issuer,
     );
     if (line === undefined) {
-      gaps.push({ contractId, code: asset.code, issuer: asset.issuer, reason: "missing" });
+      if (asset.issuerAuthRequired === null) {
+        throw new Error(
+          `The ${asset.code} issuer account ${asset.issuer} no longer exists, so this account ` +
+            `can't open the ${asset.code} trustline a pool exit pays into, and that exit can't ` +
+            "run, so the close stops here.",
+        );
+      }
+      gaps.push({
+        contractId,
+        code: asset.code,
+        issuer: asset.issuer,
+        reason: asset.issuerAuthRequired === true ? "unauthorized" : "missing",
+      });
     } else if (line.isAuthorized === false) {
       gaps.push({ contractId, code: asset.code, issuer: asset.issuer, reason: "unauthorized" });
     }
