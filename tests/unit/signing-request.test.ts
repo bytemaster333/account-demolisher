@@ -16,15 +16,12 @@ import { describe, expect, it } from "vitest";
 
 import { TESTNET } from "@/lib/config/networks";
 import { closeMarkerOperations } from "@/lib/metrics/close-marker";
-import type { AccountAudit, AuditSigner } from "@/lib/types/account";
+import type { AccountAudit } from "@/lib/types/account";
 import { pathKey } from "@/lib/types/plan";
 import {
   assessBundleability,
   buildCloseTransaction,
-  closeThreshold,
-  collectedWeight,
   inspectClose,
-  requiredSigners,
   signedSigners,
   thresholdForClose,
   type CloseDisposal,
@@ -48,14 +45,6 @@ function signedXdr(sourcePk: string, destination: string, ...kps: Keypair[]): st
   const tx = TransactionBuilder.fromXdr(buildClose(sourcePk, destination).toXdr(), NET);
   for (const kp of kps) tx.sign(kp);
   return tx.toXdr();
-}
-
-function auditWith(signers: AuditSigner[], high: number): AccountAudit {
-  return {
-    accountId: signers[0]?.key ?? "G",
-    signers,
-    thresholds: { low: 0, medium: 0, high, masterWeight: signers[0]?.weight ?? 0 },
-  } as unknown as AccountAudit;
 }
 
 describe("inspectClose", () => {
@@ -183,7 +172,7 @@ describe("inspectClose, SEC-04: value-moving ops must be flagged for the co-sign
   });
 });
 
-describe("signedSigners / collectedWeight", () => {
+describe("signedSigners", () => {
   it("reports only the keys that actually signed, verified over the tx hash", () => {
     const a = Keypair.random();
     const b = Keypair.random();
@@ -197,42 +186,6 @@ describe("signedSigners / collectedWeight", () => {
     const bothXdr = signedXdr(a.publicKey(), dest, a, b);
     const signed = signedSigners(bothXdr, NET, signers);
     expect(new Set(signed)).toEqual(new Set([a.publicKey(), b.publicKey()]));
-  });
-
-  it("sums the collected weight from the audit", () => {
-    const a = Keypair.random();
-    const b = Keypair.random();
-    const audit = auditWith(
-      [
-        { key: a.publicKey(), type: "ed25519_public_key", weight: 1 },
-        { key: b.publicKey(), type: "ed25519_public_key", weight: 2 },
-      ],
-      2,
-    );
-    expect(collectedWeight([a.publicKey()], audit)).toBe(1);
-    expect(collectedWeight([a.publicKey(), b.publicKey()], audit)).toBe(3);
-  });
-});
-
-describe("requiredSigners / closeThreshold", () => {
-  it("keeps only ed25519 signers with weight, and reads the high threshold", () => {
-    const a = Keypair.random().publicKey();
-    const audit = auditWith(
-      [
-        { key: a, type: "ed25519_public_key", weight: 1 },
-        { key: "Xhash", type: "sha256_hash", weight: 5 },
-        { key: "Gzero", type: "ed25519_public_key", weight: 0 },
-      ],
-      2,
-    );
-    expect(requiredSigners(audit)).toEqual([{ key: a, weight: 1 }]);
-    expect(closeThreshold(audit)).toBe(2);
-  });
-
-  it("floors the threshold at 1 even when high is 0", () => {
-    const a = Keypair.random().publicKey();
-    const audit = auditWith([{ key: a, type: "ed25519_public_key", weight: 1 }], 0);
-    expect(closeThreshold(audit)).toBe(1);
   });
 });
 
@@ -614,15 +567,10 @@ describe("inspectClose: full transaction facts and op details (L-91)", () => {
   });
 });
 
-describe("closeThreshold uses every threshold (L-89)", () => {
-  it("returns the highest of low, medium and high", () => {
-    const a = Keypair.random().publicKey();
-    const audit = {
-      accountId: a,
-      signers: [{ key: a, type: "ed25519_public_key", weight: 1 }],
-      thresholds: { low: 1, medium: 3, high: 2, masterWeight: 1 },
-    } as unknown as AccountAudit;
-    expect(closeThreshold(audit)).toBe(3);
+describe("thresholdForClose uses every threshold (L-89)", () => {
+  it("returns the highest of low, medium and high, floored at 1", () => {
+    expect(thresholdForClose({ low: 1, medium: 3, high: 2 })).toBe(3);
+    expect(thresholdForClose({ low: 1, medium: 1, high: 2 })).toBe(2);
     expect(thresholdForClose({ low: 4, medium: 1, high: 2 })).toBe(4);
     expect(thresholdForClose({ low: 0, medium: 0, high: 0 })).toBe(1);
   });

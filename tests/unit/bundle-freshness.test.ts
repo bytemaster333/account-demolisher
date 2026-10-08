@@ -77,6 +77,7 @@ interface LiveState {
   signers?: { key: string; weight: number }[];
   thresholds?: { low: number; med: number; high: number };
   data?: Record<string, string>;
+  numSponsoring?: number;
 }
 
 function live(state: LiveState = {}): Horizon.AccountResponse {
@@ -111,6 +112,7 @@ function live(state: LiveState = {}): Horizon.AccountResponse {
     thresholds: { low_threshold: t.low, med_threshold: t.med, high_threshold: t.high },
     // Horizon's `data` link shadows the entries, so the sdk exposes them as data_attr
     data_attr: state.data ?? { note: "aGk=" },
+    num_sponsoring: state.numSponsoring ?? 0,
   } as unknown as ConstructorParameters<typeof Horizon.AccountResponse>[0]);
 }
 
@@ -192,6 +194,15 @@ describe("checkBundleFreshness", () => {
     expect(raised.ok).toBe(false);
     if (!raised.ok) expect(raised.reasons.join(" ")).toMatch(/thresholds changed/);
   });
+
+  it("detects a reserve the account now pays for another account's entry", () => {
+    // a begin_sponsoring sandwich sourced by this account inside another
+    // account's transaction leaves the sequence alone; the merge then fails
+    // with op_is_sponsor
+    const res = check({ numSponsoring: 1 });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reasons.join(" ")).toMatch(/sponsors 1 ledger entry/);
+  });
 });
 
 describe("feeBumpBundle", () => {
@@ -221,7 +232,7 @@ describe("bundle freshness edge cases", () => {
     return tx.build().toXdr();
   }
 
-  function bare(data: Record<string, string>): Horizon.AccountResponse {
+  function bare(data: Record<string, string>, numSponsoring = 0): Horizon.AccountResponse {
     return new Horizon.AccountResponse({
       id: owner.publicKey(),
       account_id: owner.publicKey(),
@@ -230,6 +241,7 @@ describe("bundle freshness edge cases", () => {
       signers: [{ key: owner.publicKey(), weight: 1, type: "ed25519_public_key" }],
       thresholds: { low_threshold: 0, med_threshold: 0, high_threshold: 0 },
       data_attr: data,
+      num_sponsoring: numSponsoring,
     } as unknown as ConstructorParameters<typeof Horizon.AccountResponse>[0]);
   }
 
@@ -264,5 +276,86 @@ describe("bundle freshness edge cases", () => {
     const res = await loadBundleFreshness(horizon, xdrStr, TESTNET.passphrase);
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reasons.join(" ")).toMatch(/no longer exists/);
+  });
+
+  // core counts a claimable balance once per claimant in its sponsor's
+  // num_sponsoring, and claiming it releases all of them (checked on testnet:
+  // a balance with two claimants left num_sponsoring at 2, a bare merge failed
+  // op_is_sponsor, claim plus merge succeeded)
+  const CB_ID = `00000000${"4".repeat(64)}`;
+  const ownCb = (claimants: number) => ({
+    id: CB_ID,
+    asset: "native",
+    amount: "1.0000000",
+    sponsor: owner.publicKey(),
+    claimants,
+  });
+
+  it("accepts a sponsored claimable balance the bundle claims, counted per claimant", () => {
+    const res = checkBundleFreshness({
+      xdr: markerBundle([Operation.claimClaimableBalance({ balanceId: CB_ID })]),
+      passphrase: TESTNET.passphrase,
+      account: bare({}, 2),
+      offerIds: [],
+      claimableBalances: [ownCb(2)],
+    });
+    expect(res).toEqual({ ok: true });
+  });
+
+  it("detects sponsoring beyond the claimable balances the bundle claims", () => {
+    const res = checkBundleFreshness({
+      xdr: markerBundle([Operation.claimClaimableBalance({ balanceId: CB_ID })]),
+      passphrase: TESTNET.passphrase,
+      account: bare({}, 3),
+      offerIds: [],
+      claimableBalances: [ownCb(2)],
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reasons.join(" ")).toMatch(/sponsors 1 ledger entry/);
+  });
+
+  it("doesn't count a claimed balance someone else sponsors", () => {
+    const res = checkBundleFreshness({
+      xdr: markerBundle([Operation.claimClaimableBalance({ balanceId: CB_ID })]),
+      passphrase: TESTNET.passphrase,
+      account: bare({}, 2),
+      offerIds: [],
+      claimableBalances: [{ ...ownCb(2), sponsor: dest }],
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reasons.join(" ")).toMatch(/sponsors 2 ledger entries/);
+  });
+
+  it("reads the sponsor and claimant count from Horizon", async () => {
+    const xdrStr = markerBundle([Operation.claimClaimableBalance({ balanceId: CB_ID })]);
+    const horizonWith = (claimants: number, numSponsoring: number) =>
+      ({
+        loadAccount: () => Promise.resolve(bare({}, numSponsoring)),
+        offers: () => ({
+          forAccount: () => ({
+            limit: () => ({ call: () => Promise.resolve({ records: [] }) }),
+          }),
+        }),
+        claimableBalances: () => ({
+          claimableBalance: () => ({
+            call: () =>
+              Promise.resolve({
+                id: CB_ID,
+                asset: "native",
+                amount: "1.0000000",
+                sponsor: owner.publicKey(),
+                claimants: Array.from({ length: claimants }, () => ({
+                  destination: owner.publicKey(),
+                  predicate: { unconditional: true },
+                })),
+              }),
+          }),
+        }),
+      }) as unknown as Horizon.Server;
+    expect(await loadBundleFreshness(horizonWith(2, 2), xdrStr, TESTNET.passphrase)).toEqual({
+      ok: true,
+    });
+    const short = await loadBundleFreshness(horizonWith(1, 2), xdrStr, TESTNET.passphrase);
+    expect(short.ok).toBe(false);
   });
 });
