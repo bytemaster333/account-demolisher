@@ -3,9 +3,9 @@ title: Account Demolisher
 description: Close a Stellar account completely, including the Soroban DeFi positions it holds, and send the recovered XLM where you choose.
 ---
 
-Account Demolisher closes a Stellar account from start to finish. It reads the account,
-unwinds everything attached to it, converts what is left to XLM, and merges the account
-to a destination you pick. Every transaction is signed on your own device.
+Account Demolisher closes a Stellar account from start to finish. It reads the account, unwinds
+everything attached to it, sells what has a market for XLM, and merges the account into a
+destination you pick. Every transaction is signed by your own wallet or key.
 
 ## Pick your path
 
@@ -24,22 +24,26 @@ to a destination you pick. Every transaction is signed on your own device.
 
 ## What it closes
 
-Classic Stellar entries, handled inside one batched transaction (or a few, for a large account):
+Classic Stellar entries, handled in one batched transaction (or a few, for a large account):
 
 - Open DEX offers
-- Trustlines, both credit trustlines and pool-share trustlines
+- Trustlines, both credit trustlines and liquidity pool share trustlines
 - Data entries
-- Non-master signers and elevated thresholds
-- Self-sponsored entries
+- Non-master signers and raised thresholds
 - Claimable balances the account can claim
+- Reserves the account holds for its own claimable balances
 
 Soroban DeFi positions, each unwound in its own transaction before the classic close:
 
-- Blend: repay borrows, withdraw collateral and supply, claim emissions
-- Aquarius: withdraw pool shares, claim rewards
+- Blend: repay loans, withdraw collateral and supply, claim emissions
+- Blend backstop: claim emissions, queue the withdrawal, withdraw it after the unlock
+- Aquarius: claim gauge and pool rewards, withdraw pool shares and concentrated price ranges
 - Soroswap: withdraw the LP position
-- FxDAO: pay the vault debt, which returns the collateral in the same call
 - SEP-41 token allowances: set the approval to zero
+- Standalone SEP-41 tokens you select: send to the destination or convert to XLM
+
+FxDAO is not on the list: the protocol shut down on chain, so there are no FxDAO positions left to
+unwind. See [Close an account that holds DeFi](/docs/users/close-with-defi#fxdao).
 
 ## Links
 
