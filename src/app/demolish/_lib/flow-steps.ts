@@ -45,8 +45,13 @@ export function buildFlowSteps(args: {
   // signers' signatures are collected before the close is submitted.
   readonly hasCollect: boolean;
   readonly collecting: boolean;
+  // a run that only prepares the close leaves the account open, so its last
+  // step is named for what it does
+  readonly prepareOnly: boolean;
 }): readonly FlowStep[] {
-  const { phase, hasResolve, hasAcknowledge, isSucceeded, hasCollect, collecting } = args;
+  const { phase, hasResolve, hasAcknowledge, isSucceeded, hasCollect, collecting, prepareOnly } =
+    args;
+  const lastLabel = prepareOnly ? "Prepare" : "Close";
   const labels = [
     "Connect",
     "Configure",
@@ -54,7 +59,7 @@ export function buildFlowSteps(args: {
     ...(hasAcknowledge ? ["Warnings"] : []),
     "Review",
     ...(hasCollect ? ["Signatures"] : []),
-    "Close",
+    lastLabel,
   ];
 
   const activeLabel = collecting
@@ -69,7 +74,7 @@ export function buildFlowSteps(args: {
             ? "Warnings"
             : phase === "review"
               ? "Review"
-              : "Close";
+              : lastLabel;
   // a phase whose step was omitted (shouldn't happen) falls back to Review
   let activeIdx = labels.indexOf(activeLabel);
   if (activeIdx < 0) activeIdx = labels.indexOf("Review");

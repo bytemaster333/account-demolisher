@@ -1307,6 +1307,10 @@ describe("a run that only prepares the close (M-25)", () => {
     expect(note).toMatch(/still open/);
     expect(note).toMatch(/unlocks later/);
     expect(widget.textContent).not.toMatch(/Account closed|permanently closed/);
+    // the step indicator ticks off "Prepare", not "Close", for an account that stays open
+    const progress = screen.getByRole("navigation", { name: "Progress" }).textContent ?? "";
+    expect(progress).toMatch(/Prepare/);
+    expect(progress).not.toMatch(/Close/);
     expect(useWalletStore.getState().publicKey).toBe(ACC);
 
     // the only way on is back to Configure, with the account still connected

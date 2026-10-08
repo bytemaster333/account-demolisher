@@ -564,6 +564,7 @@ export function DemolishFlow(): React.JSX.Element {
         isSucceeded: isSucceeded || isPrepared,
         hasCollect: multisigRequired,
         collecting,
+        prepareOnly: tree?.prepareOnly !== undefined,
       }),
     [
       showFlow,
@@ -576,6 +577,7 @@ export function DemolishFlow(): React.JSX.Element {
       isPrepared,
       multisigRequired,
       collecting,
+      tree,
     ],
   );
 

@@ -36,7 +36,37 @@ describe("flow phase for the step indicator (L-62)", () => {
       isSucceeded: false,
       hasCollect: false,
       collecting: false,
+      prepareOnly: false,
     });
     expect(steps.find((s) => s.isActive)?.label).toBe("Configure");
+  });
+
+  // the account stays open after a prepare-only run, so its last step can't be
+  // ticked off as "Close"
+  it("names the last step Prepare when the run only prepares the close (M-25)", () => {
+    const steps = buildFlowSteps({
+      phase: flowPhaseFor({ ...base, state: "prepared" }),
+      hasResolve: false,
+      hasAcknowledge: false,
+      isSucceeded: true,
+      hasCollect: false,
+      collecting: false,
+      prepareOnly: true,
+    });
+    expect(steps.map((s) => s.label)).toEqual(["Connect", "Configure", "Review", "Prepare"]);
+    expect(steps.at(-1)?.isDone).toBe(true);
+  });
+
+  it("keeps Close as the last step of a full close", () => {
+    const steps = buildFlowSteps({
+      phase: "review",
+      hasResolve: false,
+      hasAcknowledge: false,
+      isSucceeded: false,
+      hasCollect: false,
+      collecting: false,
+      prepareOnly: false,
+    });
+    expect(steps.at(-1)?.label).toBe("Close");
   });
 });
