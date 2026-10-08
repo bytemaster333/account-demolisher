@@ -316,13 +316,29 @@ describe("demo soroban submission (L-110)", () => {
     ).rejects.toThrow(/was accepted but not in a ledger after 3 lookups/);
   });
 
-  it("reports an on-chain failure", async () => {
+  it("reports an on-chain failure with its result code when the rpc kept no events", async () => {
+    // the result the rpc answers for a contract call that trapped
+    const resultXdr = new xdr.TransactionResult({
+      feeCharged: 100n,
+      result: xdr.TransactionResultResult.txFailed([
+        xdr.OperationResult.opInner(
+          xdr.OperationResultTr.invokeHostFunction(
+            xdr.InvokeHostFunctionResult.invokeHostFunctionTrapped(),
+          ),
+        ),
+      ]),
+      ext: xdr.TransactionResultExt.v0(),
+    });
     const server = {
       sendTransaction: vi.fn(async () => ({ status: "PENDING", hash: "cd".repeat(32) })),
-      pollTransaction: vi.fn(async () => ({ status: "FAILED", diagnosticEventsXdr: [] })),
+      pollTransaction: vi.fn(async () => ({
+        status: "FAILED",
+        resultXdr,
+        diagnosticEventsXdr: [],
+      })),
     };
     await expect(submitAndPollSoroban(server as never, tx, "step", noWait)).rejects.toThrow(
-      /^step failed on-chain$/,
+      /^step failed on-chain \(txFailed: invokeHostFunctionTrapped\)$/,
     );
   });
 });

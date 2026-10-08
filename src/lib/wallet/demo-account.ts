@@ -869,7 +869,9 @@ export async function submitAndPollSoroban(
   const result = await pollSoroban(server, hash, attempts);
   if (result.status === "SUCCESS") return hash;
   if (result.status === "FAILED") {
-    throw new Error(`${stepLabel} failed on-chain${result.reason ? `: ${result.reason}` : ""}`);
+    throw new Error(
+      `${stepLabel} failed on-chain (${result.resultCode})${result.reason ? `: ${result.reason}` : ""}`,
+    );
   }
   throw new Error(
     `${stepLabel} tx ${shortAddress(hash, 8, 0)} was accepted but not in a ledger after ${attempts} lookups`,

@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { xdr, type Transaction } from "@stellar/stellar-sdk";
 
 import {
+  describeTransactionResult,
   pollSoroban,
   sendSoroban,
   SorobanNotQueuedError,
@@ -85,6 +86,67 @@ describe("sendSoroban", () => {
   });
 });
 
+function trapped(code: "invokeHostFunctionResourceLimitExceeded" | "invokeHostFunctionTrapped") {
+  return xdr.OperationResult.opInner(
+    xdr.OperationResultTr.invokeHostFunction(xdr.InvokeHostFunctionResult[code]()),
+  );
+}
+
+// a soroban transaction that failed on chain, as the rpc's resultXdr decodes
+function failedResult(): xdr.TransactionResult {
+  return new xdr.TransactionResult({
+    feeCharged: 100n,
+    result: xdr.TransactionResultResult.txFailed([
+      trapped("invokeHostFunctionResourceLimitExceeded"),
+    ]),
+    ext: xdr.TransactionResultExt.v0(),
+  });
+}
+
+describe("describeTransactionResult", () => {
+  it("names the transaction code and each operation's code", () => {
+    expect(describeTransactionResult(failedResult())).toBe(
+      "txFailed: invokeHostFunctionResourceLimitExceeded",
+    );
+  });
+
+  it("names a failure that stopped before the operations ran", () => {
+    const late = new xdr.TransactionResult({
+      feeCharged: 100n,
+      result: xdr.TransactionResultResult.txTooLate(),
+      ext: xdr.TransactionResultExt.v0(),
+    });
+    expect(describeTransactionResult(late)).toBe("txTooLate");
+  });
+
+  it("names the inner transaction's codes under a fee bump", () => {
+    const inner = new xdr.InnerTransactionResult({
+      feeCharged: 100n,
+      result: xdr.InnerTransactionResultResult.txFailed([trapped("invokeHostFunctionTrapped")]),
+      ext: xdr.InnerTransactionResultExt.v0(),
+    });
+    const bumped = new xdr.TransactionResult({
+      feeCharged: 200n,
+      result: xdr.TransactionResultResult.txFeeBumpInnerFailed(
+        new xdr.InnerTransactionResultPair({ transactionHash: new Uint8Array(32), result: inner }),
+      ),
+      ext: xdr.TransactionResultExt.v0(),
+    });
+    expect(describeTransactionResult(bumped)).toBe(
+      "txFeeBumpInnerFailed: txFailed: invokeHostFunctionTrapped",
+    );
+  });
+
+  it("names an operation refused before it ran by its operation code", () => {
+    const badAuth = new xdr.TransactionResult({
+      feeCharged: 100n,
+      result: xdr.TransactionResultResult.txFailed([xdr.OperationResult.opBadAuth()]),
+      ext: xdr.TransactionResultExt.v0(),
+    });
+    expect(describeTransactionResult(badAuth)).toBe("txFailed: opBadAuth");
+  });
+});
+
 describe("pollSoroban", () => {
   it("returns the ledger of a landed transaction and asks for the given number of lookups", async () => {
     const rpc = { pollTransaction: vi.fn(async () => ({ status: "SUCCESS", ledger: 42 })) };
@@ -95,10 +157,13 @@ describe("pollSoroban", () => {
     expect(rpc.pollTransaction).toHaveBeenCalledWith("H", { attempts: 7 });
   });
 
-  it("reports a failure with its decoded reason, and an unseen transaction as still pending", async () => {
-    const failed = { pollTransaction: vi.fn(async () => ({ status: "FAILED" })) };
+  it("reports a failure with its result code and decoded reason, and an unseen transaction as still pending", async () => {
+    const failed = {
+      pollTransaction: vi.fn(async () => ({ status: "FAILED", resultXdr: failedResult() })),
+    };
     await expect(pollSoroban(failed as never, "H")).resolves.toEqual({
       status: "FAILED",
+      resultCode: "txFailed: invokeHostFunctionResourceLimitExceeded",
       reason: "",
     });
     const unseen = { pollTransaction: vi.fn(async () => ({ status: "NOT_FOUND" })) };

@@ -4,7 +4,7 @@
 // is sent again and how a result is read live here, so a fix to one path reaches
 // all of them.
 
-import type { FeeBumpTransaction, Transaction, rpc } from "@stellar/stellar-sdk";
+import type { FeeBumpTransaction, Transaction, rpc, xdr } from "@stellar/stellar-sdk";
 
 import { describeSorobanFailure } from "@/lib/soroban/diagnostics";
 
@@ -64,8 +64,9 @@ export async function sendSoroban(
 
 export type SorobanPollOutcome =
   | { readonly status: "SUCCESS"; readonly ledger: number }
-  // the decoded failure reason, empty when the rpc kept no diagnostic events
-  | { readonly status: "FAILED"; readonly reason: string }
+  // the transaction and operation result codes, and the decoded failure reason,
+  // which is empty when the rpc kept no diagnostic events
+  | { readonly status: "FAILED"; readonly resultCode: string; readonly reason: string }
   // not seen within the window: still pending, not failed
   | { readonly status: "NOT_FOUND" };
 
@@ -79,9 +80,35 @@ export async function pollSoroban(
   const result = await server.pollTransaction(hash, { attempts });
   if (result.status === "SUCCESS") return { status: "SUCCESS", ledger: result.ledger };
   if (result.status === "FAILED") {
-    return { status: "FAILED", reason: describeSorobanFailure(result.diagnosticEventsXdr) };
+    return {
+      status: "FAILED",
+      resultCode: describeTransactionResult(result.resultXdr),
+      reason: describeSorobanFailure(result.diagnosticEventsXdr),
+    };
   }
   return { status: "NOT_FOUND" };
+}
+
+// "txFailed: invokeHostFunctionTrapped": the transaction code, then the code of
+// each operation, read through a fee bump to the inner transaction. it stays
+// readable when the rpc kept no diagnostic events to explain the failure.
+export function describeTransactionResult(result: xdr.TransactionResult): string {
+  const outer = result.result;
+  if (outer.type === "txFeeBumpInnerSuccess" || outer.type === "txFeeBumpInnerFailed") {
+    const inner = outer.innerResultPair.result.result;
+    const ops = inner.type === "txSuccess" || inner.type === "txFailed" ? inner.results : [];
+    return [outer.type, withOperationCodes(inner.type, ops)].join(": ");
+  }
+  const ops = outer.type === "txSuccess" || outer.type === "txFailed" ? outer.results : [];
+  return withOperationCodes(outer.type, ops);
+}
+
+function withOperationCodes(code: string, ops: readonly xdr.OperationResult[]): string {
+  if (ops.length === 0) return code;
+  // an operation that ran reports its own code; one refused before running
+  // reports why (opBadAuth, opNoAccount, ...)
+  const opCodes = ops.map((op) => (op.type === "opInner" ? op.tr.value.type : op.type));
+  return `${code}: ${opCodes.join(", ")}`;
 }
 
 // the sdk parses both from the rpc's xdr when it reads the answer, so these are
