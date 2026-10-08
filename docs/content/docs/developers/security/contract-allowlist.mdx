@@ -91,6 +91,17 @@ does apply.
 Refusal reasons name the specific list, for example `Contract is not on TESTNET_ALLOWLIST.`
 On futurenet the reason states the list is empty.
 
+### The Aquarius gauge reward claim
+
+An Aquarius gauge reward claim calls `gauges_claim(user)` on the pool itself, and Aquarius
+pools are permissionless, so no pool is on the list. `checkRequiredSorobanStep` passes the
+pool to `assertTransactionAllowed` as the one extra allowed target only when the build that
+made the transaction read that same address from the pinned Aquarius router's
+`get_pools` for the pool's tokens and index (`routerPool` on the node equals
+`poolAddress`). The extra target lives only for that one check and never joins the list.
+The auth guard then holds the call to exactly one source-account entry,
+`pool.gauges_claim(user)`, with nothing nested beneath it.
+
 Fee-bump wrappers are unwrapped transparently, so a fee-bump cannot hide an invocation from
 the check.
 

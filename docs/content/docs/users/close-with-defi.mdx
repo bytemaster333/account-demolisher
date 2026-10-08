@@ -26,6 +26,23 @@ before you sign. The order is worked out for you: a repay runs before the withdr
 depends on it, a rewards claim runs after its withdraw, and the account merge waits for
 every position to close.
 
+## Aquarius gauge rewards
+
+Some Aquarius pools pay extra rewards through reward gauges, which the pool's ordinary
+rewards claim does not pay. When a gauge of a pool you hold a position in owes you
+rewards, the plan adds a **Collect Aquarius gauge rewards** step that claims them before
+it withdraws your share of that pool. When a reward token needs a trustline, the plan
+opens it ahead of the claim, the same way it does for a pool payout.
+
+The claim runs only on the pool address the Aquarius router lists for that pool's tokens
+and index, and you sign exactly that one call with nothing nested beneath it. If the app
+cannot read what the gauges owe, or the claim cannot be built and dry-run, the close stops
+before the account merge and shows you why.
+
+Discovery reads gauge rewards for every pool you still hold a share or a position in. A
+gauge reward still owed in a pool you already left is not found, so claim it in Aquarius
+before you close.
+
 ## Two cases that need you to act
 
 Everything else is automatic. These two are not, and the plan tells you about both before
