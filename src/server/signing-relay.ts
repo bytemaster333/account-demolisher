@@ -47,6 +47,7 @@ import {
   isClassicTransaction,
   mergeNewSignatures,
   signedSigners,
+  thresholdForClose,
   trimToThreshold,
 } from "@/lib/multisig/partial-xdr";
 import { getHorizon } from "@/lib/stellar/horizon-client";
@@ -151,12 +152,8 @@ function signerKeysOf(rec: PlanRecord): readonly string[] {
   return rec.signers.map((s) => s.key);
 }
 
-// the weight a close needs: the largest of the three thresholds, at least 1.
-// the bundle carries high ops (merge, signer cleanup) and medium ops, and core
-// checks the low threshold for the transaction itself. same rule as
-// thresholdForClose in signing-request.ts.
 function requiredWeight(t: PlanThresholds): number {
-  return Math.max(1, t.low, t.med, t.high);
+  return thresholdForClose({ low: t.low, medium: t.med, high: t.high });
 }
 
 function collectedWeight(xdr: string, passphrase: string, signers: readonly PlanSigner[]): number {

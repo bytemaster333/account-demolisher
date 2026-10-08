@@ -20,7 +20,12 @@ import {
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { CLOSE_MARKER_NAME } from "@/lib/metrics/close-marker";
-import { mergeSignatures, signedSigners, trimToThreshold } from "@/lib/multisig/partial-xdr";
+import {
+  mergeSignatures,
+  signedSigners,
+  thresholdForClose,
+  trimToThreshold,
+} from "@/lib/multisig/partial-xdr";
 import { MAX_OPS_PER_TX, batchClassicDemolition } from "@/lib/plan/classic-batcher";
 import { shortAddress } from "@/lib/safe-display";
 import { stroopsToDecimal } from "@/lib/stellar/amount";
@@ -28,7 +33,7 @@ import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
 import type { AccountAudit, AssetIdentifier } from "@/lib/types/account";
 import { pathKey, type BatchOptions, type ClassicBatch, type ClassicMemo } from "@/lib/types/plan";
 
-export { mergeSignatures, signedSigners, trimToThreshold };
+export { mergeSignatures, signedSigners, thresholdForClose, trimToThreshold };
 
 // co-signers have this long to sign before the transaction's timebounds expire.
 // long enough for real-world coordination, short enough that a forgotten request
@@ -104,19 +109,6 @@ export function assessBundleability(input: {
     return { ok: false, reason: POOL_SHARE_REASON };
   }
   return { ok: true };
-}
-
-// the weight a bundled close needs. stellar thresholds are independent bytes, so
-// med or low can exceed high. the bundle always holds high ops (merge, signer
-// cleanup) and medium ops (the close marker, trustline and offer cleanup), and
-// core checks the low threshold at the transaction level, so the bundle needs
-// the largest of the three (at least 1).
-export function thresholdForClose(t: {
-  readonly low: number;
-  readonly medium: number;
-  readonly high: number;
-}): number {
-  return Math.max(1, t.low, t.medium, t.high);
 }
 
 // build the single bundled closure transaction for a multisig account. throws if

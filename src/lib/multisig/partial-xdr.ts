@@ -15,6 +15,20 @@ export interface MergeOptions {
   readonly expectedSigners?: readonly string[];
 }
 
+// the weight a bundled close needs. stellar thresholds are independent bytes, so
+// med or low can exceed high. the bundle always holds high ops (merge, signer
+// cleanup) and medium ops (the close marker, trustline and offer cleanup), and
+// core checks the low threshold at the transaction level, so the bundle needs
+// the largest of the three (at least 1). the relay and the client both count
+// with this one rule.
+export function thresholdForClose(t: {
+  readonly low: number;
+  readonly medium: number;
+  readonly high: number;
+}): number {
+  return Math.max(1, t.low, t.medium, t.high);
+}
+
 // the XDR envelope holds at most 20 decorated signatures
 export const MAX_ENVELOPE_SIGNATURES = 20;
 
