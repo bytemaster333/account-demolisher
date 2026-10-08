@@ -8,7 +8,6 @@ import {
   type rpc,
   type Horizon,
 } from "@stellar/stellar-sdk";
-import { buildBlndTrustlineTx } from "@/lib/adapters/blend/emissions-check";
 import { FORWARD_OPERATION_COUNT, MAX_FORWARD_FEE } from "@/lib/mediator/forward-terms";
 
 import { NodeNotBuiltError, simulateNode, SimulationFailedError } from "@/lib/plan/simulator";
@@ -275,10 +274,18 @@ describe("simulator: classic nodes outside the final batch", () => {
 
   it("validates the BLND change_trust in memory instead of asking soroban rpc", async () => {
     const simulateFn = vi.fn();
-    const tx = buildBlndTrustlineTx(
-      TESTNET,
-      new Account(USER, "41") as unknown as Horizon.AccountResponse,
-    );
+    // the change_trust hydration builds for this node
+    const tx = new TransactionBuilder(new Account(USER, "41"), {
+      fee: "100000",
+      networkPassphrase: TESTNET.passphrase,
+    })
+      .addOperation(
+        Operation.changeTrust({
+          asset: new Asset("BLND", "GATALTGTWIOT6BUDBCZM3Q4OQ4BO2COLOAZ7IYSKPLC2PMSOPPGF5V56"),
+        }),
+      )
+      .setTimeout(300)
+      .build();
     const out = await simulateNode(
       {
         id: "blnd-trustline",

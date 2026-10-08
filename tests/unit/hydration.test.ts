@@ -3,6 +3,7 @@ import {
   Asset,
   Horizon,
   Keypair,
+  NotFoundError,
   SorobanDataBuilder,
   StrKey,
   nativeToScVal,
@@ -23,6 +24,7 @@ import { NoSoroswapRouteError } from "@/lib/adapters/soroswap/swap";
 import {
   BackstopEmissionsAlreadyClaimedError,
   BackstopEmissionsClaimError,
+  ExitPayoutTooLargeError,
   hydratePlanTransactions,
   PriceImpactRefusedError,
   rebuildSorobanNodeTransaction,
@@ -121,6 +123,9 @@ function baseDeps(overrides: Partial<HydrationDeps>): HydrationDeps {
   } as HydrationDeps;
 }
 
+// the module-level deps, for a describe that wraps baseDeps with its own defaults
+const depsWith = (overrides: Partial<HydrationDeps>): HydrationDeps => baseDeps(overrides);
+
 describe("hydratePlanTransactions, WithdrawSoroswapLp slippage floor", () => {
   it("passes a positive slippage-derived amountAMin/amountBMin, never 0", async () => {
     const expectedA = 5_000_000n; // 0.5 XLM
@@ -200,6 +205,84 @@ describe("hydratePlanTransactions, WithdrawSoroswapLp slippage floor", () => {
 
     expect(failures.length).toBe(1);
     expect(failures[0]!.reason).toMatch(/slippage floor/);
+  });
+});
+
+describe("hydration, an exit paying more than a trustline can hold", () => {
+  const KALE = "CB23WRDQWGSP6YPMY4UV5C4OW5CBTXKYN3XEATG7KJEZCXMJBYEHOUOV";
+  const KALIEN = "CB4YK5LZG2EGRHJOS4WNX7AAFP3RR3RS5YJUC6D52V2HDT7EQO2QDF6T";
+  const PAIR = "CCWX3RMBJIHSUBRZ22TMYHVGMSLUK6OMDYCV35JSQD76HZ2BCD36RSLL";
+  const HOLDER = "GD2GA2JF6OJURU36COZQWJLPEJ7XC3GB25TBD7U4ALCGKOG27262RICH";
+  // the simulation error the rpc returned for this mainnet holder's
+  // remove_liquidity on 2026-10-08 (read only), trimmed to the lines that matter
+  const SIM_ERROR = [
+    "HostError: Error(Contract, #12)",
+    "",
+    "Event log (newest first):",
+    `   0: [Diagnostic Event] contract:CAG5LRYQ5JVEUI5TEID72EYOVX44TTUJT5BQR2J6J77FH65PCCFAJDDH, topics:[error, Error(Contract, #12)], data:"escalating error to VM trap from failed host function call: call"`,
+    `   4: [Failed Diagnostic Event (not emitted)] contract:${PAIR}, topics:[error, Error(Contract, #12)], data:["contract call failed", transfer, [${PAIR}, ${HOLDER}, 40178848124484506634]]`,
+    `   5: [Failed Diagnostic Event (not emitted)] contract:${KALIEN}, topics:[error, Error(Contract, #12)], data:"received amount is too large for an i64"`,
+    `   6: [Failed Diagnostic Event (not emitted)] contract:${PAIR}, topics:[fn_call, ${KALIEN}, transfer], data:[${PAIR}, ${HOLDER}, 40178848124484506634]`,
+  ].join("\n");
+  const lpNode = (deps: string[] = []): PlanNode => ({
+    id: "lp",
+    kind: "WithdrawSoroswapLp",
+    dependencies: deps,
+    description: "withdraw",
+    status: "pending",
+    metadata: {
+      kind: "WithdrawSoroswapLp",
+      tokenA: KALE,
+      tokenB: KALIEN,
+      shareBalance: 126_491_106_406_734_170n,
+    },
+  });
+
+  it("explains the refusal instead of showing the host error, and never defers it", async () => {
+    const removeLiquidityByContractIds = vi.fn(async () => {
+      throw new Error(SIM_ERROR);
+    }) as unknown as NonNullable<HydrationAdapterOverrides["removeLiquidityByContractIds"]>;
+    const before: PlanNode = {
+      id: "before",
+      kind: "RevokeAllowance",
+      dependencies: [],
+      description: "already built",
+      status: "pending",
+      metadata: {
+        kind: "RevokeAllowance",
+        contractId: "CTOKEN",
+        spender: "CSPENDER",
+        transaction: { fake: "tx" } as never,
+      },
+    };
+    const node = lpNode(["before"]);
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([before, node]),
+      USER,
+      baseDeps({ adapters: { removeLiquidityByContractIds } }),
+    );
+    expect(failures).toEqual([expect.objectContaining({ nodeId: "lp", deferred: false })]);
+    expect(failures[0]!.error).toBeInstanceOf(ExitPayoutTooLargeError);
+    expect(failures[0]!.error).toMatchObject({ token: KALIEN, amount: 40178848124484506634n });
+    expect(node.status).toBe("failed");
+    expect(node.error).toMatch(
+      /would pay 4017884812448\.4506634 of token CB4YK5.*more than a Stellar trustline can hold/,
+    );
+    expect(node.error).not.toMatch(/HostError|Event log/);
+  });
+
+  it("leaves any other probe failure as it was", async () => {
+    const removeLiquidityByContractIds = vi.fn(async () => {
+      throw new Error("HostError: Error(Contract, #13)");
+    }) as unknown as NonNullable<HydrationAdapterOverrides["removeLiquidityByContractIds"]>;
+    const node = lpNode();
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([node]),
+      USER,
+      baseDeps({ adapters: { removeLiquidityByContractIds } }),
+    );
+    expect(failures[0]!.error).not.toBeInstanceOf(ExitPayoutTooLargeError);
+    expect(node.error).toBe("HostError: Error(Contract, #13)");
   });
 });
 
@@ -923,7 +1006,13 @@ describe("hydration, Blend backstop steps take their amounts from the built tran
       baseDeps({ adapters: { buildBackstopClaimTx } }),
     );
     expect(failures).toEqual([
-      expect.objectContaining({ nodeId: "claim", deferred: false, backstopClaimUnavailable: true }),
+      expect.objectContaining({
+        nodeId: "claim",
+        deferred: false,
+        backstopClaimUnavailable: true,
+        // read on chain when the claim was simulated, not discovery's 7n
+        backstopAccruedEmissions: 7_114_578_242n,
+      }),
     ]);
     expect(claim.status).toBe("failed");
     // the amount read on chain, and a one-line reason without the diagnostic log
@@ -1107,6 +1196,7 @@ describe("hydration, failures say which user answer they wait on", () => {
     );
     expect(failures).toHaveLength(1);
     expect("refusal" in failures[0]!).toBe(false);
+    expect("backstopAccruedEmissions" in failures[0]!).toBe(false);
   });
 
   it("flags a conversion refused for its price", async () => {
@@ -1270,6 +1360,68 @@ describe("hydration, the trustline a pool exit pays into", () => {
   });
   const txOf = (node: PlanNode): Transaction | undefined =>
     (node.metadata as { transaction?: Transaction }).transaction;
+  // the issuer as horizon serves it: a real account record with its flags, or a 404
+  const issuerHorizon = (authRequired: boolean | "missing"): HydrationDeps["horizon"] =>
+    ({
+      loadAccount: vi.fn(async (id: string) => {
+        if (authRequired === "missing") throw new NotFoundError("Not Found", { status: 404 });
+        const record = accountAt(1n);
+        return new Horizon.AccountResponse({
+          ...record,
+          id,
+          account_id: id,
+          sequence: "1",
+          flags: {
+            auth_required: authRequired,
+            auth_revocable: authRequired,
+            auth_immutable: false,
+            auth_clawback_enabled: false,
+          },
+        } as never);
+      }),
+    }) as unknown as HydrationDeps["horizon"];
+  const baseDeps = (over: Partial<HydrationDeps>): HydrationDeps =>
+    depsWith({ horizon: issuerHorizon(false), ...over });
+
+  // core opens a line unauthorized when its issuer has auth_required, and a SAC
+  // can't pay into it, so the exit would still trap after the reserve is locked
+  it("refuses a line whose issuer requires authorization", async () => {
+    const node = lineNode("YBX");
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([node]),
+      USER,
+      baseDeps({
+        network: TESTNET,
+        horizon: issuerHorizon(true),
+        fetchSourceAccount: vi.fn(async () =>
+          withNative(accountAt(700n), "10.0000000", "0.0000000"),
+        ),
+      }),
+    );
+    expect(failures).toEqual([expect.objectContaining({ nodeId: "line-YBX", deferred: false })]);
+    expect(node.status).toBe("failed");
+    expect(node.error).toMatch(/issuer of YBX requires authorization/);
+    expect(txOf(node)).toBeUndefined();
+  });
+
+  // change_trust fails with CHANGE_TRUST_NO_ISSUER when the issuer is gone
+  it("refuses a line whose issuer account no longer exists", async () => {
+    const node = lineNode("YBX");
+    await hydratePlanTransactions(
+      buildPlanTree([node]),
+      USER,
+      baseDeps({
+        network: TESTNET,
+        horizon: issuerHorizon("missing"),
+        fetchSourceAccount: vi.fn(async () =>
+          withNative(accountAt(700n), "10.0000000", "0.0000000"),
+        ),
+      }),
+    );
+    expect(node.status).toBe("failed");
+    expect(node.error).toMatch(/issuer of YBX .* does not exist/);
+    expect(txOf(node)).toBeUndefined();
+  });
 
   it("builds one change_trust for the asset at the default limit, at seq + 1", async () => {
     const node = lineNode("YBX");

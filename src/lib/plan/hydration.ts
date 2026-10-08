@@ -5,6 +5,7 @@ import {
   Account,
   Asset,
   Horizon,
+  NotFoundError,
   Operation,
   scValToNative,
   TransactionBuilder,
@@ -14,7 +15,6 @@ import {
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { blndTokenForNetwork } from "@/lib/adapters/blend/constants";
-import { buildBlndTrustlineTx } from "@/lib/adapters/blend/emissions-check";
 import {
   BackstopClaimUnavailableError,
   BlndTrustlineMissingError,
@@ -45,6 +45,7 @@ import { buildRevoke } from "@/lib/soroban/allowances";
 import { balance as readTokenBalance, buildTransfer } from "@/lib/soroban/sep41";
 import { simulate, SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
 import { stroopsToDecimal } from "@/lib/stellar/amount";
+import { withHorizonRetry } from "@/lib/stellar/horizon-retry";
 import { applySlippageMin, resolveConfiguredSlippageBps } from "@/lib/safety/slippage";
 import type { AssetIdentifier } from "@/lib/types/account";
 import {
@@ -73,8 +74,11 @@ export interface HydrationFailure {
   // which answer a refused conversion waits on, set with the two flags above
   // (unset only for a price refusal thrown without its detail)
   readonly refusal?: ConversionRefusal | "no_route";
+  // the BLND accrued on a claim that traps, as read on chain when it was
+  // simulated (set with backstopClaimUnavailable), for the forfeit question
+  readonly backstopAccruedEmissions?: bigint;
   // the thrown value itself, so a caller can read what the error carries (the
-  // accrued BLND of a BackstopEmissionsClaimError, the quote of a refusal)
+  // quote of a refusal, the token an exit can't pay out)
   readonly error: unknown;
 }
 
@@ -141,7 +145,7 @@ export async function hydratePlanTransactions(
       delete node.deferred;
     } catch (err) {
       const reason = errorMessage(err);
-      const deferred = node.dependencies.length > 0 && !needsUserAnswer(err);
+      const deferred = node.dependencies.length > 0 && !needsUserAnswer(err) && !final(err);
       const refusal = conversionRefusalOf(err);
       failures.push({
         nodeId: node.id,
@@ -151,6 +155,9 @@ export async function hydratePlanTransactions(
         noSoroswapRoute: err instanceof NoSoroswapRouteError,
         backstopClaimUnavailable: err instanceof BackstopEmissionsClaimError,
         ...(refusal !== undefined ? { refusal } : {}),
+        ...(err instanceof BackstopEmissionsClaimError
+          ? { backstopAccruedEmissions: err.accruedEmissions }
+          : {}),
         error: err,
       });
       if (deferred) {
@@ -222,6 +229,21 @@ interface OpenedLines {
 }
 
 async function hydrateNode(
+  node: PlanNode,
+  userPublicKey: string,
+  deps: HydrationDeps,
+  getSourceAccount: () => Promise<Horizon.AccountResponse>,
+  opened: OpenedLines,
+  rebuild: boolean,
+): Promise<void> {
+  try {
+    await buildNode(node, userPublicKey, deps, getSourceAccount, opened, rebuild);
+  } catch (err) {
+    throw ExitPayoutTooLargeError.from(node, err) ?? err;
+  }
+}
+
+async function buildNode(
   node: PlanNode,
   userPublicKey: string,
   deps: HydrationDeps,
@@ -305,9 +327,17 @@ async function hydrateNode(
           `AddBlndTrustline: the plan's BLND issuer ${node.metadata.issuer} is not ${blnd.issuer} on ${deps.network.id}`,
         );
       }
+      if (blnd.code !== node.metadata.code) {
+        throw new Error(
+          `AddBlndTrustline: the plan's asset code ${node.metadata.code} is not ${blnd.code}`,
+        );
+      }
       const account = await getSourceAccount();
       assertTrustlineReserve(node, account, deps.network, opened, "to claim the Blend emissions");
-      setTransaction(node, buildBlndTrustlineTx(deps.network, account));
+      setTransaction(
+        node,
+        buildTrustlineTx(deps.network, account, new Asset(blnd.code, blnd.issuer)),
+      );
       opened.count += 1;
       return;
     }
@@ -322,6 +352,7 @@ async function hydrateNode(
             `on ${deps.network.id}`,
         );
       }
+      await assertIssuerOpensAuthorized(deps.horizon, md.code, md.issuer);
       const account = await getSourceAccount();
       assertTrustlineReserve(node, account, deps.network, opened, "to exit the pool");
       setTransaction(node, buildTrustlineTx(deps.network, account, asset));
@@ -794,6 +825,38 @@ function assertTrustlineReserve(
   }
 }
 
+// core opens a trustline authorized only when its issuer exists and has no
+// auth_required flag (ChangeTrustOpFrame: NO_ISSUER, else AUTHORIZED_FLAG
+// unless isAuthRequired). a line opened unauthorized can't take the SAC payout,
+// so the exit would still trap after the reserve was locked; that is refused
+// before anything is signed.
+async function assertIssuerOpensAuthorized(
+  horizon: Horizon.Server,
+  code: string,
+  issuer: string,
+): Promise<void> {
+  let account: Horizon.AccountResponse;
+  try {
+    account = await withHorizonRetry(() => horizon.loadAccount(issuer));
+  } catch (err) {
+    if (err instanceof NotFoundError) {
+      throw new Error(
+        `AddExitTrustline: the issuer of ${code} (${issuer}) does not exist, so no trustline ` +
+          `can be opened for the payout; this position can't be exited into this account`,
+        { cause: err },
+      );
+    }
+    throw err;
+  }
+  if (account.flags.auth_required) {
+    throw new Error(
+      `AddExitTrustline: the issuer of ${code} requires authorization, so a new ${code} ` +
+        `trustline can't take the payout until the issuer authorizes it; ask the issuer to ` +
+        `authorize a line for this account, or exit that position outside this app, before closing`,
+    );
+  }
+}
+
 // change_trust at the default (maximum) limit, so any payout fits. it bids the
 // same per-op fee as the soroban steps and gets the same five-minute timeout.
 // built off a copy of the account so the caller's sequence never moves.
@@ -925,6 +988,55 @@ export class BackstopEmissionsAlreadyClaimedError extends Error {
     this.name = "BackstopEmissionsAlreadyClaimedError";
     this.poolId = poolId;
   }
+}
+
+// a step whose payout to the account is larger than any trustline balance
+// (int64 stroops): the asset's SAC refuses it with Error(Contract, #12),
+// "received amount is too large for an i64" (soroban-env-host
+// stellar_asset_contract/balance.rs). a trustline can never hold it, so no
+// earlier step or retry fixes it. read off the simulation's event log, since
+// the builders throw the rpc's error text.
+export class ExitPayoutTooLargeError extends Error {
+  readonly token: string;
+  // the amount the SAC was asked to credit, when the log shows the transfer
+  readonly amount: bigint | undefined;
+  constructor(node: PlanNode, token: string, amount: bigint | undefined, cause: unknown) {
+    const paid = amount !== undefined ? `${stroopsToDecimal(amount)} of ` : "more of ";
+    super(
+      `${node.kind}: this exit would pay ${paid}token ${token} into the account, more than a ` +
+        `Stellar trustline can hold (at most ${stroopsToDecimal(INT64_MAX)}), so the position ` +
+        `can't be withdrawn into this account and the close can't include it`,
+      { cause },
+    );
+    this.name = "ExitPayoutTooLargeError";
+    this.token = token;
+    this.amount = amount;
+  }
+
+  static from(node: PlanNode, err: unknown): ExitPayoutTooLargeError | undefined {
+    if (!(err instanceof Error)) return undefined;
+    const overflow = PAYOUT_OVERFLOW.exec(err.message);
+    if (overflow === null) return undefined;
+    const token = overflow[1]!;
+    const transfer = new RegExp(
+      `topics:\\[fn_call, ${token}, transfer\\], data:\\[C[A-Z2-7]{55}, [GC][A-Z2-7]{55}, (\\d+)\\]`,
+    ).exec(err.message);
+    return new ExitPayoutTooLargeError(
+      node,
+      token,
+      transfer !== null ? BigInt(transfer[1]!) : undefined,
+      err,
+    );
+  }
+}
+
+const PAYOUT_OVERFLOW =
+  /contract:(C[A-Z2-7]{55}), topics:\[error, Error\(Contract, #12\)\], data:"received amount is too large for an i64"/;
+const INT64_MAX = 9_223_372_036_854_775_807n;
+
+// failures no earlier step or answer can resolve
+function final(err: unknown): boolean {
+  return err instanceof ExitPayoutTooLargeError;
 }
 
 function conversionRefusalOf(err: unknown): ConversionRefusal | "no_route" | undefined {
