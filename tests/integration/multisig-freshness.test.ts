@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { Asset, BASE_FEE, Keypair, Operation, TransactionBuilder } from "@stellar/stellar-sdk";
+import {
+  Asset,
+  BASE_FEE,
+  Claimant,
+  Keypair,
+  Operation,
+  TransactionBuilder,
+} from "@stellar/stellar-sdk";
 
 import { TESTNET } from "@/lib/config/networks";
 import { loadBundleFreshness } from "@/lib/multisig/bundle-freshness";
@@ -79,5 +86,72 @@ describe("integration: bundle freshness (testnet)", () => {
     const bumped = await loadBundleFreshness(server, xdr, TESTNET.passphrase);
     expect(bumped.ok).toBe(false);
     if (!bumped.ok) expect(bumped.reasons.join(" ")).toMatch(/sequence number moved/);
+  });
+
+  it("reports an entry the account starts sponsoring without moving its sequence", async () => {
+    const owner = Keypair.random();
+    const other = Keypair.random();
+    await Promise.all([friendbotFund(owner.publicKey()), friendbotFund(other.publicKey())]);
+
+    // a balance the owner sponsors with two claimants counts twice in
+    // num_sponsoring; the bundle claims it, which releases both
+    await submit(
+      owner,
+      Operation.createClaimableBalance({
+        asset: Asset.native(),
+        amount: "1",
+        claimants: [new Claimant(owner.publicKey()), new Claimant(other.publicKey())],
+      }),
+    );
+    const cbs = await server.claimableBalances().sponsor(owner.publicKey()).call();
+    const cbId = cbs.records[0]!.id;
+
+    const audit = await auditAccount(owner.publicKey(), TESTNET);
+    const tx = buildCloseTransaction({
+      audit,
+      destination: other.publicKey(),
+      network: TESTNET,
+      sourceAccount: await server.loadAccount(owner.publicKey()),
+      disposal: { claimableBalanceIds: [cbId] },
+    });
+    tx.sign(owner);
+    const xdr = tx.toXdr();
+    expect(await loadBundleFreshness(server, xdr, TESTNET.passphrase)).toEqual({ ok: true });
+
+    // the owner sponsors a data entry of another account, inside that account's
+    // transaction, so the owner's sequence stays where the bundle expects it
+    const otherAccount = await server.loadAccount(other.publicKey());
+    const sandwich = new TransactionBuilder(otherAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: TESTNET.passphrase,
+    })
+      .addOperation(
+        Operation.beginSponsoringFutureReserves({
+          sponsoredId: other.publicKey(),
+          source: owner.publicKey(),
+        }),
+      )
+      .addOperation(Operation.manageData({ name: "sponsored", value: "1" }))
+      .addOperation(Operation.endSponsoringFutureReserves({}))
+      .setTimeout(120)
+      .build();
+    sandwich.sign(other, owner);
+    await server.submitTransaction(sandwich);
+
+    const drifted = await loadBundleFreshness(server, xdr, TESTNET.passphrase);
+    expect(drifted.ok).toBe(false);
+    if (!drifted.ok) {
+      expect(drifted.reasons).toHaveLength(1);
+      expect(drifted.reasons[0]).toMatch(/sponsors 1 ledger entry/);
+    }
+
+    // and the chain agrees: the merge fails because the owner is still a sponsor
+    const failed = await server.submitTransaction(tx).then(
+      () => null,
+      (e: unknown) =>
+        (e as { response?: { data?: { extras?: { result_codes?: unknown } } } }).response?.data
+          ?.extras?.result_codes,
+    );
+    expect(JSON.stringify(failed)).toMatch(/op_is_sponsor/);
   });
 });
