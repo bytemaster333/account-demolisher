@@ -91,7 +91,12 @@ describe("integration: payout lines and their issuer", () => {
     });
     expect(wrapped.get(openSac)).toMatchObject({ issuerAuthRequired: false });
     expect(exitTrustlineGaps(holder.publicKey(), [], [lockedSac, openSac], wrapped)).toEqual([
-      { contractId: lockedSac, code: "LCK", issuer: locked.publicKey(), reason: "unauthorized" },
+      {
+        contractId: lockedSac,
+        code: "LCK",
+        issuer: locked.publicKey(),
+        reason: "issuer_requires_authorization",
+      },
       { contractId: openSac, code: "OPN", issuer: open.publicKey(), reason: "missing" },
     ]);
 
@@ -118,7 +123,7 @@ describe("integration: payout lines and their issuer", () => {
     expect(rpc.Api.isSimulationError(sim)).toBe(true);
   }, 180_000);
 
-  it("refuses a missing line whose issuer account was merged away", async () => {
+  it("reports a missing line whose issuer account was merged away", async () => {
     const issuer = Keypair.random();
     const holder = Keypair.random();
     await Promise.all([issuer, holder].map((kp) => friendbot(kp.publicKey())));
@@ -128,9 +133,9 @@ describe("integration: payout lines and their issuer", () => {
 
     const wrapped = await readWrappedAssets(server, TESTNET, [sac], holder.publicKey());
     expect(wrapped.get(sac)).toMatchObject({ kind: "credit", issuerAuthRequired: null });
-    expect(() => exitTrustlineGaps(holder.publicKey(), [], [sac], wrapped)).toThrow(
-      /issuer account .* no longer exists/,
-    );
+    expect(exitTrustlineGaps(holder.publicKey(), [], [sac], wrapped)).toEqual([
+      { contractId: sac, code: "GONE", issuer: issuer.publicKey(), reason: "issuer_missing" },
+    ]);
     // and the line really can't be opened
     await expect(submitClassic(holder, [Operation.changeTrust({ asset })])).rejects.toThrow();
   }, 180_000);

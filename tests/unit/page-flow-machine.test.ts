@@ -580,8 +580,7 @@ describe("what the preview found blocks the close until it is resolved", () => {
         contractId: "CEURT",
         code: "EURT",
         issuer: "GEURT",
-        reason: "missing",
-        why: "issuer_missing",
+        reason: "issuer_missing",
       },
     ];
     const previewInputs: Record<string, unknown>[] = [];

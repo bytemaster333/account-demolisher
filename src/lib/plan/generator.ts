@@ -946,10 +946,7 @@ function exitTrustlineNodes(
         ...(byReward ? ["the Aquarius reward claims"] : []),
       ];
       const { cause, fix } = describeUnfixableGap(gap);
-      throw new Error(
-        `${cause} It can't receive the payout of ${payers.join(" and ")}. ${fix}, or exit ` +
-          "that position outside this app, before closing.",
-      );
+      throw new Error(`${cause} It can't receive the payout of ${payers.join(" and ")}. ${fix}`);
     }
     if (byToken.has(gap.contractId)) continue;
     const id = makeId("exit-trustline", gap.contractId);

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createActor, toPromise } from "xstate";
-import { Asset, NotFoundError } from "@stellar/stellar-sdk";
+import { Asset } from "@stellar/stellar-sdk";
 
 import { EMPTY_POSITIONS } from "@/lib/adapters/positions/interface";
 
@@ -18,10 +18,10 @@ const readAquariusPoolRewardTokens = vi.fn();
 const readAquariusPoolAddress = vi.fn();
 const readPositionGaugeRewards = vi.fn();
 const scanAllowances = vi.fn();
-const loadIssuer = vi.fn();
+const loadAccount = vi.fn();
 
 vi.mock("@/lib/stellar/horizon-client", () => ({
-  getHorizon: () => ({ loadAccount: (...a: unknown[]) => loadIssuer(...a) }),
+  getHorizon: () => ({ loadAccount: (...a: unknown[]) => loadAccount(...a) }),
 }));
 
 vi.mock("@/lib/stellar/account-audit", async () => {
@@ -132,9 +132,9 @@ beforeEach(() => {
   scanAllowances.mockResolvedValue({ records: [], incomplete: null, overflow: [] });
   readWrappedAssets.mockResolvedValue(
     new Map([
-      [USDC_SAC, { kind: "credit", code: "USDC", issuer: USDC_ISSUER }],
+      [USDC_SAC, { kind: "credit", code: "USDC", issuer: USDC_ISSUER, issuerAuthRequired: false }],
       [XLM_SAC, { kind: "native" }],
-      [AQUA_SAC, { kind: "credit", code: "AQUA", issuer: AQUA_ISSUER }],
+      [AQUA_SAC, { kind: "credit", code: "AQUA", issuer: AQUA_ISSUER, issuerAuthRequired: false }],
     ]),
   );
   getUserReward.mockResolvedValue(0n);
@@ -144,7 +144,6 @@ beforeEach(() => {
   readAquariusPoolRewardTokens.mockImplementation(async (_s: unknown, pools: string[]) => {
     return new Map(pools.map((p) => [p, [AQUA_SAC]]));
   });
-  loadIssuer.mockResolvedValue({ flags: { auth_required: false } });
 });
 
 describe("discovery finds the trustlines a pool exit pays into", () => {
@@ -227,46 +226,64 @@ describe("discovery finds the trustlines a pool exit pays into", () => {
 });
 
 describe("discovery sets apart a payout line the close could not use", () => {
+  // the issuer's state comes with the token read, so discovery asks nothing else
+  const usdcIssuer = (issuerAuthRequired: boolean | null) =>
+    readWrappedAssets.mockResolvedValue(
+      new Map([
+        [USDC_SAC, { kind: "credit", code: "USDC", issuer: USDC_ISSUER, issuerAuthRequired }],
+        [XLM_SAC, { kind: "native" }],
+      ]),
+    );
+
   it("keeps a line whose issuer authorizes every new trustline out of the plan", async () => {
     getPositions.mockResolvedValue(lpPosition);
-    loadIssuer.mockResolvedValue({ flags: { auth_required: true } });
+    usdcIssuer(true);
     const out = await discover();
-    expect(loadIssuer).toHaveBeenCalledWith(USDC_ISSUER);
     expect(out.exitTrustlineGaps).toEqual([]);
     expect(out.unopenableExitLines).toEqual([
       {
         contractId: USDC_SAC,
         code: "USDC",
         issuer: USDC_ISSUER,
-        reason: "missing",
-        why: "issuer_auth_required",
+        reason: "issuer_requires_authorization",
       },
     ]);
   });
 
+  // a gone issuer is a fact about the asset, not a failed read, so the review
+  // blocks on it instead of discovery asking for a retry
   it("keeps a line whose issuer account is gone out of the plan", async () => {
     getPositions.mockResolvedValue(lpPosition);
-    loadIssuer.mockRejectedValue(
-      new NotFoundError("Not Found", { status: 404, statusText: "Not Found", data: {} }),
-    );
+    usdcIssuer(null);
     const out = await discover();
     expect(out.exitTrustlineGaps).toEqual([]);
-    expect(out.unopenableExitLines.map((l) => l.why)).toEqual(["issuer_missing"]);
+    expect(out.unopenableExitLines).toEqual([
+      { contractId: USDC_SAC, code: "USDC", issuer: USDC_ISSUER, reason: "issuer_missing" },
+    ]);
+    expect(loadAccount).not.toHaveBeenCalled();
   });
 
   it("plans a line whose issuer lets anyone hold the asset", async () => {
     getPositions.mockResolvedValue(lpPosition);
+    usdcIssuer(false);
     const out = await discover();
-    expect(out.exitTrustlineGaps).toHaveLength(1);
+    expect(out.exitTrustlineGaps).toEqual([
+      { contractId: USDC_SAC, code: "USDC", issuer: USDC_ISSUER, reason: "missing" },
+    ]);
     expect(out.unopenableExitLines).toEqual([]);
   });
 
-  it("stops discovery when the issuer can't be read", async () => {
-    getPositions.mockResolvedValue(lpPosition);
-    loadIssuer.mockRejectedValue(new Error("horizon 503"));
-    await expect(discover()).rejects.toThrow(
-      /Could not check which trustlines your pool exits pay into \(horizon 503\)/,
+  it("keeps an unauthorized line the account already has with the plan's gaps", async () => {
+    auditAccount.mockResolvedValue(
+      makeAudit({ balances: [...makeAudit().balances, { ...usdcLine, isAuthorized: false }] }),
     );
+    getPositions.mockResolvedValue(lpPosition);
+    usdcIssuer(true);
+    const out = await discover();
+    expect(out.exitTrustlineGaps).toEqual([
+      { contractId: USDC_SAC, code: "USDC", issuer: USDC_ISSUER, reason: "unauthorized" },
+    ]);
+    expect(out.unopenableExitLines).toEqual([]);
   });
 });
 

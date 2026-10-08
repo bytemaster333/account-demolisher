@@ -300,7 +300,9 @@ describe("a pool exit that pays into a missing or unauthorized trustline blocks 
       status: "simulated",
       metadata: { kind: "WithdrawSoroswapLp", tokenA: USDC_SAC, tokenB: XLM_SAC, shareBalance: 1n },
     }) as PlanNode;
-  const gap = (reason: "missing" | "unauthorized" | "issuer_requires_authorization") => ({
+  const gap = (
+    reason: "missing" | "unauthorized" | "issuer_requires_authorization" | "issuer_missing",
+  ) => ({
     contractId: USDC_SAC,
     code: "USDC",
     issuer: USDC_ISSUER,
@@ -319,6 +321,12 @@ describe("a pool exit that pays into a missing or unauthorized trustline blocks 
     ]);
     expect(noLine).toMatch(/no USDC:G\w+ trustline.*issuer requires authorization/);
     expect(noLine).not.toMatch(/not authorized by its issuer/);
+    expect(exitTrustlineBlockers(buildPlanTree([lp()]), [gap("issuer_missing")])).toEqual([
+      `A pool exit in this plan pays out USDC. This account has no USDC:${USDC_ISSUER} ` +
+        "trustline, and the issuer account no longer exists, so no trustline for it can be " +
+        "opened. The exit would fail on chain. The account can't be closed while that " +
+        "position is open.",
+    ]);
   });
 
   it("ignores a gap no exit in the plan pays into", () => {
@@ -457,16 +465,15 @@ describe("an exchange close checks the market of what its exits pay into empty l
 });
 
 describe("a payout line the close can't open usefully blocks the review", () => {
-  const line = (why: "issuer_auth_required" | "issuer_missing") => ({
+  const line = (reason: "issuer_requires_authorization" | "issuer_missing") => ({
     contractId: USDC_SAC,
     code: "USDC",
     issuer: USDC_ISSUER,
-    reason: "missing" as const,
-    why,
+    reason,
   });
 
   it("says the issuer has to authorize a line the account opens itself", () => {
-    expect(unopenableExitLineBlockers([line("issuer_auth_required")])).toEqual([
+    expect(unopenableExitLineBlockers([line("issuer_requires_authorization")])).toEqual([
       `A pool exit in this plan pays out USDC (issuer ${USDC_ISSUER}), and this account has no ` +
         "USDC trustline. Its issuer authorizes each new trustline, so a line the close opened " +
         "could not receive the payout. Add the trustline from your wallet, have the issuer " +

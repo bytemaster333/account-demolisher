@@ -6,7 +6,6 @@ import { fromPromise } from "xstate";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import { auditAccount } from "@/lib/stellar/account-audit";
-import { getHorizon } from "@/lib/stellar/horizon-client";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import type { AccountAudit } from "@/lib/types/account";
 import { EMPTY_POSITIONS, type ProtocolPositions } from "@/lib/adapters/positions/interface";
@@ -36,7 +35,6 @@ import {
 import { readAquariusRewardToken } from "@/lib/adapters/aquarius/client";
 import { readPositionGaugeRewards } from "@/lib/adapters/aquarius/gauges";
 import { ALL_PROTOCOLS, discoveryWarningFor } from "@/lib/orchestrator/warnings";
-import { isNotFoundError } from "@/lib/orchestrator/submit";
 import { withTimeout } from "@/lib/with-timeout";
 
 export interface DiscoverInput {
@@ -49,8 +47,12 @@ export interface DiscoverInput {
 // a missing payout line the close can't open usefully: its issuer authorizes
 // each new trustline, so a line the close opened could not receive the payout,
 // or its issuer account is gone, so no line can be opened at all
-export interface UnopenableExitLine extends ExitTrustlineGap {
-  readonly why: "issuer_auth_required" | "issuer_missing";
+export type UnopenableExitLine = ExitTrustlineGap & {
+  readonly reason: "issuer_requires_authorization" | "issuer_missing";
+};
+
+function isUnopenable(gap: ExitTrustlineGap): gap is UnopenableExitLine {
+  return gap.reason === "issuer_requires_authorization" || gap.reason === "issuer_missing";
 }
 
 export interface DiscoverOutput {
@@ -376,11 +378,9 @@ async function exitGaps(
       DISCOVERY_TIMEOUT_MS,
     );
     const all = exitTrustlineGaps(audit.accountId, audit.balances, tokens, wrapped);
-    const unopenable = await unopenableLines(input.network, all);
-    const left = new Set(unopenable.map((l) => l.contractId));
     return {
-      gaps: all.filter((g) => !left.has(g.contractId)),
-      unopenable,
+      gaps: all.filter((g) => !isUnopenable(g)),
+      unopenable: all.filter(isUnopenable),
       ...(rewardToken !== undefined ? { aquariusRewardToken: rewardToken } : {}),
     };
   } catch (e) {
@@ -390,33 +390,4 @@ async function exitGaps(
       { cause: e },
     );
   }
-}
-
-// a line opened under an issuer with auth_required starts unauthorized, and the
-// SAC payout into it traps like a missing one; a change_trust to an asset whose
-// issuer is gone fails. any other failed read throws.
-async function unopenableLines(
-  network: NetworkConfig,
-  gaps: readonly ExitTrustlineGap[],
-): Promise<UnopenableExitLine[]> {
-  const missing = gaps.filter((g) => g.reason === "missing");
-  const horizon = getHorizon(network);
-  const out: UnopenableExitLine[] = [];
-  for (const issuer of [...new Set(missing.map((g) => g.issuer))]) {
-    let why: UnopenableExitLine["why"] | null;
-    try {
-      const account = await withTimeout(
-        "loadIssuer",
-        horizon.loadAccount(issuer),
-        DISCOVERY_TIMEOUT_MS,
-      );
-      why = account.flags.auth_required ? "issuer_auth_required" : null;
-    } catch (e) {
-      if (!isNotFoundError(e)) throw e;
-      why = "issuer_missing";
-    }
-    if (why === null) continue;
-    for (const g of missing) if (g.issuer === issuer) out.push({ ...g, why });
-  }
-  return out;
 }

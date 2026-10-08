@@ -657,7 +657,7 @@ export function exitTrustlineBlockers(tree: PlanTree, gaps: readonly ExitTrustli
       const { cause, fix } = describeUnfixableGap(gap);
       out.push(
         `A pool exit in this plan pays out ${gap.code}. ${cause} The exit would fail on ` +
-          `chain. ${fix}, then rebuild the plan.`,
+          `chain. ${fix}`,
       );
     } else {
       out.push(
@@ -724,7 +724,7 @@ export function unopenableExitLineBlockers(lines: readonly UnopenableExitLine[])
     (l) =>
       `A pool exit in this plan pays out ${l.code} (issuer ${l.issuer}), and this account has ` +
       `no ${l.code} trustline. ` +
-      (l.why === "issuer_auth_required"
+      (l.reason === "issuer_requires_authorization"
         ? "Its issuer authorizes each new trustline, so a line the close opened could not " +
           "receive the payout. Add the trustline from your wallet, have the issuer authorize " +
           "it, then rebuild the plan."

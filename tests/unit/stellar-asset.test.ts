@@ -234,16 +234,16 @@ describe("exitTrustlineGaps", () => {
     expect(exitTrustlineGaps(USER, [credit("YBX", YBX_ISSUER)], [YBX], authRequired)).toEqual([]);
   });
 
-  it("refuses a missing line whose issuer account no longer exists", () => {
+  it("reports a missing line whose issuer account no longer exists as one no one can fix", () => {
     const gone = new Map(wrapped).set(YBX, {
       kind: "credit",
       code: "YBX",
       issuer: YBX_ISSUER,
       issuerAuthRequired: null,
     });
-    expect(() => exitTrustlineGaps(USER, [], [YBX], gone)).toThrow(
-      /issuer account .* no longer exists/,
-    );
+    expect(exitTrustlineGaps(USER, [], [YBX], gone)).toEqual([
+      { contractId: YBX, code: "YBX", issuer: YBX_ISSUER, reason: "issuer_missing" },
+    ]);
     // a line the account already has still receives the payout
     expect(exitTrustlineGaps(USER, [credit("YBX", YBX_ISSUER)], [YBX], gone)).toEqual([]);
   });

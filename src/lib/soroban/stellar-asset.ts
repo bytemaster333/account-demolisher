@@ -306,11 +306,13 @@ export interface ExitTrustlineGap {
   readonly contractId: string;
   readonly code: string;
   readonly issuer: string;
-  // missing: a change_trust before the exit fixes it. the other two need the
+  // missing: a change_trust before the exit fixes it. the others need the
   // issuer, which the app can't stand in for. unauthorized: the account has the
   // line and the issuer has not authorized it. issuer_requires_authorization:
   // there is no line, and one opened now would start unauthorized.
-  readonly reason: "missing" | "unauthorized" | "issuer_requires_authorization";
+  // issuer_missing: there is no line, and the issuer account is gone, so
+  // change_trust fails and no line can ever be opened.
+  readonly reason: "missing" | "unauthorized" | "issuer_requires_authorization" | "issuer_missing";
 }
 
 export type UnfixableExitTrustlineGap = ExitTrustlineGap & {
@@ -321,9 +323,9 @@ export function isUnfixableGap(gap: ExitTrustlineGap): gap is UnfixableExitTrust
   return gap.reason !== "missing";
 }
 
-// why the line can't take a payout, and what the user can do about it. both
-// the plan generator and the review blockers word a refusal with this, so the
-// two never disagree about whether the line exists.
+// why the line can't take a payout, and what the user can do about it, each a
+// whole sentence. both the plan generator and the review blockers word a
+// refusal with this, so the two never disagree about whether the line exists.
 export function describeUnfixableGap(gap: UnfixableExitTrustlineGap): {
   readonly cause: string;
   readonly fix: string;
@@ -333,14 +335,21 @@ export function describeUnfixableGap(gap: UnfixableExitTrustlineGap): {
     case "unauthorized":
       return {
         cause: `The ${asset} trustline of this account is not authorized by its issuer.`,
-        fix: "Ask the issuer to authorize the line",
+        fix: "Ask the issuer to authorize the line, then rebuild the plan.",
       };
     case "issuer_requires_authorization":
       return {
         cause:
           `This account has no ${asset} trustline, and its issuer requires authorization, so ` +
           "a line opened now could not receive anything until the issuer authorizes it.",
-        fix: "Open the line from your wallet and have the issuer authorize it",
+        fix: "Open the line from your wallet and have the issuer authorize it, then rebuild the plan.",
+      };
+    case "issuer_missing":
+      return {
+        cause:
+          `This account has no ${asset} trustline, and the issuer account no longer exists, so ` +
+          "no trustline for it can be opened.",
+        fix: "The account can't be closed while that position is open.",
       };
   }
 }
@@ -348,7 +357,8 @@ export function describeUnfixableGap(gap: UnfixableExitTrustlineGap): {
 // the credit assets among an exit's payout tokens that the account cannot
 // receive right now. native and non-SAC tokens need no trustline, and neither
 // does an asset the account issues itself. a missing line whose issuer account
-// is gone can't be opened at all, which stops the plan here.
+// is gone is reported as such, not thrown: it is a fact about the asset, and
+// the review blocks on it with that reason.
 export function exitTrustlineGaps(
   accountId: string,
   balances: readonly AuditBalance[],
@@ -368,18 +378,16 @@ export function exitTrustlineGaps(
         b.asset.kind === "credit" && b.asset.code === asset.code && b.asset.issuer === asset.issuer,
     );
     if (line === undefined) {
-      if (asset.issuerAuthRequired === null) {
-        throw new Error(
-          `The ${asset.code} issuer account ${asset.issuer} no longer exists, so this account ` +
-            `can't open the ${asset.code} trustline a pool exit pays into, and that exit can't ` +
-            "run, so the close stops here.",
-        );
-      }
       gaps.push({
         contractId,
         code: asset.code,
         issuer: asset.issuer,
-        reason: asset.issuerAuthRequired === true ? "issuer_requires_authorization" : "missing",
+        reason:
+          asset.issuerAuthRequired === null
+            ? "issuer_missing"
+            : asset.issuerAuthRequired
+              ? "issuer_requires_authorization"
+              : "missing",
       });
     } else if (line.isAuthorized === false) {
       gaps.push({ contractId, code: asset.code, issuer: asset.issuer, reason: "unauthorized" });
