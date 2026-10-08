@@ -330,7 +330,7 @@ beforeEach(() => {
     expiresAt: Date.now() + 15 * 60_000,
   });
   getPositions.mockResolvedValue(EMPTY_POSITIONS);
-  scanAllowances.mockResolvedValue({ records: [], incomplete: null });
+  scanAllowances.mockResolvedValue({ records: [], incomplete: null, overflow: [] });
   confirmAllowancesOnChain.mockImplementation(async (_s, _o, records: unknown[]) =>
     records.map((r) => ({ ...(r as object), onChainAmount: 5n })),
   );
@@ -574,6 +574,7 @@ describe("the real preview surfaces what it could not build", () => {
         },
       ],
       incomplete: null,
+      overflow: [],
     });
     net.rpc = {
       getLatestLedger: vi.fn(async () => ({ sequence: 1000 })),
@@ -1038,6 +1039,7 @@ describe("discovery reports partial scans and drops spent allowances", () => {
         },
       ],
       incomplete,
+      overflow: [],
     });
     const actor = discoverOnly();
     await settle(actor, "previewing");
@@ -1060,6 +1062,7 @@ describe("discovery reports partial scans and drops spent allowances", () => {
     scanAllowances.mockResolvedValue({
       records: [record(HOSTILE_TOKEN), record(USDC_SAC)],
       incomplete: null,
+      overflow: [],
     });
     confirmAllowancesOnChain.mockImplementation(async (_s, _o, records: { contractId: string }[]) =>
       records.map((r) => ({ ...r, onChainAmount: r.contractId === HOSTILE_TOKEN ? 0n : 5n })),

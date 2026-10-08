@@ -76,6 +76,8 @@ export interface PreviewInput {
   readonly deterministicDisposal?: boolean;
   // pool payouts this account has no usable trustline for (discovery)
   readonly exitTrustlineGaps?: readonly ExitTrustlineGap[];
+  // the token the aquarius reward claims pay (discovery), when a claim pays some
+  readonly aquariusRewardToken?: string;
 }
 
 // why a held-token conversion needs the user's answer

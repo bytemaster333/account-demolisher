@@ -15,6 +15,7 @@ import { manualCloseRequiredNotice } from "@/lib/safety/manual-close";
 import {
   confirmAllowancesOnChain,
   DEFAULT_SCAN_WINDOW_LEDGERS,
+  describeAllowanceOverflow,
   scanAllowances,
   withoutConfirmedZero,
   type AllowanceRecord,
@@ -26,11 +27,12 @@ import {
   type HeldToken,
 } from "@/lib/soroban/held-tokens";
 import {
-  exitPayoutTokens,
   exitTrustlineGaps,
+  readExitPayoutTokens,
   readWrappedAssets,
   type ExitTrustlineGap,
 } from "@/lib/soroban/stellar-asset";
+import { readAquariusRewardToken } from "@/lib/adapters/aquarius/client";
 import { ALL_PROTOCOLS, discoveryWarningFor } from "@/lib/orchestrator/warnings";
 
 export interface DiscoverInput {
@@ -55,6 +57,9 @@ export interface DiscoverOutput {
   // trustline for; the exit traps on chain until the line exists and is
   // authorized
   readonly exitTrustlineGaps: readonly ExitTrustlineGap[];
+  // the token the aquarius reward claims pay, read only when a planned claim
+  // will pay some
+  readonly aquariusRewardToken?: string;
 }
 
 // per-discovery-step ceiling so a hanging rpc can't pin the ui on a spinner
@@ -126,17 +131,32 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
             } catch (e) {
               confirmDetail = `allowance confirm: ${errorMessage(e)}`;
             }
-            // a partial scan keeps what it found and says how much it checked
+            // a partial scan keeps what it found and says how much it checked. a
+            // contract whose approvals were cut keeps its most recent ones, and
+            // the plan says which contracts and how many were left out
+            const warnings: string[] = [];
+            const details: string[] = [];
+            if (scan.incomplete !== null) {
+              warnings.push(
+                `${describeIncompleteScan(scan.incomplete, "token spending permissions")} An older permission may be missing from this plan; review them on the Allowances page before closing.`,
+              );
+              details.push(`allowance scan: ${scan.incomplete.detail}`);
+            }
+            if (scan.overflow.length > 0) {
+              warnings.push(
+                `${describeAllowanceOverflow(scan.overflow)} The close revokes only the token spending permissions that are listed.`,
+              );
+              details.push(
+                `allowance overflow: ${scan.overflow
+                  .map((o) => `${o.contractId} ${o.spenders} spenders, ${o.kept} kept`)
+                  .join("; ")}`,
+              );
+            }
+            if (confirmDetail !== undefined) details.push(confirmDetail);
             return {
               allowances,
-              ...(scan.incomplete !== null
-                ? {
-                    warning: `${describeIncompleteScan(scan.incomplete, "token spending permissions")} An older permission may be missing from this plan; review them on the Allowances page before closing.`,
-                    detail: `allowance scan: ${scan.incomplete.detail}${confirmDetail ? `; ${confirmDetail}` : ""}`,
-                  }
-                : confirmDetail !== undefined
-                  ? { detail: confirmDetail }
-                  : {}),
+              ...(warnings.length > 0 ? { warning: warnings.join(" ") } : {}),
+              ...(details.length > 0 ? { detail: details.join("; ") } : {}),
             };
           } catch (e) {
             return {
@@ -235,7 +255,7 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
   // contract writes a classic asset into its trustline: without one the whole
   // exit traps (contract error #13). a token that can't be read stops discovery,
   // since "unread" must never pass as "no trustline needed".
-  const gaps = await exitGaps(input, audit, positions);
+  const exits = await exitGaps(input, audit, positions);
 
   // warnings in a stable order (scan warnings, per-protocol errors, blend repay
   // shortfall) so copy doesn't reshuffle between runs
@@ -270,24 +290,47 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
     heldTokenScanFailed: heldResult.failed,
     discoveryWarnings,
     discoveryDiagnostics,
-    exitTrustlineGaps: gaps,
+    exitTrustlineGaps: exits.gaps,
+    ...(exits.aquariusRewardToken !== undefined
+      ? { aquariusRewardToken: exits.aquariusRewardToken }
+      : {}),
   };
 });
 
+// the payout tokens include the aquarius reward token when a planned claim will
+// pay some, so its token is kept for the plan: a missing line for it is opened
+// ahead of the reward claims
 async function exitGaps(
   input: DiscoverInput,
   audit: AccountAudit,
   positions: ProtocolPositions,
-): Promise<readonly ExitTrustlineGap[]> {
-  const tokens = exitPayoutTokens(positions);
-  if (tokens.length === 0) return [];
-  let wrapped: Awaited<ReturnType<typeof readWrappedAssets>>;
+): Promise<{
+  readonly gaps: readonly ExitTrustlineGap[];
+  readonly aquariusRewardToken?: string;
+}> {
+  const rpc = getRpc(input.network);
+  let rewardToken: string | undefined;
   try {
-    wrapped = await withTimeout(
-      "readWrappedAssets",
-      readWrappedAssets(getRpc(input.network), input.network, tokens, input.publicKey),
+    const tokens = await withTimeout(
+      "readExitPayoutTokens",
+      readExitPayoutTokens(rpc, input.network, input.publicKey, positions, {
+        readRewardToken: async (server, network) => {
+          rewardToken = await readAquariusRewardToken(server, network);
+          return rewardToken;
+        },
+      }),
       DISCOVERY_TIMEOUT_MS,
     );
+    if (tokens.length === 0) return { gaps: [] };
+    const wrapped = await withTimeout(
+      "readWrappedAssets",
+      readWrappedAssets(rpc, input.network, tokens, input.publicKey),
+      DISCOVERY_TIMEOUT_MS,
+    );
+    return {
+      gaps: exitTrustlineGaps(audit.accountId, audit.balances, tokens, wrapped),
+      ...(rewardToken !== undefined ? { aquariusRewardToken: rewardToken } : {}),
+    };
   } catch (e) {
     throw new Error(
       `Could not check which trustlines your pool exits pay into (${errorMessage(e)}). ` +
@@ -295,5 +338,4 @@ async function exitGaps(
       { cause: e },
     );
   }
-  return exitTrustlineGaps(audit.accountId, audit.balances, tokens, wrapped);
 }

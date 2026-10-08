@@ -117,6 +117,9 @@ export interface PageFlowContext {
   // pool payouts this account has no usable trustline for; the preview turns
   // the ones its exits pay into blockers
   readonly exitTrustlineGaps: readonly ExitTrustlineGap[];
+  // the token the aquarius reward claims pay, when discovery found a claim that
+  // pays some; the plan opens a missing line for it ahead of the claims
+  readonly aquariusRewardToken: string | null;
   readonly unroutableCredits: readonly UnroutableCredit[];
   // what the preview found that keeps the close from starting (mergeability,
   // the BLND trustline, the exchange-forward funding), in words for the user
@@ -187,6 +190,7 @@ const initialContext: PageFlowContext = {
   discoveryWarnings: [],
   discoveryDiagnostics: [],
   exitTrustlineGaps: [],
+  aquariusRewardToken: null,
   unroutableCredits: [],
   reviewBlockers: [],
   refusedConversions: [],
@@ -440,6 +444,7 @@ export const pageFlowMachine = setup({
             discoveryWarnings: ({ event }) => event.output.discoveryWarnings,
             discoveryDiagnostics: ({ event }) => event.output.discoveryDiagnostics,
             exitTrustlineGaps: ({ event }) => event.output.exitTrustlineGaps,
+            aquariusRewardToken: ({ event }) => event.output.aquariusRewardToken ?? null,
           }),
         },
         onError: {
@@ -494,6 +499,9 @@ export const pageFlowMachine = setup({
             ...(i.leaveHeldTokens ? { leaveHeldTokens: i.leaveHeldTokens } : {}),
             ...(i.deterministicDisposal ? { deterministicDisposal: true } : {}),
             exitTrustlineGaps: context.exitTrustlineGaps,
+            ...(context.aquariusRewardToken !== null
+              ? { aquariusRewardToken: context.aquariusRewardToken }
+              : {}),
           };
         },
         onDone: {
