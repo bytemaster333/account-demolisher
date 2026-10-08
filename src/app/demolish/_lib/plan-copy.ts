@@ -1,6 +1,7 @@
 // plain-language labels, grouping and explainers for plan nodes
 
 import type { PlanNode } from "@/lib/plan/tree";
+import { shortAddress } from "@/lib/safe-display";
 import type { AccountAudit } from "@/lib/types/account";
 
 export function sumNativeBalance(audit: AccountAudit): string {
@@ -109,7 +110,7 @@ export function nodeLabel(node: PlanNode): string {
     case "AddBlndTrustline":
       return "Add BLND trustline";
     case "AddExitTrustline":
-      return "Add payout trustline";
+      return `Add ${node.metadata.code} trustline`;
     case "ClaimBlendEmissions":
       return "Claim Blend emissions";
     case "ClaimAquariusRewards":
@@ -154,7 +155,7 @@ export function nodePlainLabel(node: PlanNode): string {
     case "AddBlndTrustline":
       return "Let the account hold BLND for the Blend rewards";
     case "AddExitTrustline":
-      return "Let the account hold a token a pool pays out";
+      return `Let the account hold ${node.metadata.code} so a pool can pay it out`;
     case "ClaimBlendEmissions":
       return "Collect Blend rewards";
     case "ClaimAquariusRewards":
@@ -206,7 +207,8 @@ export function nodeExplainer(
     case "AddBlndTrustline":
       return "Opens a BLND trustline so the Blend rewards can be paid to this account. It holds a small XLM reserve, which comes back when the close removes the trustline again.";
     case "AddExitTrustline":
-      return "Opens a trustline for an asset a pool pays out, since the pool can only pay it into a trustline. It holds a small XLM reserve, which comes back when the close removes the trustline again.";
+      // the issuer goes in too: a code alone doesn't tell one USDC from another
+      return `Opens a ${node.metadata.code} trustline (issuer ${shortAddress(node.metadata.issuer)}), since a pool can only pay ${node.metadata.code} into a trustline. It holds a small XLM reserve, which comes back when the close removes the trustline again.`;
     case "ClaimBlendEmissions":
       return "Collects the reward tokens Blend owes you before you leave, so you don't leave them behind.";
     case "ClaimAquariusRewards":

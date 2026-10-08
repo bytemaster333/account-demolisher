@@ -13,17 +13,19 @@ import type { PlanNode } from "@/lib/plan/tree";
 
 import { makeAudit } from "./demolish-fixtures";
 
-function exitTrustline(): PlanNode {
+const ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
+
+function exitTrustline(code = "USDC"): PlanNode {
   return {
-    id: "add-exit-trustline:C1",
+    id: `add-exit-trustline:${code}`,
     kind: "AddExitTrustline",
     dependencies: [],
     description: "",
     status: "pending",
     metadata: {
       kind: "AddExitTrustline",
-      code: "USDC",
-      issuer: "GISSUER",
+      code,
+      issuer: ISSUER,
       contractId: "C1",
     },
   } as PlanNode;
@@ -33,9 +35,16 @@ describe("the payout trustline step a pool exit needs", () => {
   it("is listed with the withdrawals it runs ahead of", () => {
     const node = exitTrustline();
     expect(phaseForNode(node)).toBe("DeFi withdrawals");
-    expect(nodeLabel(node)).toBe("Add payout trustline");
-    expect(nodePlainLabel(node)).toBe("Let the account hold a token a pool pays out");
-    expect(nodeExplainer(node, { deterministic: false })).toMatch(/reserve, which comes back/);
+    expect(nodeLabel(node)).toBe("Add USDC trustline");
+    expect(nodePlainLabel(node)).toBe("Let the account hold USDC so a pool can pay it out");
+    const explainer = nodeExplainer(node, { deterministic: false });
+    expect(explainer).toMatch(/^Opens a USDC trustline \(issuer GA5ZSE…KZVN\)/);
+    expect(explainer).toMatch(/reserve, which comes back/);
+  });
+
+  it("names which asset each line is for when a plan opens more than one", () => {
+    const labels = [exitTrustline("USDC"), exitTrustline("AQUA")].map(nodePlainLabel);
+    expect(new Set(labels).size).toBe(2);
   });
 
   it("is priced as one classic operation, not as a free soroban step", () => {
