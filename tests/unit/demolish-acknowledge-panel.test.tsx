@@ -24,7 +24,7 @@ function cb(id: string, predicate: unknown, claimableNow: boolean): ClaimableBal
     asset: { kind: "native" },
     amount: "25.0000000",
     sponsor: Keypair.random().publicKey(),
-    predicate: [{ destination: ACC, predicate }],
+    claimantsRaw: [{ destination: ACC, predicate }],
     claimants: [ACC],
     claimableNow,
   };

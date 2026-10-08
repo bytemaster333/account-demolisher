@@ -228,7 +228,7 @@ export function claimsAtRiskInWindow(args: {
       continue;
     }
     const thresholds: number[] = [];
-    predicateThresholds(cb.predicate, thresholds);
+    predicateThresholds(cb.claimantsRaw, thresholds);
     const instants = [args.nowMs, end, ...thresholds.filter((t) => t > args.nowMs && t <= end)];
     const claimableAt = (who: string, t: number): boolean =>
       filterClaimableNow([cb], who, new Date(t)).length > 0;

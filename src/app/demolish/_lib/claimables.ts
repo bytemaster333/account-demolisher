@@ -72,7 +72,7 @@ function earliestUnlock(
   if (filterClaimableNow([cb], publicKey, new Date(nowMs)).length > 0) return { kind: "now" };
   const thresholds: number[] = [];
   const flags = { rel: false };
-  collectThresholds(cb.predicate, thresholds, flags);
+  collectThresholds(cb.claimantsRaw, thresholds, flags);
   const future = [...new Set(thresholds)].filter((t) => t > nowMs).sort((a, b) => a - b);
   for (const t of future) {
     if (filterClaimableNow([cb], publicKey, new Date(t)).length > 0) {

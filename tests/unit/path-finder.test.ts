@@ -275,7 +275,7 @@ describe("resolveCreditPaths: claims the close makes", () => {
   }
 
   function cb(id: string, asset: unknown, amount: string) {
-    return { id, asset, amount, sponsor: "", predicate: [], claimants: [ACCOUNT] };
+    return { id, asset, amount, sponsor: "", claimantsRaw: [], claimants: [ACCOUNT] };
   }
 
   function auditWithClaims(): AccountAudit {

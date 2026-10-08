@@ -695,7 +695,7 @@ describe("a claimed credit is priced for what the close really moves (M-22)", ()
           asset: { kind: "credit", code: "USDC", issuer: DEST },
           amount: "5.0000000",
           sponsor: DEST,
-          predicate: [{ destination: ACC, predicate: { unconditional: true } }],
+          claimantsRaw: [{ destination: ACC, predicate: { unconditional: true } }],
           claimants: [ACC],
           claimableNow: true,
         },
@@ -761,7 +761,7 @@ describe("the claim window is checked on the ledger clock when publishing (L-25)
           asset: { kind: "native" },
           amount: "5.0000000",
           sponsor: DEST,
-          predicate: [
+          claimantsRaw: [
             {
               destination: ACC,
               predicate: { abs_before: new Date(expiresAtMs).toISOString() },
@@ -1184,7 +1184,7 @@ describe("the claim selection reaches the plan explicitly (H-11)", () => {
           asset: { kind: "native" },
           amount: "5.0000000",
           sponsor: DEST,
-          predicate: [{ destination: ACC, predicate: { unconditional: true } }],
+          claimantsRaw: [{ destination: ACC, predicate: { unconditional: true } }],
           claimants: [ACC],
           claimableNow: true,
         },

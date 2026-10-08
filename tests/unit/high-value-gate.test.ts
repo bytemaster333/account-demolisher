@@ -183,7 +183,7 @@ describe("assessCloseValue", () => {
         asset,
         amount,
         sponsor: "GSPONSOR",
-        predicate: {},
+        claimantsRaw: {},
         claimants: [ACC],
         claimableNow: true,
       }) satisfies ClaimableBalanceEntry;
@@ -217,7 +217,7 @@ describe("assessCloseValue", () => {
       asset: { kind: "credit" as const, code: "OWN", issuer: ACC },
       amount: "5",
       sponsor: "GSPONSOR",
-      predicate: {},
+      claimantsRaw: {},
       claimants: [ACC],
       claimableNow: true,
     } satisfies ClaimableBalanceEntry;
@@ -265,7 +265,7 @@ describe("assessCloseValue", () => {
         asset,
         amount,
         sponsor: "GSPONSOR",
-        predicate: {},
+        claimantsRaw: {},
         claimants: [ACC],
         claimableNow: true,
       }) satisfies ClaimableBalanceEntry;

@@ -688,7 +688,7 @@ describe("buildCloseTransaction carries the reviewed choices (H-11, H-29, L-25)"
       asset,
       amount,
       sponsor: Keypair.random().publicKey(),
-      predicate: { unconditional: true },
+      claimantsRaw: { unconditional: true },
       claimants: [kp.publicKey()],
       claimableNow: true,
     };

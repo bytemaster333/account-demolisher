@@ -64,7 +64,7 @@ function cb(id: string, over: Partial<ClaimableBalanceEntry> = {}): ClaimableBal
     asset: { kind: "native" },
     amount: "5.0000000",
     sponsor: Keypair.random().publicKey(),
-    predicate: [{ destination: ACC, predicate: { unconditional: true } }],
+    claimantsRaw: [{ destination: ACC, predicate: { unconditional: true } }],
     claimants: [ACC],
     claimableNow: true,
     ...over,
@@ -229,7 +229,7 @@ describe("claims that may fail inside the 72h signing window (H-29)", () => {
     const audit = makeAudit({
       claimableBalances: [
         cb("cb-expiring", {
-          predicate: [{ destination: ACC, predicate: { abs_before: soon } }],
+          claimantsRaw: [{ destination: ACC, predicate: { abs_before: soon } }],
         }),
         cb("cb-fine"),
       ],
@@ -252,7 +252,7 @@ describe("claims that may fail inside the 72h signing window (H-29)", () => {
       claimableBalances: [
         cb("cb-reclaimable", {
           claimants: [ACC, sender],
-          predicate: [
+          claimantsRaw: [
             { destination: ACC, predicate: { unconditional: true } },
             { destination: sender, predicate: { unconditional: true } },
           ],

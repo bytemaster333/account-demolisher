@@ -291,7 +291,7 @@ async function loadClaimableBalances(
         asset: serverAssetStringToIdentifier(c.asset),
         amount: c.amount,
         sponsor: c.sponsor ?? "",
-        predicate: c.claimants,
+        claimantsRaw: c.claimants,
         claimants: c.claimants.map((cl) => cl.destination),
       });
     }

@@ -142,7 +142,7 @@ function cb(
     asset: { kind: "native" },
     amount: "1",
     sponsor,
-    predicate: {},
+    claimantsRaw: {},
     claimants: [ACC],
     ...(claimableNow === "unset" ? {} : { claimableNow }),
   };

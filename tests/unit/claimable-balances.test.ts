@@ -281,26 +281,26 @@ describe("filterClaimableNow", () => {
       asset: { kind: "native" },
       amount: "10",
       sponsor: "GSPONSOR",
-      predicate: null,
+      claimantsRaw: null,
       claimants: [USER],
       ...overrides,
     };
   }
 
   it("keeps a balance whose single-node predicate is claimable for the user", () => {
-    const entries = [cb({ id: "a", predicate: { unconditional: true } })];
+    const entries = [cb({ id: "a", claimantsRaw: { unconditional: true } })];
     const result = filterClaimableNow(entries, USER, NOW);
     expect(result).toHaveLength(1);
     expect(result[0]?.id).toBe("a");
   });
 
   it("drops a balance where the user is not a claimant", () => {
-    const entries = [cb({ id: "a", claimants: [OTHER], predicate: { unconditional: true } })];
+    const entries = [cb({ id: "a", claimants: [OTHER], claimantsRaw: { unconditional: true } })];
     expect(filterClaimableNow(entries, USER, NOW)).toHaveLength(0);
   });
 
   it("drops a balance whose predicate is not satisfied now", () => {
-    const entries = [cb({ id: "a", predicate: { abs_before: past(3600) } })];
+    const entries = [cb({ id: "a", claimantsRaw: { abs_before: past(3600) } })];
     expect(filterClaimableNow(entries, USER, NOW)).toHaveLength(0);
   });
 
@@ -311,7 +311,7 @@ describe("filterClaimableNow", () => {
       { destination: OTHER, predicate: { unconditional: true } },
       { destination: USER, predicate: { abs_before: future(3600) } },
     ];
-    const entries = [cb({ id: "a", claimants: [USER, OTHER], predicate })];
+    const entries = [cb({ id: "a", claimants: [USER, OTHER], claimantsRaw: predicate })];
     const result = filterClaimableNow(entries, USER, NOW);
     expect(result).toHaveLength(1);
     expect(result[0]?.id).toBe("a");
@@ -322,7 +322,7 @@ describe("filterClaimableNow", () => {
       { destination: OTHER, predicate: { unconditional: true } },
       { destination: USER, predicate: { abs_before: past(3600) } },
     ];
-    const entries = [cb({ id: "a", claimants: [USER, OTHER], predicate })];
+    const entries = [cb({ id: "a", claimants: [USER, OTHER], claimantsRaw: predicate })];
     expect(filterClaimableNow(entries, USER, NOW)).toHaveLength(0);
   });
 
@@ -330,17 +330,17 @@ describe("filterClaimableNow", () => {
     const predicate = [{ destination: OTHER, predicate: { unconditional: true } }];
     // user still listed as claimant so the includes() gate passes, but no
     // matching predicate entry exists
-    const entries = [cb({ id: "a", claimants: [USER], predicate })];
+    const entries = [cb({ id: "a", claimants: [USER], claimantsRaw: predicate })];
     expect(filterClaimableNow(entries, USER, NOW)).toHaveLength(0);
   });
 
   it("filters a mixed list, preserving only claimable-now balances", () => {
     const entries = [
-      cb({ id: "unconditional", predicate: { unconditional: true } }),
-      cb({ id: "open-window", predicate: { abs_before: future(3600) } }),
-      cb({ id: "closed-window", predicate: { abs_before: past(3600) } }),
-      cb({ id: "not-claimant", claimants: [OTHER], predicate: { unconditional: true } }),
-      cb({ id: "relative", predicate: { rel_before: "10" } }),
+      cb({ id: "unconditional", claimantsRaw: { unconditional: true } }),
+      cb({ id: "open-window", claimantsRaw: { abs_before: future(3600) } }),
+      cb({ id: "closed-window", claimantsRaw: { abs_before: past(3600) } }),
+      cb({ id: "not-claimant", claimants: [OTHER], claimantsRaw: { unconditional: true } }),
+      cb({ id: "relative", claimantsRaw: { rel_before: "10" } }),
     ];
     const ids = filterClaimableNow(entries, USER, NOW).map((e) => e.id);
     expect(ids).toEqual(["unconditional", "open-window"]);
@@ -357,24 +357,24 @@ describe("filterClaimableNow", () => {
     const WINDOW = 300;
 
     it("skips a balance whose abs_before falls inside the window", () => {
-      const entries = [cb({ id: "a", predicate: { abs_before: future(120) } })];
+      const entries = [cb({ id: "a", claimantsRaw: { abs_before: future(120) } })];
       expect(filterClaimableNow(entries, USER, NOW, WINDOW)).toHaveLength(0);
       // still claimable at the instant itself
       expect(filterClaimableNow(entries, USER, NOW)).toHaveLength(1);
     });
 
     it("keeps a balance whose abs_before is beyond the window", () => {
-      const entries = [cb({ id: "a", predicate: { abs_before: future(WINDOW + 1) } })];
+      const entries = [cb({ id: "a", claimantsRaw: { abs_before: future(WINDOW + 1) } })];
       expect(filterClaimableNow(entries, USER, NOW, WINDOW)).toHaveLength(1);
     });
 
     it("skips a balance that only opens inside the window", () => {
-      const entries = [cb({ id: "a", predicate: { not: { abs_before: future(60) } } })];
+      const entries = [cb({ id: "a", claimantsRaw: { not: { abs_before: future(60) } } })];
       expect(filterClaimableNow(entries, USER, NOW, WINDOW)).toHaveLength(0);
     });
 
     it("keeps a balance that opened before the window and stays open", () => {
-      const entries = [cb({ id: "a", predicate: { not: { abs_before: past(60) } } })];
+      const entries = [cb({ id: "a", claimantsRaw: { not: { abs_before: past(60) } } })];
       expect(filterClaimableNow(entries, USER, NOW, WINDOW)).toHaveLength(1);
     });
 

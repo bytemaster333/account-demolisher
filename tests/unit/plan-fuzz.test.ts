@@ -112,7 +112,7 @@ const arbClaimable = fc
     asset: arbClaimableAsset,
     amount: arbAmount,
     sponsor: arbG,
-    predicate: fc.constant(null),
+    claimantsRaw: fc.constant(null),
     claimants: fc.constant([] as string[]),
     claimableNow: fc.boolean(),
     issuerAuthRequired: fc.option(fc.boolean(), { nil: undefined }),

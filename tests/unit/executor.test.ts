@@ -1386,7 +1386,7 @@ describe("the merge guard checks what this close really does", () => {
             amount: "1.0000000",
             sponsor: USER,
             claimants: [USER],
-            predicate: [
+            claimantsRaw: [
               { destination: USER, predicate: { abs_before_epoch: String(closedAt + 60) } },
             ],
             claimableNow: true,
@@ -1443,7 +1443,7 @@ describe("the merge guard checks what this close really does", () => {
             amount: "1.0000000",
             sponsor: USER,
             claimants: [USER],
-            predicate: [{ destination: USER, predicate: { unconditional: true } }],
+            claimantsRaw: [{ destination: USER, predicate: { unconditional: true } }],
             claimableNow: true,
             issuerAuthRequired: false,
           },
@@ -1510,7 +1510,7 @@ describe("the merge is timed by the network's clock", () => {
             amount: "1.0000000",
             sponsor: ATTACKER,
             claimants: [USER],
-            predicate: [
+            claimantsRaw: [
               { destination: USER, predicate: { abs_before_epoch: String(closedAt + 60) } },
             ],
             claimableNow: true,
@@ -1651,7 +1651,7 @@ describe("a credit the close claims is quoted with the claim", () => {
               amount: "5.0000000",
               sponsor: ATTACKER,
               claimants: [USER],
-              predicate: [{ destination: USER, predicate: { unconditional: true } }],
+              claimantsRaw: [{ destination: USER, predicate: { unconditional: true } }],
               claimableNow: true,
             },
           ],
@@ -1714,7 +1714,7 @@ describe("a credit the close claims is quoted with the claim", () => {
             amount: "5.0000000",
             sponsor: ATTACKER,
             claimants: [USER],
-            predicate: [
+            claimantsRaw: [
               { destination: USER, predicate: { abs_before_epoch: String(closedAt + 60) } },
             ],
             claimableNow: true,

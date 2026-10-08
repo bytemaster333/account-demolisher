@@ -119,9 +119,9 @@ function isClaimableForUser(
   to: bigint,
 ): boolean {
   if (!cb.claimants.includes(userPublicKey)) return false;
-  const raw = cb.predicate;
+  const raw = cb.claimantsRaw;
 
-  // case a: predicate is the full claimants array
+  // case a: claimantsRaw is the Horizon claimants array
   if (Array.isArray(raw)) {
     const entry = (raw as readonly unknown[]).find(
       (e): e is HorizonClaimant =>
@@ -133,7 +133,7 @@ function isClaimableForUser(
     return evaluateOverWindow(entry.predicate, from, to) === "always";
   }
 
-  // case b: predicate is a single node already addressed to the user
+  // case b: a fixture may store this account's own predicate node directly
   return evaluateOverWindow(raw, from, to) === "always";
 }
 
