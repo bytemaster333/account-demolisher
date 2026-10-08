@@ -1,5 +1,7 @@
 // @vitest-environment happy-dom
 
+import { locks as nodeLocks } from "node:worker_threads";
+
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Keypair } from "@stellar/stellar-sdk";
@@ -23,47 +25,6 @@ import {
 } from "@/lib/mediator/pending-flow";
 
 import { FakeHorizon, XLM } from "./mediator-horizon-fake";
-
-// happy-dom has no Web Locks; this is just enough of one for the banner
-class FakeLocks {
-  private readonly held = new Set<string>();
-  private waiters: Array<() => void> = [];
-
-  private wake(): void {
-    const w = this.waiters;
-    this.waiters = [];
-    for (const fn of w) fn();
-  }
-
-  private async waitFree(name: string, signal?: AbortSignal): Promise<void> {
-    while (this.held.has(name)) {
-      await new Promise<void>((resolve, reject) => {
-        this.waiters.push(resolve);
-        signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
-      });
-    }
-  }
-
-  async request<T>(
-    name: string,
-    options: { mode?: "exclusive" | "shared"; signal?: AbortSignal },
-    callback: () => T | Promise<T>,
-  ): Promise<T> {
-    await this.waitFree(name, options.signal);
-    if (options.mode === "shared") return callback();
-    this.held.add(name);
-    try {
-      return await callback();
-    } finally {
-      this.held.delete(name);
-      this.wake();
-    }
-  }
-
-  query(): Promise<{ held: { name: string }[]; pending: [] }> {
-    return Promise.resolve({ held: [...this.held].map((name) => ({ name })), pending: [] });
-  }
-}
 
 let fake: FakeHorizon;
 let user: string;
@@ -312,7 +273,8 @@ describe("PendingForwardBanner", () => {
   });
 
   it("stays hidden while a close for the account is running, then shows the failed forward", async () => {
-    Object.defineProperty(navigator, "locks", { value: new FakeLocks(), configurable: true });
+    // happy-dom has no web locks; node's own lock manager is the real thing
+    Object.defineProperty(navigator, "locks", { value: nodeLocks, configurable: true });
     const record = await flowRecord();
     let finishClose!: () => void;
     const closeRunning = runWithCloseLock(
@@ -334,6 +296,9 @@ describe("PendingForwardBanner", () => {
       finishClose();
       await closeRunning;
     });
-    expect(await screen.findByText("An exchange forward was interrupted")).toBeTruthy();
+    // the banner polls the lock every half second, so allow a few polls
+    expect(
+      await screen.findByText("An exchange forward was interrupted", {}, { timeout: 3000 }),
+    ).toBeTruthy();
   });
 });
