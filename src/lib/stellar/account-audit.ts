@@ -432,16 +432,24 @@ export function computeRequiresMultisig(thresholds: AuditThresholds): boolean {
 // trustlines, offers, signers or data entries (begin_sponsoring with itself as
 // the sponsored id is op_malformed), so the only entries in num_sponsoring the
 // close frees are claimable balances this account created with itself as a
-// claimant, and only those the close actually claims (claimedBalanceIds).
+// claimant, and only those the close actually claims (claimedBalanceIds). core
+// counts a claimable balance once per claimant in the sponsor's num_sponsoring
+// (computeMultiplier in stellar-core's SponsorshipUtils.cpp) and the claim
+// releases all of them, so the count here is per claimant too.
 export function computeCoverableSponsorships(
   accountId: string,
   claimableBalances: readonly ClaimableBalanceEntry[],
   claimedBalanceIds: readonly string[],
 ): number {
   const claimed = new Set(claimedBalanceIds);
-  return claimableBalances.filter(
-    (cb) => cb.sponsor === accountId && cb.claimableNow === true && claimed.has(cb.id),
-  ).length;
+  return claimableBalances.reduce(
+    (n, cb) =>
+      n +
+      (cb.sponsor === accountId && cb.claimableNow === true && claimed.has(cb.id)
+        ? cb.claimants.length
+        : 0),
+    0,
+  );
 }
 
 // the claimable balances a claim would succeed for, judged from the audit alone:

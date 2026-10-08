@@ -167,6 +167,14 @@ describe("computeCoverableSponsorships", () => {
     expect(computeCoverableSponsorships(ACC, cbs, ["b"])).toBe(1);
     expect(computeCoverableSponsorships(ACC, cbs, [])).toBe(0);
   });
+
+  // core reserves one base reserve per claimant in the sponsor's num_sponsoring
+  // and the claim releases all of them
+  it("counts a claimed self-sponsored CB once per claimant", () => {
+    const multi = { ...cb("a", ACC), claimants: [ACC, OTHER] };
+    expect(computeCoverableSponsorships(ACC, [multi], ["a"])).toBe(2);
+    expect(computeCoverableSponsorships(ACC, [multi, cb("b", ACC)], ["a", "b"])).toBe(3);
+  });
 });
 
 function creditCb(
@@ -340,6 +348,18 @@ describe("assessMergeability", () => {
     expect(assessMergeability(audit, { ...opts, claimedBalanceIds: [] })).toMatchObject({
       mergeable: false,
       reason: "IS_SPONSOR",
+    });
+  });
+
+  // a balance created with claimants [ACC, OTHER] puts 2 in num_sponsoring; on
+  // testnet claim plus merge succeeded for such an account (tx 550212b5...)
+  it("releases every claimant's reserve of a claimed multi-claimant CB", () => {
+    const audit = baseAudit({
+      claimableBalances: [{ ...cb("self", ACC), claimants: [ACC, OTHER] }],
+      sponsorship: { numSponsoring: 2, numSponsored: 0, coverable: 2 },
+    });
+    expect(assessMergeability(audit, { ...opts, claimedBalanceIds: ["self"] })).toEqual({
+      mergeable: true,
     });
   });
 

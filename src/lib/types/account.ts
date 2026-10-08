@@ -113,11 +113,12 @@ export interface SponsorshipInfo {
   readonly numSponsoring: number;
   readonly numSponsored: number;
   readonly sponsoredBy?: string;
-  // claimable balances this account created with itself as a claimant and can
-  // claim now, as far as the audit alone can tell (assessMergeability counts the
-  // plan's actual claims). an account cannot sponsor its own trustlines, offers,
-  // signers or data entries, so numSponsoring beyond this is foreign sponsorship
-  // that blocks the merge.
+  // num_sponsoring entries held by claimable balances this account created with
+  // itself as a claimant and can claim now, as far as the audit alone can tell
+  // (assessMergeability counts the plan's actual claims). core counts such a
+  // balance once per claimant. an account cannot sponsor its own trustlines,
+  // offers, signers or data entries, so numSponsoring beyond this is foreign
+  // sponsorship that blocks the merge.
   readonly coverable: number;
 }
 
