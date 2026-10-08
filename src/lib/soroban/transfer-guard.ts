@@ -15,7 +15,8 @@
 // nothing else: no other contract, no other function, no sub-invocations, no
 // address credentials. this mirrors assertSafeRevokeInvocation (SEC-02).
 
-import { Address, Operation, scValToNative, xdr, type Transaction } from "@stellar/stellar-sdk";
+import { Address, scValToNative, xdr, type Transaction } from "@stellar/stellar-sdk";
+import { assertExactSingleInvocation } from "@/lib/soroban/single-invocation-guard";
 
 export class UnsafeTransferError extends Error {
   constructor(reason: string) {
@@ -36,47 +37,10 @@ export interface ExpectedTransfer {
 // authorizes only that same transfer (source-account credentials, no
 // sub-invocations).
 export function assertSafeTransferInvocation(tx: Transaction, expected: ExpectedTransfer): void {
-  if (tx.operations.length !== 1) {
-    throw new UnsafeTransferError(`expected exactly 1 operation, got ${tx.operations.length}`);
-  }
-  const op = tx.operations[0]!;
-  if (op.type !== "invokeHostFunction") {
-    throw new UnsafeTransferError(`operation is "${op.type}", expected invokeHostFunction`);
-  }
-  const ihf = op as Operation.InvokeHostFunction;
-
-  // 1) the invoked call itself must be exactly the intended transfer
-  const func = ihf.func;
-  if (func.type !== "hostFunctionTypeInvokeContract") {
-    throw new UnsafeTransferError(`host function is "${func.type}", expected invokeContract`);
-  }
-  assertTransferCall(func.invokeContract, expected, "invocation");
-
-  // 2) every auth entry must authorize ONLY that same transfer. a hostile token
-  //    that tries to move other balances must add either a sub-invocation or a
-  //    separate entry targeting a different contract/function, both rejected here.
-  const auth = ihf.auth ?? [];
-  auth.forEach((entry, i) => {
-    const cred = entry.credentials.type;
-    if (cred !== "sorobanCredentialsSourceAccount") {
-      throw new UnsafeTransferError(
-        `auth[${i}] uses "${cred}" credentials; a safe drain is authorized only by the source account`,
-      );
-    }
-    const root = entry.rootInvocation;
-    const subs = root.subInvocations;
-    if (subs.length !== 0) {
-      throw new UnsafeTransferError(
-        `auth[${i}] carries ${subs.length} sub-invocation(s); a safe drain authorizes no nested calls`,
-      );
-    }
-    const rootFn = root.function;
-    if (rootFn.type !== "sorobanAuthorizedFunctionTypeContractFn") {
-      throw new UnsafeTransferError(
-        `auth[${i}] root is "${rootFn.type}", expected a contract call`,
-      );
-    }
-    assertTransferCall(rootFn.contractFn, expected, `auth[${i}]`);
+  assertExactSingleInvocation(tx, {
+    action: "drain",
+    fail: (reason) => new UnsafeTransferError(reason),
+    checkCall: (call, where) => assertTransferCall(call, expected, where),
   });
 }
 

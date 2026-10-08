@@ -14,7 +14,8 @@
 // approve(0) and that its auth tree authorizes nothing else: no other contract,
 // no other function, no sub-invocations, no address credentials.
 
-import { Address, Operation, scValToNative, xdr, type Transaction } from "@stellar/stellar-sdk";
+import { Address, scValToNative, xdr, type Transaction } from "@stellar/stellar-sdk";
+import { assertExactSingleInvocation } from "@/lib/soroban/single-invocation-guard";
 
 export class UnsafeRevokeError extends Error {
   constructor(reason: string) {
@@ -34,45 +35,10 @@ export interface ExpectedRevoke {
 // entry authorizes only that same approve (source-account credentials, no
 // sub-invocations).
 export function assertSafeRevokeInvocation(tx: Transaction, expected: ExpectedRevoke): void {
-  if (tx.operations.length !== 1) {
-    throw new UnsafeRevokeError(`expected exactly 1 operation, got ${tx.operations.length}`);
-  }
-  const op = tx.operations[0]!;
-  if (op.type !== "invokeHostFunction") {
-    throw new UnsafeRevokeError(`operation is "${op.type}", expected invokeHostFunction`);
-  }
-  const ihf = op as Operation.InvokeHostFunction;
-
-  // 1) the invoked call itself must be exactly the intended approve(0)
-  const func = ihf.func;
-  if (func.type !== "hostFunctionTypeInvokeContract") {
-    throw new UnsafeRevokeError(`host function is "${func.type}", expected invokeContract`);
-  }
-  assertApproveCall(func.invokeContract, expected, "invocation");
-
-  // 2) every auth entry must authorize ONLY that same approve. a hostile token
-  //    that tries to move other balances must add either a sub-invocation or a
-  //    separate entry targeting a different contract/function, both rejected here.
-  const auth = ihf.auth ?? [];
-  auth.forEach((entry, i) => {
-    const cred = entry.credentials.type;
-    if (cred !== "sorobanCredentialsSourceAccount") {
-      throw new UnsafeRevokeError(
-        `auth[${i}] uses "${cred}" credentials; a safe revoke is authorized only by the source account`,
-      );
-    }
-    const root = entry.rootInvocation;
-    const subs = root.subInvocations;
-    if (subs.length !== 0) {
-      throw new UnsafeRevokeError(
-        `auth[${i}] carries ${subs.length} sub-invocation(s); a safe revoke authorizes no nested calls`,
-      );
-    }
-    const rootFn = root.function;
-    if (rootFn.type !== "sorobanAuthorizedFunctionTypeContractFn") {
-      throw new UnsafeRevokeError(`auth[${i}] root is "${rootFn.type}", expected a contract call`);
-    }
-    assertApproveCall(rootFn.contractFn, expected, `auth[${i}]`);
+  assertExactSingleInvocation(tx, {
+    action: "revoke",
+    fail: (reason) => new UnsafeRevokeError(reason),
+    checkCall: (call, where) => assertApproveCall(call, expected, where),
   });
 }
 
