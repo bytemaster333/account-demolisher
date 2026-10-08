@@ -850,6 +850,57 @@ describe("M-26: Blend emissions claims open the BLND trustline first", () => {
   });
 });
 
+describe("a blend repay step names the debt in the asset's own units", () => {
+  const ISSUER = Keypair.random().publicKey();
+  const usdcSac = new Asset("USDC", ISSUER).contractId(TESTNET.passphrase);
+  const xlmSac = Asset.native().contractId(TESTNET.passphrase);
+  const debt = (asset: string, amount: bigint) =>
+    emptyPositions({
+      blend: [
+        {
+          poolId: POOL_ID,
+          liabilities: new Map([[asset, amount]]),
+          collateral: new Map(),
+          supply: new Map(),
+          emissionReserveTokenIds: [],
+        },
+      ],
+    });
+  const describeRepay = (positions: ProtocolPositions, audit = makeAudit()) => {
+    const tree = generatePlan(audit, positions, [], DEST, { network: TESTNET });
+    const node = [...tree.allNodes.values()].find((n) => n.kind === "RepayBlend");
+    expect(node).toBeDefined();
+    return node!.description;
+  };
+
+  it("shows a 100 XLM loan as 100 XLM, not as stroops", () => {
+    const text = describeRepay(debt(xlmSac, 1_000_000_000n));
+    expect(text).toMatch(/^Repay 100 XLM on Blend pool /);
+    expect(text).not.toContain("1000000000");
+  });
+
+  it("shows a classic asset the account holds by its code, in 7-place units", () => {
+    const audit = makeAudit({
+      balances: [
+        {
+          asset: { kind: "credit", code: "USDC", issuer: ISSUER },
+          amount: "30.0000000",
+          buyingLiabilities: "0.0000000",
+          sellingLiabilities: "0.0000000",
+          limit: "1000.0000000",
+        },
+      ],
+    });
+    expect(describeRepay(debt(usdcSac, 255_000_000n), audit)).toMatch(
+      /^Repay 25\.5 USDC on Blend pool /,
+    );
+  });
+
+  it("gives a token whose decimals it does not know in base units", () => {
+    expect(describeRepay(debt(ASSET_A, 1234n))).toMatch(/^Repay 1234 base units of token /);
+  });
+});
+
 describe("M-23: a repay asset locked in classic offers or pools is unwound first", () => {
   const ISSUER = Keypair.random().publicKey();
   const usdc = new Asset("USDC", ISSUER);

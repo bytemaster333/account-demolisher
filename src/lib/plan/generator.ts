@@ -403,7 +403,7 @@ export function generatePlan(
         kind: "RepayBlend",
         dependencies: repayDeps,
         status: "pending",
-        description: `Repay ${amount.toString()} of ${shortAddress(asset)} on Blend pool ${shortAddress(pool.poolId)}`,
+        description: `Repay ${sacAmountLabel(asset, amount, audit, passphrase)} on Blend pool ${shortAddress(pool.poolId)}`,
         metadata: {
           kind: "RepayBlend",
           poolId: pool.poolId,
@@ -1088,6 +1088,29 @@ function owedLabel(
     return `${stroopsToTrimmedDecimal(reward.amount)} XLM`;
   }
   return `${reward.amount.toString()} base units of token ${shortAddress(reward.token)}`;
+}
+
+// a token amount for a step's description. a stellar asset contract always has 7
+// decimals, so XLM and any classic asset the account trusts read as that asset;
+// any other token's decimals are not read, so its amount is given in base units.
+function sacAmountLabel(
+  token: string,
+  amount: bigint,
+  audit: AccountAudit,
+  passphrase: string | undefined,
+): string {
+  if (passphrase !== undefined) {
+    if (token === Asset.native().contractId(passphrase)) {
+      return `${stroopsToTrimmedDecimal(amount)} XLM`;
+    }
+    for (const b of audit.balances) {
+      if (b.asset.kind !== "credit") continue;
+      if (new Asset(b.asset.code, b.asset.issuer).contractId(passphrase) === token) {
+        return `${stroopsToTrimmedDecimal(amount)} ${b.asset.code}`;
+      }
+    }
+  }
+  return `${amount.toString()} base units of token ${shortAddress(token)}`;
 }
 
 // the planned exits that pay out a token, named for the user
