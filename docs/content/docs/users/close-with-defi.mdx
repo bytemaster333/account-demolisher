@@ -1,121 +1,109 @@
 ---
 title: Close an account that holds DeFi
-description: Close an account with Blend, Aquarius, Soroswap, or FxDAO positions, and handle the two cases that need you to act.
+description: Close an account with Blend, Aquarius or Soroswap positions, and handle the cases that need you to act.
 icon: Coins
 ---
 
-An account holding DeFi positions cannot merge while those positions are open. The app
-finds them, unwinds each one in its own transaction, converts the proceeds to XLM, and
-then runs the classic close.
+An account cannot be merged while it holds DeFi positions, because their value would stay behind
+on the deleted account. The app finds your positions, unwinds each one in its own transaction,
+sells what has a market to XLM, and then runs the classic close.
 
-You do not need to unwind anything by hand first. Connect the account and the plan comes
-back with the exit steps already in it.
+You do not unwind anything by hand first. Connect the account and the plan comes back with the
+exit steps in it.
 
 ## What gets unwound
 
-| Protocol              | What the close does                                                                |
-| --------------------- | ---------------------------------------------------------------------------------- |
-| **Blend**             | Repays borrows, withdraws collateral and supply, collects BLND emissions           |
-| **Aquarius**          | Withdraws your pool shares and collects rewards                                    |
-| **Soroswap**          | Withdraws your LP position                                                         |
-| **FxDAO**             | Pays the vault debt, which closes the vault and returns its collateral in one call |
-| **SEP-41 allowances** | Sets each approval to zero                                                         |
+| Protocol                        | What the close does                                                                     |
+| ------------------------------- | --------------------------------------------------------------------------------------- |
+| **Blend**                       | Repays loans, withdraws collateral and supply, collects BLND emissions                  |
+| **Blend backstop**              | Collects accrued backstop BLND, queues the withdrawal, and withdraws it once it unlocks |
+| **Aquarius pools**              | Collects gauge rewards and pool rewards, withdraws your pool shares                     |
+| **Aquarius concentrated pools** | Collects rewards and swap fees, withdraws each of your price ranges                     |
+| **Soroswap**                    | Withdraws your LP position                                                              |
+| **SEP-41 allowances**           | Sets each approval to zero                                                              |
 
-Each step appears in the Review plan with a plain label, so you see exactly what runs
-before you sign. The order is worked out for you: a repay runs before the withdraw that
-depends on it, a rewards claim runs after its withdraw, and the account merge waits for
-every position to close.
+Each step appears in Review with a plain label, so you see what runs before you sign. The order
+is worked out for you: exits that need nothing repaid run before the repays they can fund, a
+repay runs before the withdraw that depends on it, and the account merge waits for every exit.
+When an exit pays out an asset the account has no trustline for, the plan opens one first, and
+the final transaction removes it again.
 
-## Aquarius gauge rewards
+Every Aquarius and Soroswap pool exit carries a minimum output per token: the amount the step's own
+simulation expects, less the slippage tolerance (1% unless the deployment sets another). A pool
+that would pay less refuses the exit on chain instead of paying out less.
 
-Some Aquarius pools pay extra rewards through reward gauges, which the pool's ordinary
-rewards claim does not pay. When a gauge of a pool you hold a position in owes you
-rewards, the plan adds a **Collect Aquarius gauge rewards** step that claims them before
-it withdraws your share of that pool. When a reward token needs a trustline, the plan
-opens it ahead of the claim, the same way it does for a pool payout.
+## FxDAO
 
-The claim runs only on the pool address the Aquarius router lists for that pool's tokens
-and index, and you sign exactly that one call with nothing nested beneath it. If the app
-cannot read what the gauges owe, or the claim cannot be built and dry-run, the close stops
-before the account merge and shows you why.
+FxDAO is no longer supported, because the protocol shut down on chain. Its mainnet vaults contract
+now runs code that only allows eviction and upgrades, its panic mode is on, and it holds no
+vaults; its testnet contracts no longer exist. FxDAO stablecoins your account still holds are ordinary balances: the close sells them for XLM, or you choose what happens to them
+when they have no market.
 
-Discovery reads gauge rewards for every pool you still hold a share or a position in. A
-gauge reward still owed in a pool you already left is not found, so claim it in Aquarius
-before you close.
+## Cases that need you to act
 
-## Two cases that need you to act
+### A Blend loan you cannot repay from the account
 
-Everything else is automatic. These two are not, and the plan tells you about both before
-you sign.
+Repaying a Blend loan needs the borrowed token in the account. Blend has no built-in swap, and the
+app does not buy the token for you. When the account holds too little, the Warnings step says so.
+Send enough of the borrowed token to the account, or repay the loan in Blend, then come back.
 
-### A Blend loan you cannot currently repay
-
-Repaying on Blend needs the borrowed token in the account. Blend has no built-in swap, and
-the app does not acquire the token for you.
-
-If the account is short, the plan says so:
-
-> This account has a Blend loan that must be repaid before it can close, and repaying needs
-> the borrowed token on hand (Blend has no built-in swap). This account doesn't hold enough
-> of it, so the repay step would stop the close partway through. Top up that token in this
-> account, or unwind the Blend position yourself, before closing.
-
-Send enough of the borrowed token to the account, or close the Blend position in Blend,
-then come back.
+When the borrowed asset is locked in your open DEX offers or a classic liquidity pool, the plan
+adds a step that cancels those offers and withdraws those pool shares before the repay, so the
+asset is spendable.
 
 ### A Blend backstop deposit
 
-A backstop deposit is separate from an ordinary Blend position, and withdrawing one runs
-through a **17-day queue**.
+A backstop deposit is withdrawn through a queue: 17 days on the current backstop, 21 days on the
+earlier one. The account has to stay open to receive the withdrawal, so a run that queues one only
+prepares the close:
 
-The close starts that clock for you with a **Start a Blend backstop withdrawal** step and
-then stops at the merge. The account has to stay open to receive the withdrawal, so it
-cannot be deleted yet. The plan shows the unlock date.
+1. When backstop emissions have accrued, the plan claims them first so they are queued with your
+   deposit. When that claim fails on chain today, **Fix issues** shows the accrued BLND and asks you
+   to leave it unclaimed. These rewards never block the close.
+2. The plan queues the withdrawal and runs every other exit, and the account stays open. Review
+   reads **Review the preparation**, the confirmation reads **Confirm preparing the close**, and the
+   result reads **Preparation done, account still open** with the unlock date.
+3. On or after the unlock date, run the close again. The plan withdraws the unlocked deposit, which
+   Blend pays out as BLND-USDC LP tokens, and then closes the account.
 
-Come back on or after that date, withdraw the backstop, then close the account. This is
-what keeps the funds from being stranded on a deleted account.
+The LP tokens are a Soroban token, so on a close to your own address they are sent to your
+destination, or converted to XLM through Soroswap when you choose that. An exchange can only
+receive XLM, so close a backstop account to your own address.
+
+### Aquarius gauge rewards in a pool you already left
+
+The plan claims what an Aquarius pool's reward gauges owe you before it withdraws your share of
+that pool. It does this for every pool you still hold a share or a position in. Gauge rewards owed
+in a pool you already left are not found, so claim those in Aquarius before you close.
 
 ## Leftover balances
 
-Unwinding a position leaves tokens in the account. The close converts them to XLM inside
-the final transaction.
+Unwinding a position leaves tokens in the account. The final transaction sells every classic
+balance for XLM through the Stellar DEX. A balance with no market, or one whose sale would move the
+price by more than 2%, is never sold without your answer. See
+[Clear a blocked closure](/docs/users/clear-a-blocked-closure).
 
-When a token has no conversion path, it is never moved silently. You choose per asset:
-send it to your destination (offered only when the destination already accepts that
-token), or return it to its issuer. Until you choose, that balance blocks the merge.
-See [Clear a blocked closure](/docs/users/clear-a-blocked-closure).
+## Standalone tokens
 
-## Custom tokens held on their own
+A SEP-41 token someone sent you lives inside its own contract, not as a trustline balance, so it
+does not block the close and stays on the deleted account unless you move it. The **Standalone
+tokens** card in the Warnings step lists the ones the scan found. Nothing is swept unless you tick
+it, and you can convert the ticked ones to XLM through Soroswap instead of sending them as-is.
 
-A SEP-41 token someone sent you lives inside its own contract rather than as a normal
-balance, so it does not block the close and would stay behind on the deleted account.
+The scan looks back about seven days. Add an older token by its contract address.
 
-The Warnings step lists these under **Standalone tokens**. Nothing is swept unless you
-tick it. You can also send the selected ones through Soroswap to come out as XLM instead
-of moving them as-is.
+## When a protocol cannot be read
 
-Two limits are worth knowing. The scan looks back about seven days, so a token sent before
-that does not appear, and you can add it by contract address. And an exchange destination
-cannot receive raw tokens at all, so move any you want to keep to a personal wallet first.
-
-## If a protocol scan does not finish
-
-The plan says so rather than pretending the account is fully understood:
-
-> We couldn't finish checking for DeFi positions, so anything you have in apps like Blend,
-> Aquarius, Soroswap or FxDAO might be missing from this plan. If you've used those, check
-> them before closing.
-
-Check the protocol's own app before you continue.
+When discovery cannot read a protocol, the plan says so and the close stays blocked until a
+rebuilt plan reads it. Right before the merge, the close discovers your positions again and refuses
+to merge while any is open or unreadable.
 
 ## Protocols that are not supported
 
-The close unwinds Blend, Aquarius, Soroswap, and FxDAO. If the account holds a balance
-from a contract the app does not recognize, it says so and moves that balance as-is, which
-does not reclaim whatever it represents.
-
-If it is a position in another DeFi app, a pool share, a loan receipt, or a staked
-balance, unwind it in that app first.
+The close unwinds Blend, Aquarius and Soroswap. When the account holds tokens from contracts the app
+does not recognize, the Warnings step says that any of them can be a position in another app (a
+pool share, a loan or vault receipt, a staked balance). Unwind those in their own app first: the
+close can only move such a token as-is, which does not reclaim what it stands for.
 
 ## How it works underneath
 

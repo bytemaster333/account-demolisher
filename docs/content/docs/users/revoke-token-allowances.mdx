@@ -4,12 +4,12 @@ description: Review the standing token approvals on any Stellar address and set 
 icon: ShieldOff
 ---
 
-An allowance is a standing approval that lets another address spend your tokens up to a
-limit. You grant them when you use a DeFi app, and they stay active until they expire or
-you revoke them.
+An allowance is a standing approval that lets another address spend your SEP-41 tokens up to a
+limit. You grant them when you use a DeFi app, and they stay active until they expire or you
+revoke them.
 
-The allowance viewer at `/allowances` lists the active ones on any address. You do not
-have to close anything to use it, and looking is free.
+The allowance viewer at `/allowances` lists the active ones on any address. You do not have to
+close anything to use it, and looking is read-only and free.
 
 ## Review an address
 
@@ -27,10 +27,9 @@ Go to **Allowances** in the top navigation.
 
 ### Enter an address
 
-Paste any `G` account address or `C` contract address and select **Scan**. If you have a
-wallet connected, **Scan my own address** fills it in and scans in one go.
-
-Scanning is read-only. You do not need a wallet connected to look.
+Paste any `G` account address or `C` contract address and select **Scan**. With a wallet
+connected, **Scan my own address** fills in your address and scans it. You need no wallet to
+look.
 
 </Step>
 
@@ -40,18 +39,17 @@ Scanning is read-only. You do not need a wallet connected to look.
 
 Each row shows:
 
-| Column          | What it tells you                                                           |
-| --------------- | --------------------------------------------------------------------------- |
-| **TOKEN**       | The token symbol and its contract address                                   |
-| **SPENDER**     | Who can spend it, named if the app recognizes the app or protocol           |
-| **SPEND LIMIT** | The most that spender can still move. `Unlimited` for an unbounded approval |
-| **EXPIRES**     | When the approval lapses on its own                                         |
+| Column          | What it tells you                                                             |
+| --------------- | ----------------------------------------------------------------------------- |
+| **TOKEN**       | The token symbol and its contract address                                     |
+| **SPENDER**     | Who can spend it, named when the app knows the app or protocol                |
+| **SPEND LIMIT** | The most that spender can still move. **Unlimited** for an unbounded approval |
+| **EXPIRES**     | When the approval ends on its own                                             |
 
-A spender the app does not recognize is flagged **Unrecognized spender**. That does not
-mean it is malicious. It means it is not on the list of known apps and protocols for
-this network. Use the explorer link to inspect it.
+A spender the app does not know on this network is flagged **Unrecognized spender**. That does
+not make it malicious. Inspect it with the explorer link.
 
-**Show expired allowances** toggles the already-harmless ones into view.
+**Show inactive allowances** adds the approvals that expired or are already zero.
 
 </Step>
 
@@ -59,60 +57,59 @@ this network. Use the explorer link to inspect it.
 
 ## Revoke one
 
-Select **Revoke** on any row. Your wallet asks you to sign, the approval is set to zero,
-and the row updates to **Revoked** with a link to the transaction.
+Select **Revoke** on a row. Your wallet asks you to sign, the approval is set to zero, and the row
+updates to **Revoked**.
 
-You have to be connected with the wallet that owns the address being viewed. The token
-standard requires the approval's owner to authorize the change, so the app checks the
-connected key matches and keeps the page read-only otherwise. When it does not match you
-see a notice explaining that you are viewing in read-only mode.
+Only the owner of the approvals can change them, so revoking needs the wallet that owns the
+address you are viewing. With another wallet, or none, the page stays read-only and says so.
 
 ## Revoke several at once
 
-When an address has at least two active approvals, a bar above the list offers:
+When an address has at least two active approvals you can revoke, a bar above the list offers
+**Revoke all**, and **Revoke ... unrecognized** when some but not all of the spenders are unknown to
+the app. Revoking also cancels approvals for apps you still use, and you re-approve those the next
+time you use them. If you are cleaning up, start with the unrecognized ones.
 
-- **Revoke all**
-- **Revoke unrecognized**, when some but not all of the approvals are to spenders the app
-  does not recognize
-
-Revoking cancels approvals for apps you still use, and you would re-approve them next
-time you use those apps. If you are just cleaning up, start with the unrecognized ones.
-
-The sweep signs and confirms one approval at a time, so your wallet prompts you once per
-approval and it can take a couple of minutes. You can **Stop after current** at any point,
-and whatever is already revoked stays revoked.
+The bar signs and confirms one approval at a time, so your wallet prompts once per approval. You
+can select **Stop after current** at any point, and whatever is already revoked stays revoked.
 
 <Callout type="warn">
-  Keep the tab open until the sweep finishes. Each approval is a separate signature and transaction,
-  so leaving partway revokes some but not others.
+  Keep the tab open until the bar finishes. Each approval is its own transaction, so leaving partway
+  revokes some and not others.
 </Callout>
 
-## The scan covers about seven days
+## What the scan covers
 
-Soroban RPC providers keep event history for a limited window. The viewer reads back about
-seven days, which is the retention limit it can rely on.
+The viewer reads approve events from Soroban RPC, which keeps about seven days of event history.
+An approval granted earlier than that and never changed since does not appear, so check the
+spending app directly if you know you approved something earlier. When the scan cannot cover the
+whole window, the page says **The scan didn't finish**.
 
-Within that window the scan is complete. An approval granted before that window does not
-appear, so check the spending app directly if you know you approved something earlier.
+A token contract can emit approve events for any spenders it likes. When one contract reports
+approvals for more than 20 different spenders, the viewer lists the 20 most recent and says **Some
+approvals aren't listed**. Stellar asset contracts, which run no custom code, are never cut.
 
 ## When the on-chain value disagrees
 
-The list is built from approval events, then each one is read back from the token contract
-itself. If the two disagree, the row shows a second line with the on-chain figure.
+The list is built from the latest approve event per token and spender, then each one is read back
+from the token contract's own `allowance()`. When the two disagree, the row shows the on-chain
+figure and says the event can be fabricated or stale. When the read fails, the row says the amount
+is unverified. Trust the on-chain value, and revoke when you do not recognize the spender.
 
-Trust the on-chain value. A mismatch means the event was stale or fabricated, and revoking
-is the safe choice when you do not recognize the spender.
+## Allowances during a close
+
+A close revokes every active allowance it finds before the merge. It confirms each one against the
+token's `allowance()` first and skips the ones that already read zero. A revoke that fails does not
+stop the close: closing the account does not remove an allowance, so the result lists any that
+stayed in place.
 
 ## Why this is worth doing
 
-Allowances persist. They survive the spender contract being upgraded and the token issuer
-rotating. Unless an expiry was set, an approval you granted months ago is still live today.
-
-If that spender is later compromised, every account with an active approval to it is
-exposed up to the approved amount. Pruning the ones you no longer need removes that
-exposure.
+Allowances persist. Unless an expiry was set, an approval you granted months ago is still live
+today. If that spender is later compromised, every account with an active approval to it is exposed
+up to the approved amount. Pruning the ones you no longer need removes that exposure.
 
 ## How it works underneath
 
-[SEP-41 allowances](/docs/developers/protocol/allowances) covers the event scan, the
-on-chain confirmation step, and the exact call a revoke builds.
+[SEP-41 allowances](/docs/developers/protocol/allowances) covers the event scan, the on-chain
+confirmation, and the exact call a revoke builds.

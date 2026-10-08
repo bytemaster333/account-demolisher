@@ -1,79 +1,94 @@
 ---
 title: Connect your wallet
-description: Choose a signing method and the network you want to work on.
+description: Choose the network you want to work on and how you sign.
 icon: Wallet
 ---
 
-The app needs to know which account you are closing and how you want to approve each
-transaction. You choose both on the first screen.
+The app needs to know which account you are closing and how you approve each transaction. You
+choose both on the first screen.
 
 ## Pick the network first
 
-The network selector sits in the top right of every page and offers **TESTNET** and
-**MAINNET**. Your choice is remembered in your browser.
+The network selector sits in the top right of every page and offers **TESTNET** and **MAINNET**.
+Your choice is remembered in your browser. A fresh visit starts on the network the deployment was
+built for, which is testnet on [demolisher.app](https://demolisher.app).
 
-A fresh visit starts on the network the deployment was built with. On
-[demolisher.app](https://demolisher.app) that is testnet, so you can look around before
-anything touches real funds.
-
-Switching to mainnet opens a confirmation dialog titled **Switch to Mainnet?**. Tick the
-acknowledgement, then select **Switch to Mainnet**. Switching back to testnet applies
-immediately with no dialog.
+Switching to mainnet opens a dialog titled **Switch to Mainnet?**. Tick the acknowledgement that
+the tool has not completed an independent security audit, then select **Switch to Mainnet**. When
+the app opens on mainnet in a browser that has not acknowledged this yet, from a mainnet build or a
+remembered mainnet choice, the dialog **You're on Mainnet** asks for the same acknowledgement or
+offers **Switch to Testnet**. The acknowledgement is remembered in your browser. Switching back to
+testnet applies at once.
 
 <Callout type="warn">
-  Changing the network disconnects the wallet you have connected. A connected account belongs to one
-  network, so the app tears the session down rather than carrying it across. Connect again after the
-  switch.
+  Changing the network disconnects your wallet. A connected account belongs to one network, so the
+  app ends the session rather than carrying it across. Connect again after the switch. The selector
+  is locked while a close is running.
 </Callout>
 
 ## Choose how you sign
 
 ### Connect a wallet
 
-Select **Connect wallet** to open the wallet picker. It lists Albedo, Freighter, Fordefi,
-Rabet, xBull, LOBSTR, Hana Wallet, Klever Wallet, OneKey Wallet, Bitget Wallet, and
-Cactus Link, plus Ledger for hardware signing.
+Select **Connect wallet** to open the wallet picker. It lists Albedo, Freighter, Fordefi, Rabet,
+xBull, LOBSTR, Hana Wallet, Klever Wallet, OneKey Wallet, Bitget Wallet, Cactus Link, D'CENT Wallet,
+Scopuly, MetaMask and GHOSTSIG, plus Ledger for hardware signing. WalletConnect appears as well when
+the deployment sets a WalletConnect project id, and lets a mobile wallet connect by QR code.
+Wallets you do not have installed stay in the list with an install link.
 
-WalletConnect appears as well when the deployment sets a WalletConnect project id, which
-lets mobile wallets connect by QR code.
+Your wallet keeps your secret key. The app receives your public address, builds each transaction,
+and hands it to your wallet to sign. After the wallet signs, the app checks that the signed
+transaction is the one it built and that the signature is from your key before it submits it.
 
-Wallets you do not have installed stay in the list with an install link, so the picker
-always looks the same.
+### Use a Ledger
 
-Your wallet keeps your secret key. The app receives your public address, builds each
-transaction, and hands it to your wallet to sign. You approve every prompt in the wallet
-itself.
+Ledger signs over WebUSB. Connect the device, unlock it, and open the Stellar app on it before you
+select Ledger. The device shows the full transaction, operations and destination included, and you
+approve it there. The app never asks a Ledger to sign a bare transaction hash.
 
-### Use a hardware wallet
-
-Ledger is always in the picker and signs over WebUSB. Connect the device, unlock it, and
-open the Stellar app on it before you select Ledger.
+When a transaction is too large for the device to show, the Ledger refuses it and the app tells you
+to close the account with another wallet. The app does not fall back to hash signing.
 
 ### Paste a secret key
 
-If you have no wallet installed, open **Advanced: paste a secret key** on the connect
-screen and enter a key starting with `S`.
+If you have no wallet installed, open **Advanced: paste a secret key** on the connect screen, enter
+a key starting with `S`, and select **Continue with secret key**.
 
-The key stays in your browser's memory. It is never written to disk, never sent to any
-server, and never copied to your clipboard. A fresh keypair is built for each signing
-call, so the key material lives for the length of one operation.
+The key stays in your browser's memory for as long as that connection lasts, and the app signs in
+the page with it. It is never written to storage, never sent to any server, and never copied to
+your clipboard. Disconnecting drops the app's reference to it.
 
 <Callout type="warn">
-  A wallet is safer. Anyone who has your secret key controls the account and can move everything in
-  it. Only paste a key on a device you trust, with nobody able to see your screen.
+  A wallet is safer. Anyone who has your secret key controls the account. Only paste a key on a
+  device you trust, with nobody able to see your screen.
 </Callout>
 
 ### Create a demo account
 
-On testnet the connect screen also offers **Try it on a demo account**, which builds a
-funded practice account for you. See
-[Try it on testnet](/docs/users/try-it-on-testnet).
+On testnet the connect screen also offers **Try it on a demo account**, which builds a funded
+practice account for you. See [Try it on testnet](/docs/users/try-it-on-testnet).
 
-## What the app can see
+## What the app can see and send
 
-Connecting shares your public address. That is enough to read your account from the
-network and build a plan. The app never receives your secret key on the wallet path, and
-never transmits it on the secret-key path.
+Connecting shares your public address. That is enough to read your account from the network and
+build a plan. The app never receives your secret key on the wallet path and never transmits it on
+the secret-key path.
+
+Your browser talks to these services directly:
+
+- **Horizon and Soroban RPC** for the selected network, to read the account and submit
+  transactions.
+- **The Aquarius API**, to find your Aquarius pool positions.
+- **WalletConnect**, only when you pick WalletConnect or sign with a WalletConnect session you
+  restored. Its relay carries the encrypted session. Its Reown AppKit modal always sends an
+  initialization event and a connection event to `pulse.walletconnect.org`, carrying the page
+  address and, once connected, your wallet address.
+
+The app's own server receives first-party usage counts: which page you opened, which network you
+are on, four milestones of a close (wallet connected, discovery done, plan built, close started),
+and the public transaction hash of a finished close, which the server verifies on chain before it
+counts it. No account address, wallet name or amount is sent, and the server stores no IP address
+with these counts.
 
 ## Next
 

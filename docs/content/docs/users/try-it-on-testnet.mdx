@@ -4,12 +4,9 @@ description: Create a free practice account, fill it with sample positions, and 
 icon: FlaskConical
 ---
 
-The demo builds a real Stellar testnet account, fills it with the kinds of things a live
-account accumulates, and hands it to the normal closing flow. Every transaction is real
-and on chain. None of it involves real money.
-
-This is the fastest way to see the whole product before you point it at an account you
-care about.
+The demo builds a real Stellar testnet account, fills it with the kinds of things a live account
+accumulates, and hands it to the normal closing flow. Every transaction is real and on chain, and
+none of it involves real money.
 
 ## Run it
 
@@ -19,8 +16,8 @@ care about.
 
 ### Open the app on testnet
 
-Go to [demolisher.app](https://demolisher.app) and select **Demolish**. Check the network
-selector in the top right reads **Testnet**. A fresh visit starts on testnet already.
+Go to [demolisher.app](https://demolisher.app) and select **Demolish** in the top navigation. Check that the network
+selector in the top right reads **TESTNET**. A fresh visit starts on testnet.
 
 </Step>
 
@@ -28,12 +25,11 @@ selector in the top right reads **Testnet**. A fresh visit starts on testnet alr
 
 ### Create the account
 
-On the connect screen, find **Try it on a demo account** and select
-**Create demo account**. Setup takes about a minute.
+On the connect screen, find **Try it on a demo account** and select **Create demo account**. Setup
+takes about a minute.
 
-The screen switches to a live checklist while it runs. Each row turns into a check mark
-with a link to the transaction on Stellar.expert, so you can watch the account fill up in
-a block explorer as it happens.
+The screen switches to **Setting up your demo account**, a live checklist. Each finished row links
+its transaction on Stellar.expert, so you can watch the account fill up in a block explorer.
 
 </Step>
 
@@ -41,8 +37,8 @@ a block explorer as it happens.
 
 ### Continue into the close
 
-When the heading reads **Demo account ready**, you get the account's public key, an
-explorer link, and a summary of how many steps completed. Select **Continue**.
+When the heading reads **Demo account ready**, you see the account's public key and an explorer
+link. Select **Continue**.
 
 </Step>
 
@@ -50,8 +46,8 @@ explorer link, and a summary of how many steps completed. Select **Continue**.
 
 ### Set a destination
 
-In the configure step, select **Use demo address** next to the destination field. That
-fills in a fixed testnet address so you do not need a second wallet.
+In Configure, select **Use demo address** next to the destination field. It fills in a fixed
+testnet address, so you need no second wallet.
 
 </Step>
 
@@ -59,9 +55,9 @@ fills in a fixed testnet address so you do not need a second wallet.
 
 ### Close it
 
-From here the flow is identical to a real closure: review the plan, type the last four
-characters of the destination, wait out the four-second timer, and confirm. See
-[Close an account](/docs/users/close-an-account) for what each screen does.
+From here the flow is the same as a real close: resolve what the plan asks, read the warnings,
+review the plan, type the last four characters of the destination, wait for the timer, and
+confirm. See [Close an account](/docs/users/close-an-account) for each screen.
 
 </Step>
 
@@ -71,60 +67,42 @@ characters of the destination, wait out the four-second timer, and confirm. See
 
 Thirteen steps run in order.
 
-| #   | Step                         | What lands on chain                            |
-| --- | ---------------------------- | ---------------------------------------------- |
-| 1   | Generate fresh keypair       | A new keypair, created in your browser         |
-| 2   | Fund with friendbot          | 10,000 testnet XLM                             |
-| 3   | Open trustlines              | USDC, plus AQUA and YXLM from two demo issuers |
-| 4   | Write data entries           | Two `manageData` entries                       |
-| 5   | Place a sell offer           | Sell 100 XLM at 0.5 USDC                       |
-| 6   | Add a co-signer              | A random signer at weight 1                    |
-| 7   | Issue credit balances        | 1000 AQUA and 500 YXLM minted to the account   |
-| 8   | Create a claimable balance   | 5 XLM, claimable by the account itself         |
-| 9   | Supply collateral to Blend   | 50 XLM into the Blend testnet pool             |
-| 10  | Swap XLM to USDC on Soroswap | Routed through the Soroswap aggregator         |
-| 11  | Add liquidity to Soroswap LP | 20 XLM and 10 USDC into the pair               |
-| 12  | Approve a SEP-41 allowance   | 100 stroops on the native XLM contract         |
-| 13  | Ready to demolish            | The account is handed to the closing flow      |
+| #   | Step                         | What lands on chain                                |
+| --- | ---------------------------- | -------------------------------------------------- |
+| 1   | Generate fresh keypair       | A new keypair, created in your browser             |
+| 2   | Fund with friendbot          | 10,000 testnet XLM                                 |
+| 3   | Open trustlines              | USDC, plus AQUA and YXLM from two new demo issuers |
+| 4   | Write data entries           | Two data entries                                   |
+| 5   | Place a sell offer           | Sell 100 XLM at 0.5 USDC                           |
+| 6   | Add a co-signer              | A random signer at weight 1                        |
+| 7   | Issue credit balances        | 1000 AQUA and 500 YXLM paid to the account         |
+| 8   | Create a claimable balance   | 5 XLM, claimable by the account itself             |
+| 9   | Supply collateral to Blend   | 50 XLM into the Blend testnet pool                 |
+| 10  | Swap XLM → USDC on Soroswap  | 50 XLM swapped to USDC through the Soroswap router |
+| 11  | Add liquidity to Soroswap LP | XLM and USDC into the Soroswap pair                |
+| 12  | Approve a SEP-41 allowance   | 100 stroops approved on the native XLM contract    |
+| 13  | Ready to demolish            | The account is handed to the closing flow          |
 
-Only step 2 is required. If friendbot fails, the run stops. Everything after it is
-best-effort: a step that does not complete is marked failed or skipped and the rest
-carries on, so one flaky testnet service does not cost you the whole run.
+Friendbot funding is the one required step: when it fails, setup stops and offers **Try again**.
+Every later step is best effort. A step that does not complete is marked failed or skipped with its
+reason, and the rest carries on, so one unreliable testnet service does not cost you the whole run.
+Step 11 runs only when step 10 left USDC to pair with.
 
-## The Soroswap steps skip on testnet
+The co-signer in step 6 has weight 1 and the account's thresholds stay at zero, so your key still
+closes the account alone. AQUA and YXLM are ordinary classic tokens from issuers the demo creates,
+not Aquarius positions, and they have no market, so the close asks you what to do with them.
 
-Soroswap has no on-chain pools on testnet, so the aggregator returns no path for the swap
-in step 10. Step 11 needs the USDC that swap would have produced, so it skips too. Both
-appear in the checklist with the reason attached rather than failing silently.
+## What a demo close covers
 
-That makes **Blend** the one live DeFi position a testnet demo actually creates. AQUA and
-YXLM here are ordinary classic tokens from demo issuers, not Aquarius positions. To
-exercise Aquarius, Soroswap, or FxDAO you need an account that already holds them on
-mainnet.
+Depending on which steps completed, the plan revokes the allowance, withdraws the Blend collateral
+and the Soroswap liquidity, and then runs one classic transaction that cancels the offer, collects
+the claimable balance, sells the USDC when it has a market, returns the AQUA and YXLM to their issuers as you chose,
+removes the trustlines, deletes the data entries, clears the co-signer and merges the account.
 
-## What a testnet demo close looks like
-
-The plan comes out as:
-
-- **Token permissions**: one step cancelling the SEP-41 approval from step 12.
-- **Withdraw from apps**: one step pulling the 50 XLM back out of Blend.
-- **Close the account**: one transaction that collects the claimable balance, returns the
-  AQUA and YXLM to their issuers (they have no market path, so you choose what happens to
-  them), removes the three trustlines, deletes the two data entries, cancels the offer,
-  clears the co-signer, and merges the account.
-
-When it finishes you get the merge transaction hash, linked to the explorer, and a
-**Save a receipt** button that copies a text record of the closure and its transaction
-links.
+When it finishes you get the merge transaction linked on the explorer, and **Copy a receipt** and
+**Download .txt** for a text record of the close.
 
 ## Where the demo is offered
 
-The demo appears on networks that have a friendbot, which means testnet. It is never
-offered on mainnet, so there is no way to trigger it against real funds.
-
-## Change the destination to an exchange
-
-If you replace the demo destination with an address the app recognizes as an exchange
-hot wallet, the close routes through the mediator path instead and enforces that
-exchange's deposit memo rules. That exercises the exchange flow end to end on testnet.
-See [Send the funds to an exchange](/docs/users/send-to-an-exchange).
+The demo is offered on testnet only. It is never shown on mainnet, so it cannot run against real
+funds.
