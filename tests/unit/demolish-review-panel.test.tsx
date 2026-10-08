@@ -49,6 +49,17 @@ describe("memo on Review (M-40)", () => {
     expect(screen.getByTestId("review-memo").textContent).toMatch(/No memo/i);
   });
 
+  // the final gate strips bidi and invisible characters, so Review must show the
+  // same text or the two screens can read differently
+  it("shows a memo with hidden characters the way the final gate does", () => {
+    const memo: ClassicMemo = { type: "text", value: "12‮34​5" };
+    renderPanel(makeTree({ opts: { memo } }), { memo });
+    const text = screen.getByTestId("review-memo").textContent ?? "";
+    expect(text).toContain("12345");
+    expect(text).not.toMatch(/[‮​]/u);
+    expect(text).toMatch(/contains hidden characters/);
+  });
+
   it("explains the memo rides on the delivery payment for an exchange close", () => {
     const memo: ClassicMemo = { type: "text", value: "abc" };
     const mediator = Keypair.random().publicKey();
