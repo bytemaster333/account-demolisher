@@ -48,7 +48,7 @@ import {
   txHashHex,
   txMaxTime,
 } from "@/lib/orchestrator/submit";
-import { withTimeout } from "@/lib/orchestrator/actors/discover";
+import { withTimeout } from "@/lib/with-timeout";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { balance as readTokenBalance } from "@/lib/soroban/sep41";

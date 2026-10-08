@@ -34,6 +34,7 @@ import {
 } from "@/lib/soroban/event-scan";
 import { balance } from "@/lib/soroban/sep41";
 import { shortAddress } from "@/lib/safe-display";
+import { withTimeout } from "@/lib/with-timeout";
 
 export interface HeldToken {
   readonly contractId: string;
@@ -73,15 +74,6 @@ const SCAN_BUDGET_MS = 15_000;
 // one slow/stalling contract can't consume the whole budget.
 const PROBE_CONCURRENCY = 6;
 const PROBE_TIMEOUT_MS = 8_000;
-
-// reject if `p` doesn't settle within `ms`; always clears its timer
-function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout>;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-  });
-  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
-}
 
 export function heldTokenCreditFilter(toAddress: string): rpc.Api.EventFilter {
   const sym = (s: string) => xdr.ScVal.scvSymbol(s).toXdr("base64");
@@ -157,9 +149,9 @@ export async function discoverHeldTokens(
   const probed = await mapConcurrent(candidates, PROBE_CONCURRENCY, async (contractId) => {
     try {
       const bal = await withTimeout(
+        `balance(${shortAddress(contractId, 6, 0)})`,
         balance(server, contractId, userAddress, userAddress, network),
         PROBE_TIMEOUT_MS,
-        `balance(${shortAddress(contractId, 6, 0)})`,
       );
       return { contractId, bal };
     } catch {

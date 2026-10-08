@@ -37,6 +37,7 @@ import { readAquariusRewardToken } from "@/lib/adapters/aquarius/client";
 import { readPositionGaugeRewards } from "@/lib/adapters/aquarius/gauges";
 import { ALL_PROTOCOLS, discoveryWarningFor } from "@/lib/orchestrator/warnings";
 import { isNotFoundError } from "@/lib/orchestrator/submit";
+import { withTimeout } from "@/lib/with-timeout";
 
 export interface DiscoverInput {
   readonly publicKey: string;
@@ -76,14 +77,6 @@ export interface DiscoverOutput {
 
 // per-discovery-step ceiling so a hanging rpc can't pin the ui on a spinner
 export const DISCOVERY_TIMEOUT_MS = 30_000;
-
-export function withTimeout<T>(label: string, p: Promise<T>, ms: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-  });
-  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
-}
 
 export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({ input }) => {
   const discoveryWarnings: string[] = [];
