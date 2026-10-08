@@ -1,11 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { Horizon, NotFoundError, scValToNative, xdr, type Transaction } from "@stellar/stellar-sdk";
+import { Horizon, NotFoundError, type Transaction } from "@stellar/stellar-sdk";
 
 import { loadPoolAndUser } from "@/lib/adapters/blend/client";
 import { buildBlendWithdrawTx } from "@/lib/adapters/blend/exit";
 import { BLEND_MAINNET_POOLS } from "@/lib/adapters/blend/pools";
 import { MAINNET } from "@/lib/config/networks";
 import { assertSorobanFeeWithinCap } from "@/lib/soroban/fee-cap";
+
+import { findInContractData, type IndexedEntry } from "./blend-mainnet-holders";
 
 // read-only: a YieldBloxV2 collateral withdraw for a user whose Positions entry
 // is archived, built by the app's own builder and simulated against mainnet.
@@ -18,56 +20,25 @@ import { assertSorobanFeeWithinCap } from "@/lib/soroban/fee-cap";
 // 1,060,000 stroops, 1,232 to 1,336 write bytes, 5 read-write entries and 2
 // archived entries restored, well inside the defi-exit class.
 //
-// the users are picked at run time: a pinned user can restore the entry or
-// withdraw, and the test would then fail on someone else's state. the rpc cannot
-// list a contract's storage, so candidates come from stellar.expert's
-// contract-data index (archived Positions entries with collateral and no debt;
-// 278 of them on 2026-10-08). whether an entry is still archived and the
-// collateral still there is read from the chain itself, by the pool load and
-// the simulated build.
-const EXPERT = "https://api.stellar.expert";
+// the users are picked at run time (see blend-mainnet-holders) from the
+// archived Positions entries with collateral and no debt, 278 of them on
+// 2026-10-08. whether an entry is still archived and the collateral still there
+// is read from the chain itself, by the pool load and the simulated build.
 const WANTED = 2;
 const MAX_CANDIDATES = 12;
 
-interface ContractDataPage {
-  readonly _links: { readonly next?: { readonly href: string } };
-  readonly _embedded: {
-    readonly records: readonly {
-      readonly key: string;
-      readonly value: string;
-      readonly expired?: boolean;
-    }[];
+function archivedHolder(entry: IndexedEntry): string | undefined {
+  if (!entry.expired || !Array.isArray(entry.key) || entry.key[0] !== "Positions") return undefined;
+  const user: unknown = entry.key[1];
+  // a contract holder has no classic account to source the transaction from
+  if (typeof user !== "string" || !user.startsWith("G")) return undefined;
+  const positions = entry.value as {
+    collateral?: Record<string, bigint>;
+    liabilities?: Record<string, bigint>;
   };
-}
-
-async function archivedCandidates(poolId: string): Promise<string[]> {
-  const found: string[] = [];
-  let next: string | undefined = `/explorer/public/contract-data/${poolId}?limit=200`;
-  while (next !== undefined && found.length < MAX_CANDIDATES) {
-    const res = await fetch(`${EXPERT}${next}`);
-    if (!res.ok) throw new Error(`stellar.expert contract-data listing failed: ${res.status}`);
-    const page = (await res.json()) as ContractDataPage;
-    const records = page._embedded.records;
-    for (const rec of records) {
-      if (rec.expired !== true) continue;
-      const key = scValToNative(xdr.ScVal.fromXdr(rec.key, "base64")) as unknown;
-      if (!Array.isArray(key) || key[0] !== "Positions" || typeof key[1] !== "string") continue;
-      // a contract holder has no classic account to source the transaction from
-      if (!key[1].startsWith("G")) continue;
-      const positions = scValToNative(xdr.ScVal.fromXdr(rec.value, "base64")) as {
-        collateral?: Record<string, bigint>;
-        liabilities?: Record<string, bigint>;
-      };
-      const held = Object.values(positions.collateral ?? {}).some((v) => v > 0n);
-      const owes = Object.values(positions.liabilities ?? {}).some((v) => v > 0n);
-      if (held && !owes) found.push(key[1]);
-      if (found.length >= MAX_CANDIDATES) break;
-    }
-    // the next link carries the default page size, not the one asked for
-    next =
-      records.length < 200 ? undefined : page._links.next?.href.replace(/limit=\d+/, "limit=200");
-  }
-  return found;
+  const held = Object.values(positions.collateral ?? {}).some((v) => v > 0n);
+  const owes = Object.values(positions.liabilities ?? {}).some((v) => v > 0n);
+  return held && !owes ? user : undefined;
 }
 
 function archivedEntries(tx: Transaction): number {
@@ -82,7 +53,7 @@ describe("integration: YieldBloxV2 archived withdraw (mainnet, read-only)", () =
     const entry = BLEND_MAINNET_POOLS.find((p) => p.name === "YieldBloxV2");
     if (entry === undefined) throw new Error("YieldBloxV2 is not in the mainnet registry");
     const horizon = new Horizon.Server(MAINNET.horizon);
-    const candidates = await archivedCandidates(entry.pool_id);
+    const candidates = await findInContractData(entry.pool_id, archivedHolder, MAX_CANDIDATES);
     const checked: string[] = [];
     const passedOver: string[] = [];
 

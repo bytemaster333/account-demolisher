@@ -1,18 +1,26 @@
 import { describe, it, expect } from "vitest";
 import { Address, Horizon, scValToNative, xdr, type Transaction } from "@stellar/stellar-sdk";
 
-import { defaultBackstopDepositLoader, withBlendFailover } from "@/lib/adapters/blend/client";
+import {
+  defaultBackstopDepositLoader,
+  withBlendFailover,
+  type BackstopUserState,
+} from "@/lib/adapters/blend/client";
 import {
   BLEND_BACKSTOP_MAINNET_ID,
   BLEND_BACKSTOP_V1_MAINNET_ID,
   resolveKnownBackstop,
+  type BlendBackstopRef,
 } from "@/lib/adapters/blend/constants";
 import {
   BackstopClaimUnavailableError,
   buildBackstopClaimTx,
   buildExitSequence,
 } from "@/lib/adapters/blend/exit";
+import { BLEND_MAINNET_POOL_IDS } from "@/lib/adapters/blend/pools";
 import { MAINNET } from "@/lib/config/networks";
+
+import { backstopBalance, findInContractData } from "./blend-mainnet-holders";
 
 // read-only: the backstop emissions claim is built by the app's own builder and
 // simulated against live mainnet state. nothing is signed or submitted.
@@ -25,22 +33,45 @@ import { MAINNET } from "@/lib/config/networks";
 // never a silent skip), and the queue must still build without it. if the
 // comet is fixed, the claim builds instead, and that is checked as well.
 
-// depositors holding active shares and accrued emissions on 2026-10-06 (read
-// from the backstops' UserBalance and UEmisData entries)
 const CASES = [
-  {
-    label: "v2 backstop, FixedV2",
-    poolId: "CAJJZSGMMM3PD7N33TAPHGBUGTB43OC73HVIK2L2G6BNGGGYOSSYBXBD",
-    user: "GBCRDN4B6KY456PNKGPTB7OJXEHOBMMZ6EQ23TIRBMIXZUUJODL5RDYM",
-    backstopId: BLEND_BACKSTOP_MAINNET_ID,
-  },
-  {
-    label: "v1 backstop, Fixed",
-    poolId: "CDVQVKOY2YSXS2IC7KN6MNASSHPAO7UN2UR2ON4OI2SKMFJNVAMDX6DP",
-    user: "GCGZAO7KGSJFYO2O5ZJHCNDRFXHXUN7X7A5N3EXW4S2QXIZPZ37OXO4R",
-    backstopId: BLEND_BACKSTOP_V1_MAINNET_ID,
-  },
+  { label: "v2 backstop", backstopId: BLEND_BACKSTOP_MAINNET_ID },
+  { label: "v1 backstop", backstopId: BLEND_BACKSTOP_V1_MAINNET_ID },
 ] as const;
+
+// the depositor is picked at run time (see blend-mainnet-holders): a
+// balance with active shares in a pool the app supports, whose accrued
+// emissions the app's own loader reads as above zero
+const MAX_CANDIDATES = 10;
+
+async function holderWithAccrual(backstop: BlendBackstopRef): Promise<{
+  readonly poolId: string;
+  readonly user: string;
+  readonly state: BackstopUserState;
+}> {
+  const candidates = await findInContractData(
+    backstop.id,
+    (entry) => {
+      const b = backstopBalance(entry);
+      if (b === undefined || !BLEND_MAINNET_POOL_IDS.includes(b.pool)) return undefined;
+      return b.shares > 0n ? b : undefined;
+    },
+    MAX_CANDIDATES,
+  );
+  const passedOver: string[] = [];
+  for (const c of candidates) {
+    const state = await withBlendFailover(MAINNET, (sdkNetwork) =>
+      defaultBackstopDepositLoader.loadUser(sdkNetwork, backstop, c.pool, c.user),
+    );
+    if (state.shares > 0n && state.accruedEmissions > 0n) {
+      return { poolId: c.pool, user: c.user, state };
+    }
+    passedOver.push(`${c.user} (shares ${state.shares}, accrued ${state.accruedEmissions})`);
+  }
+  throw new Error(
+    `precondition: none of ${candidates.length} indexed depositors of ${backstop.id} holds ` +
+      `shares with accrued emissions: ${passedOver.join(", ")}`,
+  );
+}
 
 function call(tx: Transaction): { contract: string; fn: string; args: xdr.ScVal[] } {
   const op = tx.operations[0];
@@ -57,25 +88,16 @@ describe("integration: blend backstop emissions claim against mainnet (L-49)", (
   for (const c of CASES) {
     it(`reports a claim that cannot run as forfeitable and still queues (${c.label})`, async () => {
       const backstop = resolveKnownBackstop(MAINNET, c.backstopId);
-      const state = await withBlendFailover(MAINNET, (sdkNetwork) =>
-        defaultBackstopDepositLoader.loadUser(sdkNetwork, backstop, c.poolId, c.user),
-      );
-      if (state.shares <= 0n || state.accruedEmissions <= 0n) {
-        throw new Error(
-          `precondition: ${c.user} no longer holds shares with accrued emissions in the ` +
-            `${c.label} backstop (shares ${state.shares}, accrued ${state.accruedEmissions}); ` +
-            `pick a current holder`,
-        );
-      }
-      const account = await new Horizon.Server(MAINNET.horizon).loadAccount(c.user);
+      const { poolId, user, state } = await holderWithAccrual(backstop);
+      const account = await new Horizon.Server(MAINNET.horizon).loadAccount(user);
 
-      const outcome = await buildBackstopClaimTx(MAINNET, { poolId: c.poolId }, c.user, account)
+      const outcome = await buildBackstopClaimTx(MAINNET, { poolId }, user, account)
         .then((built) => ({ built }))
         .catch((e: unknown) => ({ error: e }));
       if ("error" in outcome) {
         expect(outcome.error).toBeInstanceOf(BackstopClaimUnavailableError);
         const e = outcome.error as BackstopClaimUnavailableError;
-        expect(e.poolId).toBe(c.poolId);
+        expect(e.poolId).toBe(poolId);
         expect(e.backstopId).toBe(c.backstopId);
         expect(e.accruedEmissions).toBeGreaterThan(0n);
         expect(e.simulationError).toMatch(/HostError/);
@@ -85,14 +107,14 @@ describe("integration: blend backstop emissions claim against mainnet (L-49)", (
       } else {
         const claim = call(outcome.built.transaction);
         expect([claim.contract, claim.fn]).toEqual([c.backstopId, "claim"]);
-        expect(scValToNative(claim.args[1]!)).toEqual([c.poolId]);
+        expect(scValToNative(claim.args[1]!)).toEqual([poolId]);
       }
 
       // the queue is built on its own and never waits on the claim
       const steps = await buildExitSequence(
         MAINNET,
-        { poolId: c.poolId, liabilities: new Map(), collateral: new Map(), supply: new Map() },
-        c.user,
+        { poolId, liabilities: new Map(), collateral: new Map(), supply: new Map() },
+        user,
         account,
         { backstopShares: state.shares },
       );
