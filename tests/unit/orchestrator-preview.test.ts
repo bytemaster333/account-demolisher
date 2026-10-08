@@ -10,10 +10,12 @@ import {
   type HydrationFailure,
 } from "@/lib/plan/hydration";
 import { buildPlanTree, type PlanNode, type PlanTree } from "@/lib/plan/tree";
+import { EMPTY_POSITIONS } from "@/lib/adapters/positions/interface";
 import { i128 as scvI128, vec as scvVec } from "@/lib/soroban/scval";
 import {
   backstopClaimForfeits,
   exchangeFundingBlocker,
+  exchangePayoutPathBlockers,
   exitTrustlineBlockers,
   exitTrustlineNotes,
   refusedHeldTokenConversions,
@@ -349,6 +351,100 @@ describe("a pool exit that pays into a missing or unauthorized trustline blocks 
         "trustline.",
     ]);
     expect(exitTrustlineNotes(buildPlanTree([lp()]))).toEqual([]);
+  });
+});
+
+describe("an exchange close checks the market of what its exits pay into empty lines", () => {
+  const lpPositions = {
+    ...EMPTY_POSITIONS,
+    soroswap: [{ pair: { tokenA: USDC_SAC, tokenB: XLM_SAC }, shareBalance: 10n }],
+  };
+  const usdcLine = (amount: string, isAuthorized = true) => ({
+    asset: { kind: "credit" as const, code: "USDC", issuer: USDC_ISSUER },
+    amount,
+    buyingLiabilities: "0.0000000",
+    sellingLiabilities: "0.0000000",
+    limit: "1000.0000000",
+    isAuthorized,
+  });
+  const withLine = (line: ReturnType<typeof usdcLine>) =>
+    makeAudit({ balances: [...makeAudit().balances, line] });
+  const missing = {
+    contractId: USDC_SAC,
+    code: "USDC",
+    issuer: USDC_ISSUER,
+    reason: "missing" as const,
+  };
+  const opts = (gaps: (typeof missing)[] = []) => ({
+    passphrase: NETWORK.passphrase,
+    exitTrustlineGaps: gaps,
+  });
+  const BLOCKER =
+    `A pool exit in this plan pays out USDC (issuer ${USDC_ISSUER}), which has no market ` +
+    "path to XLM, so an exchange close could not forward it. Close to your own Stellar " +
+    "address instead.";
+
+  it("blocks a payout into an empty line whose asset has no market", async () => {
+    const asked: string[] = [];
+    const out = await exchangePayoutPathBlockers(
+      withLine(usdcLine("0.0000000")),
+      lpPositions,
+      opts(),
+      async (a) => {
+        asked.push(`${a.code}:${a.issuer}`);
+        return false;
+      },
+    );
+    expect(asked).toEqual([`USDC:${USDC_ISSUER}`]);
+    expect(out).toEqual([BLOCKER]);
+  });
+
+  it("blocks a payout into a line the plan opens", async () => {
+    const out = await exchangePayoutPathBlockers(
+      makeAudit(),
+      lpPositions,
+      opts([missing]),
+      async () => false,
+    );
+    expect(out).toEqual([BLOCKER]);
+  });
+
+  it("passes a payout whose asset has a market", async () => {
+    const out = await exchangePayoutPathBlockers(
+      withLine(usdcLine("0.0000000")),
+      lpPositions,
+      opts([missing]),
+      async () => true,
+    );
+    expect(out).toEqual([]);
+  });
+
+  it("leaves a line with a balance to the quotes of the balances", async () => {
+    const hasMarket = vi.fn(async () => false);
+    await exchangePayoutPathBlockers(
+      withLine(usdcLine("2.0000000")),
+      lpPositions,
+      opts(),
+      hasMarket,
+    );
+    expect(hasMarket).not.toHaveBeenCalled();
+  });
+
+  it("asks nothing of a line no exit pays into, or one the issuer has not authorized", async () => {
+    const hasMarket = vi.fn(async () => false);
+    await exchangePayoutPathBlockers(
+      withLine(usdcLine("0.0000000")),
+      EMPTY_POSITIONS,
+      opts([missing]),
+      hasMarket,
+    );
+    await exchangePayoutPathBlockers(
+      withLine(usdcLine("0.0000000", false)),
+      lpPositions,
+      opts(),
+      hasMarket,
+    );
+    expect(hasMarket).not.toHaveBeenCalled();
   });
 });
 

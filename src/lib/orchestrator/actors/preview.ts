@@ -38,7 +38,8 @@ import { isNotFoundError } from "@/lib/orchestrator/submit";
 import { heldTokenDispositionWarnings } from "@/lib/orchestrator/warnings";
 import { assessMergeability, isFrozenBalance } from "@/lib/stellar/account-audit";
 import { fetchLedgerClock } from "@/lib/stellar/ledger-clock";
-import { resolveCreditPaths } from "@/lib/stellar/path-finder";
+import { findPathToXLM, resolveCreditPaths } from "@/lib/stellar/path-finder";
+import { decimalToStroops } from "@/lib/stellar/amount";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { formatXlm } from "@/lib/soroban/fee-cap";
@@ -48,7 +49,7 @@ import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
 import { blndTrustlineRequirement } from "@/lib/adapters/blend/emissions-check";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import type { HeldToken } from "@/lib/soroban/held-tokens";
-import type { ExitTrustlineGap } from "@/lib/soroban/stellar-asset";
+import { exitPayoutTokens, type ExitTrustlineGap } from "@/lib/soroban/stellar-asset";
 import type { UnopenableExitLine } from "@/lib/orchestrator/actors/discover";
 
 export interface PreviewInput {
@@ -270,6 +271,22 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
     } catch (err) {
       return blockedPreview(errorMessage(err));
     }
+    const unsellable = await exchangePayoutPathBlockers(
+      audit,
+      input.positions,
+      {
+        passphrase: network.passphrase,
+        exitTrustlineGaps: input.exitTrustlineGaps ?? [],
+        ...(input.aquariusRewardToken ? { aquariusRewardToken: input.aquariusRewardToken } : {}),
+      },
+      async (asset) =>
+        (await findPathToXLM(
+          { kind: "credit", code: asset.code, issuer: asset.issuer },
+          PAYOUT_PATH_PROBE_AMOUNT,
+          network,
+        )) !== null,
+    );
+    if (unsellable.length > 0) return blockedPreview(...unsellable);
     const flow = await startMediatorFlow(input.destination, {
       network: network.id,
       memo: input.memo ?? null,
@@ -636,6 +653,53 @@ export function exitTrustlineBlockers(tree: PlanTree, gaps: readonly ExitTrustli
         : `A pool exit in this plan pays out ${gap.code} (issuer ${gap.issuer}), and this ` +
             `account has no ${gap.code} trustline, so the exit would fail on chain. Add a ` +
             `${gap.code} trustline from your wallet, then rebuild the plan.`,
+    );
+  }
+  return out;
+}
+
+// what a pool exit pays is not known before it lands, so one unit is quoted. it
+// shows whether the asset has a market to XLM at all; the final batches quote
+// the real amount before they sell it.
+const PAYOUT_PATH_PROBE_AMOUNT = "1";
+
+// an exchange close sells every credit at the merge. what a pool exit pays into
+// a line the plan opens, or into a line that holds nothing yet, is not quoted
+// with the account's balances. an asset with no market to XLM would stop the
+// close at the final batches, after the exits ran, so the review says so first.
+export async function exchangePayoutPathBlockers(
+  audit: AccountAudit,
+  positions: ProtocolPositions,
+  opts: {
+    readonly passphrase: string;
+    readonly exitTrustlineGaps: readonly ExitTrustlineGap[];
+    readonly aquariusRewardToken?: string;
+  },
+  hasMarket: (asset: { readonly code: string; readonly issuer: string }) => Promise<boolean>,
+): Promise<string[]> {
+  const paid = new Set(exitPayoutTokens(positions));
+  if (opts.aquariusRewardToken !== undefined) paid.add(opts.aquariusRewardToken);
+  const assets = new Map<string, { readonly code: string; readonly issuer: string }>();
+  // a missing line is opened by the plan; an unauthorized one is refused by it
+  for (const gap of opts.exitTrustlineGaps) {
+    if (gap.reason !== "missing" || !paid.has(gap.contractId)) continue;
+    assets.set(`${gap.code}:${gap.issuer}`, { code: gap.code, issuer: gap.issuer });
+  }
+  for (const b of audit.balances) {
+    if (b.asset.kind !== "credit" || b.isAuthorized === false) continue;
+    if (decimalToStroops(b.amount) !== 0n) continue;
+    const { code, issuer } = b.asset;
+    if (paid.has(new Asset(code, issuer).contractId(opts.passphrase))) {
+      assets.set(`${code}:${issuer}`, { code, issuer });
+    }
+  }
+  const out: string[] = [];
+  for (const asset of assets.values()) {
+    if (await hasMarket(asset)) continue;
+    out.push(
+      `A pool exit in this plan pays out ${asset.code} (issuer ${asset.issuer}), which has no ` +
+        "market path to XLM, so an exchange close could not forward it. Close to your own " +
+        "Stellar address instead.",
     );
   }
   return out;

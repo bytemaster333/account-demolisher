@@ -63,8 +63,10 @@ vi.mock("@/lib/stellar/account-audit", async () => {
   return { ...actual, auditAccount: (...a: unknown[]) => auditAccount(...a) };
 });
 const resolveCreditPaths = vi.fn();
+const findPathToXLM = vi.fn();
 vi.mock("@/lib/stellar/path-finder", () => ({
   resolveCreditPaths: (...a: unknown[]) => resolveCreditPaths(...a),
+  findPathToXLM: (...a: unknown[]) => findPathToXLM(...a),
 }));
 vi.mock("@/lib/mediator/client", () => ({
   startMediatorFlow: (...a: unknown[]) => startMediatorFlow(...a),
@@ -337,6 +339,7 @@ beforeEach(() => {
   );
   discoverHeldTokens.mockResolvedValue({ held: [], unreadable: [], incomplete: null });
   resolveCreditPaths.mockResolvedValue(new Map());
+  findPathToXLM.mockResolvedValue({ destinationAmount: "1.0000000", path: [], sourceAmount: "1" });
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -1527,6 +1530,50 @@ describe("the review plans the trustlines pool exits pay into", () => {
     expect(ctx.reviewBlockers).toEqual([
       expect.stringMatching(/USDC.*issuer authorizes each new trustline/),
     ]);
+    actor.stop();
+  });
+
+  it("blocks an exchange close when a line it opens for a payout has no market to XLM", async () => {
+    findPathToXLM.mockResolvedValue(null);
+    const gap = { contractId: USDC_SAC, code: "USDC", issuer: USDC_ISSUER, reason: "missing" };
+    const actor = reviewWith([USDC_SAC, XLM_SAC], [gap], input());
+    await settle(actor, "awaiting_confirmation");
+    const ctx = actor.getSnapshot().context;
+    expect(findPathToXLM).toHaveBeenCalledWith(
+      { kind: "credit", code: "USDC", issuer: USDC_ISSUER },
+      "1",
+      NETWORK,
+    );
+    expect(ctx.reviewBlockers).toEqual([
+      `A pool exit in this plan pays out USDC (issuer ${USDC_ISSUER}), which has no market ` +
+        "path to XLM, so an exchange close could not forward it. Close to your own Stellar " +
+        "address instead.",
+    ]);
+    // asked before the mint, so a plan that can't run leaves no flow behind
+    expect(startMediatorFlow).not.toHaveBeenCalled();
+    expect(ctx.tree!.allNodes.size).toBe(0);
+    actor.stop();
+  });
+
+  it("lets an exchange close open a payout line whose asset has a market", async () => {
+    const gap = { contractId: USDC_SAC, code: "USDC", issuer: USDC_ISSUER, reason: "missing" };
+    const actor = reviewWith([USDC_SAC, XLM_SAC], [gap], input());
+    await settle(actor, "awaiting_confirmation");
+    expect(findPathToXLM).toHaveBeenCalledTimes(1);
+    expect(actor.getSnapshot().context.reviewBlockers.join(" ")).not.toMatch(/no market path/);
+    actor.stop();
+  });
+
+  it("asks no market of a payout line in a close to the user's own address", async () => {
+    findPathToXLM.mockResolvedValue(null);
+    const gap = { contractId: USDC_SAC, code: "USDC", issuer: USDC_ISSUER, reason: "missing" };
+    const actor = reviewWith(
+      [USDC_SAC, XLM_SAC],
+      [gap],
+      input({ destination: DEST, useMediator: false }),
+    );
+    await settle(actor, "awaiting_confirmation");
+    expect(findPathToXLM).not.toHaveBeenCalled();
     actor.stop();
   });
 
