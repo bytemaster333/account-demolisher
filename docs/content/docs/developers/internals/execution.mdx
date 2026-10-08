@@ -69,7 +69,7 @@ not become safe on a rebuild.
 `runFinalClassic` runs one classic batch per phase, up to 30 phases, and audits the account again
 after each lands. For each phase it:
 
-1. Audits the account. A missing account means a merge may have landed with its reply lost:
+1. Audits the account. A missing account means a merge already landed, even if its reply was lost:
    `findAccountMerge` reads the account's history, and a merge into the expected account (the
    destination, or the forwarding account) finishes the close.
 2. Quotes the conversions for the balances plus what the close claims into them.

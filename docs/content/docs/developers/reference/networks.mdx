@@ -36,7 +36,7 @@ Only a rate limit (429), a 5xx, the RPC's processing-limit answer (JSON-RPC code
 named transport failure moves a call to the next host. A deterministic error is returned as-is,
 because every host would answer it the same way. Once a host answers, the client stays on it.
 
-A failed-over `sendTransaction` that comes back `txBadSeq` might be the same transaction already
+A failed-over `sendTransaction` that comes back `txBadSeq` can be the same transaction already
 applied through the first host, so the client looks the hash up on every host and reports a
 transaction any host knows as `DUPLICATE`, for the caller to poll.
 
@@ -69,7 +69,7 @@ and `testnet` for testnet.
 
 ## Adding an endpoint
 
-The browser may only contact hosts in the Content Security Policy. `connect-src` is derived from
+The browser contacts only hosts in the Content Security Policy. `connect-src` is derived from
 `NETWORKS` (each network's Horizon, RPC, failovers and friendbot), so an endpoint you add in
 `src/lib/config/networks.ts` joins the policy with it. Any other host the browser needs goes into
 `src/lib/config/csp.ts`.

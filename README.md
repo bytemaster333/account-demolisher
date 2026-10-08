@@ -12,8 +12,8 @@ performed yet, and the app asks you to acknowledge that before it operates on ma
 
 - **Classic close.** Cancels DEX offers, withdraws classic liquidity-pool shares, claims the
   claimable balances the account can claim, sells or returns credit balances, removes trustlines
-  and data entries, clears extra signers and thresholds, and merges the account. Small accounts
-  close in one transaction; larger ones in a few.
+  and data entries, clears extra signers and thresholds, and merges the account. The classic
+  close runs in one transaction, or in a few for a large account or one with pool shares.
 - **Soroban DeFi.** Discovers and exits positions in the browser, against the network directly:
   Blend (repay, withdraw, emissions, the backstop queue and its withdrawal after the unlock),
   Aquarius (rewards, gauge rewards, pool shares, concentrated ranges) and Soroswap (LP positions).
