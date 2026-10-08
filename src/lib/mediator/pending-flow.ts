@@ -411,14 +411,15 @@ export async function tryRunWithCloseLock<T>(
   }
 }
 
-// a close queued for the lock counts too: it runs as soon as the lock is free
+// a close queued for the lock counts too: it runs as soon as the lock is free.
+// only a shared hold is left out, since no close takes one
 export async function isCloseInFlight(publicKey: string): Promise<boolean> {
   const locks = lockManager();
   if (locks === null) return false;
   const state = await locks.query();
   const name = closeLockName(publicKey);
   return [...(state.held ?? []), ...(state.pending ?? [])].some(
-    (l) => l.name === name && l.mode === "exclusive",
+    (l) => l.name === name && l.mode !== "shared",
   );
 }
 
