@@ -13,6 +13,7 @@ import {
   AquariusAPIPoolProvider,
   AquariusEventScanPoolProvider,
   AquariusPartialPoolsError,
+  readAquariusPoolAddress,
 } from "@/lib/adapters/aquarius/pools";
 import { MAINNET_CONCENTRATED_POOLS } from "@/lib/adapters/aquarius/concentrated-pools";
 import { getAquariusRouterId } from "@/lib/adapters/aquarius/client";
@@ -230,5 +231,44 @@ describe("Aquarius event scan", () => {
       ),
     ).rejects.toThrow(/3-page cap/);
     expect(n).toBe(3);
+  });
+});
+
+describe("readAquariusPoolAddress", () => {
+  // router.get_pools(tokens) -> map<BytesN<32>, address>, as the router answers it
+  function poolsServer(seen: { tokens?: string[]; contract?: string }) {
+    return simServer((contract, fn, args) => {
+      if (fn !== "get_pools") throw new Error(`unexpected ${fn}`);
+      seen.contract = contract;
+      seen.tokens = (scValToNative(args[0]!) as string[]).map(String);
+      return xdr.ScVal.scvMap([
+        new xdr.ScMapEntry({
+          key: xdr.ScVal.scvBytes(Buffer.from(IDX_OK, "hex")),
+          val: new Address(POOL_OK).toScVal(),
+        }),
+        new xdr.ScMapEntry({
+          key: xdr.ScVal.scvBytes(Buffer.from(IDX_BROKEN, "hex")),
+          val: new Address(POOL_BROKEN).toScVal(),
+        }),
+      ]);
+    });
+  }
+
+  it("resolves a pool index to its contract through the router", async () => {
+    const seen: { tokens?: string[]; contract?: string } = {};
+    await expect(
+      readAquariusPoolAddress(poolsServer(seen), MAINNET, [TOKEN_A, TOKEN_B], IDX_BROKEN, USER),
+    ).resolves.toBe(POOL_BROKEN);
+    expect(seen.contract).toBe(getAquariusRouterId(MAINNET));
+    expect(seen.tokens).toEqual([TOKEN_A, TOKEN_B]);
+    await expect(
+      readAquariusPoolAddress(poolsServer({}), MAINNET, [TOKEN_A, TOKEN_B], `0x${IDX_OK}`, USER),
+    ).resolves.toBe(POOL_OK);
+  });
+
+  it("refuses an index the router does not list for those tokens", async () => {
+    await expect(
+      readAquariusPoolAddress(poolsServer({}), MAINNET, [TOKEN_A, TOKEN_B], "3".repeat(64), USER),
+    ).rejects.toThrow(/no pool with index 3{8}/);
   });
 });

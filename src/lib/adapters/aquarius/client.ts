@@ -133,44 +133,115 @@ export async function getUserReward(
   return fromScValU128(retval);
 }
 
-// the token a router claim pays (AQUA on mainnet). the router exports a setter
-// but no getter, so it is read from the router's instance storage, key
-// ["RewardToken"], with no contract code run. read live rather than pinned
-// because the router admin can change it.
+// the reward token the router stores (AQUA on mainnet). the router exports a
+// setter but no getter, so it is read from the router's instance storage, key
+// ["RewardToken"], with no contract code run. the claim itself is paid by the
+// pool from its own ["RewardToken"] (readAquariusPoolRewardTokens), which every
+// pool on mainnet had equal to this one on 2026-10-08.
 export async function readAquariusRewardToken(
   server: rpc.Server,
   network: NetworkConfig,
 ): Promise<string> {
   const routerId = getAquariusRouterId(network);
+  const storage = (await readInstanceStorage(server, [routerId])).get(routerId)!;
+  return storedRewardToken(storage, `AquariusAmmRouter ${routerId}`);
+}
+
+// the tokens each pool's reward claim can pay: its own ["RewardToken"] first,
+// then any other token its ["RewardTokenRegistry"] lists (concentrated pools
+// keep one). a router claim on mainnet standard pool CAUCGD... was paid by the
+// pool, as a transfer from the pool of the token in its RewardToken (simulated
+// 2026-10-08). the protocol source is not public, so a registry entry is taken
+// as payable rather than guessed away.
+export async function readAquariusPoolRewardTokens(
+  server: rpc.Server,
+  poolAddresses: readonly string[],
+): Promise<Map<string, readonly string[]>> {
+  const ids = [...new Set(poolAddresses)];
+  const storage = await readInstanceStorage(server, ids);
+  const out = new Map<string, readonly string[]>();
+  for (const id of ids) {
+    const items = storage.get(id)!;
+    const label = `Aquarius pool ${id}`;
+    const tokens = [storedRewardToken(items, label)];
+    const registry = storageValue(items, "RewardTokenRegistry");
+    if (registry !== undefined) {
+      if (registry.type !== "scvVec" || registry.vec === null) {
+        throw new Error(`${label} has a RewardTokenRegistry that is not a list of tokens`);
+      }
+      for (const v of registry.vec) {
+        const token = contractAddress(v);
+        if (token === null) {
+          throw new Error(`${label} has a RewardTokenRegistry entry that is not a contract`);
+        }
+        if (!tokens.includes(token)) tokens.push(token);
+      }
+    }
+    out.set(id, tokens);
+  }
+  return out;
+}
+
+// instance storage of each contract, read in one getLedgerEntries call (the
+// rpc takes up to 200 keys; a close touches a handful of pools)
+export async function readInstanceStorage(
+  server: rpc.Server,
+  contractIds: readonly string[],
+): Promise<Map<string, readonly xdr.ScMapEntry[]>> {
+  const out = new Map<string, readonly xdr.ScMapEntry[]>();
+  if (contractIds.length === 0) return out;
   const resp = await server.getLedgerEntries(
-    xdr.LedgerKey.contractData(
-      new xdr.LedgerKeyContractData({
-        contract: new Address(routerId).toScAddress(),
-        key: xdr.ScVal.scvLedgerKeyContractInstance(),
-        durability: xdr.ContractDataDurability.persistent,
-      }),
+    ...contractIds.map((id) =>
+      xdr.LedgerKey.contractData(
+        new xdr.LedgerKeyContractData({
+          contract: new Address(id).toScAddress(),
+          key: xdr.ScVal.scvLedgerKeyContractInstance(),
+          durability: xdr.ContractDataDurability.persistent,
+        }),
+      ),
     ),
   );
-  const entry = resp.entries[0];
-  if (entry === undefined) {
-    throw new Error(`AquariusAmmRouter ${routerId} instance was not returned by the rpc`);
+  for (const entry of resp.entries) {
+    const cd = xdr.expectUnionVariant(entry.val, "contractData").contractData;
+    const instance = xdr.expectUnionVariant(cd.val, "scvContractInstance").instance;
+    out.set(Address.fromScAddress(cd.contract).toString(), instance.storage ?? []);
   }
-  const instance = xdr.expectUnionVariant(
-    xdr.expectUnionVariant(entry.val, "contractData").contractData.val,
-    "scvContractInstance",
-  ).instance;
-  for (const item of instance.storage ?? []) {
+  const missing = contractIds.filter((id) => !out.has(id));
+  if (missing.length > 0) {
+    throw new Error(`contract instances not returned by the rpc: ${missing.join(", ")}`);
+  }
+  return out;
+}
+
+// the value stored under the one-symbol key [name]
+export function storageValue(
+  items: readonly xdr.ScMapEntry[],
+  name: string,
+): xdr.ScVal | undefined {
+  for (const item of items) {
     const key = item.key.type === "scvVec" ? item.key.vec : null;
-    const name = key?.length === 1 && key[0]!.type === "scvSymbol" ? key[0]!.sym.toString() : null;
-    if (name !== "RewardToken") continue;
-    if (item.val.type !== "scvAddress") break;
-    const token = Address.fromScVal(item.val).toString();
-    if (!token.startsWith("C")) break;
-    return token;
+    if (key?.length === 1 && key[0]!.type === "scvSymbol" && key[0]!.sym.toString() === name) {
+      return item.val;
+    }
   }
-  throw new Error(
-    `AquariusAmmRouter ${routerId} has no contract address under RewardToken, so the token a reward claim pays is unknown`,
-  );
+  return undefined;
+}
+
+function contractAddress(v: xdr.ScVal): string | null {
+  if (v.type !== "scvAddress") return null;
+  const id = Address.fromScVal(v).toString();
+  return id.startsWith("C") ? id : null;
+}
+
+function storedRewardToken(items: readonly xdr.ScMapEntry[], label: string): string {
+  const v = storageValue(items, "RewardToken");
+  const token = v === undefined ? null : contractAddress(v);
+  if (token === null) {
+    throw new Error(
+      `${label} has no contract address under RewardToken, so the token a reward claim pays is unknown`,
+    );
+  }
+  return token;
 }
 
 export interface WithdrawConcentratedArgs {

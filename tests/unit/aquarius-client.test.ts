@@ -14,6 +14,7 @@ import {
 import {
   claim,
   getAquariusRouterId,
+  readAquariusPoolRewardTokens,
   readAquariusRewardToken,
   type AquariusClientDeps,
 } from "@/lib/adapters/aquarius/client";
@@ -102,25 +103,26 @@ describe("aquarius claim", () => {
   });
 });
 
-describe("readAquariusRewardToken", () => {
-  const AQUA_SAC = "CAUIKL3IYGMERDRUN6YSCLWVAKIFG5Q4YJHUKM4S4NJZQIA3BAS6OJPK";
+const AQUA_SAC = "CAUIKL3IYGMERDRUN6YSCLWVAKIFG5Q4YJHUKM4S4NJZQIA3BAS6OJPK";
 
-  function storageItem(name: string, val: xdr.ScVal): xdr.ScMapEntry {
-    return new xdr.ScMapEntry({ key: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(name)]), val });
-  }
+function storageItem(name: string, val: xdr.ScVal): xdr.ScMapEntry {
+  return new xdr.ScMapEntry({ key: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(name)]), val });
+}
 
-  // the router's instance entry as getLedgerEntries returns it
-  function routerServer(storage: xdr.ScMapEntry[] | null, present = true) {
-    const routerId = getAquariusRouterId(MAINNET);
-    const calls: xdr.LedgerKey[][] = [];
-    const server = {
-      getLedgerEntries: async (...keys: xdr.LedgerKey[]) => {
-        calls.push(keys);
-        if (!present) return { latestLedger: 1, entries: [] };
+// contract instance entries as getLedgerEntries returns them, for the ids it has
+function instanceServer(storageById: Record<string, xdr.ScMapEntry[] | null>) {
+  const calls: xdr.LedgerKey[][] = [];
+  const server = {
+    getLedgerEntries: async (...keys: xdr.LedgerKey[]) => {
+      calls.push(keys);
+      const entries = keys.flatMap((key) => {
+        const contract = xdr.expectUnionVariant(key, "contractData").contractData.contract;
+        const id = Address.fromScAddress(contract).toString();
+        if (!(id in storageById)) return [];
         const val = xdr.LedgerEntryData.contractData(
           new xdr.ContractDataEntry({
             ext: xdr.ExtensionPoint.v0(),
-            contract: new Address(routerId).toScAddress(),
+            contract,
             key: xdr.ScVal.scvLedgerKeyContractInstance(),
             durability: xdr.ContractDataDurability.persistent,
             val: xdr.ScVal.scvContractInstance(
@@ -128,14 +130,24 @@ describe("readAquariusRewardToken", () => {
                 executable: xdr.ContractExecutable.contractExecutableWasm(
                   new Uint8Array(32).fill(1),
                 ),
-                storage,
+                storage: storageById[id]!,
               }),
             ),
           }),
         );
-        return { latestLedger: 1, entries: [{ key: keys[0]!, val, lastModifiedLedgerSeq: 1 }] };
-      },
-    } as unknown as rpc.Server;
+        return [{ key, val, lastModifiedLedgerSeq: 1 }];
+      });
+      return { latestLedger: 1, entries };
+    },
+  } as unknown as rpc.Server;
+  return { server, calls };
+}
+
+describe("readAquariusRewardToken", () => {
+  // the router's instance entry as getLedgerEntries returns it
+  function routerServer(storage: xdr.ScMapEntry[] | null, present = true) {
+    const routerId = getAquariusRouterId(MAINNET);
+    const { server, calls } = instanceServer(present ? { [routerId]: storage } : {});
     return { server, calls, routerId };
   }
 
@@ -172,5 +184,73 @@ describe("readAquariusRewardToken", () => {
     await expect(readAquariusRewardToken(routerServer([], false).server, MAINNET)).rejects.toThrow(
       /not returned/,
     );
+  });
+});
+
+describe("readAquariusPoolRewardTokens", () => {
+  const POOL_A = StrKey.encodeContract(Buffer.alloc(32, 31));
+  const POOL_B = StrKey.encodeContract(Buffer.alloc(32, 32));
+  const OTHER = StrKey.encodeContract(Buffer.alloc(32, 33));
+  const registry = (ids: string[]) =>
+    storageItem(
+      "RewardTokenRegistry",
+      xdr.ScVal.scvVec(ids.map((id) => new Address(id).toScVal())),
+    );
+
+  // mainnet 2026-10-08: a router claim on standard pool CAUCGD... for GDD34D...
+  // is paid by the pool (transfer CAUCGD -> GDD34D of the token in the pool's
+  // own RewardToken). every one of the 365 pools stores the router's token
+  // today, and each concentrated pool's RewardTokenRegistry lists only it.
+  it("reads each pool's own reward token in one ledger read", async () => {
+    const { server, calls } = instanceServer({
+      [POOL_A]: [
+        storageItem("RewardBoostToken", new Address(TOKEN_B).toScVal()),
+        storageItem("RewardToken", new Address(AQUA_SAC).toScVal()),
+      ],
+      [POOL_B]: [storageItem("RewardToken", new Address(AQUA_SAC).toScVal()), registry([AQUA_SAC])],
+    });
+    const got = await readAquariusPoolRewardTokens(server, [POOL_A, POOL_B, POOL_A]);
+    expect(got).toEqual(
+      new Map([
+        [POOL_A, [AQUA_SAC]],
+        [POOL_B, [AQUA_SAC]],
+      ]),
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toHaveLength(2);
+  });
+
+  it("lists every token a pool's registry names besides its reward token", async () => {
+    const { server } = instanceServer({
+      [POOL_A]: [
+        storageItem("RewardToken", new Address(AQUA_SAC).toScVal()),
+        registry([AQUA_SAC, OTHER]),
+      ],
+    });
+    await expect(readAquariusPoolRewardTokens(server, [POOL_A])).resolves.toEqual(
+      new Map([[POOL_A, [AQUA_SAC, OTHER]]]),
+    );
+  });
+
+  it("refuses a pool the rpc does not return or that stores no reward token", async () => {
+    await expect(readAquariusPoolRewardTokens(instanceServer({}).server, [POOL_A])).rejects.toThrow(
+      /not returned/,
+    );
+    await expect(
+      readAquariusPoolRewardTokens(instanceServer({ [POOL_A]: [registry([AQUA_SAC])] }).server, [
+        POOL_A,
+      ]),
+    ).rejects.toThrow(/RewardToken/);
+    await expect(
+      readAquariusPoolRewardTokens(
+        instanceServer({
+          [POOL_A]: [
+            storageItem("RewardToken", new Address(AQUA_SAC).toScVal()),
+            storageItem("RewardTokenRegistry", xdr.ScVal.scvU32(1)),
+          ],
+        }).server,
+        [POOL_A],
+      ),
+    ).rejects.toThrow(/RewardTokenRegistry/);
   });
 });

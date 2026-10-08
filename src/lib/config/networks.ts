@@ -62,11 +62,3 @@ export function requireNetwork(id: string | null | undefined): NetworkConfig {
 export function unsupportedNetwork(id: never): never {
   throw new Error(`unsupported Stellar network id "${String(id)}"`);
 }
-
-// no app code calls this any more; a few component tests still do, and it goes
-// once they use NETWORKS. it used to turn an unknown id into testnet, so it now
-// throws like requireNetwork instead of guessing.
-/** @deprecated use parseNetworkId or requireNetwork */
-export function resolveNetwork(id: string | undefined): NetworkConfig {
-  return requireNetwork(id);
-}

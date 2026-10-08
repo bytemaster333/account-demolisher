@@ -18,9 +18,12 @@ import {
   MAINNET_CONCENTRATED_POOL_WASM,
 } from "@/lib/adapters/aquarius/concentrated-pools";
 import { getAquariusRouterId } from "@/lib/adapters/aquarius/client";
-import { poolIndexHexToBytes } from "@/lib/adapters/aquarius/pools";
+import { poolIndexHexToBytes, readAquariusPoolAddress } from "@/lib/adapters/aquarius/pools";
+import { EMPTY_POSITIONS } from "@/lib/adapters/positions/interface";
+import { claimGaugeRewards, readGaugeRewards } from "@/lib/adapters/aquarius/gauges";
 import { MAINNET } from "@/lib/config/networks";
 import { getRpc } from "@/lib/soroban/rpc-client";
+import { readExitPayouts } from "@/lib/soroban/stellar-asset";
 import { simulateRead } from "@/lib/soroban/simulate";
 import { u128 } from "@/lib/soroban/scval";
 
@@ -178,5 +181,102 @@ describe("integration: aquarius exits simulate against mainnet", () => {
       "GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA",
     ).contractId(MAINNET.passphrase);
     await expect(readAquariusRewardToken(getRpc(MAINNET), MAINNET)).resolves.toBe(aqua);
+  });
+
+  // GDD34D... holds archived shares in standard pool CAUCGD... with AQUA
+  // pending; the pool pays that claim from its own RewardToken (simulated
+  // 2026-10-08), so the payout read resolves the pool through the router and
+  // reads that token
+  it("reads the reward token from the paying pool, found through the router", async () => {
+    const server = getRpc(MAINNET);
+    const user = "GDD34DUAHJA4ZW26H7YUFKXZHS4TRVCU6G7NZ6JBFLTIMV6FNQCIEQ4O";
+    const pool = "CAUCGDPDPQL4EPMPPFST63VBDVN6H5LMDYM3OTBGJQZTCTM3DE4IWWWB";
+    const index = "37b955f3708dae748cad465441fcad70b26ffe272385227a4a737234ae429bdf";
+    const tokens = [
+      "CAESLMGW5LYTIEJI7FJHK6SFSWRELLNVX5Q4WR4UZEALMTRWQDBKDPAG",
+      "CAUIKL3IYGMERDRUN6YSCLWVAKIFG5Q4YJHUKM4S4NJZQIA3BAS6OJPK",
+    ];
+    const aqua = new Asset(
+      "AQUA",
+      "GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA",
+    ).contractId(MAINNET.passphrase);
+    await expect(readAquariusPoolAddress(server, MAINNET, tokens, index, user)).resolves.toBe(pool);
+    const payouts = await readExitPayouts(server, MAINNET, user, {
+      ...EMPTY_POSITIONS,
+      aquarius: [{ poolIndex: index, shareBalance: 1n, tokens }],
+    });
+    expect(payouts.aquariusRewardToken).toBe(aqua);
+    expect([...payouts.tokens].sort()).toEqual([...tokens].sort());
+  });
+
+  // stable pool CCNXGPE4... had a gauge paying XLM on
+  // 2026-10-08. a share holder the gauge owes is found through stellar.expert's
+  // listing of the share token's balances, then the app's own reader and
+  // builder run against live state (simulation only)
+  it("reads what a pool's gauge owes and builds the claim that pays it", async () => {
+    const server = getRpc(MAINNET);
+    const horizon = new Horizon.Server(MAINNET.horizon);
+    const pool = "CCNXGPE4AQCSNEBZO3XJDKKDI3CRLYMVS6UWBBTVDLALLWMJEXBORQ2A";
+    // the pool's key in the router, from the amm-api pool listing
+    const api = {
+      index: "f56e6f3b43d99643950956cf1dfdfccfc1abe825bef484484911c9f428ff4ba7",
+      tokens_addresses: [
+        "CAUP7NFABXE5TJRL3FKTPMWRLC7IAXYDCTHQRFSCLR5TMGKHOOQO772J",
+        "CBIJBDNZNF4X35BJ4FFZWCDBSCKOP5NB4PLG4SNENRMLAPYG4P5FM6VN",
+      ],
+    };
+    const share = String(
+      scValToNative(
+        (
+          await simulateRead(
+            server,
+            getAquariusRouterId(MAINNET),
+            "share_id",
+            [
+              xdr.ScVal.scvVec(api.tokens_addresses.map((t) => new Address(t).toScVal())),
+              xdr.ScVal.scvBytes(Buffer.from(poolIndexHexToBytes(api.index))),
+            ],
+            "GC6K27OC6OAA6XWVE3GGMJ2US5MOVMYZT5OJ326KOWKH4ZVMHXT6A7X4",
+            MAINNET,
+          )
+        ).retval,
+      ),
+    );
+    const listing = (await (
+      await fetch(
+        `https://api.stellar.expert/explorer/public/contract-data/${share}?limit=200&order=desc`,
+      )
+    ).json()) as { _embedded?: { records?: { key: string }[] } };
+    const holders: string[] = [];
+    for (const r of listing._embedded?.records ?? []) {
+      const key = scValToNative(xdr.ScVal.fromXdr(r.key, "base64")) as unknown;
+      if (Array.isArray(key) && key[0] === "Balance" && String(key[1]).startsWith("G")) {
+        holders.push(String(key[1]));
+      }
+    }
+    let found: { user: string; amount: bigint; token: string } | undefined;
+    for (const user of holders.slice(0, 40)) {
+      const owed = await readGaugeRewards(server, MAINNET, user, [pool]);
+      if (owed.length > 0) {
+        found = { user, amount: owed[0]!.amount, token: owed[0]!.token };
+        break;
+      }
+    }
+    expect(found, "no holder of CCNXGPE4 is owed a gauge reward any more").toBeDefined();
+    const tx = await claimGaugeRewards(
+      {
+        user: found!.user,
+        poolAddress: pool,
+        tokens: api.tokens_addresses,
+        poolIndex: api.index,
+        sourceAccount: await horizon.loadAccount(found!.user),
+        network: MAINNET,
+      },
+      { server },
+    );
+    const op = tx.operations[0] as unknown as { auth: xdr.SorobanAuthorizationEntry[] };
+    expect(op.auth).toHaveLength(1);
+    expect(op.auth[0]!.credentials.type).toBe("sorobanCredentialsSourceAccount");
+    expect(op.auth[0]!.rootInvocation.subInvocations).toHaveLength(0);
   });
 });

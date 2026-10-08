@@ -1,5 +1,13 @@
 import { describe, it, expect, vi } from "vitest";
-import { Address, Asset, Keypair, xdr, type rpc } from "@stellar/stellar-sdk";
+import {
+  Address,
+  Asset,
+  AuthRequiredFlag,
+  Keypair,
+  StrKey,
+  xdr,
+  type rpc,
+} from "@stellar/stellar-sdk";
 
 import { MAINNET } from "@/lib/config/networks";
 import { EMPTY_POSITIONS, type ProtocolPositions } from "@/lib/adapters/positions/interface";
@@ -7,7 +15,9 @@ import {
   exitPayoutTokens,
   exitTrustlineGaps,
   readExitPayoutTokens,
+  readExitPayouts,
   readWrappedAssets,
+  type WrappedAsset,
 } from "@/lib/soroban/stellar-asset";
 import type { AuditBalance } from "@/lib/types/account";
 
@@ -44,10 +54,46 @@ function instanceEntry(contractId: string, sac: boolean): rpc.Api.LedgerEntryRes
   return { key, val, lastModifiedLedgerSeq: 1, liveUntilLedgerSeq: 100 };
 }
 
-function server(entries: Record<string, boolean>) {
+function accountEntry(accountId: string, flags: number): rpc.Api.LedgerEntryResult {
+  const id = Keypair.fromPublicKey(accountId).xdrPublicKey();
+  const key = xdr.LedgerKey.account(new xdr.LedgerKeyAccount({ accountId: id }));
+  const val = xdr.LedgerEntryData.account(
+    new xdr.AccountEntry({
+      accountId: id,
+      balance: 10_000_000n,
+      seqNum: 1n,
+      numSubEntries: 0,
+      inflationDest: null,
+      flags,
+      homeDomain: "",
+      thresholds: new Uint8Array([1, 0, 0, 0]),
+      signers: [],
+      ext: xdr.AccountEntryExt.v0(),
+    }),
+  );
+  return { key, val, lastModifiedLedgerSeq: 1 };
+}
+
+// contract instances by id (true for a SAC), and issuer accounts by key with
+// their flags; anything not listed is not returned, like a missing entry
+function server(
+  entries: Record<string, boolean>,
+  issuers: Record<string, number> = { [AQUA_ISSUER]: 0, [YBX_ISSUER]: 0 },
+) {
   const getLedgerEntries = vi.fn(async (...keys: xdr.LedgerKey[]) => ({
     latestLedger: 1,
     entries: keys.flatMap((k) => {
+      if (k.type === "account") {
+        const id = StrKey.encodeEd25519PublicKey(
+          xdr
+            .expectUnionVariant(
+              xdr.expectUnionVariant(k, "account").account.accountId,
+              "publicKeyTypeEd25519",
+            )
+            .ed25519.toBytes(),
+        );
+        return id in issuers ? [accountEntry(id, issuers[id]!)] : [];
+      }
       const id = Address.fromScAddress(
         xdr.expectUnionVariant(k, "contractData").contractData.contract,
       ).toString();
@@ -85,8 +131,18 @@ describe("readWrappedAssets", () => {
     const got = await readWrappedAssets(s, MAINNET, [AQUA, YBX, XLM, WASM_TOKEN, AQUA], USER, {
       simulateRead: nameRead,
     });
-    expect(got.get(AQUA)).toEqual({ kind: "credit", code: "AQUA", issuer: AQUA_ISSUER });
-    expect(got.get(YBX)).toEqual({ kind: "credit", code: "YBX", issuer: YBX_ISSUER });
+    expect(got.get(AQUA)).toEqual({
+      kind: "credit",
+      code: "AQUA",
+      issuer: AQUA_ISSUER,
+      issuerAuthRequired: false,
+    });
+    expect(got.get(YBX)).toEqual({
+      kind: "credit",
+      code: "YBX",
+      issuer: YBX_ISSUER,
+      issuerAuthRequired: false,
+    });
     expect(got.get(XLM)).toEqual({ kind: "native" });
     expect(got.get(WASM_TOKEN)).toBeNull();
     // the wasm token's own code is never run to answer the question
@@ -118,21 +174,31 @@ describe("readWrappedAssets", () => {
     ).rejects.toThrow(new RegExp(`not returned by the rpc: ${YBX}`));
   });
 
-  it("batches the instance reads", async () => {
+  it("batches the instance reads and the issuer reads", async () => {
     const s = server({ [AQUA]: true, [YBX]: true, [XLM]: true });
     await readWrappedAssets(s, MAINNET, [AQUA, YBX, XLM], USER, {
       simulateRead: nameRead,
       batchSize: 2,
     });
-    expect(s.getLedgerEntries).toHaveBeenCalledTimes(2);
+    // two instance batches, then the two issuers in one
+    expect(s.getLedgerEntries).toHaveBeenCalledTimes(3);
+  });
+
+  // a new line to an auth_required issuer starts unauthorized, and an issuer
+  // account that is gone takes no new lines (change_trust fails no_issuer)
+  it("reads whether each issuer lets the account open a usable line", async () => {
+    const s = server({ [AQUA]: true, [YBX]: true }, { [AQUA_ISSUER]: AuthRequiredFlag | 2 });
+    const got = await readWrappedAssets(s, MAINNET, [AQUA, YBX], USER, { simulateRead: nameRead });
+    expect(got.get(AQUA)).toMatchObject({ issuerAuthRequired: true });
+    expect(got.get(YBX)).toMatchObject({ issuerAuthRequired: null });
   });
 });
 
 describe("exitTrustlineGaps", () => {
-  const wrapped = new Map([
-    [AQUA, { kind: "credit" as const, code: "AQUA", issuer: AQUA_ISSUER }],
-    [YBX, { kind: "credit" as const, code: "YBX", issuer: YBX_ISSUER }],
-    [XLM, { kind: "native" as const }],
+  const wrapped = new Map<string, WrappedAsset | null>([
+    [AQUA, { kind: "credit", code: "AQUA", issuer: AQUA_ISSUER, issuerAuthRequired: false }],
+    [YBX, { kind: "credit", code: "YBX", issuer: YBX_ISSUER, issuerAuthRequired: false }],
+    [XLM, { kind: "native" }],
     [WASM_TOKEN, null],
   ]);
 
@@ -152,6 +218,34 @@ describe("exitTrustlineGaps", () => {
     expect(exitTrustlineGaps(USER, [credit("YBX", YBX_ISSUER, false)], [YBX], wrapped)).toEqual([
       { contractId: YBX, code: "YBX", issuer: YBX_ISSUER, reason: "unauthorized" },
     ]);
+  });
+
+  it("reports a missing line whose issuer requires authorization as one the app can't fix", () => {
+    const authRequired = new Map(wrapped).set(YBX, {
+      kind: "credit",
+      code: "YBX",
+      issuer: YBX_ISSUER,
+      issuerAuthRequired: true,
+    });
+    expect(exitTrustlineGaps(USER, [], [YBX], authRequired)).toEqual([
+      { contractId: YBX, code: "YBX", issuer: YBX_ISSUER, reason: "unauthorized" },
+    ]);
+    // an authorized existing line is fine whatever the issuer's flags
+    expect(exitTrustlineGaps(USER, [credit("YBX", YBX_ISSUER)], [YBX], authRequired)).toEqual([]);
+  });
+
+  it("refuses a missing line whose issuer account no longer exists", () => {
+    const gone = new Map(wrapped).set(YBX, {
+      kind: "credit",
+      code: "YBX",
+      issuer: YBX_ISSUER,
+      issuerAuthRequired: null,
+    });
+    expect(() => exitTrustlineGaps(USER, [], [YBX], gone)).toThrow(
+      /issuer account .* no longer exists/,
+    );
+    // a line the account already has still receives the payout
+    expect(exitTrustlineGaps(USER, [credit("YBX", YBX_ISSUER)], [YBX], gone)).toEqual([]);
   });
 
   it("refuses a token it was not given an answer for", () => {
@@ -241,10 +335,15 @@ describe("exitPayoutTokens", () => {
   });
 });
 
-describe("readExitPayoutTokens", () => {
+describe("readExitPayouts", () => {
   const s = {} as rpc.Server;
+  const STANDARD = "CAUCGDPDPQL4EPMPPFST63VBDVN6H5LMDYM3OTBGJQZTCTM3DE4IWWWB";
+  const STANDARD_2 = "CD5N56KLXH7DIACQTZHWZ47CYSGXHUJOT3GVZA5TBWPCN6XATR6U5DPD";
 
-  function deps(rewards: Record<string, bigint>) {
+  function deps(
+    rewards: Record<string, bigint>,
+    poolTokens: (pool: string) => readonly string[] = () => [REWARD],
+  ) {
     const readRewardToken = vi.fn(async () => REWARD);
     const readUserReward = vi.fn(
       async (_s: rpc.Server, args: { readonly tokens: readonly string[] }) => {
@@ -253,24 +352,37 @@ describe("readExitPayoutTokens", () => {
         return rewards[key]!;
       },
     );
-    return { readRewardToken, readUserReward };
+    // the router's get_pools answer: one pool per token set
+    const readPoolAddress = vi.fn(
+      async (_s: rpc.Server, _n: unknown, tokens: readonly string[]): Promise<string> =>
+        tokens.includes(YBX) ? STANDARD_2 : STANDARD,
+    );
+    const readPoolRewardTokens = vi.fn(
+      async (_s: rpc.Server, pools: readonly string[]) =>
+        new Map(pools.map((p) => [p, poolTokens(p)] as const)),
+    );
+    return { readRewardToken, readUserReward, readPoolAddress, readPoolRewardTokens };
   }
 
   // mainnet 2026-10-07, read only: GAPU4W... (no AQUA line) had 768,599,147
   // AQUA pending in concentrated pool CAPIOQ... and its router claim trapped with
   // Error(Contract, #13); its claim on CA4HTZ..., with nothing pending, ran and
   // paid 0
-  it("adds the router's reward token when a concentrated position has a reward", async () => {
+  it("adds the pool's reward token when a concentrated position has a reward", async () => {
     const d = deps({});
     const positions: ProtocolPositions = {
       ...EMPTY_POSITIONS,
       aquariusConcentrated: [concentrated({ pendingReward: 768_599_147n })],
     };
-    expect(await readExitPayoutTokens(s, MAINNET, USER, positions, d)).toEqual([REWARD]);
-    expect(d.readRewardToken).toHaveBeenCalledTimes(1);
+    expect(await readExitPayouts(s, MAINNET, USER, positions, d)).toEqual({
+      tokens: [REWARD],
+      aquariusRewardToken: REWARD,
+    });
+    expect(d.readPoolRewardTokens).toHaveBeenCalledWith(s, [POOL]);
+    expect(d.readPoolAddress).not.toHaveBeenCalled();
   });
 
-  it("adds it for a standard pool only when the router says a reward is pending", async () => {
+  it("reads a standard pool's reward token only when a reward is pending there", async () => {
     const pending = deps({ [`${XLM},${AQUA}`]: 5n, [`${AQUA},${YBX}`]: 0n });
     const positions: ProtocolPositions = {
       ...EMPTY_POSITIONS,
@@ -279,9 +391,9 @@ describe("readExitPayoutTokens", () => {
         { poolIndex: INDEX, shareBalance: 1n, tokens: [AQUA, YBX] },
       ],
     };
-    expect([...(await readExitPayoutTokens(s, MAINNET, USER, positions, pending))].sort()).toEqual(
-      [XLM, AQUA, YBX, REWARD].sort(),
-    );
+    const got = await readExitPayouts(s, MAINNET, USER, positions, pending);
+    expect([...got.tokens].sort()).toEqual([XLM, AQUA, YBX, REWARD].sort());
+    expect(got.aquariusRewardToken).toBe(REWARD);
     const first = pending.readUserReward.mock.calls[0]![1] as unknown as {
       user: string;
       poolIndex: Uint8Array;
@@ -290,12 +402,17 @@ describe("readExitPayoutTokens", () => {
     expect(first.user).toBe(USER);
     expect(first.poolIndex).toHaveLength(32);
     expect(first.network).toBe(MAINNET);
+    // only the pool with a pending reward is resolved and read
+    expect(pending.readPoolAddress).toHaveBeenCalledTimes(1);
+    expect(pending.readPoolAddress).toHaveBeenCalledWith(s, MAINNET, [XLM, AQUA], INDEX, USER);
+    expect(pending.readPoolRewardTokens).toHaveBeenCalledWith(s, [STANDARD]);
 
     const none = deps({ [`${XLM},${AQUA}`]: 0n, [`${AQUA},${YBX}`]: 0n });
-    expect([...(await readExitPayoutTokens(s, MAINNET, USER, positions, none))].sort()).toEqual(
-      [XLM, AQUA, YBX].sort(),
-    );
+    const nothing = await readExitPayouts(s, MAINNET, USER, positions, none);
+    expect([...nothing.tokens].sort()).toEqual([XLM, AQUA, YBX].sort());
+    expect(nothing.aquariusRewardToken).toBeUndefined();
     expect(none.readRewardToken).not.toHaveBeenCalled();
+    expect(none.readPoolRewardTokens).not.toHaveBeenCalled();
   });
 
   it("skips the reward read for a pool the plan does not withdraw", async () => {
@@ -304,8 +421,43 @@ describe("readExitPayoutTokens", () => {
       ...EMPTY_POSITIONS,
       aquarius: [{ poolIndex: INDEX, shareBalance: 0n, tokens: [XLM, AQUA] }],
     };
-    expect(await readExitPayoutTokens(s, MAINNET, USER, positions, d)).toEqual([]);
+    expect(await readExitPayouts(s, MAINNET, USER, positions, d)).toEqual({
+      tokens: [],
+      aquariusRewardToken: undefined,
+    });
     expect(d.readUserReward).not.toHaveBeenCalled();
+  });
+
+  // the pool pays the claim, so a pool storing another token than the router
+  // would pay into a line the plan never checked
+  it("refuses a paying pool whose reward token is not the router's", async () => {
+    const positions: ProtocolPositions = {
+      ...EMPTY_POSITIONS,
+      aquarius: [
+        { poolIndex: INDEX, shareBalance: 1n, tokens: [XLM, AQUA] },
+        { poolIndex: INDEX, shareBalance: 1n, tokens: [AQUA, YBX] },
+      ],
+    };
+    const rewards = { [`${XLM},${AQUA}`]: 5n, [`${AQUA},${YBX}`]: 5n };
+    await expect(
+      readExitPayouts(
+        s,
+        MAINNET,
+        USER,
+        positions,
+        deps(rewards, (p) => (p === STANDARD_2 ? [USDC] : [REWARD])),
+      ),
+    ).rejects.toThrow(new RegExp(`${STANDARD_2} pays its rewards in ${USDC}`));
+    // a registry naming a second token is refused the same way
+    await expect(
+      readExitPayouts(
+        s,
+        MAINNET,
+        USER,
+        positions,
+        deps(rewards, () => [REWARD, USDC]),
+      ),
+    ).rejects.toThrow(/pays its rewards in/);
   });
 
   it("fails rather than leave out a reward it could not read", async () => {
@@ -313,17 +465,37 @@ describe("readExitPayoutTokens", () => {
       ...EMPTY_POSITIONS,
       aquarius: [{ poolIndex: INDEX, shareBalance: 1n, tokens: [XLM, AQUA] }],
     };
-    await expect(readExitPayoutTokens(s, MAINNET, USER, positions, deps({}))).rejects.toThrow(
+    await expect(readExitPayouts(s, MAINNET, USER, positions, deps({}))).rejects.toThrow(
       /no reward stub/,
     );
-    const broken = {
+    const brokenRouter = {
+      ...deps({ [`${XLM},${AQUA}`]: 1n }),
       readRewardToken: vi.fn(async (): Promise<string> => {
         throw new Error("router instance missing");
       }),
-      readUserReward: vi.fn(async () => 1n),
     };
-    await expect(readExitPayoutTokens(s, MAINNET, USER, positions, broken)).rejects.toThrow(
+    await expect(readExitPayouts(s, MAINNET, USER, positions, brokenRouter)).rejects.toThrow(
       /router instance missing/,
+    );
+    const brokenLookup = {
+      ...deps({ [`${XLM},${AQUA}`]: 1n }),
+      readPoolAddress: vi.fn(async (): Promise<string> => {
+        throw new Error("router lists no pool with index");
+      }),
+    };
+    await expect(readExitPayouts(s, MAINNET, USER, positions, brokenLookup)).rejects.toThrow(
+      /router lists no pool/,
+    );
+  });
+
+  it("gives readExitPayoutTokens the same token list", async () => {
+    const d = deps({ [`${XLM},${AQUA}`]: 5n });
+    const positions: ProtocolPositions = {
+      ...EMPTY_POSITIONS,
+      aquarius: [{ poolIndex: INDEX, shareBalance: 1n, tokens: [XLM, AQUA] }],
+    };
+    expect([...(await readExitPayoutTokens(s, MAINNET, USER, positions, d))].sort()).toEqual(
+      [XLM, AQUA, REWARD].sort(),
     );
   });
 });

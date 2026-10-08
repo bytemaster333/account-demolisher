@@ -39,14 +39,14 @@
 // archived, position holders of the 37 pinned concentrated pools (none of the
 // 1,017 User entries the sweep listed through stellar.expert was archived, so no
 // archived concentrated position could be measured), and archived blend
-// Positions and backstop balances in every pinned pool. the YieldBloxV2 row is
-// the largest of 8
-// archived holders (2 entries restored, at most 1,336 write bytes and 5
-// read-write entries); those withdraws trapped before 2026-10-07 because the
-// builder asked for i128::MAX of a reserve whose b_rate is below 1e12, which
-// overflowed the pool's bToken conversion (fixed in blend/exit.ts
-// v2WithdrawRequest). the aquarius worst cases restore the pool's reward pages
-// (one RewardInvData page is 3,316 bytes), the blend ones up to 8 entries.
+// Positions and backstop balances in every pinned pool, YieldBloxV2 included.
+// the YieldBloxV2 row is the largest of its 8 archived holders (2 entries
+// restored, 1,232 to 1,336 write bytes, 5 read-write entries); those withdraws
+// trapped before 2026-10-07 only because the builder asked for i128::MAX of a
+// reserve whose b_rate is below 1e12, which overflowed the pool's bToken
+// conversion (fixed in blend/exit.ts v2WithdrawRequest). the aquarius worst
+// cases restore the pool's reward pages (one RewardInvData page is 3,316 bytes),
+// the blend ones up to 8 entries.
 //
 // 17 of the 70 testnet remove_liquidity runs cost 36,812,907 to 174,084,607 and
 // declared 14,700 to 53,204 write bytes: those checked restore an archived
@@ -55,14 +55,15 @@
 // the bounded classes refuse it rather than pay for it; the step fails with the
 // fee spelled out. no mainnet pair needed that in the sweep.
 //
-// the classes, each capped at about twice its largest measured case:
+// the classes, each capped at two to three times its largest measured case:
 // untrusted-token (revoke, held-token transfer): the archived-instance revoke.
 // untrusted-convert (a held token sold through the router, or a soroswap lp
 // exit; both run token code nobody vetted): the archived-pair remove_liquidity.
 // pool-exit (aquarius standard, stable and concentrated pools; the protocol code
 // is pinned but the pools are permissionless, so a pool token can be anything):
 // the archived router claim. defi-exit (blend steps against the pinned pools and
-// backstops): the archived blend withdraw.
+// backstops): the archived blend withdraw, at 11,763,314 still the largest
+// blend row, so the cap stays where it was.
 // declared write bytes and read-write entries are bounded for the first three
 // (largest measured without a code restore: 3,128 bytes and 10 entries for the
 // archived one-hop convert; 15,984 bytes for a concentrated withdraw and 22

@@ -2,14 +2,16 @@
 //
 // a concentrated pool is called directly (withdraw_position, claim_all_position_fees),
 // not through the router, so each pool contract has to be on the allow-list as an
-// entry point. the lists below were enumerated on chain on 2026-10-02, and the
-// mainnet one re-checked against a fresh enumeration on 2026-10-06, through the
-// router's get_tokens_sets_count + get_pools_for_tokens_range, keeping every pool
-// whose contract instance runs the concentrated wasm below (router.pool_type answers
-// "concentrated" for them). the mainnet set matches the 37 pool_type=concentrated
-// entries the aquarius REST api lists. a pool deployed after this snapshot is not on
-// the list; discovery reports it as an error so the merge stays blocked instead of
-// silently leaving the position behind.
+// entry point. the lists below were enumerated on chain through the router's
+// get_tokens_sets_count + get_pools_for_tokens_range, keeping every pool whose
+// contract instance runs the concentrated wasm below (router.pool_type answers
+// "concentrated" for them). last enumeration 2026-10-08: mainnet 43 of the 368
+// router pools (6 more than on 2026-10-06; the REST api listed 41 of them that
+// day), testnet 37 of 364, and every router pool on either network runs one of
+// three wasms, so no concentrated pool is on another version. a pool deployed
+// after this snapshot is not on the list; discovery reports it as an error so the
+// merge stays blocked instead of silently leaving the position behind, and
+// tests/integration/aquarius-mainnet-exits fails until it is added.
 
 import { unsupportedNetwork, type NetworkConfig } from "@/lib/config/networks";
 
@@ -21,7 +23,7 @@ export interface AquariusConcentratedPool {
   readonly tokens: readonly string[];
 }
 
-export const CONCENTRATED_POOLS_VERIFIED_AT = "2026-10-06";
+export const CONCENTRATED_POOLS_VERIFIED_AT = "2026-10-08";
 export const CONCENTRATED_POOLS_SOURCE =
   "on-chain AquariusAmmRouter get_pools_for_tokens_range enumeration filtered by contract instance wasm; both sets cross-checked against the amm-api.aqua.network pool_type=concentrated listing";
 
@@ -37,6 +39,14 @@ export const TESTNET_CONCENTRATED_POOL_WASM =
   "155a17b9929ffb1f9e84bd6ef5c00a4d613c1ab5f4ad4c502d84515250cc2907";
 
 export const MAINNET_CONCENTRATED_POOLS: readonly AquariusConcentratedPool[] = [
+  {
+    address: "CA26X2GYYE2H3ZXNXFPU537O2HITDXNMF5HXUJVL3O7XEVQUUB4RQ54T",
+    poolIndex: "24f9c991c44acf33fff5f44031c40385d235dc212d7379e824ba3db1c35371f3",
+    tokens: [
+      "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
+      "CDJXSUXNKP6YPEPRQUSMPP2IMPYOH5GLU7ZUZV5OZCMA3AMW7BT4TXAD",
+    ],
+  },
   {
     address: "CA4HTZNY2RBZWEQE5GBMNREZMFRPAZSVJ6OGPC7T3VM7NHRJYFAVID2S",
     poolIndex: "ed45429155f876475d3c7ac18d34273d638d6a5b2fcc736db36d71a5788852c5",
@@ -67,6 +77,14 @@ export const MAINNET_CONCENTRATED_POOLS: readonly AquariusConcentratedPool[] = [
     tokens: [
       "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA",
       "CBZVSNVB55ANF24QVJL2K5QCLOAB6XITGTGXYEAF6NPTXYKEJUYQOHFC",
+    ],
+  },
+  {
+    address: "CAKJKVAJJQEVFPBTWG5IQ4WJHL5AE27RYYIVFBYJXW5HVE4A7UDJZ6UH",
+    poolIndex: "24f9c991c44acf33fff5f44031c40385d235dc212d7379e824ba3db1c35371f3",
+    tokens: [
+      "CB7OOP3VSAWBZOOTOG2YEFANVU45GVWYUUM5HI32DKLHVKUDOFVQ37XP",
+      "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
     ],
   },
   {
@@ -102,6 +120,14 @@ export const MAINNET_CONCENTRATED_POOLS: readonly AquariusConcentratedPool[] = [
     ],
   },
   {
+    address: "CATBRG3ADIAEYW6W7K4OHINZAS4WFJ4QG737HR5F3DY5VMNVUWTQMWYY",
+    poolIndex: "24f9c991c44acf33fff5f44031c40385d235dc212d7379e824ba3db1c35371f3",
+    tokens: [
+      "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
+      "CDTRXQUOFLCNAEC7DBZT36MBVQ2EDUNUKT4GYOZHOMYOFR7QWTC5IIRV",
+    ],
+  },
+  {
     address: "CAVB532FDYEWBXNSCSKACTZI3BV3QBNFLH2UQRR5HIKFKLFVQW5YGZVY",
     poolIndex: "24f9c991c44acf33fff5f44031c40385d235dc212d7379e824ba3db1c35371f3",
     tokens: [
@@ -131,6 +157,14 @@ export const MAINNET_CONCENTRATED_POOLS: readonly AquariusConcentratedPool[] = [
     tokens: [
       "CC546RSLM66Y34CYQDOLJ5HXOTN4C3PQ4QUH3FP3MJHOBLVUZWLE6JGG",
       "CDFZUVS5YNLXU7VENKOUDEOHCJGKQNVUBWD7KMN6E7ZROKPYPFLRUJFG",
+    ],
+  },
+  {
+    address: "CB6M2MGKLIALMGANSVRTQZFTIVRZTF3H3HZBZK33EOWLR7E6CQVX6QAL",
+    poolIndex: "24f9c991c44acf33fff5f44031c40385d235dc212d7379e824ba3db1c35371f3",
+    tokens: [
+      "CBZOWZEGBDJ6YVUTYZSQ2EBRJT4QJLX3GO4UHOJPIWSZSKAMRFAIOE7A",
+      "CDJXSUXNKP6YPEPRQUSMPP2IMPYOH5GLU7ZUZV5OZCMA3AMW7BT4TXAD",
     ],
   },
   {
@@ -211,6 +245,22 @@ export const MAINNET_CONCENTRATED_POOLS: readonly AquariusConcentratedPool[] = [
     tokens: [
       "CDFZUVS5YNLXU7VENKOUDEOHCJGKQNVUBWD7KMN6E7ZROKPYPFLRUJFG",
       "CDTKPWPLOURQA2SGTKTUQOWRCBZEORB4BWBOMJ3D3ZTQQSGE5F6JBQLV",
+    ],
+  },
+  {
+    address: "CCR2APFXL5IFQH5H6V6C6E6V5PNSF3QDL6RQX2CL2YUCEO6OBKJDWA72",
+    poolIndex: "24f9c991c44acf33fff5f44031c40385d235dc212d7379e824ba3db1c35371f3",
+    tokens: [
+      "CCOVLDJCH3S552AOUKS2M5AMWORG5KNPMBCS3EQI6G5RPPKQPQHB6F6G",
+      "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
+    ],
+  },
+  {
+    address: "CCU7TJ5XXFZOWRWXWEX3F4UIDY27UKITATVWRUIQOKJOIBXQB7IHWWQN",
+    poolIndex: "24f9c991c44acf33fff5f44031c40385d235dc212d7379e824ba3db1c35371f3",
+    tokens: [
+      "CBS6HUZIOWD6VMBWGSBOPF4AALO7TNY277GI6YEHZHA6JVWC7VQ7C3G5",
+      "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
     ],
   },
   {

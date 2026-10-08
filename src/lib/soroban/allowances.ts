@@ -117,7 +117,9 @@ export interface AllowanceScanOptions {
 // filters a fabricated row. an honest token approved for this many spenders
 // within the scan window is not a real use, so a contract's rows are cut to the
 // most recent ones here, which bounds the confirm reads, the revokes a close
-// plans and the rows the page renders. the cut is reported, never hidden.
+// plans and the rows the page renders. the cut is reported, never hidden. a
+// stellar asset contract is not cut: it runs no token code, so every approve
+// event it emitted is an approval the user signed.
 export const MAX_SPENDERS_PER_CONTRACT = 20;
 
 // a contract whose live approvals were cut to MAX_SPENDERS_PER_CONTRACT
@@ -179,9 +181,10 @@ export function describeAllowanceOverflow(overflow: readonly AllowanceOverflow[]
   return overflow
     .map(
       (o) =>
-        `Token contract ${o.contractId} reports approvals for ${o.spenders} different spenders, ` +
-        `so only the ${o.kept} most recent are listed. Approval events can be fabricated by the ` +
-        `token itself, and no real use needs that many, so treat this token as hostile.`,
+        `Token contract ${o.contractId} is not a verified Stellar asset contract and reports ` +
+        `approvals for ${o.spenders} different spenders, so only the ${o.kept} most recent are ` +
+        `listed. Its own code emits these events and can fabricate them, and no real use needs ` +
+        `that many, so treat this token as hostile.`,
     )
     .join(" ");
 }
@@ -248,10 +251,15 @@ export async function scanAllowances(
 
   // the cap counts every row that would be returned, so expired rows kept on
   // request cannot flood the list either
+  const over = [...byContract].filter(([, rows]) => rows.length > MAX_SPENDERS_PER_CONTRACT);
+  const sacs = await stellarAssetContracts(
+    server,
+    over.map(([id]) => id),
+  );
   const records: AllowanceRecord[] = [];
   const overflow: AllowanceOverflow[] = [];
   for (const [contractId, rows] of byContract) {
-    if (rows.length <= MAX_SPENDERS_PER_CONTRACT) {
+    if (rows.length <= MAX_SPENDERS_PER_CONTRACT || sacs.has(contractId)) {
       for (const r of rows) records.push(r.rec);
       continue;
     }
@@ -261,6 +269,40 @@ export async function scanAllowances(
     overflow.push({ contractId, spenders: rows.length, kept: kept.length });
   }
   return { records, incomplete: scan.incomplete, overflow };
+}
+
+// the ids among these whose instance runs the built-in stellar asset contract.
+// a SAC runs no token code, so its approve events are the user's own approvals
+// and are never cut. an instance the rpc does not return can't be shown to be
+// one and stays capped.
+const INSTANCE_BATCH = 190;
+
+async function stellarAssetContracts(
+  server: rpc.Server,
+  contractIds: readonly string[],
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  for (let i = 0; i < contractIds.length; i += INSTANCE_BATCH) {
+    const resp = await server.getLedgerEntries(
+      ...contractIds.slice(i, i + INSTANCE_BATCH).map((id) =>
+        xdr.LedgerKey.contractData(
+          new xdr.LedgerKeyContractData({
+            contract: new Address(id).toScAddress(),
+            key: xdr.ScVal.scvLedgerKeyContractInstance(),
+            durability: xdr.ContractDataDurability.persistent,
+          }),
+        ),
+      ),
+    );
+    for (const entry of resp.entries) {
+      const cd = xdr.expectUnionVariant(entry.val, "contractData").contractData;
+      const instance = xdr.expectUnionVariant(cd.val, "scvContractInstance").instance;
+      if (instance.executable.type === "contractExecutableStellarAsset") {
+        out.add(Address.fromScAddress(cd.contract).toString());
+      }
+    }
+  }
+  return out;
 }
 
 // enumerate active sep-41 allowances the user granted. a scan that could not

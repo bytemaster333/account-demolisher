@@ -14,10 +14,22 @@
 // derives back to its own contract id: a SAC's id is the hash of its asset, so
 // the asset it names cannot be wrong without the id differing.
 
-import { Address, Asset, xdr, type rpc } from "@stellar/stellar-sdk";
+import {
+  Address,
+  Asset,
+  AuthRequiredFlag,
+  Keypair,
+  StrKey,
+  xdr,
+  type rpc,
+} from "@stellar/stellar-sdk";
 
-import { getUserReward, readAquariusRewardToken } from "@/lib/adapters/aquarius/client";
-import { poolIndexHexToBytes } from "@/lib/adapters/aquarius/pools";
+import {
+  getUserReward,
+  readAquariusPoolRewardTokens,
+  readAquariusRewardToken,
+} from "@/lib/adapters/aquarius/client";
+import { poolIndexHexToBytes, readAquariusPoolAddress } from "@/lib/adapters/aquarius/pools";
 import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
 import type { NetworkConfig } from "@/lib/config/networks";
 import type { AuditBalance } from "@/lib/types/account";
@@ -27,7 +39,19 @@ import { simulateRead } from "@/lib/soroban/simulate";
 
 export type WrappedAsset =
   | { readonly kind: "native" }
-  | { readonly kind: "credit"; readonly code: string; readonly issuer: string };
+  | {
+      readonly kind: "credit";
+      readonly code: string;
+      readonly issuer: string;
+      // the issuer's auth_required flag: a line opened now starts unauthorized
+      // and can't receive a payout until the issuer authorizes it. null when the
+      // issuer account no longer exists, so change_trust fails (no_issuer) and
+      // no new line can be opened at all.
+      readonly issuerAuthRequired: boolean | null;
+    };
+
+type SacName =
+  { readonly kind: "native" } | { readonly kind: "credit"; code: string; issuer: string };
 
 export interface StellarAssetDeps {
   readonly simulateRead?: typeof simulateRead;
@@ -38,9 +62,9 @@ export interface StellarAssetDeps {
 const DEFAULT_BATCH_SIZE = 190;
 
 // maps each contract id to the classic asset it wraps, or null for a contract
-// that is not a stellar asset contract. throws when an instance is missing or a
-// SAC's name does not derive to its id, so a caller never plans an exit on a
-// guess.
+// that is not a stellar asset contract, with whether its issuer lets a new line
+// receive. throws when an instance is missing or a SAC's name does not derive
+// to its id, so a caller never plans an exit on a guess.
 export async function readWrappedAssets(
   server: rpc.Server,
   network: NetworkConfig,
@@ -75,10 +99,10 @@ export async function readWrappedAssets(
     throw new Error(`token contract instances not returned by the rpc: ${missing.join(", ")}`);
   }
 
-  const out = new Map<string, WrappedAsset | null>();
+  const named = new Map<string, SacName | null>();
   for (const id of ids) {
     if (isSac.get(id) !== true) {
-      out.set(id, null);
+      named.set(id, null);
       continue;
     }
     const { retval } = await read(server, id, "name", [], sourcePublicKey, network);
@@ -92,13 +116,55 @@ export async function readWrappedAssets(
         `stellar asset contract ${id} names an asset whose contract is ${derived}, refusing to trust it`,
       );
     }
-    out.set(id, asset);
+    named.set(id, asset);
+  }
+
+  const issuers = [
+    ...new Set([...named.values()].flatMap((a) => (a?.kind === "credit" ? [a.issuer] : []))),
+  ];
+  const authRequired = await readIssuerAuthRequired(server, issuers, batchSize);
+  const out = new Map<string, WrappedAsset | null>();
+  for (const [id, asset] of named) {
+    out.set(
+      id,
+      asset === null || asset.kind === "native"
+        ? asset
+        : { ...asset, issuerAuthRequired: authRequired.get(asset.issuer) ?? null },
+    );
+  }
+  return out;
+}
+
+// each issuer's auth_required flag from its account entry. an issuer the rpc
+// does not return has no account (merged away); it is left out of the map.
+async function readIssuerAuthRequired(
+  server: rpc.Server,
+  issuers: readonly string[],
+  batchSize: number,
+): Promise<Map<string, boolean>> {
+  const out = new Map<string, boolean>();
+  for (let i = 0; i < issuers.length; i += batchSize) {
+    const keys = issuers
+      .slice(i, i + batchSize)
+      .map((id) =>
+        xdr.LedgerKey.account(
+          new xdr.LedgerKeyAccount({ accountId: Keypair.fromPublicKey(id).xdrPublicKey() }),
+        ),
+      );
+    const resp = await server.getLedgerEntries(...keys);
+    for (const entry of resp.entries) {
+      const account = xdr.expectUnionVariant(entry.val, "account").account;
+      const id = StrKey.encodeEd25519PublicKey(
+        xdr.expectUnionVariant(account.accountId, "publicKeyTypeEd25519").ed25519.toBytes(),
+      );
+      out.set(id, (account.flags & AuthRequiredFlag) !== 0);
+    }
   }
   return out;
 }
 
 // a SAC's name() is "native" or "CODE:ISSUER"
-function parseSacName(name: string): WrappedAsset {
+function parseSacName(name: string): SacName {
   if (name === "native") return { kind: "native" };
   const sep = name.indexOf(":");
   if (sep <= 0 || sep !== name.lastIndexOf(":")) {
@@ -118,7 +184,7 @@ function parseSacName(name: string): WrappedAsset {
 // position kept only for its reward pays none of its pool tokens.
 //
 // it does not include the aquarius reward token, which needs rpc reads; a
-// trustline check must use readExitPayoutTokens.
+// trustline check must use readExitPayouts.
 export function exitPayoutTokens(positions: ProtocolPositions): readonly string[] {
   const out = new Set<string>();
   for (const p of positions.soroswap) {
@@ -145,18 +211,87 @@ export function exitPayoutTokens(positions: ProtocolPositions): readonly string[
 export interface ExitPayoutDeps {
   readonly readRewardToken?: typeof readAquariusRewardToken;
   readonly readUserReward?: typeof getUserReward;
+  readonly readPoolAddress?: typeof readAquariusPoolAddress;
+  readonly readPoolRewardTokens?: typeof readAquariusPoolRewardTokens;
+}
+
+export interface ExitPayouts {
+  // every token a planned exit or reward claim pays out
+  readonly tokens: readonly string[];
+  // the one token every aquarius reward claim that pays anything pays, for
+  // GeneratePlanOptions.aquariusRewardToken; undefined when no claim pays
+  readonly aquariusRewardToken: string | undefined;
 }
 
 const REWARD_READ_CONCURRENCY = 4;
 
-// exitPayoutTokens plus the aquarius router's reward token when a planned claim
-// will pay some. a claim of a pending reward into a missing trustline traps
-// with Error(Contract, #13) like a withdraw; a claim with nothing pending runs
-// and pays 0 (both seen read-only on mainnet 2026-10-07), so the reward token
-// only counts when a reward is pending. the generator claims every standard
-// pool it withdraws, so each of those is asked through get_user_reward; a
-// concentrated position carries its own pendingReward. any failed read throws:
-// an unknown reward must not read as "no payout".
+// exitPayoutTokens plus the reward token of each aquarius pool whose claim will
+// pay some. a claim of a pending reward into a missing trustline traps with
+// Error(Contract, #13) like a withdraw; a claim with nothing pending runs and
+// pays 0 (both seen read-only on mainnet 2026-10-07), so a pool only counts
+// when a reward is pending there. the generator claims every standard pool it
+// withdraws, so each of those is asked through get_user_reward; a concentrated
+// position carries its own pendingReward.
+//
+// the pool pays its claim from its own RewardToken, while the plan links every
+// claim to one reward token, so a paying pool whose token is not the router's
+// is refused rather than planned against the wrong line. any failed read
+// throws: an unknown reward must not read as "no payout".
+export async function readExitPayouts(
+  server: rpc.Server,
+  network: NetworkConfig,
+  userAddress: string,
+  positions: ProtocolPositions,
+  deps: ExitPayoutDeps = {},
+): Promise<ExitPayouts> {
+  const tokens = exitPayoutTokens(positions);
+  const readUserReward = deps.readUserReward ?? getUserReward;
+  const readPoolAddress = deps.readPoolAddress ?? readAquariusPoolAddress;
+
+  const paying = positions.aquariusConcentrated
+    .filter((p) => p.pendingReward > 0n)
+    .map((p) => p.poolAddress);
+  const withdrawn = positions.aquarius.filter((p) => p.shareBalance > 0n);
+  const rewards = await mapConcurrent(withdrawn, REWARD_READ_CONCURRENCY, (p) =>
+    readUserReward(server, {
+      user: userAddress,
+      tokens: p.tokens,
+      poolIndex: poolIndexHexToBytes(p.poolIndex),
+      network,
+    }),
+  );
+  const rewarded = withdrawn.filter((_, i) => rewards[i]! > 0n);
+  paying.push(
+    ...(await mapConcurrent(rewarded, REWARD_READ_CONCURRENCY, (p) =>
+      readPoolAddress(server, network, p.tokens, p.poolIndex, userAddress),
+    )),
+  );
+  if (paying.length === 0) return { tokens, aquariusRewardToken: undefined };
+
+  const [routerToken, byPool] = await Promise.all([
+    (deps.readRewardToken ?? readAquariusRewardToken)(server, network),
+    (deps.readPoolRewardTokens ?? readAquariusPoolRewardTokens)(server, paying),
+  ]);
+  for (const pool of new Set(paying)) {
+    const poolTokens = byPool.get(pool);
+    if (poolTokens === undefined) {
+      throw new Error(`the reward token of Aquarius pool ${pool} was not read`);
+    }
+    if (poolTokens.length !== 1 || poolTokens[0] !== routerToken) {
+      throw new Error(
+        `Aquarius pool ${pool} pays its rewards in ${poolTokens.join(", ")}, not only in the ` +
+          `router's reward token ${routerToken}, so its reward claim can't be planned. Claim ` +
+          "that reward outside this app before closing.",
+      );
+    }
+  }
+  return {
+    tokens: tokens.includes(routerToken) ? tokens : [...tokens, routerToken],
+    aquariusRewardToken: routerToken,
+  };
+}
+
+// the token list of readExitPayouts
 export async function readExitPayoutTokens(
   server: rpc.Server,
   network: NetworkConfig,
@@ -164,24 +299,7 @@ export async function readExitPayoutTokens(
   positions: ProtocolPositions,
   deps: ExitPayoutDeps = {},
 ): Promise<readonly string[]> {
-  const tokens = exitPayoutTokens(positions);
-  let rewardPending = positions.aquariusConcentrated.some((p) => p.pendingReward > 0n);
-  if (!rewardPending) {
-    const readUserReward = deps.readUserReward ?? getUserReward;
-    const withdrawn = positions.aquarius.filter((p) => p.shareBalance > 0n);
-    const rewards = await mapConcurrent(withdrawn, REWARD_READ_CONCURRENCY, (p) =>
-      readUserReward(server, {
-        user: userAddress,
-        tokens: p.tokens,
-        poolIndex: poolIndexHexToBytes(p.poolIndex),
-        network,
-      }),
-    );
-    rewardPending = rewards.some((r) => r > 0n);
-  }
-  if (!rewardPending) return tokens;
-  const reward = await (deps.readRewardToken ?? readAquariusRewardToken)(server, network);
-  return tokens.includes(reward) ? tokens : [...tokens, reward];
+  return (await readExitPayouts(server, network, userAddress, positions, deps)).tokens;
 }
 
 export interface ExitTrustlineGap {
@@ -189,13 +307,15 @@ export interface ExitTrustlineGap {
   readonly code: string;
   readonly issuer: string;
   // missing: a change_trust before the exit fixes it. unauthorized: the issuer
-  // has to authorize the existing line; the app cannot.
+  // has to authorize the line (the existing one, or the one a change_trust would
+  // open when the issuer requires authorization); the app cannot.
   readonly reason: "missing" | "unauthorized";
 }
 
 // the credit assets among an exit's payout tokens that the account cannot
 // receive right now. native and non-SAC tokens need no trustline, and neither
-// does an asset the account issues itself.
+// does an asset the account issues itself. a missing line whose issuer account
+// is gone can't be opened at all, which stops the plan here.
 export function exitTrustlineGaps(
   accountId: string,
   balances: readonly AuditBalance[],
@@ -215,7 +335,19 @@ export function exitTrustlineGaps(
         b.asset.kind === "credit" && b.asset.code === asset.code && b.asset.issuer === asset.issuer,
     );
     if (line === undefined) {
-      gaps.push({ contractId, code: asset.code, issuer: asset.issuer, reason: "missing" });
+      if (asset.issuerAuthRequired === null) {
+        throw new Error(
+          `The ${asset.code} issuer account ${asset.issuer} no longer exists, so this account ` +
+            `can't open the ${asset.code} trustline a pool exit pays into, and that exit can't ` +
+            "run, so the close stops here.",
+        );
+      }
+      gaps.push({
+        contractId,
+        code: asset.code,
+        issuer: asset.issuer,
+        reason: asset.issuerAuthRequired === true ? "unauthorized" : "missing",
+      });
     } else if (line.isAuthorized === false) {
       gaps.push({ contractId, code: asset.code, issuer: asset.issuer, reason: "unauthorized" });
     }

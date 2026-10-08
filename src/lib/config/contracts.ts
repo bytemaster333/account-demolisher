@@ -96,15 +96,17 @@ export const MAINNET_ALLOWLIST: readonly AllowedContract[] = [
   },
   // blend (github.com/blend-capital/blend-utils)
   ...BLEND_ALLOWLIST_ENTRIES,
-  // aquarius (github.com/AquaToken/soroban-amm)
+  // aquarius. its source repo (github.com/AquaToken/soroban-amm) and its
+  // frontend repo answer 404 (checked 2026-10-08), so the docs page and the
+  // deployed wasm are what is left to check the ids against
   {
     id: "CBQDHNBFBZYE4MKPWBSJOPIYLW4SFSXAXUTSXJN76GNKYVYPCKWC6QUK",
     name: "AquariusAmmRouter",
     protocol: "aquarius",
     role: "entrypoint",
-    verified_at: "2026-08-23",
+    verified_at: "2026-10-08",
     source:
-      "docs.aqua.network/developers/code-examples/prerequisites-and-basics (mainnet AMM contract id); cross-confirmed against AquaToken/soroban-amm liquidity_pool_router",
+      "docs.aqua.network/developers/code-examples/prerequisites-and-basics (mainnet AMM contract id); runs wasm c99539b023df4a28d7857d33ca4c915c2e20fec04f12b125132b84fbdf94dad3, the same as the testnet router on that page (read on chain 2026-10-08); first cross-confirmed against AquaToken/soroban-amm liquidity_pool_router, no longer public",
   },
   ...MAINNET_CONCENTRATED_POOLS.map(concentratedEntry),
   // fxdao is not listed: the protocol shut down on chain (2026-10-06: the vaults
@@ -164,9 +166,9 @@ const TESTNET_AQUARIUS_ENTRIES: readonly AllowedContract[] = [
     name: "AquariusAmmRouter",
     protocol: "aquarius",
     role: "entrypoint",
-    verified_at: "2026-05-18",
+    verified_at: "2026-10-08",
     source:
-      "github.com/AquaToken/aquarius-frontend/blob/master/src/constants/soroban.ts (CONTRACTS[ENV_TESTNET].amm); cross-confirmed via api.stellar.expert/explorer/testnet/contract/CBCFTQSPDBAIZ6R6PJQKSQWKNKWH2QIV3I4J72SHWBIK3ADRRAM5A6GD (validation.status=verified against AquaToken/soroban-amm soroban-liquidity-pool-router-contract)",
+      'docs.aqua.network/developers/code-examples/prerequisites-and-basics (testnet AMM contract id, "valid across testnet resets"); runs wasm c99539b023df4a28d7857d33ca4c915c2e20fec04f12b125132b84fbdf94dad3, the same as the mainnet router (read on chain 2026-10-08); first taken from github.com/AquaToken/aquarius-frontend src/constants/soroban.ts, no longer public',
   },
   {
     id: "CCNMIX72UQIM44MB4T3LIKIMADPFBNIBVHTX27QTFLB6IACJLRWM6PA4",
@@ -174,8 +176,9 @@ const TESTNET_AQUARIUS_ENTRIES: readonly AllowedContract[] = [
     protocol: "aquarius",
     role: "infrastructure",
     verified_at: "2026-05-18",
+    // a label only, never a call root
     source:
-      "github.com/AquaToken/aquarius-frontend/blob/master/src/constants/soroban.ts (CONTRACTS[ENV_TESTNET].batch)",
+      "github.com/AquaToken/aquarius-frontend src/constants/soroban.ts (CONTRACTS[ENV_TESTNET].batch), no longer public; live on testnet per api.stellar.expert/explorer/testnet/contract/CCNMIX72UQIM44MB4T3LIKIMADPFBNIBVHTX27QTFLB6IACJLRWM6PA4 (2026-10-08)",
   },
   ...TESTNET_CONCENTRATED_POOLS.map(concentratedEntry),
 ];
