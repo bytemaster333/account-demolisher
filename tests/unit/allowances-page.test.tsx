@@ -45,7 +45,11 @@ vi.mock("@/lib/metrics/beacon", () => ({
 }));
 
 import AllowancesPage from "@/app/allowances/page";
-import { AllowanceScanIncompleteError, type AllowanceRecord } from "@/lib/soroban/allowances";
+import {
+  AllowanceScanIncompleteError,
+  AllowanceScanOverflowError,
+  type AllowanceRecord,
+} from "@/lib/soroban/allowances";
 import { setActiveConnector } from "@/lib/wallet/active-connector";
 import type { Connector } from "@/lib/wallet/connector";
 import { useNetworkStore } from "@/stores/network";
@@ -188,6 +192,57 @@ describe("/allowances partial scan", () => {
     await scanAddress(G_OWNER);
     expect(screen.getByTestId("allowance-scan-incomplete").textContent).toMatch(/503/);
     expect(screen.queryByText("No active allowances found")).toBeNull();
+  });
+});
+
+describe("/allowances capped token contract", () => {
+  const CUT = { contractId: "CHOSTILE", spenders: 21, kept: 20 };
+
+  it("lists the kept rows and says which contract was cut", async () => {
+    scan.enumerate.mockRejectedValue(
+      new AllowanceScanOverflowError([rec("GSPENDA"), rec("GSPENDB")], [CUT]),
+    );
+    render(<AllowancesPage />);
+    await scanAddress(G_OWNER);
+
+    expect(screen.getAllByTestId("allowance-row")).toHaveLength(2);
+    expect(screen.queryByTestId("allowance-scan-incomplete")).toBeNull();
+    const notice = screen.getByTestId("allowance-scan-overflow").textContent ?? "";
+    expect(notice).toMatch(/CHOSTILE/);
+    expect(notice).toMatch(/21 different spenders/);
+    expect(screen.queryByText(/Failed to load allowances/)).toBeNull();
+  });
+
+  it("reports both the missed history and the cut contract on a partial scan", async () => {
+    scan.enumerate.mockRejectedValue(
+      new AllowanceScanIncompleteError(
+        [rec("GSPENDA")],
+        {
+          reason: "budget",
+          coveredFromLedger: 90,
+          rangeStartLedger: 1,
+          lastLedger: 100,
+          detail: "budget",
+        },
+        [CUT],
+      ),
+    );
+    render(<AllowancesPage />);
+    await scanAddress(G_OWNER);
+
+    expect(screen.getAllByTestId("allowance-row")).toHaveLength(1);
+    expect(screen.getByTestId("allowance-scan-incomplete").textContent).toMatch(/ran out of time/);
+    expect(screen.getByTestId("allowance-scan-overflow").textContent).toMatch(/CHOSTILE/);
+  });
+
+  it("drops the cut notice when a new scan comes back clean", async () => {
+    scan.enumerate.mockRejectedValueOnce(new AllowanceScanOverflowError([rec("GSPENDA")], [CUT]));
+    render(<AllowancesPage />);
+    await scanAddress(G_OWNER);
+    expect(screen.getByTestId("allowance-scan-overflow")).toBeTruthy();
+
+    await scanAddress(G_OWNER);
+    expect(screen.queryByTestId("allowance-scan-overflow")).toBeNull();
   });
 });
 

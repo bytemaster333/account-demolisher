@@ -28,7 +28,9 @@ import { NETWORKS, type NetworkConfig } from "@/lib/config/networks";
 import { trackVisit } from "@/lib/metrics/beacon";
 import {
   AllowanceScanIncompleteError,
+  AllowanceScanOverflowError,
   confirmAllowancesOnChain,
+  describeAllowanceOverflow,
   enumerateAllowances,
   type AllowanceRecord,
 } from "@/lib/soroban/allowances";
@@ -81,6 +83,9 @@ export default function AllowancesPage(): React.JSX.Element {
   // set when the last scan could not cover the whole event window: its rows are
   // shown, and this says which part of history it missed
   const [scanGap, setScanGap] = useState<string | null>(null);
+  // set when some token contract reported more spenders than the scan keeps:
+  // its newest rows are shown, and this names the contract
+  const [scanCut, setScanCut] = useState<string | null>(null);
   const [showExpired, setShowExpired] = useState(false);
 
   // the live signing connector: the app-wide active one when present (the only
@@ -111,6 +116,7 @@ export default function AllowancesPage(): React.JSX.Element {
       const seq = ++loadSeq.current;
       setError(null);
       setScanGap(null);
+      setScanCut(null);
       setRecords(null);
       setCurrentLedger(null);
 
@@ -128,15 +134,26 @@ export default function AllowancesPage(): React.JSX.Element {
         const ledger = latest.sequence;
         let list: readonly AllowanceRecord[];
         let gap: string | null = null;
+        let cut: string | null = null;
         try {
           list = await enumerateAllowances(rpc, target, ledger, undefined, {
             includeExpired: true,
           });
         } catch (e: unknown) {
-          if (!(e instanceof AllowanceScanIncompleteError)) throw e;
-          // what was found is real, but the list isn't complete; show both
-          list = e.partial;
-          gap = `${describeIncompleteScan(e.incomplete, "allowances")} Allowances approved in the part it missed may be missing here, or show an older amount. Scan again to retry.`;
+          // a cut contract is reported next to the rows that were kept, never
+          // in place of them: otherwise one contract emitting fake approvals
+          // would hide every real allowance on the page
+          if (e instanceof AllowanceScanOverflowError) {
+            list = e.partial;
+            cut = describeAllowanceOverflow(e.overflow);
+          } else if (e instanceof AllowanceScanIncompleteError) {
+            // what was found is real, but the list isn't complete; show both
+            list = e.partial;
+            gap = `${describeIncompleteScan(e.incomplete, "allowances")} Allowances approved in the part it missed may be missing here, or show an older amount. Scan again to retry.`;
+            if (e.overflow.length > 0) cut = describeAllowanceOverflow(e.overflow);
+          } else {
+            throw e;
+          }
         }
         // event amounts can be fabricated by a hostile token, so each one is
         // checked against the token's allowance() when there is a simulation
@@ -148,6 +165,7 @@ export default function AllowancesPage(): React.JSX.Element {
             : list;
         if (loadSeq.current !== seq) return; // superseded (network switch or newer scan)
         setScanGap(gap);
+        setScanCut(cut);
         setRecords(confirmed);
         setCurrentLedger(ledger);
         setViewedAddress(target);
@@ -182,6 +200,7 @@ export default function AllowancesPage(): React.JSX.Element {
     setCurrentLedger(null);
     setError(null);
     setScanGap(null);
+    setScanCut(null);
     setLoading(false);
   }, [networkId]);
 
@@ -347,6 +366,13 @@ export default function AllowancesPage(): React.JSX.Element {
             <div style={{ marginBottom: 14 }} data-testid="allowance-scan-incomplete">
               <Notice tone="warning" role="status" title="The scan didn't finish">
                 {scanGap}
+              </Notice>
+            </div>
+          ) : null}
+          {scanCut !== null && records !== null && !loading ? (
+            <div style={{ marginBottom: 14 }} data-testid="allowance-scan-overflow">
+              <Notice tone="warning" role="status" title="Some approvals aren't listed">
+                {scanCut}
               </Notice>
             </div>
           ) : null}
