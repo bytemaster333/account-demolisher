@@ -16,6 +16,7 @@ import { TESTNET } from "@/lib/config/networks";
 import { batchClassicDemolition } from "@/lib/plan/classic-batcher";
 import { AccountNotFoundError, auditAccount } from "@/lib/stellar/account-audit";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
+import { DEFAULT_TX_VALIDITY_SECONDS, fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { pathKey } from "@/lib/types/plan";
 
@@ -101,7 +102,15 @@ describe("integration: a pool withdraw and a claim of the same asset on a custom
       const batch = batches[0]!;
       kindsPerPhase.push(batch.operations.map((o) => o.kind));
       const account = await server.loadAccount(holder.publicKey());
-      const built = buildClassicTransaction(batch, account, TESTNET, Number(BASE_FEE));
+      const clock = await fetchLedgerClock(TESTNET);
+      const built = buildClassicTransaction(
+        batch,
+        account,
+        TESTNET,
+        Number(BASE_FEE),
+        DEFAULT_TX_VALIDITY_SECONDS,
+        clock.closedAt,
+      );
       built.transaction.sign(holder);
       await server.submitTransaction(built.transaction);
       merged = batch.operations.some((o) => o.kind === "account_merge");

@@ -20,6 +20,7 @@ import {
   collectableClaimableBalanceIds,
 } from "@/lib/stellar/account-audit";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
+import { DEFAULT_TX_VALIDITY_SECONDS, fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 import { resolveCreditPaths } from "@/lib/stellar/path-finder";
 import { planClaimableBalances } from "@/lib/plan/classic-batcher";
 import type { BatchedOperation } from "@/lib/types/plan";
@@ -290,10 +291,14 @@ describe("integration: audit merge verdicts (testnet)", () => {
       }) as unknown as BatchedOperation;
     const submitBatch = async (operations: BatchedOperation[]): Promise<void> => {
       const source = await server.loadAccount(holder.publicKey());
+      const clock = await fetchLedgerClock(TESTNET);
       const built = buildClassicTransaction(
         { operations, destination: holder.publicKey() },
         source,
         TESTNET,
+        Number(BASE_FEE),
+        DEFAULT_TX_VALIDITY_SECONDS,
+        clock.closedAt,
       );
       const tx = built.transaction as Transaction;
       tx.sign(holder);
@@ -352,6 +357,9 @@ describe("integration: audit merge verdicts (testnet)", () => {
       },
       source,
       TESTNET,
+      Number(BASE_FEE),
+      DEFAULT_TX_VALIDITY_SECONDS,
+      audit.ledger.closedAt,
     );
     const tx = built.transaction as Transaction;
     tx.sign(issuer);

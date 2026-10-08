@@ -11,6 +11,7 @@ import {
 import { auditAccount, AccountNotFoundError } from "@/lib/stellar/account-audit";
 import { batchClassicDemolition } from "@/lib/plan/classic-batcher";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
+import { DEFAULT_TX_VALIDITY_SECONDS, fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { TESTNET } from "@/lib/config/networks";
 import { CLOSE_MARKER_NAME, CLOSE_MARKER_VALUE } from "@/lib/metrics/close-marker";
@@ -79,8 +80,8 @@ describe("integration: classic builder (testnet)", () => {
         batch,
         source,
         TESTNET,
-        undefined,
-        undefined,
+        Number(BASE_FEE),
+        DEFAULT_TX_VALIDITY_SECONDS,
         audit.ledger.closedAt,
       );
       const tx = built.transaction as Transaction;
@@ -107,6 +108,7 @@ describe("integration: classic builder (testnet)", () => {
         metadata: { action },
       }) as unknown as BatchedOperation;
     const source = await server.loadAccount(kp.publicKey());
+    const clock = await fetchLedgerClock(TESTNET);
     const built = buildClassicTransaction(
       {
         operations: [
@@ -122,6 +124,9 @@ describe("integration: classic builder (testnet)", () => {
       },
       source,
       TESTNET,
+      Number(BASE_FEE),
+      DEFAULT_TX_VALIDITY_SECONDS,
+      clock.closedAt,
     );
     const tx = built.transaction as Transaction;
     tx.sign(kp);

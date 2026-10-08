@@ -26,9 +26,9 @@ export interface SimulationDeps {
   // surge-aware base, so callers that know it pass it; otherwise the network
   // minimum (BASE_FEE) is used and the figure is a lower bound.
   readonly classicFeePerOp?: number;
-  // close time (unix seconds) of the latest ledger, from the audit, so the
-  // classic envelopes are bounded by the network's clock like the executor's
-  readonly ledgerCloseTime?: number;
+  // close time (unix seconds) of the latest ledger, so the classic envelopes are
+  // bounded by the network's clock like the executor's
+  readonly ledgerCloseTime: number;
 }
 
 // simulate one node. throws on structural issues or simulation failure

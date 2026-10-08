@@ -1012,6 +1012,9 @@ function built(batch: ClassicBatch): Transaction {
     batch,
     new Account(ACC, "100") as unknown as Horizon.AccountResponse,
     TESTNET,
+    100,
+    300,
+    1_900_000_000,
   ).transaction as Transaction;
 }
 

@@ -66,6 +66,7 @@ describe("integration: bundle freshness (testnet)", () => {
       network: TESTNET,
       sourceAccount: await server.loadAccount(owner.publicKey()),
       disposal: { claimableBalanceIds: [], returnToIssuerAssetKeys: [`USD:${issuer.publicKey()}`] },
+      ledgerCloseTime: audit.ledger.closedAt,
     });
     tx.sign(owner);
     const xdr = tx.toXdr();
@@ -113,6 +114,7 @@ describe("integration: bundle freshness (testnet)", () => {
       network: TESTNET,
       sourceAccount: await server.loadAccount(owner.publicKey()),
       disposal: { claimableBalanceIds: [cbId] },
+      ledgerCloseTime: audit.ledger.closedAt,
     });
     tx.sign(owner);
     const xdr = tx.toXdr();

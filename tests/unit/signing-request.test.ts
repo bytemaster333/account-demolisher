@@ -27,6 +27,10 @@ import {
   type CloseDisposal,
 } from "@/lib/multisig/signing-request";
 
+// the bundle's expiry counts from the ledger close time; now keeps it in the
+// future like a fresh ledger read would
+const LEDGER_NOW = Math.floor(Date.now() / 1000);
+
 const NET = Networks.TESTNET;
 
 // a single-op account-close transaction (accountMerge), the shape a signing
@@ -649,6 +653,7 @@ describe("liquidity pool shares cannot be bundled (L-94)", () => {
         network: TESTNET,
         sourceAccount: account,
         disposal: { claimableBalanceIds: [] },
+        ledgerCloseTime: LEDGER_NOW,
       }),
     ).toThrow(/liquidity pool/i);
 
@@ -672,6 +677,7 @@ describe("liquidity pool shares cannot be bundled (L-94)", () => {
         network: TESTNET,
         sourceAccount: account,
         disposal: { claimableBalanceIds: [] },
+        ledgerCloseTime: LEDGER_NOW,
       }),
     ).toThrow(/liquidity pool/i);
   });
@@ -754,6 +760,7 @@ describe("buildCloseTransaction carries the reviewed choices (H-11, H-29, L-25)"
       network: TESTNET,
       sourceAccount: source(),
       disposal: { claimableBalanceIds: [], memo: { type: "id", value: "777" } },
+      ledgerCloseTime: LEDGER_NOW,
     });
     expect(tx.memo.type).toBe("id");
     expect(String(tx.memo.value)).toBe("777");
@@ -774,6 +781,7 @@ describe("buildCloseTransaction carries the reviewed choices (H-11, H-29, L-25)"
           ...base,
           sourceAccount: source(),
           disposal: { claimableBalanceIds: [ID1, ID2] },
+          ledgerCloseTime: LEDGER_NOW,
         }),
       ),
     ).toEqual([ID1, ID2]);
@@ -783,6 +791,7 @@ describe("buildCloseTransaction carries the reviewed choices (H-11, H-29, L-25)"
           ...base,
           sourceAccount: source(),
           disposal: { claimableBalanceIds: [ID2] },
+          ledgerCloseTime: LEDGER_NOW,
         }),
       ),
     ).toEqual([ID2]);
@@ -792,6 +801,7 @@ describe("buildCloseTransaction carries the reviewed choices (H-11, H-29, L-25)"
           ...base,
           sourceAccount: source(),
           disposal: { claimableBalanceIds: [] },
+          ledgerCloseTime: LEDGER_NOW,
         }),
       ),
     ).toEqual([]);
@@ -808,6 +818,7 @@ describe("buildCloseTransaction carries the reviewed choices (H-11, H-29, L-25)"
         network: TESTNET,
         sourceAccount: source(),
         disposal: disposal as CloseDisposal,
+        ledgerCloseTime: LEDGER_NOW,
       });
     expect(build(undefined)).toThrow(/claimable balance selection/);
     expect(build({ memo: { type: "id", value: "1" } })).toThrow(/claimable balance selection/);
@@ -848,6 +859,7 @@ describe("buildCloseTransaction carries the reviewed choices (H-11, H-29, L-25)"
         network: TESTNET,
         sourceAccount: source(),
         disposal: { claimableBalanceIds: [ID1] },
+        ledgerCloseTime: LEDGER_NOW,
       }),
     ).toThrow(/claimable balance/i);
   });
@@ -878,6 +890,7 @@ describe("buildCloseTransaction carries the reviewed choices (H-11, H-29, L-25)"
         network: TESTNET,
         sourceAccount: source(),
         disposal: { claimableBalanceIds: [ID1] },
+        ledgerCloseTime: LEDGER_NOW,
       });
     } catch (e) {
       message = (e as Error).message;
@@ -900,6 +913,7 @@ describe("buildCloseTransaction carries the reviewed choices (H-11, H-29, L-25)"
       network: TESTNET,
       sourceAccount: source(),
       disposal: { claimableBalanceIds: [] },
+      ledgerCloseTime: LEDGER_NOW,
     });
     const marker = tx.operations.filter(
       (o) => o.type === "manageData" && o.name === "account-demolisher.close",
@@ -920,6 +934,7 @@ describe("buildCloseTransaction carries the reviewed choices (H-11, H-29, L-25)"
         network: TESTNET,
         sourceAccount: source(),
         disposal: { claimableBalanceIds: [ID1], returnToIssuerAssetKeys: [pathKey(usd)] },
+        ledgerCloseTime: LEDGER_NOW,
       });
     } catch (e) {
       message = (e as Error).message;
@@ -942,6 +957,7 @@ describe("buildCloseTransaction carries the reviewed choices (H-11, H-29, L-25)"
         network: TESTNET,
         sourceAccount: source(),
         disposal: { claimableBalanceIds: [ID1], returnToIssuerAssetKeys: [pathKey(usd)] },
+        ledgerCloseTime: LEDGER_NOW,
       }),
     ).toThrow(/needs \d+ operations/);
   });

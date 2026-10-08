@@ -2,7 +2,7 @@
 // one bundled transaction is built from the reviewed plan, and the checks run
 // right before it is published for co-signers.
 
-import type { Horizon, Transaction } from "@stellar/stellar-sdk";
+import { BASE_FEE, type Horizon, type Transaction } from "@stellar/stellar-sdk";
 
 import { openPositionCount, type ProtocolPositions } from "@/lib/adapters/positions/interface";
 import type { NetworkConfig } from "@/lib/config/networks";
@@ -146,7 +146,7 @@ export function buildReviewedBundle(args: {
     batch,
     args.sourceAccount,
     args.network,
-    undefined,
+    Number.parseInt(BASE_FEE, 10),
     SIGNING_WINDOW_SECONDS,
     args.ledgerCloseTime,
   );

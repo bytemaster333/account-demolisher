@@ -3,7 +3,6 @@
 import type { Horizon } from "@stellar/stellar-sdk";
 import {
   Asset,
-  BASE_FEE,
   LiquidityPoolAsset,
   Operation,
   StrKey,
@@ -13,7 +12,6 @@ import {
 import type { NetworkConfig } from "@/lib/config/networks";
 import { closeMarkerOperations } from "@/lib/metrics/close-marker";
 import { decimalToStroops } from "@/lib/stellar/amount";
-import { DEFAULT_TX_VALIDITY_SECONDS } from "@/lib/stellar/ledger-clock";
 import { toSdkMemo } from "@/lib/stellar/memo";
 import type { AssetIdentifier } from "@/lib/types/account";
 import type {
@@ -27,16 +25,18 @@ export function buildClassicTransaction(
   batch: ClassicBatch,
   account: Horizon.AccountResponse,
   network: NetworkConfig,
-  feeBase: number = Number.parseInt(BASE_FEE, 10),
-  // signing window. the live execute path signs and submits within minutes, so
-  // the default is short. a multisig signing plan circulates for hours or days,
-  // so its builder passes a much longer window (the tx must still be valid when
-  // the last co-signer signs).
-  timeoutSeconds: number = DEFAULT_TX_VALIDITY_SECONDS,
+  // per-operation base fee; the sdk multiplies it by the operation count
+  feeBase: number,
+  // signing window. the live execute path signs and submits within minutes
+  // (DEFAULT_TX_VALIDITY_SECONDS). a multisig signing plan circulates for hours
+  // or days, so its builder passes a much longer window (the tx must still be
+  // valid when the last co-signer signs).
+  timeoutSeconds: number,
   // close time (unix seconds) of the latest ledger, from fetchLedgerClock or
-  // AccountAuditResult.ledger. when given, maxTime is anchored to the network's
-  // clock instead of the browser's, which may be minutes off.
-  ledgerCloseTime?: number,
+  // AccountAuditResult.ledger. maxTime is anchored to the network's clock, never
+  // the browser's, which may be minutes off and turn every submit into
+  // tx_too_late. required so no caller can fall back to the local clock.
+  ledgerCloseTime: number,
 ): TransactionBuildResult {
   if (batch.operations.length === 0) {
     throw new Error("buildClassicTransaction: batch has no operations");
@@ -59,14 +59,10 @@ export function buildClassicTransaction(
     builder.addOperation(addOperation(op));
   }
 
-  if (ledgerCloseTime === undefined) {
-    builder.setTimeout(timeoutSeconds);
-  } else {
-    if (!Number.isSafeInteger(ledgerCloseTime) || ledgerCloseTime <= 0) {
-      throw new Error(`buildClassicTransaction: invalid ledger close time ${ledgerCloseTime}`);
-    }
-    builder.setTimebounds(0, ledgerCloseTime + timeoutSeconds);
+  if (!Number.isSafeInteger(ledgerCloseTime) || ledgerCloseTime <= 0) {
+    throw new Error(`buildClassicTransaction: invalid ledger close time ${ledgerCloseTime}`);
   }
+  builder.setTimebounds(0, ledgerCloseTime + timeoutSeconds);
 
   const tx = builder.build();
   const envelopeXdr = tx.toEnvelope().toXdr("base64");

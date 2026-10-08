@@ -10,6 +10,7 @@ import {
 import { auditAccount, AccountNotFoundError } from "@/lib/stellar/account-audit";
 import { batchClassicDemolition } from "@/lib/plan/classic-batcher";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
+import { DEFAULT_TX_VALIDITY_SECONDS, fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { TESTNET } from "@/lib/config/networks";
 import { mergeSignatures } from "@/lib/multisig/partial-xdr";
@@ -85,7 +86,15 @@ describe("integration: 2-of-3 multisig close via partial-XDR merge (testnet)", (
 
     for (const batch of batches) {
       const source = await server.loadAccount(master.publicKey());
-      const canonical = buildClassicTransaction(batch, source, TESTNET).transaction;
+      const clock = await fetchLedgerClock(TESTNET);
+      const canonical = buildClassicTransaction(
+        batch,
+        source,
+        TESTNET,
+        Number(BASE_FEE),
+        DEFAULT_TX_VALIDITY_SECONDS,
+        clock.closedAt,
+      ).transaction;
       const canonicalXdr = canonical.toEnvelope().toXdr("base64");
 
       // TWO of the three signers sign the SAME canonical tx, independently

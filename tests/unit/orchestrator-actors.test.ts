@@ -1234,6 +1234,7 @@ describe("the preview leaves a step built after earlier ones pending", () => {
       fetchSourceAccount: async () => {
         throw new Error("not used");
       },
+      ledgerCloseTime: 1_800_000_000,
     });
     expect(deferred.status).toBe("pending");
     expect(deferred.error).toBeUndefined();

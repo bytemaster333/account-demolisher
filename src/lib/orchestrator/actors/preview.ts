@@ -421,12 +421,16 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
   });
   const hydrationReason = new Map(failures.map((f) => [f.nodeId, f.reason]));
 
+  // one read of the network clock times the simulated envelopes and the merge
+  // check below
+  const clock = await fetchLedgerClock(network);
   await simulatePreviewTree(tree, hydrationReason, {
     server: rpcServer,
     network,
     userPublicKey: audit.accountId,
     fetchSourceAccount: async (pk) => horizon.loadAccount(pk),
     classicFeePerOp,
+    ledgerCloseTime: clock.closedAt,
   });
   refuseUnsafeSteps(tree, audit.accountId, network);
 
@@ -495,7 +499,6 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
     // the network's own checks on the merge, against what this plan really
     // claims (on the account as the unwind leaves it, at the batches' fee) and
     // how many transactions the account still sources before it
-    const clock = await fetchLedgerClock(network);
     const merge = assessMergeability(audit, {
       ledger: clock,
       claimedBalanceIds: planClaimableBalances(unwound, md.claimableBalanceIds, {

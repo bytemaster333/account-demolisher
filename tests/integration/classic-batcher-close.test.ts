@@ -16,6 +16,7 @@ import { batchClassicDemolition, closeMarkerPlanned } from "@/lib/plan/classic-b
 import { verifyCloseTx } from "@/server/close-verify";
 import { AccountNotFoundError, auditAccount } from "@/lib/stellar/account-audit";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
+import { DEFAULT_TX_VALIDITY_SECONDS, fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { pathKey } from "@/lib/types/plan";
 
@@ -79,7 +80,15 @@ describe("integration: classic close of an account holding an untrusted claimabl
       kindsPerPhase.push(batch.operations.map((o) => o.kind));
       if (batches.length === 1) expect(closeMarkerPlanned(batches)).toBe(true);
       const account = await server.loadAccount(closer.publicKey());
-      const built = buildClassicTransaction(batch, account, TESTNET, Number(BASE_FEE));
+      const clock = await fetchLedgerClock(TESTNET);
+      const built = buildClassicTransaction(
+        batch,
+        account,
+        TESTNET,
+        Number(BASE_FEE),
+        DEFAULT_TX_VALIDITY_SECONDS,
+        clock.closedAt,
+      );
       built.transaction.sign(closer);
       const result = await server.submitTransaction(built.transaction);
       if (batch.operations.some((o) => o.kind === "account_merge")) mergeHash = result.hash;

@@ -37,6 +37,7 @@ function baseDeps(over: Partial<SimulationDeps> = {}): SimulationDeps {
     network: TESTNET,
     userPublicKey: USER,
     fetchSourceAccount: async () => ({}) as unknown as Horizon.AccountResponse,
+    ledgerCloseTime: 1_800_000_000,
     ...over,
   };
 }

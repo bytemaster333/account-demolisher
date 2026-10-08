@@ -13,6 +13,7 @@ import { getRpc } from "@/lib/soroban/rpc-client";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { TESTNET } from "@/lib/config/networks";
 import { auditAccount } from "@/lib/stellar/account-audit";
+import { fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 import { DirectContractProvider } from "@/lib/adapters/positions/direct";
 import { enumerateAllowances } from "@/lib/soroban/allowances";
 import { buildApprove } from "@/lib/soroban/sep41";
@@ -138,12 +139,14 @@ describe("integration: full DeFi close pipeline against live testnet", () => {
 
     // simulate EVERY step: the Soroban revoke against live RPC, the classic merge
     // built + validated in-memory. A doomed step would throw here.
+    const clock = await fetchLedgerClock(TESTNET);
     for (const node of topologicalOrder(tree)) {
       const outcome = await simulateNode(node, {
         server: rpc,
         network: TESTNET,
         userPublicKey: owner.publicKey(),
         fetchSourceAccount: (pk) => horizonDirect.loadAccount(pk),
+        ledgerCloseTime: clock.closedAt,
       });
       expect(outcome.kind === "soroban" || outcome.kind === "classic").toBe(true);
     }

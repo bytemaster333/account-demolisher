@@ -132,7 +132,7 @@ export function buildCloseTransaction(params: {
   readonly timeoutSeconds?: number;
   // close time (unix seconds) of the latest ledger; anchors maxTime to the
   // network clock instead of this device's
-  readonly ledgerCloseTime?: number;
+  readonly ledgerCloseTime: number;
 }): Transaction {
   const { audit, destination, network, sourceAccount, disposal } = params;
   // the type requires it, but an untyped caller must not fall into claim-all

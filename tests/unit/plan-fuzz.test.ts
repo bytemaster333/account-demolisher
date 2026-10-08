@@ -377,6 +377,9 @@ describe("plan generation, property-based fuzzing", () => {
             batch,
             new Account(ACC, "0") as unknown as Horizon.AccountResponse,
             TESTNET,
+            100,
+            300,
+            1_900_000_000,
           );
           expect(built.transaction.operations.length).toBe(batch.operations.length);
         }

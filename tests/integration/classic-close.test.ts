@@ -9,6 +9,7 @@ import {
 import { auditAccount, AccountNotFoundError } from "@/lib/stellar/account-audit";
 import { batchClassicDemolition } from "@/lib/plan/classic-batcher";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
+import { DEFAULT_TX_VALIDITY_SECONDS, fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { TESTNET } from "@/lib/config/networks";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
@@ -72,7 +73,15 @@ describe("integration: classic account close (testnet)", () => {
     const connector = new SecretKeyConnector(kp.secret());
     for (const batch of batches) {
       const source = await server.loadAccount(kp.publicKey());
-      const built = buildClassicTransaction(batch, source, TESTNET);
+      const clock = await fetchLedgerClock(TESTNET);
+      const built = buildClassicTransaction(
+        batch,
+        source,
+        TESTNET,
+        Number(BASE_FEE),
+        DEFAULT_TX_VALIDITY_SECONDS,
+        clock.closedAt,
+      );
       const { signedXdr } = await connector.signTransaction(built.transaction, TESTNET.passphrase);
       const signed = TransactionBuilder.fromXdr(signedXdr, TESTNET.passphrase) as Transaction;
       await server.submitTransaction(signed);

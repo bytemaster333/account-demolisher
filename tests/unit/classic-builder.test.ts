@@ -27,6 +27,9 @@ const TEST_NET: NetworkConfig = {
 
 const SOURCE = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H";
 
+// any positive close time builds; the time bounds tests pick their own
+const LEDGER_TIME = 1_900_000_000;
+
 function singleOpBatch(): ClassicBatch {
   return {
     operations: [
@@ -59,27 +62,55 @@ function newSource(): Horizon.AccountResponse {
 
 describe("buildClassicTransaction fee computation", () => {
   it("prices a batch at feeBase * opCount under normal conditions", () => {
-    const built = buildClassicTransaction(singleOpBatch(), newSource(), TEST_NET, 100);
+    const built = buildClassicTransaction(
+      singleOpBatch(),
+      newSource(),
+      TEST_NET,
+      100,
+      300,
+      LEDGER_TIME,
+    );
     expect(built.estimatedFee).toBe("100");
   });
 
   it("accepts a surge-derived base whose total sits at the u32 ceiling", () => {
     // one op, feeBase == 0xffffffff -> total == ceiling, must NOT throw
-    const built = buildClassicTransaction(singleOpBatch(), newSource(), TEST_NET, 0xffffffff);
+    const built = buildClassicTransaction(
+      singleOpBatch(),
+      newSource(),
+      TEST_NET,
+      0xffffffff,
+      300,
+      LEDGER_TIME,
+    );
     expect(built.estimatedFee).toBe("4294967295");
   });
 
   it("throws when feeBase * opCount overflows the u32 fee ceiling", () => {
     // one op, feeBase one stroop over the ceiling -> total exceeds u32 max
     expect(() =>
-      buildClassicTransaction(singleOpBatch(), newSource(), TEST_NET, 0xffffffff + 1),
+      buildClassicTransaction(
+        singleOpBatch(),
+        newSource(),
+        TEST_NET,
+        0xffffffff + 1,
+        300,
+        LEDGER_TIME,
+      ),
     ).toThrow(/exceeds the u32 ceiling/);
   });
 
   it("charges feeBase * opCount total, NOT feeBase * opCount² (SDK multiplies by op count)", () => {
     // regression: feeBase was pre-multiplied AND the SDK multiplied again, so a
     // 5-op batch at base 100 was charged 100*5*5 = 2500 instead of 100*5 = 500.
-    const built = buildClassicTransaction(multiOpBatch(5), newSource(), TEST_NET, 100);
+    const built = buildClassicTransaction(
+      multiOpBatch(5),
+      newSource(),
+      TEST_NET,
+      100,
+      300,
+      LEDGER_TIME,
+    );
     expect(built.transaction.fee).toBe("500");
     expect(built.estimatedFee).toBe("500");
   });
@@ -94,7 +125,8 @@ function batchOf(op: BatchedOperation, memo?: ClassicMemo): ClassicBatch {
 }
 
 function firstOp(batch: ClassicBatch): Record<string, unknown> {
-  const tx = buildClassicTransaction(batch, newSource(), TEST_NET, 100).transaction as Transaction;
+  const tx = buildClassicTransaction(batch, newSource(), TEST_NET, 100, 300, LEDGER_TIME)
+    .transaction as Transaction;
   return tx.operations[0] as unknown as Record<string, unknown>;
 }
 
@@ -240,6 +272,8 @@ describe("buildClassicTransaction memos", () => {
           newSource(),
           TEST_NET,
           100,
+          300,
+          LEDGER_TIME,
         ).transaction as Transaction;
         expect(tx.memo.type).toBe(type);
         expect(Array.from(tx.memo.value as Uint8Array)).toEqual(Array.from(HASH_BYTES));
@@ -257,6 +291,8 @@ describe("buildClassicTransaction memos", () => {
         newSource(),
         TEST_NET,
         100,
+        300,
+        LEDGER_TIME,
       ),
     ).toThrow(/32 bytes/);
   });
@@ -281,6 +317,21 @@ describe("buildClassicTransaction time bounds", () => {
   it("refuses a malformed ledger close time", () => {
     expect(() =>
       buildClassicTransaction(singleOpBatch(), newSource(), TEST_NET, 100, 300, Number.NaN),
+    ).toThrow(/ledger close time/);
+  });
+
+  // an untyped caller that drops the ledger time must not get an envelope timed
+  // by this device's clock
+  it("refuses to build without a ledger close time", () => {
+    expect(() =>
+      buildClassicTransaction(
+        singleOpBatch(),
+        newSource(),
+        TEST_NET,
+        100,
+        300,
+        undefined as unknown as number,
+      ),
     ).toThrow(/ledger close time/);
   });
 });
@@ -360,7 +411,7 @@ describe("buildClassicTransaction close_marker", () => {
       ],
       destination: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
     };
-    const tx = buildClassicTransaction(batch, newSource(), TEST_NET, 100)
+    const tx = buildClassicTransaction(batch, newSource(), TEST_NET, 100, 300, LEDGER_TIME)
       .transaction as Transaction;
     const [set, del] = closeMarkerOperations(source);
     expect(tx.operations[0]!.type).toBe("manageData");
@@ -403,7 +454,7 @@ describe("buildClassicTransaction close_marker", () => {
       ],
       destination: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
     };
-    const tx = buildClassicTransaction(batch, newSource(), TEST_NET, 100)
+    const tx = buildClassicTransaction(batch, newSource(), TEST_NET, 100, 300, LEDGER_TIME)
       .transaction as Transaction;
     const env = tx.toEnvelope();
     if (env.type !== "envelopeTypeTx") throw new Error("expected a v1 envelope");

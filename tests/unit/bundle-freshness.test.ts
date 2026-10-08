@@ -24,6 +24,10 @@ import {
 import { buildCloseTransaction } from "@/lib/multisig/signing-request";
 import type { AccountAudit } from "@/lib/types/account";
 
+// the bundle's expiry counts from the ledger close time; now keeps it in the
+// future like a fresh ledger read would
+const LEDGER_NOW = Math.floor(Date.now() / 1000);
+
 const owner = Keypair.random();
 const cosigner = Keypair.random();
 const issuer = Keypair.random().publicKey();
@@ -122,6 +126,7 @@ const bundle: Transaction = buildCloseTransaction({
   network: TESTNET,
   sourceAccount: live(),
   disposal: { claimableBalanceIds: [], returnToIssuerAssetKeys: [`USD:${issuer}`] },
+  ledgerCloseTime: LEDGER_NOW,
 });
 const XDR = bundle.toXdr();
 const snapshot = {
