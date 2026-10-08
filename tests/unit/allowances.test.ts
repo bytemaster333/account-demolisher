@@ -64,12 +64,39 @@ function approveEvent(ledger: number, value: xdr.ScVal, opts: EventOpts = {}): F
   };
 }
 
-// an rpc that serves these events the way stellar-rpc does (windows, filters)
+// an rpc that serves these events the way stellar-rpc does (windows, filters),
+// and contract instances: true for a stellar asset contract, false for wasm;
+// an id left out is not returned
 function serverWithEvents(
   events: FakeEvent[],
   extra: Partial<FakeEventsRpcOptions> = {},
+  instances: Record<string, boolean> = {},
 ): rpc.Server {
-  return fakeEventsRpc({ oldestLedger: 1, latestLedger: 100_000, events, ...extra }).server;
+  const server = fakeEventsRpc({ oldestLedger: 1, latestLedger: 100_000, events, ...extra }).server;
+  const getLedgerEntries = vi.fn(async (...keys: xdr.LedgerKey[]) => ({
+    latestLedger: 100_000,
+    entries: keys.flatMap((key) => {
+      const contract = xdr.expectUnionVariant(key, "contractData").contractData.contract;
+      const id = Address.fromScAddress(contract).toString();
+      if (!(id in instances)) return [];
+      const executable = instances[id]
+        ? xdr.ContractExecutable.contractExecutableStellarAsset()
+        : xdr.ContractExecutable.contractExecutableWasm(new Uint8Array(32).fill(5));
+      const val = xdr.LedgerEntryData.contractData(
+        new xdr.ContractDataEntry({
+          ext: xdr.ExtensionPoint.v0(),
+          contract,
+          key: xdr.ScVal.scvLedgerKeyContractInstance(),
+          durability: xdr.ContractDataDurability.persistent,
+          val: xdr.ScVal.scvContractInstance(
+            new xdr.ScContractInstance({ executable, storage: null }),
+          ),
+        }),
+      );
+      return [{ key, val, lastModifiedLedgerSeq: 1 }];
+    }),
+  }));
+  return Object.assign(server, { getLedgerEntries });
 }
 
 afterEach(() => {
@@ -398,6 +425,43 @@ describe("approvals one contract reports for many spenders", () => {
     });
     expect(scan.records).toHaveLength(MAX_SPENDERS_PER_CONTRACT);
     expect(scan.overflow.map((o) => o.spenders)).toEqual([MAX_SPENDERS_PER_CONTRACT + 5]);
+  });
+
+  // a stellar asset contract runs no token code: each of its approve events was
+  // signed by the user, so every row is a real allowance and none is cut
+  it("keeps every spender of a stellar asset contract", async () => {
+    const sac = StrKey.encodeContract(Buffer.alloc(32, 4));
+    const hostile = StrKey.encodeContract(Buffer.alloc(32, 9));
+    const server = serverWithEvents(
+      [
+        ...flood(MAX_SPENDERS_PER_CONTRACT + 5, 4).map((e) => ({
+          ...e,
+          ledger: e.ledger + 30_000,
+        })),
+        ...flood(MAX_SPENDERS_PER_CONTRACT + 5, 9),
+      ],
+      {},
+      { [sac]: true, [hostile]: false },
+    );
+    const scan = await scanAllowances(server, USER, currentLedger, currentLedger);
+    expect(scan.records.filter((r) => r.contractId === sac)).toHaveLength(
+      MAX_SPENDERS_PER_CONTRACT + 5,
+    );
+    expect(scan.records.filter((r) => r.contractId === hostile)).toHaveLength(
+      MAX_SPENDERS_PER_CONTRACT,
+    );
+    expect(scan.overflow.map((o) => o.contractId)).toEqual([hostile]);
+    expect(describeAllowanceOverflow(scan.overflow)).toMatch(
+      /not a verified Stellar asset contract/,
+    );
+  });
+
+  // an instance the rpc does not return can't be shown to be a SAC
+  it("caps a contract whose instance it can't read", async () => {
+    const server = serverWithEvents(flood(MAX_SPENDERS_PER_CONTRACT + 2, 4));
+    const scan = await scanAllowances(server, USER, currentLedger, currentLedger);
+    expect(scan.records).toHaveLength(MAX_SPENDERS_PER_CONTRACT);
+    expect(scan.overflow).toHaveLength(1);
   });
 
   it("refuses to pass a capped list off as complete", async () => {
