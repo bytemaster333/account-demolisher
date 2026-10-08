@@ -27,7 +27,7 @@ import type {
 } from "@/lib/adapters/positions/interface";
 import { NETWORKS, type NetworkConfig } from "@/lib/config/networks";
 import { shortAddress } from "@/lib/safe-display";
-import { stroopsToDecimal } from "@/lib/stellar/amount";
+import { stroopsToTrimmedDecimal } from "@/lib/stellar/amount";
 import {
   auditAfterUnwind,
   batchClassicDemolition,
@@ -497,7 +497,7 @@ export function generatePlan(
           dependencies: [],
           status: "pending",
           description:
-            `Claim ${formatBlnd(accrued)} BLND of Blend backstop emissions for pool ` +
+            `Claim ${stroopsToTrimmedDecimal(accrued)} BLND of Blend backstop emissions for pool ` +
             `${shortAddress(bs.poolId)} into backstop shares, so they are queued too`,
           metadata: {
             kind: "ClaimBackstopEmissions",
@@ -1085,7 +1085,7 @@ function owedLabel(
   passphrase: string | undefined,
 ): string {
   if (passphrase !== undefined && reward.token === Asset.native().contractId(passphrase)) {
-    return `${stroopsToDecimal(reward.amount).replace(/\.?0+$/, "")} XLM`;
+    return `${stroopsToTrimmedDecimal(reward.amount)} XLM`;
   }
   return `${reward.amount.toString()} base units of token ${shortAddress(reward.token)}`;
 }
@@ -1208,11 +1208,6 @@ function aquariusPoolLabel(pool: AquariusPositionSummary): string {
 
 function concentratedLabel(pos: AquariusConcentratedPositionSummary): string {
   return `${pos.tokens.map((t) => shortAddress(t)).join("/")} (${shortAddress(pos.poolAddress)})`;
-}
-
-// BLND has 7 decimals
-function formatBlnd(stroops: bigint): string {
-  return stroopsToDecimal(stroops).replace(/\.?0+$/, "");
 }
 
 // stable id format: lower-cased parts joined with ":"

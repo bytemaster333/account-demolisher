@@ -13,7 +13,6 @@ import {
   SOROBAN_RESOURCE_FEE_CAPS,
   SorobanFeeCapError,
   assertSorobanFeeWithinCap,
-  formatXlm,
   sorobanFeeBreakdown,
 } from "@/lib/soroban/fee-cap";
 import { SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
@@ -226,11 +225,5 @@ describe("soroban fee cap", () => {
       .setTimeout(300)
       .build();
     expect(() => assertSorobanFeeWithinCap(raw, "defi-exit")).toThrow(/not prepared/);
-  });
-
-  it("formats stroops as XLM", () => {
-    expect(formatXlm(10_000_000n)).toBe("1");
-    expect(formatXlm(115_929n)).toBe("0.0115929");
-    expect(formatXlm(5_000_000n)).toBe("0.5");
   });
 });

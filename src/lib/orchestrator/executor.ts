@@ -46,7 +46,6 @@ import { assertSafeRevokeInvocation, UnsafeRevokeError } from "@/lib/soroban/rev
 import { assertDefiAuthTree, UnsafeDefiAuthError } from "@/lib/soroban/defi-auth-guard";
 import {
   assertSorobanFeeWithinCap,
-  formatXlm as formatTokenAmount,
   SorobanFeeCapError,
   type SorobanFeeClass,
 } from "@/lib/soroban/fee-cap";
@@ -68,7 +67,11 @@ import { pathKey, type ClassicBatch, type ClassicMemo, type PathResultRef } from
 import { AmbiguousSubmitError, CloseFailure, rejectionCodes } from "@/lib/orchestrator/failures";
 import { journalFor, type NodeJournal } from "@/lib/orchestrator/journal";
 import { residueLineProblem, type DestinationLine } from "@/lib/orchestrator/residue";
-import { decimalToStroops as toStroops } from "@/lib/stellar/amount";
+import {
+  decimalToStroops as toStroops,
+  stroopsToDecimal,
+  stroopsToTrimmedDecimal,
+} from "@/lib/stellar/amount";
 import { shortAddress } from "@/lib/safe-display";
 
 export interface ConfirmationReceipt {
@@ -396,17 +399,11 @@ function capFeeToBalance(
   if (perOp < BigInt(DEFAULT_FEE_BASE)) {
     throw new CloseFailure(
       "not_mergeable",
-      `The account has ${formatXlm(available)} XLM it can spend, which does not cover the minimum ` +
+      `The account has ${stroopsToDecimal(available)} XLM it can spend, which does not cover the minimum ` +
         `network fee for the next ${opCount}-operation step. Add a little XLM and retry.`,
     );
   }
   return Number(perOp < BigInt(feeBase) ? perOp : BigInt(feeBase));
-}
-
-function formatXlm(stroops: bigint): string {
-  const neg = stroops < 0n;
-  const abs = neg ? -stroops : stroops;
-  return `${neg ? "-" : ""}${abs / 10_000_000n}.${(abs % 10_000_000n).toString().padStart(7, "0")}`;
 }
 
 function throwIfInterrupted(signal: AbortSignal | undefined): void {
@@ -748,7 +745,7 @@ function conversionRefusal(err: unknown): string | null {
   if (!(err instanceof PriceImpactRefusedError)) return null;
   const quoted =
     err.expectedOut !== undefined
-      ? ` (the whole balance would now get ${formatTokenAmount(err.expectedOut)} XLM)`
+      ? ` (the whole balance would now get ${stroopsToTrimmedDecimal(err.expectedOut)} XLM)`
       : "";
   if (err.reason === "price_impact" && typeof err.priceImpactBps === "number") {
     return `selling it all would move the price by ${(err.priceImpactBps / 100).toFixed(2)}%${quoted}`;
@@ -925,7 +922,7 @@ function claimUnavailable(err: BackstopEmissionsClaimError): CloseFailure {
     "claim_unavailable",
     `The Blend backstop emissions claim for pool ${shortAddress(err.poolId, 4, 4)} can no longer run, so ` +
       `nothing further was signed. Rebuild the plan to review the ` +
-      `${formatTokenAmount(err.accruedEmissions)} BLND it would leave unclaimed.`,
+      `${stroopsToTrimmedDecimal(err.accruedEmissions)} BLND it would leave unclaimed.`,
     { cause: err },
   );
 }
@@ -1265,8 +1262,8 @@ async function runFinalClassic(node: FinalClassicTxNode, run: Run): Promise<Conf
           throw new CloseFailure(
             "not_mergeable",
             "account_merge blocked: not enough XLM to fund the exchange forward. The temporary " +
-              `account needs ${formatXlm(funding.requiredStroops)} XLM and this account can spare ` +
-              `about ${formatXlm(funding.availableStroops < 0n ? 0n : funding.availableStroops)} XLM ` +
+              `account needs ${stroopsToDecimal(funding.requiredStroops)} XLM and this account can spare ` +
+              `about ${stroopsToDecimal(funding.availableStroops < 0n ? 0n : funding.availableStroops)} XLM ` +
               "at that point. Add XLM and retry.",
           );
         }

@@ -22,3 +22,8 @@ export function stroopsToDecimal(stroops: bigint): string {
   const result = `${abs / 10_000_000n}.${(abs % 10_000_000n).toString().padStart(7, "0")}`;
   return negative ? `-${result}` : result;
 }
+
+// the form people read: trailing zeros and a bare point dropped ("0.5", "100")
+export function stroopsToTrimmedDecimal(stroops: bigint): string {
+  return stroopsToDecimal(stroops).replace(/\.?0+$/, "");
+}

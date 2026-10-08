@@ -50,9 +50,9 @@ import {
 } from "@/lib/orchestrator/submit";
 import { withTimeout } from "@/lib/with-timeout";
 import { getHorizon } from "@/lib/stellar/horizon-client";
+import { stroopsToTrimmedDecimal } from "@/lib/stellar/amount";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { balance as readTokenBalance } from "@/lib/soroban/sep41";
-import { formatXlm } from "@/lib/soroban/fee-cap";
 import type { DemolishProgressEvent, DemolishResult } from "@/lib/types/plan";
 import { DirectContractProvider } from "@/lib/adapters/positions/direct";
 import { openPositionCount, type ProtocolPositions } from "@/lib/adapters/positions/interface";
@@ -389,7 +389,7 @@ async function runClose(input: ExecuteInput, signal: AbortSignal): Promise<Execu
         onSigning: (node, fee) =>
           input.onProgress({
             kind: "submitting",
-            message: `Sign "${node.description}": network fee up to ${formatXlm(fee)} XLM.`,
+            message: `Sign "${node.description}": network fee up to ${stroopsToTrimmedDecimal(fee)} XLM.`,
           }),
         lookupClassicTransaction: (hash, maxTime) =>
           lookupHorizonTransaction(horizon, hash, maxTime),
@@ -681,7 +681,7 @@ async function submitBundle(
     const bump = feeBumpBundle(xdrToSubmit, passphrase, feeSource, capped.toString());
     input.onProgress({
       kind: "submitting",
-      message: `The network asks a higher fee. Sign a fee bump of up to ${formatXlm(BigInt(bump.fee))} XLM, paid by ${feeSource}.`,
+      message: `The network asks a higher fee. Sign a fee bump of up to ${stroopsToTrimmedDecimal(BigInt(bump.fee))} XLM, paid by ${feeSource}.`,
     });
     const paid = await input.connector.signTransaction(bump, passphrase);
     return receiptOf(await submitClassic(paid.signedXdr));

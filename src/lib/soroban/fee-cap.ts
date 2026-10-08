@@ -78,6 +78,7 @@
 import type { FeeBumpTransaction, Transaction } from "@stellar/stellar-sdk";
 
 import { SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
+import { stroopsToTrimmedDecimal } from "@/lib/stellar/amount";
 
 export type SorobanFeeClass = "untrusted-token" | "untrusted-convert" | "pool-exit" | "defi-exit";
 
@@ -108,8 +109,6 @@ const WRITE_BOUNDS: Readonly<
   "pool-exit": { bytes: POOL_EXIT_MAX_WRITE_BYTES, entries: POOL_EXIT_MAX_READ_WRITE_ENTRIES },
 };
 
-const STROOPS_PER_XLM = 10_000_000n;
-
 export interface SorobanFeeBreakdown {
   // the total fee the signer authorizes (inclusion bid + resource fee)
   readonly totalFee: bigint;
@@ -124,7 +123,7 @@ export class SorobanFeeCapError extends Error {
   readonly breakdown: SorobanFeeBreakdown;
   constructor(feeClass: SorobanFeeClass, breakdown: SorobanFeeBreakdown, reason: string) {
     super(
-      `Refusing to sign: this step would cost ${formatXlm(breakdown.totalFee)} XLM in fees ` +
+      `Refusing to sign: this step would cost ${stroopsToTrimmedDecimal(breakdown.totalFee)} XLM in fees ` +
         `(${reason}). That is above what this kind of step legitimately needs, so it was not signed.`,
     );
     this.name = "SorobanFeeCapError";
@@ -166,14 +165,14 @@ export function assertSorobanFeeWithinCap(
     throw new SorobanFeeCapError(
       feeClass,
       b,
-      `resource fee ${formatXlm(b.resourceFee)} XLM over the ${formatXlm(cap)} XLM cap`,
+      `resource fee ${stroopsToTrimmedDecimal(b.resourceFee)} XLM over the ${stroopsToTrimmedDecimal(cap)} XLM cap`,
     );
   }
   if (b.totalFee > b.inclusionFee + cap) {
     throw new SorobanFeeCapError(
       feeClass,
       b,
-      `total fee over the ${formatXlm(b.inclusionFee + cap)} XLM cap`,
+      `total fee over the ${stroopsToTrimmedDecimal(b.inclusionFee + cap)} XLM cap`,
     );
   }
   const bound = WRITE_BOUNDS[feeClass];
@@ -194,10 +193,4 @@ export function assertSorobanFeeWithinCap(
     }
   }
   return b;
-}
-
-export function formatXlm(stroops: bigint): string {
-  const whole = stroops / STROOPS_PER_XLM;
-  const frac = (stroops % STROOPS_PER_XLM).toString().padStart(7, "0").replace(/0+$/, "");
-  return frac.length > 0 ? `${whole}.${frac}` : whole.toString();
 }

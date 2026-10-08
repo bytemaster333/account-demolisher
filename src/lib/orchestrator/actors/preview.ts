@@ -39,10 +39,9 @@ import { heldTokenDispositionWarnings } from "@/lib/orchestrator/warnings";
 import { assessMergeability, isFrozenBalance } from "@/lib/stellar/account-audit";
 import { fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 import { findPathToXLM, resolveCreditPaths } from "@/lib/stellar/path-finder";
-import { decimalToStroops } from "@/lib/stellar/amount";
+import { decimalToStroops, stroopsToTrimmedDecimal } from "@/lib/stellar/amount";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { getRpc } from "@/lib/soroban/rpc-client";
-import { formatXlm } from "@/lib/soroban/fee-cap";
 import type { AccountAudit } from "@/lib/types/account";
 import { pathKey, type ClassicMemo } from "@/lib/types/plan";
 import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
@@ -473,13 +472,13 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
   // forfeited: claiming them would mint new backstop shares under a new lock
   for (const left of input.positions.backstopUnclaimedEmissions) {
     reviewNotes.push(
-      `${formatXlm(left.accruedEmissions)} BLND of backstop emissions for pool ${left.poolId} are ` +
+      `${stroopsToTrimmedDecimal(left.accruedEmissions)} BLND of backstop emissions for pool ${left.poolId} are ` +
         "forfeited: claiming them would mint new backstop shares under a new withdrawal lock.",
     );
   }
   for (const f of tree.forfeitedBackstopEmissions ?? []) {
     reviewNotes.push(
-      `${formatXlm(f.accruedEmissions)} BLND of backstop emissions for pool ${f.poolId} are ` +
+      `${stroopsToTrimmedDecimal(f.accruedEmissions)} BLND of backstop emissions for pool ${f.poolId} are ` +
         "forfeited, as you chose: the claim can't run on chain today, so the withdrawal is " +
         "queued without it.",
     );
@@ -783,8 +782,8 @@ export function exchangeFundingBlocker(
   );
   if (funding === null || funding.sufficient) return null;
   return (
-    `This account needs at least ${formatXlm(funding.requiredStroops)} XLM free at the merge to ` +
-    `fund the exchange forward; it has about ${formatXlm(
+    `This account needs at least ${stroopsToTrimmedDecimal(funding.requiredStroops)} XLM free at the merge to ` +
+    `fund the exchange forward; it has about ${stroopsToTrimmedDecimal(
       funding.availableStroops < 0n ? 0n : funding.availableStroops,
     )} XLM. Add XLM, then rebuild the plan.`
   );

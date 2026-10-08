@@ -3,7 +3,7 @@
 import { BASE_FEE } from "@stellar/stellar-sdk";
 
 import { MAX_PER_OP_FEE } from "@/lib/orchestrator/executor";
-import { decimalToStroops } from "@/lib/stellar/amount";
+import { decimalToStroops, stroopsToTrimmedDecimal } from "@/lib/stellar/amount";
 import type { PlanNode } from "@/lib/plan/tree";
 
 // the executor's surge ceiling per classic operation: it starts at Horizon's p90
@@ -70,13 +70,9 @@ export function nodeMaxFeeStroops(node: PlanNode): number {
 
 // stroops → a trimmed XLM string (1 XLM = 10,000,000 stroops)
 export function stroopsToXlm(stroops: number | bigint): string {
-  const big = typeof stroops === "bigint" ? stroops : BigInt(Math.trunc(stroops));
-  const negative = big < 0n;
-  const abs = negative ? -big : big;
-  const whole = abs / 10_000_000n;
-  const frac = (abs % 10_000_000n).toString().padStart(7, "0").replace(/0+$/, "");
-  const s = frac.length > 0 ? `${whole}.${frac}` : `${whole}`;
-  return negative ? `-${s}` : s;
+  return stroopsToTrimmedDecimal(
+    typeof stroops === "bigint" ? stroops : BigInt(Math.trunc(stroops)),
+  );
 }
 
 // decimal XLM string -> integer stroops, under the shared strict amount policy:

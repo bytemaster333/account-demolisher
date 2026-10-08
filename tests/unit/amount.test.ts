@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { decimalToStroops, stroopsToDecimal } from "@/lib/stellar/amount";
+import { decimalToStroops, stroopsToDecimal, stroopsToTrimmedDecimal } from "@/lib/stellar/amount";
 
 describe("decimalToStroops", () => {
   it.each([
@@ -37,6 +37,28 @@ describe("stroopsToDecimal", () => {
   it("round-trips through decimalToStroops", () => {
     for (const v of [0n, 1n, 9_999_999n, 10_000_001n, -7n, 9_223_372_036_854_775_807n]) {
       expect(decimalToStroops(stroopsToDecimal(v))).toBe(v);
+    }
+  });
+});
+
+describe("stroopsToTrimmedDecimal", () => {
+  it.each([
+    [0n, "0"],
+    [1n, "0.0000001"],
+    [10_000_000n, "1"],
+    [1_000_000_000n, "100"],
+    [115_929n, "0.0115929"],
+    [5_000_000n, "0.5"],
+    [105_000_000n, "10.5"],
+    [-5_000_000n, "-0.5"],
+    [-25_000_000n, "-2.5"],
+  ])("formats %s", (input, expected) => {
+    expect(stroopsToTrimmedDecimal(input)).toBe(expected);
+  });
+
+  it("round-trips through decimalToStroops", () => {
+    for (const v of [0n, 1n, 9_999_999n, 10_000_000n, 10_000_001n, -7n, -5_000_000n]) {
+      expect(decimalToStroops(stroopsToTrimmedDecimal(v))).toBe(v);
     }
   });
 });

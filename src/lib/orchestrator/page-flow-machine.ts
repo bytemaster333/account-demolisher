@@ -34,6 +34,7 @@ import type { HeldToken } from "@/lib/soroban/held-tokens";
 import type { ExitTrustlineGap } from "@/lib/soroban/stellar-asset";
 import type { PoolGaugeRewards } from "@/lib/adapters/aquarius/gauges";
 import type { Connector } from "@/lib/wallet/connector";
+import { stroopsToTrimmedDecimal } from "@/lib/stellar/amount";
 
 export { classifyFailure, isRetryableFailure, type FailureKind };
 export { previewBlockers, type PreviewBlocker } from "@/lib/orchestrator/retry";
@@ -260,7 +261,7 @@ export function confirmBlockers(
     ...context.emissionForfeits.map(
       (f) =>
         `The backstop emissions claim for pool ${f.poolId} can't run (${f.reason}). Confirm that you leave ${
-          f.accruedEmissions === null ? "the accrued" : formatBlnd(f.accruedEmissions)
+          f.accruedEmissions === null ? "the accrued" : stroopsToTrimmedDecimal(f.accruedEmissions)
         } BLND unclaimed to continue.`,
     ),
     ...context.reviewBlockers,
@@ -289,12 +290,6 @@ function creditReason(c: UnroutableCredit): string {
     case "requote_worse":
       return "the market price fell below the one you reviewed";
   }
-}
-
-function formatBlnd(stroops: bigint): string {
-  const frac = (stroops % 10_000_000n).toString().padStart(7, "0").replace(/0+$/, "");
-  const whole = (stroops / 10_000_000n).toString();
-  return frac.length > 0 ? `${whole}.${frac}` : whole;
 }
 
 function typedMatches(context: PageFlowContext, typed: string | undefined): boolean {
