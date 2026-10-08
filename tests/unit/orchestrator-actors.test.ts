@@ -713,14 +713,20 @@ describe("a signed bundle is checked against the account as it is now", () => {
     signers: [{ key: USER, weight: 1 }],
     thresholds: { low: 0, med: 0, high: 0 },
   };
-  function signedBundle(signers: Keypair[] = [USER_KP], fee = "100") {
-    const tx = new TransactionBuilder(new Account(USER, "100"), {
+  // `removes`: signers the bundle clears ahead of the merge, as the batcher
+  // does for every signer the account has
+  function signedBundle(signers: Keypair[] = [USER_KP], fee = "100", removes: Keypair[] = []) {
+    const builder = new TransactionBuilder(new Account(USER, "100"), {
       fee,
       networkPassphrase: PASS,
       timebounds: { minTime: 0, maxTime: Math.floor(Date.now() / 1000) + 3600 },
-    })
-      .addOperation(Operation.accountMerge({ destination: DEST }))
-      .build();
+    });
+    for (const kp of removes) {
+      builder.addOperation(
+        Operation.setOptions({ signer: { ed25519PublicKey: kp.publicKey(), weight: 0 } }),
+      );
+    }
+    const tx = builder.addOperation(Operation.accountMerge({ destination: DEST })).build();
     for (const kp of signers) tx.sign(kp);
     return {
       signedXdr: tx.toEnvelope().toXdr("base64"),
@@ -809,7 +815,10 @@ describe("a signed bundle is checked against the account as it is now", () => {
     const actor = withPlan(mergeOnly, direct());
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
     actor.send(
-      event(signedBundle([USER_KP]), { ...twoOfTwo, thresholds: { low: 2, med: 2, high: 2 } }),
+      event(signedBundle([USER_KP], "200", [OTHER_KP]), {
+        ...twoOfTwo,
+        thresholds: { low: 2, med: 2, high: 2 },
+      }),
     );
     await settle(actor, "failed");
     expect(actor.getSnapshot().context.error).toMatch(/Not enough signatures/);
