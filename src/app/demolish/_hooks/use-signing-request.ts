@@ -116,13 +116,19 @@ export function useSigningRequest(args: {
       if (!("operations" in relayTx)) {
         return { ok: false, reason: "The stored request isn't a close transaction." };
       }
-      // sequence and time bounds don't matter for the comparison
+      const relayMaxTime = maxTimeOf(relayTx as Transaction);
+      if (relayMaxTime === null) {
+        return { ok: false, reason: "The stored request has no expiry." };
+      }
+      // sequence and time bounds don't matter for the comparison. the rebuild
+      // takes its window from the stored request rather than this browser's clock
       const source = new Account(args.audit.accountId, "0") as unknown as Horizon.AccountResponse;
       const rebuilt = buildReviewedBundle({
         tree: args.tree,
         input: args.runInput,
         sourceAccount: source,
         network: args.network,
+        ledgerCloseTime: Math.floor(relayMaxTime.getTime() / 1000) - SIGNING_WINDOW_SECONDS,
       });
       return sameOperationsAndMemo(rebuilt, relayTx as Transaction)
         ? { ok: true }

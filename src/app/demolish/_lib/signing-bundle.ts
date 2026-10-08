@@ -106,8 +106,9 @@ export function buildReviewedBundle(args: {
   readonly sourceAccount: Horizon.AccountResponse;
   readonly network: NetworkConfig;
   // close time (unix seconds) of the latest ledger: the request's expiry is
-  // counted from the network's clock, the same one the claim window check uses
-  readonly ledgerCloseTime?: number;
+  // counted from the network's clock, the same one the claim window check uses.
+  // required, so no caller can end up with an expiry from the browser's clock
+  readonly ledgerCloseTime: number;
 }): Transaction {
   const { tree, input } = args;
   const final = tree.allNodes.get("final-classic-tx");

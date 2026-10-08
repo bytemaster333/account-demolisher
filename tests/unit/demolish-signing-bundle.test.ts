@@ -9,6 +9,7 @@ import {
 } from "@stellar/stellar-sdk";
 
 import { TESTNET } from "@/lib/config/networks";
+import { SIGNING_WINDOW_SECONDS } from "@/lib/multisig/signing-request";
 import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
 import type { PlanTree } from "@/lib/plan/tree";
 import type { ClaimableBalanceEntry } from "@/lib/types/account";
@@ -35,6 +36,8 @@ import {
 // claimable balance ids are a 4-byte type prefix plus a 32-byte hash, in hex
 const CB_KEEP = `00000000${"a1".repeat(32)}`;
 const CB_DROP = `00000000${"b2".repeat(32)}`;
+// close time of the latest ledger, unix seconds
+const LEDGER_TIME = 2_000_000_000;
 
 function source(): Horizon.AccountResponse {
   // TransactionBuilder only reads accountId()/sequenceNumber(); a real Account
@@ -147,6 +150,7 @@ describe("the signing request is built from the reviewed plan (H-29)", () => {
         input: { destination: DEST, useMediator: false, memo },
         sourceAccount: source(),
         network: TESTNET,
+        ledgerCloseTime: LEDGER_TIME,
       }),
     );
     expect(tx.memo.type).toBe("id");
@@ -154,6 +158,24 @@ describe("the signing request is built from the reviewed plan (H-29)", () => {
     const merge = tx.operations[tx.operations.length - 1]!;
     expect(merge.type).toBe("accountMerge");
     expect((merge as { destination: string }).destination).toBe(DEST);
+  });
+
+  // the request circulates for days, so its expiry must come from the network's
+  // clock: a browser running minutes slow would otherwise cut the window short (L-25)
+  it("counts the signing window from the ledger close time", () => {
+    const tx = decode(
+      buildReviewedBundle({
+        tree: makeTree(),
+        input: { destination: DEST, useMediator: false },
+        sourceAccount: source(),
+        network: TESTNET,
+        ledgerCloseTime: LEDGER_TIME,
+      }),
+    );
+    expect(tx.timeBounds).toEqual({
+      minTime: "0",
+      maxTime: String(LEDGER_TIME + SIGNING_WINDOW_SECONDS),
+    });
   });
 
   it("claims only the claimable balances in the reviewed selection", () => {
@@ -165,6 +187,7 @@ describe("the signing request is built from the reviewed plan (H-29)", () => {
         input: { destination: DEST, useMediator: false },
         sourceAccount: source(),
         network: TESTNET,
+        ledgerCloseTime: LEDGER_TIME,
       }),
     );
     const claims = tx.operations.filter((o) => o.type === "claimClaimableBalance");
@@ -180,6 +203,7 @@ describe("the signing request is built from the reviewed plan (H-29)", () => {
         input: { destination: DEST, useMediator: false, memo: { type: "id", value: "2" } },
         sourceAccount: source(),
         network: TESTNET,
+        ledgerCloseTime: LEDGER_TIME,
       }),
     ).toThrow(/memo/i);
   });
@@ -192,6 +216,7 @@ describe("the signing request is built from the reviewed plan (H-29)", () => {
         input: { destination: Keypair.random().publicKey(), useMediator: false },
         sourceAccount: source(),
         network: TESTNET,
+        ledgerCloseTime: LEDGER_TIME,
       }),
     ).toThrow(/destination/i);
   });
