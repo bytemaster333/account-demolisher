@@ -34,6 +34,7 @@ import {
   type ExitTrustlineGap,
 } from "@/lib/soroban/stellar-asset";
 import { readAquariusRewardToken } from "@/lib/adapters/aquarius/client";
+import { readPositionGaugeRewards } from "@/lib/adapters/aquarius/gauges";
 import { ALL_PROTOCOLS, discoveryWarningFor } from "@/lib/orchestrator/warnings";
 import { isNotFoundError } from "@/lib/orchestrator/submit";
 
@@ -266,7 +267,10 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
   // contract writes a classic asset into its trustline: without one the whole
   // exit traps (contract error #13). a token that can't be read stops discovery,
   // since "unread" must never pass as "no trustline needed".
-  const exits = await exitGaps(input, audit, positions);
+  const [exits, gauges] = await Promise.all([
+    exitGaps(input, audit, positions),
+    gaugeRewardsLeftBehind(input, positions),
+  ]);
 
   // warnings in a stable order (scan warnings, per-protocol errors, blend repay
   // shortfall) so copy doesn't reshuffle between runs
@@ -279,6 +283,8 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
     discoveryWarnings.push(discoveryWarningFor(e));
     if (e.protocol !== ALL_PROTOCOLS) discoveryDiagnostics.push(`${e.protocol}: ${e.message}`);
   }
+  if (gauges.warning) discoveryWarnings.push(gauges.warning);
+  if (gauges.detail) discoveryDiagnostics.push(gauges.detail);
 
   // blend repay needs the borrowed token on hand (no auto-swap); a shortfall
   // would stop the close mid-way, so say it now
@@ -308,6 +314,42 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
       : {}),
   };
 });
+
+// aquarius gauge rewards are paid only by the pool's gauges_claim, which no plan
+// step makes, so a close leaves them behind. the user is told which pools owe
+// them; a failed read says the check did not happen instead of passing as none.
+async function gaugeRewardsLeftBehind(
+  input: DiscoverInput,
+  positions: ProtocolPositions,
+): Promise<{ readonly warning?: string; readonly detail?: string }> {
+  if (positions.aquarius.length === 0 && positions.aquariusConcentrated.length === 0) return {};
+  try {
+    const owed = await withTimeout(
+      "readPositionGaugeRewards",
+      readPositionGaugeRewards(getRpc(input.network), input.network, input.publicKey, positions),
+      DISCOVERY_TIMEOUT_MS,
+    );
+    if (owed.length === 0) return {};
+    const pools = owed.map((o) => o.poolAddress);
+    return {
+      warning:
+        `Aquarius gauge rewards are owed to this account in ${
+          pools.length === 1 ? "pool" : "pools"
+        } ${pools.join(", ")}. This app can't claim gauge rewards, so closing now leaves them ` +
+        "behind. Claim them outside this app before closing, then rebuild the plan.",
+      detail: `aquarius gauges: ${owed
+        .map((o) => `${o.poolAddress} ${o.rewards.map((r) => `${r.token}=${r.amount}`).join("/")}`)
+        .join("; ")}`,
+    };
+  } catch (e) {
+    return {
+      warning:
+        "We could not check this account's Aquarius gauge rewards, so any that accrued may be " +
+        "left behind by this close.",
+      detail: `aquarius gauges: ${errorMessage(e)}`,
+    };
+  }
+}
 
 // the payout tokens include the aquarius reward token when a planned claim will
 // pay some, so its token is kept for the plan: a missing line for it is opened

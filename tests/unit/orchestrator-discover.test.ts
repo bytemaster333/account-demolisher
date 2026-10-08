@@ -16,6 +16,7 @@ const getUserReward = vi.fn();
 const readAquariusRewardToken = vi.fn();
 const readAquariusPoolRewardTokens = vi.fn();
 const readAquariusPoolAddress = vi.fn();
+const readPositionGaugeRewards = vi.fn();
 const scanAllowances = vi.fn();
 const loadIssuer = vi.fn();
 
@@ -76,6 +77,15 @@ vi.mock("@/lib/adapters/aquarius/client", async () => {
     readAquariusPoolRewardTokens: (...a: unknown[]) => readAquariusPoolRewardTokens(...a),
   };
 });
+vi.mock("@/lib/adapters/aquarius/gauges", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/adapters/aquarius/gauges")>(
+    "@/lib/adapters/aquarius/gauges",
+  );
+  return {
+    ...actual,
+    readPositionGaugeRewards: (...a: unknown[]) => readPositionGaugeRewards(...a),
+  };
+});
 vi.mock("@/lib/adapters/aquarius/pools", async () => {
   const actual = await vi.importActual<typeof import("@/lib/adapters/aquarius/pools")>(
     "@/lib/adapters/aquarius/pools",
@@ -130,6 +140,7 @@ beforeEach(() => {
   getUserReward.mockResolvedValue(0n);
   readAquariusRewardToken.mockResolvedValue(AQUA_SAC);
   readAquariusPoolAddress.mockResolvedValue(AQUARIUS_POOL);
+  readPositionGaugeRewards.mockResolvedValue([]);
   readAquariusPoolRewardTokens.mockImplementation(async (_s: unknown, pools: string[]) => {
     return new Map(pools.map((p) => [p, [AQUA_SAC]]));
   });
@@ -298,5 +309,60 @@ describe("discovery says when a token's approvals were cut", () => {
     const allowanceWarnings = out.discoveryWarnings.filter((w) => w.includes("permission"));
     expect(allowanceWarnings).toHaveLength(1);
     expect(allowanceWarnings[0]).toContain(describeAllowanceOverflow(overflow));
+  });
+});
+
+describe("discovery says when aquarius gauge rewards would be left behind", () => {
+  const owed = {
+    poolAddress: AQUARIUS_POOL,
+    tokens: [XLM_SAC, USDC_SAC],
+    poolIndex: "ab".repeat(32),
+    rewards: [{ token: XLM_SAC, amount: 1_126_439_834n }],
+  };
+
+  it("warns with the pools whose gauges owe this account", async () => {
+    auditAccount.mockResolvedValue(makeAudit({ balances: [...makeAudit().balances, usdcLine] }));
+    getPositions.mockResolvedValue(aquariusPosition);
+    readPositionGaugeRewards.mockResolvedValue([owed]);
+    const out = await discover();
+    expect(readPositionGaugeRewards).toHaveBeenCalledWith(
+      expect.anything(),
+      NETWORK,
+      USER,
+      aquariusPosition,
+    );
+    expect(out.discoveryWarnings).toContain(
+      `Aquarius gauge rewards are owed to this account in pool ${AQUARIUS_POOL}. This app ` +
+        "can't claim gauge rewards, so closing now leaves them behind. Claim them outside " +
+        "this app before closing, then rebuild the plan.",
+    );
+    expect(out.discoveryDiagnostics).toContain(
+      `aquarius gauges: ${AQUARIUS_POOL} ${XLM_SAC}=1126439834`,
+    );
+  });
+
+  it("says nothing when no gauge owes anything", async () => {
+    auditAccount.mockResolvedValue(makeAudit({ balances: [...makeAudit().balances, usdcLine] }));
+    getPositions.mockResolvedValue(aquariusPosition);
+    const out = await discover();
+    expect(out.discoveryWarnings.join(" ")).not.toMatch(/gauge/);
+  });
+
+  it("does not read gauges without an aquarius position", async () => {
+    getPositions.mockResolvedValue(lpPosition);
+    await discover();
+    expect(readPositionGaugeRewards).not.toHaveBeenCalled();
+  });
+
+  it("says the rewards could not be checked when the read fails", async () => {
+    auditAccount.mockResolvedValue(makeAudit({ balances: [...makeAudit().balances, usdcLine] }));
+    getPositions.mockResolvedValue(aquariusPosition);
+    readPositionGaugeRewards.mockRejectedValue({ code: -32001, message: "processing limit" });
+    const out = await discover();
+    expect(out.discoveryWarnings).toContain(
+      "We could not check this account's Aquarius gauge rewards, so any that accrued may be " +
+        "left behind by this close.",
+    );
+    expect(out.discoveryDiagnostics).toContain("aquarius gauges: processing limit");
   });
 });
