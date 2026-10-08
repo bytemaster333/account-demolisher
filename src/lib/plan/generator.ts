@@ -12,7 +12,12 @@ import type {
 } from "@/lib/types/plan";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import type { HeldToken } from "@/lib/soroban/held-tokens";
-import { exitPayoutTokens, type ExitTrustlineGap } from "@/lib/soroban/stellar-asset";
+import {
+  describeUnfixableGap,
+  exitPayoutTokens,
+  isUnfixableGap,
+  type ExitTrustlineGap,
+} from "@/lib/soroban/stellar-asset";
 import type {
   AquariusConcentratedPositionSummary,
   AquariusPositionSummary,
@@ -935,15 +940,15 @@ function exitTrustlineNodes(
     const byExit = paidByExit.has(gap.contractId);
     const byReward = rewardClaims && gap.contractId === rewardToken;
     if (!byExit && !byReward) continue;
-    if (gap.reason === "unauthorized") {
+    if (isUnfixableGap(gap)) {
       const payers = [
         ...(byExit ? exitsPaying(positions, gap.contractId) : []),
         ...(byReward ? ["the Aquarius reward claims"] : []),
       ];
+      const { cause, fix } = describeUnfixableGap(gap);
       throw new Error(
-        `The ${gap.code}:${gap.issuer} trustline of this account is not authorized by its ` +
-          `issuer, so it can't receive the payout of ${payers.join(" and ")}. Ask the issuer ` +
-          `to authorize the line, or exit that position outside this app, before closing.`,
+        `${cause} It can't receive the payout of ${payers.join(" and ")}. ${fix}, or exit ` +
+          "that position outside this app, before closing.",
       );
     }
     if (byToken.has(gap.contractId)) continue;

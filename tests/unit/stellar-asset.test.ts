@@ -228,7 +228,7 @@ describe("exitTrustlineGaps", () => {
       issuerAuthRequired: true,
     });
     expect(exitTrustlineGaps(USER, [], [YBX], authRequired)).toEqual([
-      { contractId: YBX, code: "YBX", issuer: YBX_ISSUER, reason: "unauthorized" },
+      { contractId: YBX, code: "YBX", issuer: YBX_ISSUER, reason: "issuer_requires_authorization" },
     ]);
     // an authorized existing line is fine whatever the issuer's flags
     expect(exitTrustlineGaps(USER, [credit("YBX", YBX_ISSUER)], [YBX], authRequired)).toEqual([]);

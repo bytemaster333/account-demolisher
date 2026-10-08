@@ -306,10 +306,43 @@ export interface ExitTrustlineGap {
   readonly contractId: string;
   readonly code: string;
   readonly issuer: string;
-  // missing: a change_trust before the exit fixes it. unauthorized: the issuer
-  // has to authorize the line (the existing one, or the one a change_trust would
-  // open when the issuer requires authorization); the app cannot.
-  readonly reason: "missing" | "unauthorized";
+  // missing: a change_trust before the exit fixes it. the other two need the
+  // issuer, which the app can't stand in for. unauthorized: the account has the
+  // line and the issuer has not authorized it. issuer_requires_authorization:
+  // there is no line, and one opened now would start unauthorized.
+  readonly reason: "missing" | "unauthorized" | "issuer_requires_authorization";
+}
+
+export type UnfixableExitTrustlineGap = ExitTrustlineGap & {
+  readonly reason: Exclude<ExitTrustlineGap["reason"], "missing">;
+};
+
+export function isUnfixableGap(gap: ExitTrustlineGap): gap is UnfixableExitTrustlineGap {
+  return gap.reason !== "missing";
+}
+
+// why the line can't take a payout, and what the user can do about it. both
+// the plan generator and the review blockers word a refusal with this, so the
+// two never disagree about whether the line exists.
+export function describeUnfixableGap(gap: UnfixableExitTrustlineGap): {
+  readonly cause: string;
+  readonly fix: string;
+} {
+  const asset = `${gap.code}:${gap.issuer}`;
+  switch (gap.reason) {
+    case "unauthorized":
+      return {
+        cause: `The ${asset} trustline of this account is not authorized by its issuer.`,
+        fix: "Ask the issuer to authorize the line",
+      };
+    case "issuer_requires_authorization":
+      return {
+        cause:
+          `This account has no ${asset} trustline, and its issuer requires authorization, so ` +
+          "a line opened now could not receive anything until the issuer authorizes it.",
+        fix: "Open the line from your wallet and have the issuer authorize it",
+      };
+  }
 }
 
 // the credit assets among an exit's payout tokens that the account cannot
@@ -346,7 +379,7 @@ export function exitTrustlineGaps(
         contractId,
         code: asset.code,
         issuer: asset.issuer,
-        reason: asset.issuerAuthRequired === true ? "unauthorized" : "missing",
+        reason: asset.issuerAuthRequired === true ? "issuer_requires_authorization" : "missing",
       });
     } else if (line.isAuthorized === false) {
       gaps.push({ contractId, code: asset.code, issuer: asset.issuer, reason: "unauthorized" });

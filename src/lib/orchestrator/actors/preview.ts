@@ -49,7 +49,12 @@ import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
 import { blndTrustlineRequirement } from "@/lib/adapters/blend/emissions-check";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import type { HeldToken } from "@/lib/soroban/held-tokens";
-import { exitPayoutTokens, type ExitTrustlineGap } from "@/lib/soroban/stellar-asset";
+import {
+  describeUnfixableGap,
+  exitPayoutTokens,
+  isUnfixableGap,
+  type ExitTrustlineGap,
+} from "@/lib/soroban/stellar-asset";
 import type { UnopenableExitLine } from "@/lib/orchestrator/actors/discover";
 
 export interface PreviewInput {
@@ -645,15 +650,19 @@ export function exitTrustlineBlockers(tree: PlanTree, gaps: readonly ExitTrustli
   for (const gap of gaps) {
     if (!paid.has(gap.contractId)) continue;
     if (gap.reason === "missing" && opened.has(gap.contractId)) continue;
-    out.push(
-      gap.reason === "unauthorized"
-        ? `A pool exit in this plan pays out ${gap.code} (issuer ${gap.issuer}), and your ` +
-            `${gap.code} trustline is not authorized by its issuer, so the exit would fail on ` +
-            "chain. Ask the issuer to authorize it, then rebuild the plan."
-        : `A pool exit in this plan pays out ${gap.code} (issuer ${gap.issuer}), and this ` +
-            `account has no ${gap.code} trustline, so the exit would fail on chain. Add a ` +
-            `${gap.code} trustline from your wallet, then rebuild the plan.`,
-    );
+    if (isUnfixableGap(gap)) {
+      const { cause, fix } = describeUnfixableGap(gap);
+      out.push(
+        `A pool exit in this plan pays out ${gap.code}. ${cause} The exit would fail on ` +
+          `chain. ${fix}, then rebuild the plan.`,
+      );
+    } else {
+      out.push(
+        `A pool exit in this plan pays out ${gap.code} (issuer ${gap.issuer}), and this ` +
+          `account has no ${gap.code} trustline, so the exit would fail on chain. Add a ` +
+          `${gap.code} trustline from your wallet, then rebuild the plan.`,
+      );
+    }
   }
   return out;
 }

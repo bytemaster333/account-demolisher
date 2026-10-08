@@ -1403,6 +1403,22 @@ describe("exit payouts need a trustline: the plan opens it first", () => {
     ).toThrow(/YBX:G\w+ .*not authorized.*Soroswap pool/);
   });
 
+  it("refuses an exit into a missing line whose issuer requires authorization", () => {
+    let message = "";
+    try {
+      generatePlan(makeAudit(), soroswapYbx, [], DEST, {
+        network: TESTNET,
+        exitTrustlineGaps: [{ ...missing("YBX"), reason: "issuer_requires_authorization" }],
+      });
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toMatch(/has no YBX:G\w+ trustline.*issuer requires authorization/);
+    expect(message).toMatch(/payout of the Soroswap pool/);
+    // there is no line yet, so it can't be one the issuer has not authorized
+    expect(message).not.toMatch(/not authorized by its issuer/);
+  });
+
   it("names only the exits that pay the asset, not a position kept for its reward", () => {
     const both = emptyPositions({
       soroswap: soroswapYbx.soroswap,

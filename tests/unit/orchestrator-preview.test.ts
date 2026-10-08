@@ -300,7 +300,7 @@ describe("a pool exit that pays into a missing or unauthorized trustline blocks 
       status: "simulated",
       metadata: { kind: "WithdrawSoroswapLp", tokenA: USDC_SAC, tokenB: XLM_SAC, shareBalance: 1n },
     }) as PlanNode;
-  const gap = (reason: "missing" | "unauthorized") => ({
+  const gap = (reason: "missing" | "unauthorized" | "issuer_requires_authorization") => ({
     contractId: USDC_SAC,
     code: "USDC",
     issuer: USDC_ISSUER,
@@ -314,6 +314,11 @@ describe("a pool exit that pays into a missing or unauthorized trustline blocks 
     expect(exitTrustlineBlockers(buildPlanTree([lp()]), [gap("unauthorized")])).toEqual([
       expect.stringMatching(/not authorized by its issuer/),
     ]);
+    const [noLine] = exitTrustlineBlockers(buildPlanTree([lp()]), [
+      gap("issuer_requires_authorization"),
+    ]);
+    expect(noLine).toMatch(/no USDC:G\w+ trustline.*issuer requires authorization/);
+    expect(noLine).not.toMatch(/not authorized by its issuer/);
   });
 
   it("ignores a gap no exit in the plan pays into", () => {
@@ -340,6 +345,9 @@ describe("a pool exit that pays into a missing or unauthorized trustline blocks 
     expect(exitTrustlineBlockers(tree, [gap("missing")])).toEqual([]);
     expect(exitTrustlineBlockers(tree, [gap("unauthorized")])).toEqual([
       expect.stringMatching(/not authorized by its issuer/),
+    ]);
+    expect(exitTrustlineBlockers(tree, [gap("issuer_requires_authorization")])).toEqual([
+      expect.stringMatching(/issuer requires authorization/),
     ]);
   });
 
