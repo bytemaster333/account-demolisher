@@ -3,7 +3,6 @@
 // concentrated pool keeps tick-range positions in its own storage and is found by
 // discoverConcentratedPositions in ./concentrated.
 import { Address, xdr, type rpc } from "@stellar/stellar-sdk";
-import { getAllowlistForNetwork, type AllowedContract } from "@/lib/config/contracts";
 import { unsupportedNetwork, type NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import { balance as sep41Balance } from "@/lib/soroban/sep41";
@@ -20,6 +19,7 @@ import {
   RETENTION_RETRY_MARGIN_LEDGERS,
   parseRetentionFloor,
 } from "@/lib/soroban/event-retention";
+import { getAquariusRouterId } from "@/lib/adapters/aquarius/client";
 import { findConcentratedPool } from "@/lib/adapters/aquarius/concentrated-pools";
 
 // one pool the user holds shares in
@@ -43,20 +43,6 @@ export interface AquariusPoolProvider {
 
 // the router's pool_type answer and the REST pool_type for a concentrated pool
 export const CONCENTRATED_POOL_TYPE = "concentrated";
-
-// resolve aquarius router id from the network's allow-list
-function getAquariusRouterIdFromAllowlist(network: NetworkConfig): string {
-  const list = getAllowlistForNetwork(network);
-  const entry: AllowedContract | undefined = list.find(
-    (c) => c.protocol === "aquarius" && c.name === "AquariusAmmRouter",
-  );
-  if (entry === undefined) {
-    throw new Error(
-      `Aquarius router not found in ${network.id} allow-list: expected entry name 'AquariusAmmRouter'`,
-    );
-  }
-  return entry.id;
-}
 
 // encode tokens: vec<address>
 function tokensToScVal(tokens: readonly string[]): xdr.ScVal {
@@ -217,7 +203,7 @@ export class AquariusAPIPoolProvider implements AquariusPoolProvider {
     this.server = opts.server;
     this.network = opts.network;
     this.baseUrl = (opts.baseUrl ?? aquariusApiBaseUrlForNetwork(opts.network)).replace(/\/+$/, "");
-    this.routerId = getAquariusRouterIdFromAllowlist(opts.network);
+    this.routerId = getAquariusRouterId(opts.network);
     this.timeoutMs = opts.timeoutMs ?? AQUARIUS_API_TIMEOUT_MS;
     // the browser's fetch must be invoked with `this === window`; stored on the
     // instance and called as `this.fetchImpl(...)` it would otherwise throw
@@ -422,7 +408,7 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
   constructor(opts: AquariusEventScanPoolProviderOptions) {
     this.server = opts.server;
     this.network = opts.network;
-    this.routerId = getAquariusRouterIdFromAllowlist(opts.network);
+    this.routerId = getAquariusRouterId(opts.network);
     this.lookbackLedgers = opts.lookbackLedgers ?? DEFAULT_EVENT_LOOKBACK_LEDGERS;
     this.maxPages = opts.maxPages ?? DEFAULT_EVENT_MAX_PAGES;
     if (this.lookbackLedgers < 1) {
@@ -613,7 +599,7 @@ export async function readAquariusPoolAddress(
 ): Promise<string> {
   const { retval } = await simulateRead(
     server,
-    getAquariusRouterIdFromAllowlist(network),
+    getAquariusRouterId(network),
     "get_pools",
     [tokensToScVal(tokens)],
     sourcePublicKey,
