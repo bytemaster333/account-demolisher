@@ -5,6 +5,7 @@ import {
   claim,
   claimConcentratedFees,
   getUserReward,
+  readAquariusPoolRewardTokens,
   readAquariusRewardToken,
   withdrawConcentratedPosition,
 } from "@/lib/adapters/aquarius/client";
@@ -183,6 +184,23 @@ describe("integration: aquarius exits simulate against mainnet", () => {
     await expect(readAquariusRewardToken(getRpc(MAINNET), MAINNET)).resolves.toBe(aqua);
   });
 
+  // the plan links every reward claim to the router's reward token and refuses
+  // a paying pool whose own token list differs, so a pinned concentrated pool
+  // that paid anything else would have its pending reward refused
+  it("finds every pinned concentrated pool paying its rewards in the router's token", async () => {
+    const server = getRpc(MAINNET);
+    const [routerToken, byPool] = await Promise.all([
+      readAquariusRewardToken(server, MAINNET),
+      readAquariusPoolRewardTokens(
+        server,
+        MAINNET_CONCENTRATED_POOLS.map((p) => p.address),
+      ),
+    ]);
+    for (const pool of MAINNET_CONCENTRATED_POOLS) {
+      expect(byPool.get(pool.address), pool.address).toEqual([routerToken]);
+    }
+  });
+
   // GDD34D... holds archived shares in standard pool CAUCGD... with AQUA
   // pending; the pool pays that claim from its own RewardToken (simulated
   // 2026-10-08), so the payout read resolves the pool through the router and
@@ -254,15 +272,32 @@ describe("integration: aquarius exits simulate against mainnet", () => {
         holders.push(String(key[1]));
       }
     }
-    let found: { user: string; amount: bigint; token: string } | undefined;
+    let found: { user: string; owed: { token: string; amount: bigint }[] } | undefined;
     for (const user of holders.slice(0, 40)) {
       const owed = await readGaugeRewards(server, MAINNET, user, [pool]);
       if (owed.length > 0) {
-        found = { user, amount: owed[0]!.amount, token: owed[0]!.token };
+        found = { user, owed };
         break;
       }
     }
     expect(found, "no holder of CCNXGPE4 is owed a gauge reward any more").toBeDefined();
+    // the read must name what gauges_claim really pays: the same tokens, and at
+    // least the amount read, since the claim runs a moment later
+    const paid = scValToNative(
+      (
+        await simulateRead(
+          server,
+          pool,
+          "gauges_claim",
+          [new Address(found!.user).toScVal()],
+          found!.user,
+          MAINNET,
+        )
+      ).retval,
+    ) as Record<string, bigint>;
+    const paying = Object.entries(paid).filter(([, v]) => v > 0n);
+    expect(paying.map(([t]) => t).sort()).toEqual(found!.owed.map((o) => o.token).sort());
+    for (const o of found!.owed) expect(paid[o.token]).toBeGreaterThanOrEqual(o.amount);
     const tx = await claimGaugeRewards(
       {
         user: found!.user,
