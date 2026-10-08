@@ -12,6 +12,7 @@ import {
   SorobanDataBuilder,
   TransactionBuilder,
   xdr,
+  type Horizon,
   type Transaction,
 } from "@stellar/stellar-sdk";
 import { vi } from "vitest";
@@ -101,6 +102,34 @@ export interface FakeAccount {
   balances: unknown[];
 }
 
+// horizon's fee_stats answer on a quiet network: ledgers mostly empty and every
+// fee at the 100 stroop minimum
+export function quietFeeStats(): Horizon.HorizonApi.FeeStatsResponse {
+  const flat = {
+    max: "100",
+    min: "100",
+    mode: "100",
+    p10: "100",
+    p20: "100",
+    p30: "100",
+    p40: "100",
+    p50: "100",
+    p60: "100",
+    p70: "100",
+    p80: "100",
+    p90: "100",
+    p95: "100",
+    p99: "100",
+  };
+  return {
+    last_ledger: String(AUDIT_LEDGER.sequence),
+    last_ledger_base_fee: "100",
+    ledger_capacity_usage: "0.10",
+    fee_charged: flat,
+    max_fee: flat,
+  };
+}
+
 // horizon double backed by a mutable account table. a missing account answers
 // with the sdk's real NotFoundError, as horizon does.
 export function fakeHorizon(accounts: Map<string, FakeAccount>, extra: Partial<HorizonLike> = {}) {
@@ -121,7 +150,8 @@ export function fakeHorizon(accounts: Map<string, FakeAccount>, extra: Partial<H
       }),
     }),
   });
-  return { loadAccount, ledgers, ...extra } as unknown as HorizonLike & {
+  const feeStats = vi.fn(async () => quietFeeStats());
+  return { loadAccount, ledgers, feeStats, ...extra } as unknown as HorizonLike & {
     loadAccount: typeof loadAccount;
   };
 }

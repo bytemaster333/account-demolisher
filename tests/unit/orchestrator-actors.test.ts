@@ -35,6 +35,7 @@ import {
   XLM_SAC,
   allowlisted,
   makeAudit,
+  quietFeeStats,
   signingConnector,
 } from "./orchestrator-fixtures";
 
@@ -189,6 +190,10 @@ function horizonDouble() {
     }),
     offers: () => ({
       forAccount: () => ({ limit: () => ({ call: async () => ({ records: [] }) }) }),
+    }),
+    feeStats: vi.fn(async () => {
+      if (state.down) throw unavailable();
+      return quietFeeStats();
     }),
     submitTransaction: vi.fn(async (tx: Transaction) => {
       submitted.push(tx);
@@ -597,6 +602,19 @@ describe("the real preview surfaces what it could not build", () => {
     actor.stop();
   });
 
+  it("fails the preview as a retryable network failure when the fees can't be read", async () => {
+    net.horizon.feeStats.mockRejectedValue(
+      new BadResponseError("down", { status: 503, statusText: "Service Unavailable", data: {} }),
+    );
+    const actor = realActors(input({ destination: DEST, useMediator: false }));
+    await settle(actor, "failed");
+    const ctx = actor.getSnapshot().context;
+    expect(ctx.error).toMatch(/network fees could not be read/i);
+    expect(ctx.failureKind).toBe("network");
+    expect(ctx.tree).toBeNull();
+    actor.stop();
+  });
+
   it("keeps a step's real hydration error and failed status", async () => {
     const spender = allowlisted("soroswap", "SoroswapRouter");
     scanAllowances.mockResolvedValue({
@@ -909,6 +927,30 @@ describe("a signed bundle is checked against the account as it is now", () => {
     const bump = connector.signTransaction.mock.calls[0]![0] as unknown as { feeSource: string };
     expect(bump.feeSource).toBe(USER);
     again.stop();
+  });
+
+  it("signs no fee bump when the network fees can't be read", async () => {
+    net.horizon.submitTransaction.mockImplementationOnce(async () => {
+      throw new TransactionFailedError("failed", {
+        status: 400,
+        statusText: "Bad Request",
+        data: { extras: { result_codes: { transaction: "tx_insufficient_fee" } } },
+      });
+    });
+    const connector = signingConnector();
+    const actor = withPlan(mergeOnly, input({ destination: DEST, useMediator: false, connector }));
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    net.horizon.feeStats.mockRejectedValue(
+      new BadResponseError("down", { status: 503, statusText: "Service Unavailable", data: {} }),
+    );
+    actor.send(event());
+    await settle(actor, "failed");
+    const ctx = actor.getSnapshot().context;
+    expect(ctx.failureKind).toBe("network");
+    expect(ctx.error).toMatch(/network fees could not be read/i);
+    expect(connector.signTransaction).not.toHaveBeenCalled();
+    expect(net.horizon.submitTransaction).toHaveBeenCalledTimes(1);
+    actor.stop();
   });
 });
 

@@ -70,7 +70,9 @@ import {
 } from "@/lib/orchestrator/executor";
 import {
   AmbiguousSubmitError,
+  classifyFailure,
   CloseFailure,
+  isRetryableFailure,
   SubmitRejectedError,
 } from "@/lib/orchestrator/failures";
 import { journalFor } from "@/lib/orchestrator/journal";
@@ -270,8 +272,9 @@ describe("FinalClassicTx fee bid and in-call rebuilds", () => {
       {
         horizon: fakeHorizon(table, {
           feeStats: vi.fn(async () => ({
-            fee_charged: { p90: "6970" },
-            max_fee: { p90: "1000000" },
+            ledger_capacity_usage: "0.60",
+            fee_charged: { mode: "100", p90: "6970" },
+            max_fee: { mode: "100", p90: "1000000" },
           })) as never,
         }),
       },
@@ -318,6 +321,39 @@ describe("FinalClassicTx fee bid and in-call rebuilds", () => {
     expect(perOpFee(d.connector.signed[0]!)).toBe("17380");
   });
 
+  it("fails as a retryable network failure when horizon can't serve fee stats", async () => {
+    const table = accounts();
+    const feeStats = vi.fn(async () => {
+      throw horizonError(503);
+    });
+    const d = deps({ horizon: fakeHorizon(table, { feeStats: feeStats as never }) }, table);
+    const failure = await run(tree(finalNode()), d).catch((e: unknown) => e);
+    expect(failure).toBeInstanceOf(CloseFailure);
+    expect(failure).toMatchObject({ kind: "network" });
+    expect(isRetryableFailure(classifyFailure(failure))).toBe(true);
+    expect((failure as Error).message).toMatch(/network fees could not be read/i);
+    // a 503 is a blip: the read is retried before the step fails
+    expect(feeStats).toHaveBeenCalledTimes(3);
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an unreadable bid", { ledger_capacity_usage: "0.60", fee_charged: { p90: "n/a" } }],
+    ["a zero bid", { ledger_capacity_usage: "0.10", fee_charged: { mode: "0" } }],
+    ["no fee_charged", { ledger_capacity_usage: "0.10" }],
+    ["an unreadable capacity usage", { fee_charged: { mode: "100", p90: "5000" } }],
+  ])("refuses to bid the minimum on %s", async (_label, stats) => {
+    const table = accounts();
+    const d = deps(
+      { horizon: fakeHorizon(table, { feeStats: vi.fn(async () => stats) as never }) },
+      table,
+    );
+    const failure = await run(tree(finalNode()), d).catch((e: unknown) => e);
+    expect(failure).toMatchObject({ kind: "network" });
+    expect((failure as Error).message).toMatch(/network fees could not be read/i);
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
+  });
+
   it("caps the bid at what the account can spend above its reserves", async () => {
     const table = accounts();
     // 1.0000500 XLM with a 0.5 XLM base reserve and no subentries: 500 stroops
@@ -344,7 +380,10 @@ describe("FinalClassicTx fee bid and in-call rebuilds", () => {
     const d = deps(
       {
         horizon: fakeHorizon(table, {
-          feeStats: vi.fn(async () => ({ fee_charged: { p90: "800000" } })) as never,
+          feeStats: vi.fn(async () => ({
+            ledger_capacity_usage: "0.60",
+            fee_charged: { p90: "800000" },
+          })) as never,
           ledgers: ledgers as never,
         }),
       },
@@ -359,7 +398,10 @@ describe("FinalClassicTx fee bid and in-call rebuilds", () => {
     const d = deps(
       {
         horizon: fakeHorizon(table, {
-          feeStats: vi.fn(async () => ({ fee_charged: { p90: "20000" } })) as never,
+          feeStats: vi.fn(async () => ({
+            ledger_capacity_usage: "0.60",
+            fee_charged: { p90: "20000" },
+          })) as never,
         }),
       },
       table,

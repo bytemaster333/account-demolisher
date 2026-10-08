@@ -51,12 +51,19 @@ terminal, and the test suite pins that behaviour.
 
 ### The starting fee
 
-`surgeFeeBase` reads Horizon's fee statistics and starts at the p90 of `max_fee`, clamped
-to the range 100 to 1,000,000 stroops per operation. Any failure reading the statistics
-falls back to 100.
+`surgeFeeBase` reads Horizon's fee statistics and bids from `fee_charged`, what recent
+ledgers actually charged per operation. While `ledger_capacity_usage` is below 0.5 it
+starts at the mode; from 0.5 up it starts at the p90. The bid is clamped to the range 100
+to 1,000,000 stroops per operation, and the executor then caps it at what the account can
+spend above its reserves. The review reads the same bid to size its reserve checks.
 
 That figure is per operation. The SDK multiplies by operation count, and `computeFee`
 throws when the total would exceed the uint32 ceiling.
+
+A read that meets a 429, a 5xx, or no response runs up to three times with a backoff.
+When it still fails, or the answer carries no readable capacity usage or bid, the step
+fails as a retryable `network` failure that says the network fees could not be read. The
+close never bids the 100 stroop minimum in place of a fee it could not read.
 
 ## Soroban submission failures
 

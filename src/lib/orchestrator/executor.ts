@@ -77,11 +77,9 @@ export interface ConfirmationReceipt {
 }
 
 // the horizon surface the executor reads. the latest ledger times every classic
-// batch and sizes its fee to the spendable balance, so it is required; without
-// fee stats the bid starts at the network minimum and the fee retry raises it.
-export type HorizonLike = Pick<Horizon.Server, "loadAccount" | "ledgers"> & {
-  readonly feeStats?: Horizon.Server["feeStats"];
-};
+// batch and sizes its fee to the spendable balance; fee stats set the starting
+// bid, since a minimum bid during surge pricing never lands.
+export type HorizonLike = Pick<Horizon.Server, "loadAccount" | "ledgers" | "feeStats">;
 
 // on-chain outcome of a transaction submitted earlier. "pending" means not found
 // yet while it can still be included; "expired" means not found and past its
@@ -335,26 +333,36 @@ function sorobanRecoverableKind(err: unknown): "resequence" | "footprint" | "ref
 // soroban resource fees are counted in fee_charged too, so its p90 can sit far
 // above any classic surge while ledgers are mostly empty; below half capacity
 // there is no surge to outbid and the most common charge is the bid, as the
-// mediator forward does. a failed or malformed fee_stats read starts at the
-// network minimum; the fee retry escalates from there.
+// mediator forward does. an unreadable answer fails the step rather than bid
+// the network minimum, which never lands while fees surge.
 const SURGE_CAPACITY_USAGE = 0.5;
 
 export async function surgeFeeBase(horizon: HorizonLike): Promise<number> {
-  if (typeof horizon.feeStats !== "function") return DEFAULT_FEE_BASE;
-  let bid: number;
+  const unreadable = (detail: string, cause?: unknown): CloseFailure =>
+    new CloseFailure(
+      "network",
+      `The network fees could not be read (${detail}). Retry once Horizon answers.`,
+      cause === undefined ? undefined : { cause },
+    );
+  // typed loosely: a proxy or a misbehaving horizon can answer with any json
+  let stats: Partial<Horizon.HorizonApi.FeeStatsResponse> | null;
   try {
-    const stats = await horizon.feeStats();
-    const usage = Number.parseFloat(stats.ledger_capacity_usage ?? "");
-    // an unreadable usage keeps the higher p90 bid
-    const pick =
-      Number.isFinite(usage) && usage < SURGE_CAPACITY_USAGE
-        ? stats.fee_charged?.mode
-        : stats.fee_charged?.p90;
-    bid = Number.parseInt(pick ?? "", 10);
-  } catch {
-    return DEFAULT_FEE_BASE;
+    stats = await withHorizonRetry(() => horizon.feeStats());
+  } catch (err) {
+    throw unreadable(`Horizon fee_stats failed: ${errorMessage(err)}`, err);
   }
-  if (!Number.isFinite(bid) || bid <= 0) return DEFAULT_FEE_BASE;
+  const usageRaw = stats?.ledger_capacity_usage;
+  const usage =
+    typeof usageRaw === "string" && usageRaw.trim() !== "" ? Number(usageRaw) : Number.NaN;
+  if (!Number.isFinite(usage)) {
+    throw unreadable(`Horizon fee_stats reported ledger_capacity_usage "${String(usageRaw)}"`);
+  }
+  const field = usage < SURGE_CAPACITY_USAGE ? "mode" : "p90";
+  const pick: unknown = stats?.fee_charged?.[field];
+  const bid = typeof pick === "string" && /^\d+$/.test(pick) ? Number(pick) : Number.NaN;
+  if (!Number.isFinite(bid) || bid <= 0) {
+    throw unreadable(`Horizon fee_stats reported fee_charged.${field} "${String(pick)}"`);
+  }
   return Math.min(Math.max(DEFAULT_FEE_BASE, bid), MAX_PER_OP_FEE);
 }
 
