@@ -958,25 +958,28 @@ describe("one close per account runs in a tab", () => {
     second.stop();
   });
 
-  // another tab's close holds the exclusive lock: a request that waits for it is
-  // never granted while that close runs. `queryShowsHold` false is the moment
-  // between a check and the request, when the other tab has just taken it.
-  function heldLocks(queryShowsHold: boolean) {
+  // the lock as another tab sees it. each request for the close lock takes it
+  // only when free (ifAvailable); `holds` answers, attempt by attempt, what
+  // query() shows then: another close's exclusive hold, an old watcher's shared
+  // hold, or nothing. a waiting request would never be granted.
+  function closeLocks(holds: readonly ("exclusive" | "shared" | "free")[]) {
     const name = `account-demolisher:close:${USER}`;
-    const waited: string[] = [];
+    let attempt = 0;
     const request = vi.fn(
       (lockName: string, opts: { ifAvailable?: boolean }, cb: (lock: unknown) => unknown) => {
         if (lockName !== name) return Promise.resolve(cb({ name: lockName, mode: "exclusive" }));
-        if (opts.ifAvailable === true) return Promise.resolve(cb(null));
-        waited.push(lockName);
-        return new Promise(() => {});
+        if (opts.ifAvailable !== true) return new Promise(() => {});
+        const hold = holds[Math.min(attempt, holds.length - 1)]!;
+        attempt += 1;
+        return Promise.resolve(cb(hold === "free" ? { name, mode: "exclusive" } : null));
       },
     );
-    const query = async () => ({
-      held: queryShowsHold ? [{ name, mode: "exclusive" }] : [],
-      pending: [],
-    });
-    return { locks: { request, query }, waited };
+    const query = async () => {
+      const hold = holds[Math.min(attempt - 1, holds.length - 1)]!;
+      return { held: hold === "free" ? [] : [{ name, mode: hold }], pending: [] };
+    };
+    const closeRequests = () => request.mock.calls.filter((c) => c[0] === name);
+    return { locks: { request, query }, closeRequests };
   }
 
   const finalOnly = () =>
@@ -994,28 +997,58 @@ describe("one close per account runs in a tab", () => {
       },
     } as PlanNode);
 
-  for (const [label, queryShowsHold] of [
-    ["while another tab holds the close", true],
-    ["when another tab takes the lock right after a check", false],
-  ] as const) {
-    it(`says so at once ${label}, instead of waiting on its lock`, async () => {
-      const held = heldLocks(queryShowsHold);
-      vi.stubGlobal("navigator", { ...navigator, locks: held.locks });
-      try {
-        const actor = withPlan(finalOnly, input({ destination: DEST, useMediator: false }));
-        await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
-        actor.send({ type: "CONFIRM", typed: DEST.slice(-4), expected: RUN });
-        await settle(actor, "failed");
-        expect(actor.getSnapshot().context.failureKind).toBe("close_running");
-        expect(actor.getSnapshot().context.error).toMatch(/another tab/);
-        expect(held.waited).toEqual([]);
-        expect(net.horizon.submitted).toHaveLength(0);
-        actor.stop();
-      } finally {
-        vi.unstubAllGlobals();
-      }
-    });
+  async function confirmWith(locks: ReturnType<typeof closeLocks>["locks"], end: FlowState) {
+    vi.stubGlobal("navigator", { ...navigator, locks });
+    const actor = withPlan(finalOnly, input({ destination: DEST, useMediator: false }));
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    actor.send({ type: "CONFIRM", typed: DEST.slice(-4), expected: RUN });
+    await settle(actor, end);
+    return actor;
   }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("says so at once while another tab holds the close, without waiting on its lock", async () => {
+    const held = closeLocks(["exclusive"]);
+    const actor = await confirmWith(held.locks, "failed");
+    expect(actor.getSnapshot().context.failureKind).toBe("close_running");
+    expect(actor.getSnapshot().context.error).toMatch(/another tab/);
+    expect(held.closeRequests()).toHaveLength(1);
+    expect(held.closeRequests()[0]![1]).toEqual({ mode: "exclusive", ifAvailable: true });
+    expect(net.horizon.submitted).toHaveLength(0);
+    actor.stop();
+  });
+
+  it("says so when another tab's close takes the lock between two attempts", async () => {
+    // an old watcher's shared hold blocks the first attempt; by the second a
+    // close in another tab holds it
+    const held = closeLocks(["shared", "exclusive"]);
+    const actor = await confirmWith(held.locks, "failed");
+    expect(actor.getSnapshot().context.failureKind).toBe("close_running");
+    expect(held.closeRequests()).toHaveLength(2);
+    expect(held.closeRequests().every((c) => c[1].ifAvailable === true)).toBe(true);
+    expect(net.horizon.submitted).toHaveLength(0);
+    actor.stop();
+  });
+
+  it("runs the close once a watcher's brief shared hold is gone", async () => {
+    const held = closeLocks(["shared", "free"]);
+    const actor = await confirmWith(held.locks, "succeeded");
+    expect(held.closeRequests()).toHaveLength(2);
+    expect(net.horizon.submitted).toHaveLength(1);
+    actor.stop();
+  });
+
+  it("stops with the lock's own reason when a stray hold never goes away", async () => {
+    const held = closeLocks(["shared"]);
+    const actor = await confirmWith(held.locks, "failed");
+    expect(actor.getSnapshot().context.error).toMatch(/Could not take this account's close lock/);
+    expect(actor.getSnapshot().context.failureKind).not.toBe("close_running");
+    expect(net.horizon.submitted).toHaveLength(0);
+    actor.stop();
+  });
 });
 
 describe("discovery reports partial scans and drops spent allowances", () => {
