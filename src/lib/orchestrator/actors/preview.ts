@@ -25,11 +25,7 @@ import {
   unroutableCredits,
   type UnroutableCredit,
 } from "@/lib/plan/classic-batcher";
-import {
-  BackstopEmissionsClaimError,
-  hydratePlanTransactions,
-  type HydrationFailure,
-} from "@/lib/plan/hydration";
+import { hydratePlanTransactions, type HydrationFailure } from "@/lib/plan/hydration";
 import { startMediatorFlow } from "@/lib/mediator/client";
 import { FINAL_CLASSIC_TX_NODE_ID } from "@/lib/mediator/refresh";
 import {
@@ -568,20 +564,17 @@ export function backstopClaimForfeits(
   failures: readonly HydrationFailure[],
 ): EmissionForfeit[] {
   const unavailable = new Map(
-    failures.filter((f) => f.backstopClaimUnavailable).map((f) => [f.nodeId, f.error]),
+    failures.filter((f) => f.backstopClaimUnavailable).map((f) => [f.nodeId, f]),
   );
   const out: EmissionForfeit[] = [];
   for (const node of tree.allNodes.values()) {
     if (node.kind !== "ClaimBackstopEmissions" || node.status !== "failed") continue;
-    if (!unavailable.has(node.id)) continue;
-    const err = unavailable.get(node.id);
+    const failure = unavailable.get(node.id);
+    if (failure === undefined) continue;
     out.push({
       poolId: node.metadata.poolId,
       // the amount the claim's simulation read, which can be newer than discovery's
-      accruedEmissions:
-        err instanceof BackstopEmissionsClaimError
-          ? err.accruedEmissions
-          : node.metadata.accruedEmissions,
+      accruedEmissions: failure.backstopAccruedEmissions ?? node.metadata.accruedEmissions,
       // node.error keeps the hydration's own line for the details view
       reason: "the claim fails when simulated against the chain today",
     });
