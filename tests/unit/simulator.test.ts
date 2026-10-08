@@ -8,7 +8,6 @@ import {
   type rpc,
   type Horizon,
 } from "@stellar/stellar-sdk";
-import { buildBlndTrustlineTx } from "@/lib/adapters/blend/emissions-check";
 import { FORWARD_OPERATION_COUNT, MAX_FORWARD_FEE } from "@/lib/mediator/forward-terms";
 
 import { NodeNotBuiltError, simulateNode, SimulationFailedError } from "@/lib/plan/simulator";
@@ -99,6 +98,22 @@ describe("simulator: FinalClassicTx in-memory validation", () => {
     );
     if (out.kind !== "classic") throw new Error("expected classic");
     expect(out.estimatedFee).toBe("35000");
+  });
+
+  // the network's clock, not the browser's, bounds the envelope like the executor's
+  it("bounds the envelope by the ledger close time the caller passes", async () => {
+    const closedAt = 1_800_000_000;
+    const out = await simulateNode(finalNode([batch(2)]), baseDeps({ ledgerCloseTime: closedAt }));
+    if (out.kind !== "classic") throw new Error("expected classic");
+    const tx = TransactionBuilder.fromXDR(out.xdr, TESTNET.passphrase);
+    if ("innerTransaction" in tx) throw new Error("expected a plain transaction");
+    expect(tx.timeBounds).toEqual({ minTime: "0", maxTime: String(closedAt + 300) });
+  });
+
+  it("refuses a ledger close time that is not a positive whole second", async () => {
+    await expect(
+      simulateNode(finalNode([batch(1)]), baseDeps({ ledgerCloseTime: Number.NaN })),
+    ).rejects.toBeInstanceOf(SimulationFailedError);
   });
 });
 
@@ -275,10 +290,18 @@ describe("simulator: classic nodes outside the final batch", () => {
 
   it("validates the BLND change_trust in memory instead of asking soroban rpc", async () => {
     const simulateFn = vi.fn();
-    const tx = buildBlndTrustlineTx(
-      TESTNET,
-      new Account(USER, "41") as unknown as Horizon.AccountResponse,
-    );
+    // the change_trust hydration builds for this node
+    const tx = new TransactionBuilder(new Account(USER, "41"), {
+      fee: "100000",
+      networkPassphrase: TESTNET.passphrase,
+    })
+      .addOperation(
+        Operation.changeTrust({
+          asset: new Asset("BLND", "GATALTGTWIOT6BUDBCZM3Q4OQ4BO2COLOAZ7IYSKPLC2PMSOPPGF5V56"),
+        }),
+      )
+      .setTimeout(300)
+      .build();
     const out = await simulateNode(
       {
         id: "blnd-trustline",

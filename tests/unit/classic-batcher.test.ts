@@ -1424,3 +1424,128 @@ describe("H-12: a pool withdraw counts against the trustline room a claim needs"
     expect(plan.trustlineChanges).toEqual([]);
   });
 });
+
+describe("a pool withdraw whose payout overflows a custom trustline limit", () => {
+  const CAP = { kind: "credit", code: "CAP", issuer: ISSUER } as const;
+  const MAX = "922337203685.4775807";
+  const capLine = (amount: string, limit: string, buying = "0"): AuditBalance => ({
+    asset: CAP,
+    amount,
+    limit,
+    buyingLiabilities: buying,
+    sellingLiabilities: "0",
+    isAuthorized: true,
+  });
+  // 10 of 100 shares of a pool holding 300 CAP: the withdraw pays 30 CAP
+  const capPool = (poolId: string = POOL_ID) =>
+    ({
+      poolId,
+      poolType: "constant_product",
+      shareBalance: "10",
+      totalShares: "100",
+      shareLimit: "100",
+      fee: 30,
+      reserves: [
+        { asset: { kind: "native" }, amount: "1000" },
+        { asset: CAP, amount: "300" },
+      ],
+    }) as const;
+  const capCb = (id: string, amount: string): ClaimableBalanceEntry => ({
+    id,
+    asset: CAP,
+    amount,
+    sponsor: OTHER,
+    predicate: {},
+    claimants: [ACC],
+    claimableNow: true,
+  });
+  const raises = (ops: readonly BatchedOperation[]) =>
+    ops.filter((o) => o.kind === "change_trust_add");
+
+  // core fails the withdraw with LIQUIDITY_POOL_WITHDRAW_LINE_FULL when the
+  // payout does not fit, and the claims' raise used to come after it
+  it("raises the line to the maximum limit ahead of the withdraw", () => {
+    const audit = makeAudit({
+      balances: [nativeLine("100"), capLine("90", "100")],
+      poolShares: [capPool()],
+    });
+    const ops = allOps(batchClassicDemolition(audit, directOptions));
+    expect(raises(ops)).toHaveLength(1);
+    expect(raises(ops)[0]!.metadata).toEqual({ asset: CAP });
+    expect(raises(ops)[0]!.summary).toMatch(/pool withdraw/);
+    expect(ops.indexOf(raises(ops)[0]!)).toBeLessThan(
+      ops.findIndex((o) => o.kind === "liquidity_pool_withdraw"),
+    );
+  });
+
+  it("counts buying liabilities, which the withdraw sees before the offers are cancelled", () => {
+    const audit = makeAudit({
+      balances: [nativeLine("100"), capLine("40", "100", "40")],
+      poolShares: [capPool()],
+    });
+    expect(raises(allOps(batchClassicDemolition(audit, directOptions)))).toHaveLength(1);
+  });
+
+  it("adds up what several pools pay into the same line, and raises it once", () => {
+    const audit = makeAudit({
+      balances: [nativeLine("100"), capLine("50", "100")],
+      poolShares: [capPool(), capPool("b".repeat(64))],
+    });
+    // 30 fits, 60 does not
+    const ops = allOps(batchClassicDemolition(audit, directOptions));
+    expect(raises(ops)).toHaveLength(1);
+    expect(ops.indexOf(raises(ops)[0]!)).toBe(0);
+  });
+
+  it("raises nothing for a payout that fits", () => {
+    const audit = makeAudit({
+      balances: [nativeLine("100"), capLine("70", "100")],
+      poolShares: [capPool()],
+    });
+    expect(raises(allOps(batchClassicDemolition(audit, directOptions)))).toEqual([]);
+  });
+
+  it("claims into the raised line without raising it a second time", () => {
+    const audit = makeAudit({
+      balances: [nativeLine("100"), capLine("90", "100")],
+      poolShares: [capPool()],
+      claimableBalances: [capCb(CB_ID(30), "50")],
+    });
+    const plan = planClaimableBalances(audit, undefined);
+    expect(plan.claimed.map((c) => c.id)).toEqual([CB_ID(30)]);
+    expect(plan.trustlineChanges).toEqual([]);
+    expect(raises(allOps(batchClassicDemolition(audit, directOptions)))).toHaveLength(1);
+  });
+
+  it("refuses a withdraw that overflows the line even at the maximum limit", () => {
+    const audit = makeAudit({
+      balances: [nativeLine("100"), capLine("922337203680", MAX)],
+      poolShares: [capPool()],
+    });
+    expect(() => batchClassicDemolition(audit, directOptions)).toThrow(
+      /CAP.*more than its trustline can hold/,
+    );
+  });
+
+  it("raises the line ahead of the withdraw in the unwind before a repay too", () => {
+    const audit = makeAudit({
+      balances: [nativeLine("100"), capLine("90", "100")],
+      poolShares: [capPool()],
+    });
+    const ops = allOps(
+      buildClassicUnwindBatches(audit, { offerIds: [], poolIds: [POOL_ID], destination: DEST }),
+    );
+    expect(ops.map((o) => o.kind)).toEqual(["change_trust_add", "liquidity_pool_withdraw"]);
+  });
+
+  it("builds a change_trust at the maximum limit", () => {
+    const audit = makeAudit({
+      balances: [nativeLine("100"), capLine("90", "100")],
+      poolShares: [capPool()],
+    });
+    const batches = batchClassicDemolition(audit, directOptions);
+    const tx = built(batches[0]!);
+    expect(tx.operations[0]!.type).toBe("changeTrust");
+    expect((tx.operations[0] as { limit: string }).limit).toBe(MAX);
+  });
+});

@@ -229,6 +229,27 @@ describe("planExitPayoutTokens", () => {
     ]);
     expect(planExitPayoutTokens(tree)).toEqual(["CA", "CB", "CC", "CD"]);
   });
+
+  it("lists the reward token a reward claim pays, when the plan recorded it", () => {
+    const claim = (id: string, rewardToken?: string): PlanNode => ({
+      id,
+      kind: "ClaimAquariusRewards",
+      dependencies: [],
+      description: id,
+      status: "pending",
+      metadata: {
+        kind: "ClaimAquariusRewards",
+        poolIndex: "ab",
+        tokens: ["CA", "CB"],
+        ...(rewardToken !== undefined ? { rewardToken } : {}),
+      },
+    });
+    expect(planExitPayoutTokens(buildPlanTree([claim("r1", "CR"), claim("r2", "CR")]))).toEqual([
+      "CR",
+    ]);
+    // the claim pays none of the pool's own tokens
+    expect(planExitPayoutTokens(buildPlanTree([claim("r1")]))).toEqual([]);
+  });
 });
 
 describe("plan tree, prepare-only plans and the classic unwind", () => {
