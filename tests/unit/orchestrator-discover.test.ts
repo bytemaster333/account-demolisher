@@ -14,6 +14,8 @@ const getPositions = vi.fn();
 const readWrappedAssets = vi.fn();
 const getUserReward = vi.fn();
 const readAquariusRewardToken = vi.fn();
+const readAquariusPoolRewardTokens = vi.fn();
+const readAquariusPoolAddress = vi.fn();
 const scanAllowances = vi.fn();
 const loadIssuer = vi.fn();
 
@@ -71,6 +73,16 @@ vi.mock("@/lib/adapters/aquarius/client", async () => {
     ...actual,
     getUserReward: (...a: unknown[]) => getUserReward(...a),
     readAquariusRewardToken: (...a: unknown[]) => readAquariusRewardToken(...a),
+    readAquariusPoolRewardTokens: (...a: unknown[]) => readAquariusPoolRewardTokens(...a),
+  };
+});
+vi.mock("@/lib/adapters/aquarius/pools", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/adapters/aquarius/pools")>(
+    "@/lib/adapters/aquarius/pools",
+  );
+  return {
+    ...actual,
+    readAquariusPoolAddress: (...a: unknown[]) => readAquariusPoolAddress(...a),
   };
 });
 
@@ -79,6 +91,7 @@ import { describeAllowanceOverflow } from "@/lib/soroban/allowances";
 
 const AQUA_ISSUER = "GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA";
 const AQUA_SAC = new Asset("AQUA", AQUA_ISSUER).contractId(NETWORK.passphrase);
+const AQUARIUS_POOL = "CCNXGPE4AQCSNEBZO3XJDKKDI3CRLYMVS6UWBBTVDLALLWMJEXBORQ2A";
 
 const lpPosition = {
   ...EMPTY_POSITIONS,
@@ -116,6 +129,10 @@ beforeEach(() => {
   );
   getUserReward.mockResolvedValue(0n);
   readAquariusRewardToken.mockResolvedValue(AQUA_SAC);
+  readAquariusPoolAddress.mockResolvedValue(AQUARIUS_POOL);
+  readAquariusPoolRewardTokens.mockImplementation(async (_s: unknown, pools: string[]) => {
+    return new Map(pools.map((p) => [p, [AQUA_SAC]]));
+  });
   loadIssuer.mockResolvedValue({ flags: { auth_required: false } });
 });
 
@@ -166,6 +183,17 @@ describe("discovery finds the trustlines a pool exit pays into", () => {
     expect(out.exitTrustlineGaps).toEqual([
       { contractId: AQUA_SAC, code: "AQUA", issuer: AQUA_ISSUER, reason: "missing" },
     ]);
+  });
+
+  it("stops discovery when a paying pool's own reward token is not the router's", async () => {
+    auditAccount.mockResolvedValue(makeAudit({ balances: [...makeAudit().balances, usdcLine] }));
+    getPositions.mockResolvedValue(aquariusPosition);
+    getUserReward.mockResolvedValue(768_599_147n);
+    readAquariusPoolRewardTokens.mockResolvedValue(new Map([[AQUARIUS_POOL, [USDC_SAC]]]));
+    await expect(discover()).rejects.toThrow(
+      new RegExp(`Aquarius pool ${AQUARIUS_POOL} pays its rewards in ${USDC_SAC}`),
+    );
+    expect(readWrappedAssets).not.toHaveBeenCalled();
   });
 
   it("leaves the reward token out when nothing is pending", async () => {
