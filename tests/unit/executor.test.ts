@@ -798,7 +798,13 @@ describe("MediatorForward", () => {
     t.allNodes.get("final-classic-tx")!.error = 'Skipped: dependency "x" did not complete: boom';
     await run(t, deps());
     expect(submitMediatorForward).not.toHaveBeenCalled();
-    expect(t.allNodes.get("mediator-forward")!.status).toBe("skipped");
+    const forward = t.allNodes.get("mediator-forward")!;
+    expect(forward.status).toBe("skipped");
+    // the forward's own failure names the merge and carries the step that
+    // blocked it, never a forward error from a mediator nothing funded
+    expect(forward.error).toBe(
+      'Skipped: dependency "final-classic-tx" did not complete: Skipped: dependency "x" did not complete: boom',
+    );
   });
 
   it("finds a forward that landed with its reply lost instead of failing on the missing mediator", async () => {

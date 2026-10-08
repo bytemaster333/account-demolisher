@@ -151,6 +151,7 @@ import {
 import { latestPendingForward, savePendingForward } from "@/lib/mediator/pending-flow";
 import { simulatePreviewTree } from "@/lib/orchestrator/actors/preview";
 import { journalFor } from "@/lib/orchestrator/journal";
+import { executeActor } from "@/lib/orchestrator/actors/execute";
 
 const RUN = { publicKey: USER, networkId: NETWORK.id };
 const recordFor = () => latestPendingForward(USER, NETWORK.id);
@@ -438,6 +439,56 @@ describe("an exchange close is not complete until the forward lands", () => {
     expect(actor.getSnapshot().context.failureKind).toBe("forward_pending");
     expect(progressKinds(actor)).not.toContain("complete");
     actor.stop();
+  });
+});
+
+describe("a merge skipped behind a failed step reports that step", () => {
+  it("names the blocking step as the failure and never calls the forward", async () => {
+    // an exit that failed on an earlier attempt; the merge depends on it. the
+    // machine's confirm gate refuses a reviewed tree like this, so the real
+    // execute actor is driven directly with it
+    const base = mediatorPlan();
+    const exit = {
+      id: "soroswap-exit",
+      kind: "WithdrawSoroswapLp",
+      dependencies: [],
+      description: "withdraw the soroswap lp",
+      status: "failed",
+      error: "the pool exit reverted: boom",
+      metadata: { kind: "WithdrawSoroswapLp" },
+    } as unknown as PlanNode;
+    const final = base.allNodes.get("final-classic-tx")!;
+    const plan = tree(
+      exit,
+      { ...final, dependencies: ["soroswap-exit"] },
+      base.allNodes.get("mediator-forward")!,
+    );
+    const progress: DemolishProgressEvent[] = [];
+    const actor = createActor(executeActor, {
+      input: {
+        publicKey: USER,
+        network: NETWORK,
+        connector: signingConnector(),
+        tree: plan,
+        interrupt: new AbortController().signal,
+        onProgress: (e) => progress.push(e),
+        onNodeTick: () => {},
+      },
+    }).start();
+    const done = waitFor(actor, (s) => s.status === "done", { timeout: 3_600_000 });
+    await vi.runAllTimersAsync();
+    const out = (await done).output!;
+
+    const reason =
+      'Skipped: dependency "soroswap-exit" did not complete: the pool exit reverted: boom';
+    expect(submitMediatorForward).not.toHaveBeenCalled();
+    expect(net.horizon.submitted).toHaveLength(0);
+    expect(out.result).toEqual({ ok: false, errors: [reason] });
+    expect(progress.at(-1)).toEqual({
+      kind: "blocked",
+      message: `Merge did not complete: ${reason}`,
+    });
+    expect(plan.allNodes.get("mediator-forward")!.status).toBe("skipped");
   });
 });
 
