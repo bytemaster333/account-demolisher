@@ -23,7 +23,9 @@ export function ConnectButton({ network, onConnector }: ConnectButtonProps): Rea
   const setConnected = useWalletStore((s) => s.setConnected);
   const disconnectStore = useWalletStore((s) => s.disconnect);
 
-  const [pending, setPending] = useState(false);
+  // which action is running, not just that one is: disconnectSession clears the
+  // store before it waits on the wallet, so isConnected can't tell the two apart
+  const [busy, setBusy] = useState<"connect" | "disconnect" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [connector, setConnectorLocal] = useState<WalletKitConnector | null>(null);
 
@@ -33,7 +35,7 @@ export function ConnectButton({ network, onConnector }: ConnectButtonProps): Rea
 
   const onConnect = useCallback(async () => {
     setError(null);
-    setPending(true);
+    setBusy("connect");
     try {
       const next = new WalletKitConnector(network);
       const { publicKey: address } = await next.connect();
@@ -47,7 +49,7 @@ export function ConnectButton({ network, onConnector }: ConnectButtonProps): Rea
       // wallet's own reason (unsupported network, ledger app closed, declined)
       setError(describeConnectError(e));
     } finally {
-      setPending(false);
+      setBusy(null);
     }
   }, [network, setConnected]);
 
@@ -57,30 +59,31 @@ export function ConnectButton({ network, onConnector }: ConnectButtonProps): Rea
   // the phone) is said here instead of only in the console
   const onDisconnect = useCallback(async () => {
     setError(null);
-    setPending(true);
+    setBusy("disconnect");
     try {
       await disconnectSession(disconnectStore, (e) => setError(walletTeardownNotice(e)));
     } finally {
       setConnectorLocal(null);
-      setPending(false);
+      setBusy(null);
     }
   }, [disconnectStore]);
 
   const isConnected = publicKey !== null && connectorKind === "kit";
-  const label = pending
-    ? isConnected
+  const label =
+    busy === "disconnect"
       ? "Disconnecting…"
-      : "Connecting…"
-    : isConnected
-      ? shortAddress(publicKey)
-      : "Connect wallet";
+      : busy === "connect"
+        ? "Connecting…"
+        : isConnected
+          ? shortAddress(publicKey)
+          : "Connect wallet";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <button
         type="button"
         onClick={isConnected ? onDisconnect : onConnect}
-        disabled={pending}
+        disabled={busy !== null}
         // this button only renders the button + error text, so there's no inline
         // spot for reassurance copy; the connect screen shows the "only your public
         // address is shared" note. keep the intent accessible on the button itself.
@@ -106,8 +109,8 @@ export function ConnectButton({ network, onConnector }: ConnectButtonProps): Rea
           fontWeight: 600,
           fontSize: 13.5,
           letterSpacing: "-0.01em",
-          cursor: pending ? "not-allowed" : "pointer",
-          opacity: pending ? 0.6 : 1,
+          cursor: busy !== null ? "not-allowed" : "pointer",
+          opacity: busy !== null ? 0.6 : 1,
           fontFamily: isConnected ? '"Geist Mono", ui-monospace, monospace' : "inherit",
           whiteSpace: "nowrap",
         }}

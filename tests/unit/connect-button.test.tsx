@@ -112,4 +112,30 @@ describe("ConnectButton disconnect", () => {
     expect(useWalletStore.getState().publicKey).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
   });
+
+  // disconnectSession clears the store before it waits on the wallet, so the
+  // button already reads as not connected while a slow walletconnect relay
+  // is still being closed
+  it("says disconnecting, not connecting, while the wallet teardown is still running", async () => {
+    let finish: () => void = () => {};
+    const teardown = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    setActiveConnector({ ...failingKit(null), disconnect: () => teardown });
+    useWalletStore.setState({ publicKey: G, connectorKind: "kit" });
+    render(<ConnectButton network={TESTNET} />);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("connect-button"));
+    });
+    const button = screen.getByTestId("connect-button");
+    expect(useWalletStore.getState().publicKey).toBeNull();
+    expect(button.textContent).toBe("Disconnecting…");
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => {
+      finish();
+      await teardown;
+    });
+    expect(button.textContent).toBe("Connect wallet");
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+  });
 });
