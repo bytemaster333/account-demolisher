@@ -7,7 +7,7 @@ import { Asset } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
-import { generatePlan, preparePlanFor } from "@/lib/plan/generator";
+import { assertExchangeCloseCanRun, generatePlan, preparePlanFor } from "@/lib/plan/generator";
 import { NodeNotBuiltError, simulateNode, SimulationFailedError } from "@/lib/plan/simulator";
 import {
   buildPlanTree,
@@ -24,7 +24,11 @@ import {
   unroutableCredits,
   type UnroutableCredit,
 } from "@/lib/plan/classic-batcher";
-import { hydratePlanTransactions, type HydrationFailure } from "@/lib/plan/hydration";
+import {
+  BackstopEmissionsClaimError,
+  hydratePlanTransactions,
+  type HydrationFailure,
+} from "@/lib/plan/hydration";
 import { startMediatorFlow } from "@/lib/mediator/client";
 import {
   checkRequiredSorobanStep,
@@ -238,15 +242,7 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
       claimedBalanceIds: [],
       transactionsBeforeMerge: 1,
     });
-    return {
-      tree: buildPlanTree([]),
-      unroutableCredits: [],
-      heldTokenWarnings: [],
-      reviewNotes: [],
-      reviewBlockers: [merge.mergeable ? "A balance is frozen by its issuer." : merge.detail],
-      refusedConversions: [],
-      emissionForfeits: [],
-    };
+    return blockedPreview(merge.mergeable ? "A balance is frozen by its issuer." : merge.detail);
   }
 
   // a run that only prepares the close disposes of no classic balance
@@ -289,6 +285,17 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
   // the executor mints the flow that is actually funded right before funding it.
   let mediator: { readonly flowToken: string; readonly mediatorPublicKey: string } | null = null;
   if (input.useMediator && prepare === undefined) {
+    // an exit payout the forward can't carry refuses the plan; asked before the
+    // mint so a plan that can't run leaves no flow behind
+    try {
+      assertExchangeCloseCanRun(audit, input.positions, {
+        network,
+        ...(input.exitTrustlineGaps ? { exitTrustlineGaps: input.exitTrustlineGaps } : {}),
+        ...(input.aquariusRewardToken ? { aquariusRewardToken: input.aquariusRewardToken } : {}),
+      });
+    } catch (err) {
+      return blockedPreview(errorMessage(err));
+    }
     const flow = await startMediatorFlow(input.destination, {
       network: network.id,
       memo: input.memo ?? null,
@@ -339,6 +346,9 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
     ...(input.forfeitBackstopEmissionPoolIds
       ? { forfeitBackstopEmissionsPoolIds: input.forfeitBackstopEmissionPoolIds }
       : {}),
+    // a missing payout line is opened ahead of the exits that pay into it
+    ...(input.exitTrustlineGaps ? { exitTrustlineGaps: input.exitTrustlineGaps } : {}),
+    ...(input.aquariusRewardToken ? { aquariusRewardToken: input.aquariusRewardToken } : {}),
   });
 
   const rpcServer = getRpc(network);
@@ -409,6 +419,7 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
         "queued without it.",
     );
   }
+  reviewNotes.push(...exitTrustlineNotes(tree));
   reviewBlockers.push(...exitTrustlineBlockers(tree, input.exitTrustlineGaps ?? []));
   if (tree.prepareOnly !== undefined) {
     reviewNotes.push(
@@ -433,9 +444,9 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
     const clock = await fetchLedgerClock(network);
     const merge = assessMergeability(audit, {
       ledger: clock,
-      claimedBalanceIds: planClaimableBalances(audit, md.claimableBalanceIds).claimed.map(
-        (c) => c.id,
-      ),
+      claimedBalanceIds: planClaimableBalances(audit, md.claimableBalanceIds, {
+        feePerOpStroops: classicFeePerOp,
+      }).claimed.map((c) => c.id),
       transactionsBeforeMerge: transactionsBeforeMerge(tree),
     });
     if (!merge.mergeable) reviewBlockers.push(merge.detail);
@@ -454,6 +465,19 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
     emissionForfeits,
   };
 });
+
+// a review with nothing to run and one reason it can't
+function blockedPreview(blocker: string): PreviewOutput {
+  return {
+    tree: buildPlanTree([]),
+    unroutableCredits: [],
+    heldTokenWarnings: [],
+    reviewNotes: [],
+    reviewBlockers: [blocker],
+    refusedConversions: [],
+    emissionForfeits: [],
+  };
+}
 
 // runs the sign-time checks of every required step (allow-listed contract, the
 // exact auth tree its call needs, the fee cap) on the transaction preview built.
@@ -487,30 +511,27 @@ export function backstopClaimForfeits(
   tree: PlanTree,
   failures: readonly HydrationFailure[],
 ): EmissionForfeit[] {
-  const unavailable = new Set(
-    failures.filter((f) => f.backstopClaimUnavailable).map((f) => f.nodeId),
+  const unavailable = new Map(
+    failures.filter((f) => f.backstopClaimUnavailable).map((f) => [f.nodeId, f.error]),
   );
   const out: EmissionForfeit[] = [];
   for (const node of tree.allNodes.values()) {
     if (node.kind !== "ClaimBackstopEmissions" || node.status !== "failed") continue;
     if (!unavailable.has(node.id)) continue;
+    const err = unavailable.get(node.id);
     out.push({
       poolId: node.metadata.poolId,
-      accruedEmissions: node.metadata.accruedEmissions,
+      // the amount the claim's simulation read, which can be newer than discovery's
+      accruedEmissions:
+        err instanceof BackstopEmissionsClaimError
+          ? err.accruedEmissions
+          : node.metadata.accruedEmissions,
       // node.error keeps the hydration's own line for the details view
       reason: "the claim fails when simulated against the chain today",
     });
   }
   return out;
 }
-
-// how hydration words a price refusal (plan/hydration.ts hydrateConvert). its
-// failure says only that the price was refused, so which check refused it is
-// read from the message; a price refusal that matches none is a price impact.
-const PRICE_REFUSAL_WORDING: readonly (readonly [RegExp, ConversionRefusalKind])[] = [
-  [/can't price a reference trade/, "unpriced"],
-  [/ worse than the reviewed /, "requote_worse"],
-];
 
 // held-token conversions hydration refused: over the price-impact cap, with no
 // reference price, worse than the reviewed quote, or with no route at all. only
@@ -532,9 +553,8 @@ export function refusedHeldTokenConversions(
     if (failure.noSoroswapRoute) {
       refusal = "no_route";
     } else if (failure.priceImpactRefused) {
-      refusal =
-        PRICE_REFUSAL_WORDING.find(([wording]) => wording.test(failure.reason))?.[1] ??
-        "price_impact";
+      // a refusal thrown without its detail can only be the impact cap's
+      refusal = failure.refusal ?? "price_impact";
     } else {
       continue;
     }
@@ -545,13 +565,20 @@ export function refusedHeldTokenConversions(
 }
 
 // a pool exit the plan runs that pays a classic asset into a trustline this
-// account lacks, or one its issuer has not authorized, traps on chain. the close
-// can't open the line for it yet, so the review says how to fix it.
+// account lacks, or one its issuer has not authorized, traps on chain. a missing
+// line the plan opens ahead of the exit is fine; any other gap an exit pays into
+// blocks the review with how to fix it.
 export function exitTrustlineBlockers(tree: PlanTree, gaps: readonly ExitTrustlineGap[]): string[] {
   const paid = new Set(planExitPayoutTokens(tree));
+  const opened = new Set(
+    [...tree.allNodes.values()].flatMap((n) =>
+      n.kind === "AddExitTrustline" ? [n.metadata.contractId] : [],
+    ),
+  );
   const out: string[] = [];
   for (const gap of gaps) {
     if (!paid.has(gap.contractId)) continue;
+    if (gap.reason === "missing" && opened.has(gap.contractId)) continue;
     out.push(
       gap.reason === "unauthorized"
         ? `A pool exit in this plan pays out ${gap.code} (issuer ${gap.issuer}), and your ` +
@@ -560,6 +587,21 @@ export function exitTrustlineBlockers(tree: PlanTree, gaps: readonly ExitTrustli
         : `A pool exit in this plan pays out ${gap.code} (issuer ${gap.issuer}), and this ` +
             `account has no ${gap.code} trustline, so the exit would fail on chain. Add a ` +
             `${gap.code} trustline from your wallet, then rebuild the plan.`,
+    );
+  }
+  return out;
+}
+
+// the payout trustlines the close opens. the final batches remove every line
+// before the forward is funded, so the reserve comes back by the merge.
+export function exitTrustlineNotes(tree: PlanTree): string[] {
+  const out: string[] = [];
+  for (const node of tree.allNodes.values()) {
+    if (node.kind !== "AddExitTrustline") continue;
+    out.push(
+      `The close first opens a ${node.metadata.code} trustline (issuer ${node.metadata.issuer}) ` +
+        "so a pool exit can pay it out. It holds 0.5 XLM of reserve, which comes back when the " +
+        "final step removes the trustline.",
     );
   }
   return out;
@@ -609,14 +651,20 @@ function transactionsBeforeMerge(tree: PlanTree): number {
 }
 
 // XLM the steps ahead of the classic batches can spend: each simulated step's
-// maximum fee, plus any XLM debt a blend repay pays back. a step deferred to
-// execute time has no simulated fee yet; the executor's check on fresh state
-// before the funding batch covers it.
+// maximum fee (a trustline step's classic fee too), plus any XLM debt a blend
+// repay pays back. a step deferred to execute time has no simulated fee yet; the
+// executor's check on fresh state before the funding batch covers it.
 function spentBefore(tree: PlanTree, network: NetworkConfig): bigint {
   const nativeSac = Asset.native().contractId(network.passphrase);
   let spent = 0n;
   for (const node of tree.allNodes.values()) {
     if (node.simulated?.kind === "soroban") spent += BigInt(node.simulated.maxFee);
+    if (
+      (node.kind === "AddBlndTrustline" || node.kind === "AddExitTrustline") &&
+      node.simulated?.kind === "classic"
+    ) {
+      spent += BigInt(node.simulated.estimatedFee);
+    }
     if (node.kind === "RepayBlend" && node.metadata.asset === nativeSac) {
       spent += node.metadata.amount;
     }
