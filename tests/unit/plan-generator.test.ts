@@ -1053,7 +1053,7 @@ describe("M-25: an exchange close can't take exit payouts it can't forward", () 
 
   it("refuses before any step runs when the backstop withdraw pays out LP tokens", () => {
     expect(() => generatePlan(makeAudit(), unlocked(500n), [], DEST, exchange)).toThrow(
-      /exchange close can only forward XLM.*BLND-USDC LP token CA5UTU\.\.\.DWDM/,
+      /exchange close can only forward XLM.*BLND-USDC LP token CA5UTU…DWDM/,
     );
   });
 
@@ -1401,6 +1401,24 @@ describe("exit payouts need a trustline: the plan opens it first", () => {
         exitTrustlineGaps: [{ ...missing("YBX"), reason: "unauthorized" }],
       }),
     ).toThrow(/YBX:G\w+ .*not authorized.*Soroswap pool/);
+  });
+
+  it("names only the exits that pay the asset, not a position kept for its reward", () => {
+    const both = emptyPositions({
+      soroswap: soroswapYbx.soroswap,
+      aquariusConcentrated: rewardOnly.aquariusConcentrated,
+    });
+    let message = "";
+    try {
+      generatePlan(makeAudit(), both, [], DEST, {
+        network: TESTNET,
+        exitTrustlineGaps: [{ ...missing("YBX"), reason: "unauthorized" }],
+      });
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toMatch(/payout of the Soroswap pool/);
+    expect(message).not.toMatch(/concentrated/);
   });
 
   it("ignores an unauthorized line nothing in the plan pays into", () => {

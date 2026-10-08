@@ -12,7 +12,7 @@ import type {
 } from "@/lib/types/plan";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import type { HeldToken } from "@/lib/soroban/held-tokens";
-import type { ExitTrustlineGap } from "@/lib/soroban/stellar-asset";
+import { exitPayoutTokens, type ExitTrustlineGap } from "@/lib/soroban/stellar-asset";
 import type {
   AquariusConcentratedPositionSummary,
   AquariusPositionSummary,
@@ -21,6 +21,7 @@ import type {
   SoroswapPositionSummary,
 } from "@/lib/adapters/positions/interface";
 import { NETWORKS, type NetworkConfig } from "@/lib/config/networks";
+import { shortAddress } from "@/lib/safe-display";
 import { stroopsToDecimal } from "@/lib/stellar/amount";
 import {
   auditAfterUnwind,
@@ -198,7 +199,7 @@ export function generatePlan(
       kind: "RevokeAllowance",
       dependencies: [],
       status: "pending",
-      description: `Revoke allowance: ${shortAddr(allowance.spender)} on ${shortAddr(allowance.contractId)}`,
+      description: `Revoke allowance: ${shortAddress(allowance.spender)} on ${shortAddress(allowance.contractId)}`,
       metadata: {
         kind: "RevokeAllowance",
         contractId: allowance.contractId,
@@ -249,7 +250,7 @@ export function generatePlan(
       kind: "WithdrawSoroswapLp",
       dependencies: linesFor([pos.pair.tokenA, pos.pair.tokenB]),
       status: "pending",
-      description: `Withdraw Soroswap LP ${shortAddr(pos.pair.tokenA)}/${shortAddr(pos.pair.tokenB)}`,
+      description: `Withdraw Soroswap LP ${shortAddress(pos.pair.tokenA)}/${shortAddress(pos.pair.tokenB)}`,
       metadata: {
         kind: "WithdrawSoroswapLp",
         tokenA: pos.pair.tokenA,
@@ -343,7 +344,7 @@ export function generatePlan(
         kind: "RepayBlend",
         dependencies: repayDeps,
         status: "pending",
-        description: `Repay ${amount.toString()} of ${shortAddr(asset)} on Blend pool ${shortAddr(pool.poolId)}`,
+        description: `Repay ${amount.toString()} of ${shortAddress(asset)} on Blend pool ${shortAddress(pool.poolId)}`,
         metadata: {
           kind: "RepayBlend",
           poolId: pool.poolId,
@@ -378,7 +379,7 @@ export function generatePlan(
       ],
       status: "pending",
       description:
-        `Claim Blend emissions for pool ${shortAddr(pool.poolId)} ` +
+        `Claim Blend emissions for pool ${shortAddress(pool.poolId)} ` +
         `(reserves ${reserveTokenIds.join(", ")})`,
       metadata: {
         kind: "ClaimBlendEmissions",
@@ -437,7 +438,7 @@ export function generatePlan(
           status: "pending",
           description:
             `Claim ${formatBlnd(accrued)} BLND of Blend backstop emissions for pool ` +
-            `${shortAddr(bs.poolId)} into backstop shares, so they are queued too`,
+            `${shortAddress(bs.poolId)} into backstop shares, so they are queued too`,
           metadata: {
             kind: "ClaimBackstopEmissions",
             poolId: bs.poolId,
@@ -454,7 +455,7 @@ export function generatePlan(
         dependencies: claimId !== null ? [claimId] : [],
         status: "pending",
         description:
-          `Queue Blend backstop withdrawal for pool ${shortAddr(bs.poolId)} ` +
+          `Queue Blend backstop withdrawal for pool ${shortAddress(bs.poolId)} ` +
           `(${bs.shares.toString()} shares; unlocks ~${queueEndsAt.toISOString().slice(0, 10)})`,
         metadata: {
           kind: "BackstopQueue",
@@ -474,7 +475,7 @@ export function generatePlan(
         dependencies: [],
         status: "pending",
         description:
-          `Withdraw the unlocked Blend backstop queue for pool ${shortAddr(bs.poolId)} ` +
+          `Withdraw the unlocked Blend backstop queue for pool ${shortAddress(bs.poolId)} ` +
           `(${unlocked.toString()} shares, paid out as BLND-USDC LP tokens)`,
         metadata: {
           kind: "BackstopWithdraw",
@@ -528,8 +529,8 @@ export function generatePlan(
       swept.add(contractId);
       const asset = { kind: "contract", contractId } as const;
       const label = fromExit
-        ? `token ${shortAddr(contractId)} paid out by your DeFi exits`
-        : `held token ${shortAddr(contractId)}`;
+        ? `token ${shortAddress(contractId)} paid out by your DeFi exits`
+        : `held token ${shortAddress(contractId)}`;
       if (opts.convertHeldTokensToXLM === true && !asIs.has(contractId)) {
         // convert the token to XLM via a Soroswap-router swap so the account ends
         // as a single XLM balance. A conversion that can't be built (no route, a
@@ -557,7 +558,7 @@ export function generatePlan(
         kind: "TransferAsIs",
         dependencies: sweepDeps,
         status: "pending",
-        description: `Send ${label} to ${shortAddr(destination)}`,
+        description: `Send ${label} to ${shortAddress(destination)}`,
         metadata: {
           kind: "TransferAsIs",
           asset,
@@ -650,7 +651,7 @@ export function generatePlan(
     status: "pending",
     description:
       `Final classic batch (${batches.length} tx, merge to ` +
-      `${shortAddr(useMediator ? (opts.mediatorPublicKey ?? destination) : destination)})` +
+      `${shortAddress(useMediator ? (opts.mediatorPublicKey ?? destination) : destination)})` +
       (closeMarker
         ? ""
         : "; not marked as an Account Demolisher close, so the close metrics will not count it"),
@@ -664,7 +665,7 @@ export function generatePlan(
       kind: "MediatorForward",
       dependencies: [finalId],
       status: "pending",
-      description: `Forward closed-out funds from mediator to ${shortAddr(destination)}`,
+      description: `Forward closed-out funds from mediator to ${shortAddress(destination)}`,
       metadata: {
         kind: "MediatorForward",
         mediatorPublicKey: opts.mediatorPublicKey,
@@ -715,7 +716,7 @@ export function assertExchangeCloseCanRun(
   const stuck = [...new Set(payouts)].filter((t) => !classic.has(t));
   if (stuck.length === 0) return;
   const names = stuck.map((t) =>
-    t === comet ? `the Blend backstop's BLND-USDC LP token ${shortAddr(t)}` : shortAddr(t),
+    t === comet ? `the Blend backstop's BLND-USDC LP token ${shortAddress(t)}` : shortAddress(t),
   );
   throw new Error(
     `An exchange close can only forward XLM, and the DeFi exits in this plan pay out ` +
@@ -723,12 +724,6 @@ export function assertExchangeCloseCanRun(
       `Close to your own Stellar address instead, or exit those positions first.`,
   );
 }
-
-// a backstop deposit with, when discovery read it, the latest unlock of its
-// still-locked queue entries (the q4w exp)
-type BackstopDeposit = ProtocolPositions["backstop"][number] & {
-  readonly latestQueueUnlocksAt?: Date;
-};
 
 // whether a plan for these positions can only prepare the close: a backstop
 // queue stays locked after it runs (new queues, and the part of an existing one
@@ -746,7 +741,7 @@ export function preparePlanFor(
   let newQueueUnlocksAt: Date | undefined;
   let queuedUnlocksAt: Date | undefined;
   let queuedEstimated = false;
-  for (const bs of positions.backstop as readonly BackstopDeposit[]) {
+  for (const bs of positions.backstop) {
     const duration = bs.queueDurationSeconds ?? BACKSTOP_QUEUE_DURATION_SECONDS;
     const fullPeriod = new Date(now + duration * 1000);
     if (bs.shares > 0n) newQueueUnlocksAt = later(newQueueUnlocksAt, fullPeriod);
@@ -893,33 +888,6 @@ function concentratedNodes(
   return ids;
 }
 
-// contract ids of every token a planned exit pays out, in plan order
-function exitPayoutTokens(positions: ProtocolPositions): readonly string[] {
-  const out: string[] = [];
-  const add = (id: string): void => {
-    if (!out.includes(id)) out.push(id);
-  };
-  for (const pool of positions.aquarius) {
-    if (pool.shareBalance > 0n) pool.tokens.forEach(add);
-  }
-  for (const pos of positions.aquariusConcentrated) {
-    if (pos.ranges.some((r) => r.liquidity > 0n) || pos.pendingFees.some((f) => f > 0n)) {
-      pos.tokens.forEach(add);
-    }
-  }
-  for (const pos of positions.soroswap) {
-    if (pos.shareBalance <= 0n) continue;
-    add(pos.pair.tokenA);
-    add(pos.pair.tokenB);
-  }
-  for (const pool of positions.blend) {
-    for (const [asset, amount] of [...pool.collateral, ...pool.supply]) {
-      if (amount > 0n) add(asset);
-    }
-  }
-  return out;
-}
-
 // the payout trustlines the plan opens, one per asset, and which of them the
 // exits need. a gap counts only for a token a planned step pays: a withdraw or
 // fee claim's pool token, or the reward token when a reward claim is planned.
@@ -997,7 +965,9 @@ function exitsPaying(positions: ProtocolPositions, token: string): string[] {
   const out: string[] = [];
   for (const pos of positions.soroswap) {
     if (pos.shareBalance > 0n && (pos.pair.tokenA === token || pos.pair.tokenB === token)) {
-      out.push(`the Soroswap pool ${shortAddr(pos.pair.tokenA)}/${shortAddr(pos.pair.tokenB)}`);
+      out.push(
+        `the Soroswap pool ${shortAddress(pos.pair.tokenA)}/${shortAddress(pos.pair.tokenB)}`,
+      );
     }
   }
   for (const pool of positions.aquarius) {
@@ -1006,13 +976,16 @@ function exitsPaying(positions: ProtocolPositions, token: string): string[] {
     }
   }
   for (const pos of positions.aquariusConcentrated) {
-    if (pos.tokens.includes(token)) {
+    // a position kept only for its reward pays none of its pool tokens
+    const paysTokens =
+      pos.ranges.some((r) => r.liquidity > 0n) || pos.pendingFees.some((f) => f > 0n);
+    if (paysTokens && pos.tokens.includes(token)) {
       out.push(`the Aquarius concentrated pool ${concentratedLabel(pos)}`);
     }
   }
   for (const pool of positions.blend) {
     if ([...pool.collateral, ...pool.supply].some(([a, amount]) => a === token && amount > 0n)) {
-      out.push(`the Blend pool ${shortAddr(pool.poolId)}`);
+      out.push(`the Blend pool ${shortAddress(pool.poolId)}`);
     }
   }
   return out;
@@ -1088,8 +1061,8 @@ function withdrawBlendNode(
     status: "pending",
     description:
       bucket === "collateral"
-        ? `Withdraw Blend collateral ${shortAddr(asset)} from pool ${shortAddr(poolId)}`
-        : `Withdraw Blend supply ${shortAddr(asset)} from pool ${shortAddr(poolId)}`,
+        ? `Withdraw Blend collateral ${shortAddress(asset)} from pool ${shortAddress(poolId)}`
+        : `Withdraw Blend supply ${shortAddress(asset)} from pool ${shortAddress(poolId)}`,
     metadata: {
       kind: "WithdrawBlend",
       poolId,
@@ -1100,11 +1073,11 @@ function withdrawBlendNode(
 }
 
 function aquariusPoolLabel(pool: AquariusPositionSummary): string {
-  return `${pool.tokens.map(shortAddr).join("/")} (${pool.poolIndex.slice(0, 8)}...)`;
+  return `${pool.tokens.map((t) => shortAddress(t)).join("/")} (${shortAddress(pool.poolIndex, 8, 0)})`;
 }
 
 function concentratedLabel(pos: AquariusConcentratedPositionSummary): string {
-  return `${pos.tokens.map(shortAddr).join("/")} (${shortAddr(pos.poolAddress)})`;
+  return `${pos.tokens.map((t) => shortAddress(t)).join("/")} (${shortAddress(pos.poolAddress)})`;
 }
 
 // BLND has 7 decimals
@@ -1115,11 +1088,6 @@ function formatBlnd(stroops: bigint): string {
 // stable id format: lower-cased parts joined with ":"
 function makeId(...parts: readonly string[]): string {
   return parts.map((p) => p.toLowerCase()).join(":");
-}
-
-function shortAddr(s: string): string {
-  if (s.length <= 12) return s;
-  return `${s.slice(0, 6)}...${s.slice(-4)}`;
 }
 
 export type {
