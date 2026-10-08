@@ -27,6 +27,7 @@ import {
   auditAfterUnwind,
   batchClassicDemolition,
   closeMarkerPlanned,
+  mediatorLabel,
   planClaimableBalances,
   planClassicUnwind,
   type ClassicUnwindTargets,
@@ -651,7 +652,7 @@ export function generatePlan(
     status: "pending",
     description:
       `Final classic batch (${batches.length} tx, merge to ` +
-      `${shortAddress(useMediator ? (opts.mediatorPublicKey ?? destination) : destination)})` +
+      `${useMediator && opts.mediatorPublicKey !== undefined ? mediatorLabel(opts.mediatorPublicKey) : shortAddress(destination)})` +
       (closeMarker
         ? ""
         : "; not marked as an Account Demolisher close, so the close metrics will not count it"),

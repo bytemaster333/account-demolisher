@@ -298,7 +298,7 @@ export function batchClassicDemolition(
   const mediatorOp: BatchedOperation | null = fundMediator
     ? {
         kind: "create_account_mediator",
-        summary: `Fund mediator ${shortAddress(options.mediatorPublicKey as string)} with ${MEDIATOR_FUNDING_XLM} XLM`,
+        summary: `Fund mediator ${mediatorLabel(options.mediatorPublicKey as string)} with ${MEDIATOR_FUNDING_XLM} XLM`,
         metadata: {
           destination: options.mediatorPublicKey,
           startingBalance: MEDIATOR_FUNDING_XLM,
@@ -308,7 +308,7 @@ export function batchClassicDemolition(
   const mergeOp: BatchedOperation = {
     kind: "account_merge",
     summary: options.useMediator
-      ? `Merge account into mediator ${shortAddress(mergeDestination)}`
+      ? `Merge account into mediator ${mediatorLabel(mergeDestination)}`
       : `Merge account into ${shortAddress(mergeDestination)}`,
     metadata: {
       destination: mergeDestination,
@@ -794,6 +794,13 @@ function poolPayoutRaiseOps(
     });
   }
   return ops;
+}
+
+// how the plan names the mediator in its summaries and descriptions. a re-minted
+// flow swaps the key in that text (mediator/refresh.ts), so this one form is
+// what both sides match on.
+export function mediatorLabel(publicKey: string): string {
+  return `${publicKey.slice(0, 6)}...`;
 }
 
 function offerCancelOp(offer: AccountAudit["offers"][number]): BatchedOperation {
