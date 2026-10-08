@@ -695,6 +695,37 @@ describe("H-10: a credit claim lands before its asset is converted or its trustl
     expect(claimKinds.some((o) => o.kind === "account_merge")).toBe(false);
   });
 
+  it("sells what the claim adds too, the amount its quote and floor were sized for", () => {
+    const audit = makeAudit({
+      balances: [usdcLine("10")],
+      claimableBalances: [usdcCb("cb1", "5")],
+    });
+    // the review quotes each credit at its balance plus what the close claims into it
+    const paths = new Map([[USDC_KEY, pricedPath("15", "60")]]);
+    const convert = allOps(batchClassicDemolition(audit, directOptions, paths)).find(
+      (o) => o.kind === "path_payment_strict_send",
+    )!;
+    expect(convert.metadata.sendAmount).toBe("15.0000000");
+    expect(convert.metadata.destMin).toBe(applySlippage("60"));
+  });
+
+  it("shows the sale of a claim into an empty line after the claim's batch", () => {
+    const audit = makeAudit({
+      balances: [usdcLine("0")],
+      claimableBalances: [usdcCb("cb1", "5")],
+    });
+    const paths = new Map([[USDC_KEY, pricedPath("5", "20")]]);
+    const batches = batchClassicDemolition(audit, directOptions, paths);
+    const convertAt = batchWith(batches, (o) => o.kind === "path_payment_strict_send");
+    expect(convertAt).toBeGreaterThan(batchWith(batches, isClaim));
+    const convert = batches[convertAt]!.operations.find(
+      (o) => o.kind === "path_payment_strict_send",
+    )!;
+    expect(convert.metadata.sendAmount).toBe("5.0000000");
+    // the line goes once the re-audit sees it empty, not in this preview
+    expect(allOps(batches).some(isUsdcRemoval)).toBe(false);
+  });
+
   it("claims into a zero-balance trustline without removing it in the same transaction", () => {
     const audit = makeAudit({
       balances: [usdcLine("0")],

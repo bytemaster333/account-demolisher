@@ -115,6 +115,9 @@ export function batchClassicDemolition(
   const sameTxClaims: BatchedOperation[] = [];
   const claimedInTx = new Map<string, bigint>();
   const claimsInEarlierPhase = new Set<string>();
+  // what the earlier phase claims into a line this audit already has: the
+  // conversion after it sells that too, as the review's quote counts it
+  const claimedEarlier = new Map<string, bigint>();
   for (const cb of claimPlan.claimed) {
     const op = claimOp(cb);
     if (cb.asset.kind !== "credit" || cb.asset.issuer === audit.accountId) {
@@ -142,6 +145,7 @@ export function batchClassicDemolition(
     } else {
       target(isolatedClaims);
       claimsInEarlierPhase.add(key);
+      claimedEarlier.set(key, (claimedEarlier.get(key) ?? 0n) + toStroops(cb.amount));
     }
   }
 
@@ -156,19 +160,22 @@ export function batchClassicDemolition(
     if (balance.asset.kind !== "credit") continue;
     const key = pathKey(balance.asset);
     const held = toStroops(balance.amount) + (claimedInTx.get(key) ?? 0n);
+    const disposal = decide(key);
     const removeOp: BatchedOperation = {
       kind: "change_trust_remove",
       summary: `Remove trustline ${balance.asset.code}`,
       metadata: { asset: balance.asset, poolShare: false },
     };
-    if (held === 0n) {
+    // a conversion is rebuilt once the earlier phase landed, so it is sized for
+    // what the account holds then: the amount its quote and destMin were made for
+    const sold = disposal.kind === "convert" ? held + (claimedEarlier.get(key) ?? 0n) : held;
+    if (sold === 0n) {
       // a trustline with a claim landing in an earlier phase is removed once the
       // re-audit sees that balance, not here
       credits.push({ asset: balance.asset, removable: !claimsInEarlierPhase.has(key) });
       continue;
     }
-    const amount = stroopsToDecimal(held);
-    const disposal = decide(key);
+    const amount = stroopsToDecimal(sold);
     switch (disposal.kind) {
       case "send_to_destination": {
         const payment: BatchedOperation = {
