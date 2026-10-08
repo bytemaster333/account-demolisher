@@ -1,64 +1,71 @@
 ---
 title: Sign a closure request
-description: Someone sent you a link asking you to co-sign an account closure. Here is how to review it and sign safely.
+description: Someone sent you a link asking you to co-sign an account closure. Review it and sign on your own device.
 icon: PenLine
 ---
 
 You received a link like `https://demolisher.app/sign?id=...`. It asks you to add your
-signature to a transaction that permanently closes a Stellar account.
-
-Read the page before you sign. It shows you exactly what the transaction does.
+signature to a transaction that permanently closes a Stellar account. The page decodes that
+transaction for you, so you see what you sign before you sign it.
 
 ## What you see
 
 The page opens on **Review, then sign**.
 
-**What you're signing.** The account being closed, and a decoded list of every operation
-in the transaction, one line each. Operations that destroy something are marked in red.
-You never sign opaque base64 here.
+**What you're signing.** A badge beside the heading names the network. Below it you see the
+account being closed, the merge destination, and every operation in the transaction, one line
+each. An operation a close never contains is marked **A close never does this**.
 
-**Progress.** A **Signing weight collected** bar, then every signer on the account with
-its weight and a **Signed** or **Pending** badge. This updates live as other people sign.
+**The transaction's limits.** The maximum fee, the time window in which the transaction is
+valid, and until when the relay serves the request.
+
+**Progress.** A **Signing weight collected** bar, then every signer on the account with its
+weight and a **Signed** or **Pending** badge. It updates live as other people sign.
 
 ## Check these before signing
 
 <Callout type="warn">
-  Signing helps permanently close the account. Confirm all three of these first.
+  Your signature helps close the account permanently. Confirm all three of these first.
 </Callout>
 
-1. **The account being closed is the one you expect.** It is shown in full near the top.
-2. **The operation list matches what you agreed to.** Look at the destination address on
-   the merge operation in particular.
-3. **The network badge is right.** It sits beside the **What you're signing** heading.
+1. **The account being closed is the one you expect.** It is shown in full under **ACCOUNT
+   BEING CLOSED**.
+2. **The merge destination is the one you agreed to.** It is where the whole balance goes.
+3. **The network badge is right.** A testnet request moves no real funds.
 
 ## Sign
 
-Two ways, both entirely local:
+Both ways sign in your browser:
 
-- **Connect wallet and sign.** Opens your wallet, which shows its own confirmation.
-- **Paste your secret key.** Your key is used only in this browser to sign and is never
-  uploaded or shared.
+- **Connect wallet and sign** opens your wallet, which shows its own confirmation. The wallet
+  is connected for this one signature only. Afterwards the page returns the app to the wallet
+  session it had before. If that disconnect fails, a **Your wallet is still connected** notice
+  tells you to end the connection in your wallet.
+- **Paste your secret key** and select **Sign**. The key is used in this browser only and is
+  never uploaded or shared.
 
-When your signature is accepted you see **Your signature is in**, telling you either that
-the close now has enough signatures or that it still needs more signers.
+When the relay accepts your signature you see **Your signature is in**. It tells you either that
+the close has enough signatures, or that it still needs more signers.
 
-## Things the page refuses to do
+## What the page refuses
 
-The app re-computes the transaction's hash from the link id and compares them before
-anything renders. That means a link cannot show you one transaction and have you sign
-another.
+Before anything renders, the page recomputes the transaction's hash and compares it with the id
+in the link, so a link cannot show you one transaction and have you sign another.
 
-| Message                                    | What it means                                                                                                                             |
-| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| **This request can't be opened**           | The link is missing its id, the transaction does not match the link, or the request could not be loaded. Ask the sender for a fresh link. |
-| **This request can't be verified**         | The transaction is not a single account close on this network. Do not sign it.                                                            |
-| **This key isn't a signer on the account** | The key you signed with is not authorized on that account, so the signature does not count. Sign with one of the keys listed on the page. |
+| Message                                          | What it means                                                                                    |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| **This request can't be opened**                 | The link has no id, the transaction does not match the link, or the request could not be loaded. |
+| **This request can't be verified**               | The transaction is not a single account close, or some operations act on another account.        |
+| **This account was already closed**              | This transaction already landed. No more signatures are needed.                                  |
+| **This account no longer exists**                | The account is gone and this transaction did not close it, so there is nothing to sign.          |
+| **The account changed since this request**       | As signed, the network would refuse the close. The page lists why.                               |
+| **That key ... is not a signer on this request** | The key you signed with is not one of the account's signers. Nothing was submitted.              |
 
 ## After you sign
 
-Nothing else is required from you. The person who started the close submits it once enough
-signatures arrive. Your signature alone does not close the account unless your weight
-meets the threshold on its own.
+Nothing else is required from you. The person who started the close submits it once the
+collected weight reaches the threshold. Your signature alone closes nothing unless your weight
+meets the threshold by itself.
 
-Your signature cannot be reused elsewhere. A Stellar signature covers one transaction on
-one network, so it cannot be replayed against a different close or a different network.
+A Stellar signature covers one transaction on one network. Your signature cannot be replayed
+against a different close or on a different network.

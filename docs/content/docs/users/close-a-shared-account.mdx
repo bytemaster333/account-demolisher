@@ -1,15 +1,15 @@
 ---
 title: Close a shared account
-description: Collect signatures from every signer on a multisig account and submit the close once the threshold is met.
+description: Collect signatures from the signers of a multisig account and submit the close once the threshold is met.
 icon: Users
 ---
 
-When no single key can meet the account's signing threshold, the close has to be signed by
-several people. The app detects this while reading the account and adds a **Signatures**
-step where you gather the rest.
+When the key you connect cannot meet the account's signing threshold on its own, the close
+needs signatures from other signers. The app detects this from the account's signers and
+thresholds and adds a **Signatures** step after Review, where you collect them.
 
-Everyone signs on their own device. No signer keys are shared, and no third-party
-signature service is involved.
+Every signer signs on their own device. Nobody shares a secret key, and the app relays only
+the transaction and its signatures, which are public data.
 
 ## Run it
 
@@ -19,9 +19,13 @@ signature service is involved.
 
 ### Start the close as normal
 
-Connect your key and work through Configure and Review. A **Shared account** bar appears
-at the top of the configure step showing how many signatures the account needs and how
-many your key provides.
+Connect your key and fill in Configure. A **Shared account** bar shows the signing weight the
+close needs and how many signers that takes.
+
+On a shared account nothing is sold on the market. Every asset other than XLM is returned to
+its issuer or sent to the destination, as you choose in the **Fix issues** step. A market sale
+can fail when the price moves, and one failed operation would sink the single transaction
+everyone signs.
 
 </Step>
 
@@ -29,10 +33,10 @@ many your key provides.
 
 ### Create the signing request
 
-At the bottom of Review, select **Create signing request**. This packages the exact close
-you just reviewed into one transaction and signs it with your key.
+At the bottom of Review, select **Create signing request**. The app builds the reviewed close
+as one transaction, signs it with your key, and publishes it to the signing relay.
 
-Nothing is submitted. The account stays open until enough signers sign.
+Nothing is submitted to the network yet. The account stays open until enough signers sign.
 
 </Step>
 
@@ -40,10 +44,8 @@ Nothing is submitted. The account stays open until enough signers sign.
 
 ### Share the link
 
-The Signatures step shows a link under **SEND TO THE OTHER SIGNERS**. Select **Copy link**
-and send it to your co-signers.
-
-Each of them opens it and signs from their own device. See
+The Signatures step shows a link under **SEND TO THE OTHER SIGNERS**. Select **Copy link** and
+send it to your co-signers. Each of them opens it and signs from their own device. See
 [Sign a closure request](/docs/users/sign-a-closure-request) for what they see.
 
 </Step>
@@ -52,12 +54,12 @@ Each of them opens it and signs from their own device. See
 
 ### Watch signatures arrive
 
-The **Signing weight collected** bar updates the moment each signature lands. Below it,
-every signer on the account is listed with its weight and a **Signed** or **Pending**
-badge. Your own key is marked **You**.
+The **Signing weight collected** bar updates as each signature arrives. Below it, every signer
+on the account is listed with its weight and a **Signed** or **Pending** badge. Your own key is
+marked **You**.
 
-Updates stream live. If the connection drops, a **Live updates interrupted** notice
-appears with a **Refresh** button.
+Updates stream live. When the stream drops, the page falls back to polling the relay and shows a
+**Live updates interrupted** notice with a **Refresh** button that pulls the latest signatures.
 
 </Step>
 
@@ -65,9 +67,10 @@ appears with a **Refresh** button.
 
 ### Close it
 
-Once the bar reaches the threshold, select **Continue to final confirmation**. That opens
-the same typed confirmation as any other close: type the last four characters of the
-destination, wait out the timer, and confirm.
+Once the collected weight reaches the threshold, select **Continue to final confirmation**. The
+app checks the request against the live account first, then opens the same typed confirmation
+as any other close: type the last four characters of the destination, wait for the timer, and
+confirm.
 
 </Step>
 
@@ -75,33 +78,47 @@ destination, wait out the timer, and confirm.
 
 ## Signing several keys yourself
 
-If you hold more than one signer key, you do not need the link. Under **SIGN A KEY
-LOCALLY**, paste a key and select **Sign**. Repeat for each key you hold, and every
-signature moves the bar up.
+If you hold more than one signer key, you do not need the link for those keys. Under **SIGN A
+KEY LOCALLY**, paste a key and sign. Each signature moves the bar up. The keys are used in your
+browser only and are never uploaded or stored.
 
-Those keys are used only in your browser to sign. They are never uploaded or stored.
+## What a shared close cannot include
 
-## What a shared close cannot do
+A signing request collects signatures on exactly one transaction, so the whole close has to fit
+in one classic transaction. The app tells you before you start when one of these applies:
 
-A signing request collects signatures on exactly **one** transaction, so the whole close
-has to fit in one transaction. Three situations do not fit, and the app tells you which
-one applies before you start:
+| Situation                                        | Why it does not fit                                 | What to do                                           |
+| ------------------------------------------------ | --------------------------------------------------- | ---------------------------------------------------- |
+| The destination is an exchange                   | The exchange path runs as several transactions      | Close to an address you control instead              |
+| The account holds Soroban DeFi positions         | Each exit is its own transaction                    | Unwind them first, or close with all signers present |
+| The account has token allowances to revoke       | Each revoke is its own transaction                  | Revoke them first, or close with all signers present |
+| You selected standalone tokens to sweep          | Each token move is its own transaction              | Leave them out, or close with all signers present    |
+| The account holds a classic liquidity pool share | The pool withdraw runs in its own transaction first | Withdraw it first, or close with all signers present |
 
-| Situation                                  | Why                                            | What to do                                           |
-| ------------------------------------------ | ---------------------------------------------- | ---------------------------------------------------- |
-| The destination is an exchange             | The exchange path runs as several transactions | Close to a self-custody address instead              |
-| The account holds Soroban DeFi positions   | Each position needs its own transaction        | Unwind them first, or close with all signers present |
-| The account has token allowances to revoke | Each revoke is its own transaction             | Revoke them first, or close with all signers present |
-
-An account whose classic close needs more than 100 operations also cannot be bundled into
-one request.
+The close itself also has to fit in 100 operations, the Stellar limit for one transaction.
 
 ## How long you have
 
-A signing request stays open for at most 72 hours, and less when the transaction's own
-time bounds expire sooner. After that it is swept away and you create a new one.
+The bundled transaction is valid for 72 hours. The relay serves the request until the earlier of
+72 hours after you publish it and one minute before the transaction's own expiry. After that you
+create a new request.
+
+The relay keeps requests in the server's memory, so a server restart drops them. When the relay no
+longer has your request, the notice offers **Publish this request again**. The link stays the same
+and every signature collected in your browser is kept.
+
+## Before the close is submitted
+
+When you confirm, the app checks the collected transaction against the account as it is now. It
+refuses to submit when the account changed in a way that makes the transaction fail (its
+sequence number, balances, offers or signers), when a DeFi position appeared since the request
+was built, or when the collected signatures no longer reach the threshold of the current signers.
+In each case you build a new signing request and every signer signs again.
+
+When the network asks a higher fee than the request bid, the app offers a fee bump paid by your
+connected wallet. The signatures cover the inner transaction only, so nobody has to sign again.
 
 ## How it works underneath
 
-[The signing relay API](/docs/developers/protocol/signing-relay) covers the routes, the
-guards on publishing a request, and how signatures are verified and merged.
+[The signing relay API](/docs/developers/protocol/signing-relay) covers the routes, the checks on
+publishing a request, and how signatures are verified and merged.
