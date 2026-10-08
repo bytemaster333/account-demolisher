@@ -17,6 +17,7 @@ import {
 } from "@/lib/adapters/blend/constants";
 import {
   BackstopClaimUnavailableError,
+  BackstopNothingAccruedError,
   BlndTrustlineMissingError,
 } from "@/lib/adapters/blend/exit";
 import { spendableFromAccount } from "@/lib/adapters/blend/spendable";
@@ -1095,7 +1096,7 @@ describe("hydration, Blend backstop steps take their amounts from the built tran
   // nothing to forfeit, and the plan is stale, so the review is run again
   it("fails a claim with nothing left to claim as a stale plan, not a forfeit", async () => {
     const buildBackstopClaimTx = vi.fn(async () => {
-      throw new Error("no accrued backstop emissions to claim for Blend pool CPOOL");
+      throw new BackstopNothingAccruedError("CPOOL");
     });
     const before: PlanNode = {
       id: "before",
@@ -1135,6 +1136,22 @@ describe("hydration, Blend backstop steps take their amounts from the built tran
         baseDeps({ adapters: { buildBackstopClaimTx } }),
       ),
     ).rejects.toMatchObject({ name: "BackstopEmissionsAlreadyClaimedError", poolId: "CPOOL" });
+  });
+
+  // only the builder's typed error means "nothing accrued"; any other failure
+  // that happens to carry the same words stays an ordinary failure
+  it("does not read a plain error with the same text as nothing left to claim", async () => {
+    const thrown = new Error("no accrued backstop emissions to claim for Blend pool CPOOL");
+    const buildBackstopClaimTx = vi.fn(async () => {
+      throw thrown;
+    });
+    await expect(
+      rebuildSorobanNodeTransaction(
+        claimNode(),
+        USER,
+        baseDeps({ adapters: { buildBackstopClaimTx } }),
+      ),
+    ).rejects.toBe(thrown);
   });
 });
 

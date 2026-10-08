@@ -17,6 +17,7 @@ import type { NetworkConfig } from "@/lib/config/networks";
 import { blndTokenForNetwork } from "@/lib/adapters/blend/constants";
 import {
   BackstopClaimUnavailableError,
+  BackstopNothingAccruedError,
   BlndTrustlineMissingError,
   buildBackstopClaimTx,
   buildBackstopQueueTx,
@@ -405,7 +406,7 @@ async function buildNode(
         if (err instanceof BackstopClaimUnavailableError) {
           throw new BackstopEmissionsClaimError(err);
         }
-        if (err instanceof Error && NOTHING_ACCRUED.test(err.message)) {
+        if (err instanceof BackstopNothingAccruedError) {
           throw new BackstopEmissionsAlreadyClaimedError(node.metadata.poolId, err);
         }
         throw err;
@@ -968,10 +969,6 @@ export class BackstopEmissionsClaimError extends Error {
     this.simulationError = cause.simulationError;
   }
 }
-
-// buildBackstopClaimTx (adapters/blend/exit.ts) throws a plain Error with this
-// message when the on-chain accrual it reads is zero
-const NOTHING_ACCRUED = /^no accrued backstop emissions to claim\b/;
 
 // the plan has a backstop claim because discovery saw accrued BLND, and the
 // build finds none: it was claimed elsewhere in between. nothing is forfeited,
