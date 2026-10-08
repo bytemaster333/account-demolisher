@@ -22,6 +22,7 @@ import type { NetworkConfig } from "@/lib/config/networks";
 import { CLOSE_MARKER_NAME } from "@/lib/metrics/close-marker";
 import { mergeSignatures, signedSigners, trimToThreshold } from "@/lib/multisig/partial-xdr";
 import { MAX_OPS_PER_TX, batchClassicDemolition } from "@/lib/plan/classic-batcher";
+import { shortAddress } from "@/lib/safe-display";
 import { stroopsToDecimal } from "@/lib/stellar/amount";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
 import type { AccountAudit, AssetIdentifier } from "@/lib/types/account";
@@ -105,19 +106,6 @@ export function assessBundleability(input: {
   return { ok: true };
 }
 
-export interface RequiredSigner {
-  readonly key: string;
-  readonly weight: number;
-}
-
-// the account's ed25519 signer set that can actually sign a transaction (weight
-// > 0). hash/preauth signers can't produce a signature, so they're excluded.
-export function requiredSigners(audit: AccountAudit): readonly RequiredSigner[] {
-  return audit.signers
-    .filter((s) => s.type === "ed25519_public_key" && s.weight > 0)
-    .map((s) => ({ key: s.key, weight: s.weight }));
-}
-
 // the weight a bundled close needs. stellar thresholds are independent bytes, so
 // med or low can exceed high. the bundle always holds high ops (merge, signer
 // cleanup) and medium ops (the close marker, trustline and offer cleanup), and
@@ -129,10 +117,6 @@ export function thresholdForClose(t: {
   readonly high: number;
 }): number {
   return Math.max(1, t.low, t.medium, t.high);
-}
-
-export function closeThreshold(audit: AccountAudit): number {
-  return thresholdForClose(audit.thresholds);
 }
 
 // build the single bundled closure transaction for a multisig account. throws if
@@ -366,7 +350,7 @@ function assetLabel(asset: AssetLike | PoolAssetLike): string {
   if (isPoolAsset(asset)) {
     return `the ${assetLabel(asset.assetA)} / ${assetLabel(asset.assetB)} pool share`;
   }
-  return asset.isNative() ? "XLM" : `${asset.getCode()} (${shortId(asset.getIssuer())})`;
+  return asset.isNative() ? "XLM" : `${asset.getCode()} (${shortAddress(asset.getIssuer())})`;
 }
 
 // full label for an asset in a danger step: the whole issuer, since a short
@@ -378,10 +362,6 @@ function fullAssetLabel(asset: AssetLike): string {
 function humanizeOpType(type: string): string {
   const spaced = type.replace(/([A-Z])/g, " $1").trim();
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
-}
-
-function shortId(key: string): string {
-  return key.length > 12 ? `${key.slice(0, 6)}…${key.slice(-4)}` : key;
 }
 
 function isZeroAmount(amount: string | undefined): boolean {
@@ -566,7 +546,7 @@ function summarizeOpShape(op: RawOp, ctx: InspectContext): OperationSummary {
     case "claimClaimableBalance":
       return {
         type: "Claim a claimable balance",
-        detail: `Claims balance ${shortId(op.balanceId ?? "")} into this account before it closes.`,
+        detail: `Claims balance ${shortAddress(op.balanceId ?? "")} into this account before it closes.`,
       };
 
     case "manageData": {
@@ -599,7 +579,7 @@ function summarizeOpShape(op: RawOp, ctx: InspectContext): OperationSummary {
     case "liquidityPoolWithdraw":
       return {
         type: "Withdraw from a liquidity pool",
-        detail: `Withdraws ${op.amount ?? "the"} pool shares from pool ${shortId(op.liquidityPoolId ?? "")} into this account (minimums ${op.minAmountA ?? "?"} and ${op.minAmountB ?? "?"}).`,
+        detail: `Withdraws ${op.amount ?? "the"} pool shares from pool ${shortAddress(op.liquidityPoolId ?? "")} into this account (minimums ${op.minAmountA ?? "?"} and ${op.minAmountB ?? "?"}).`,
       };
 
     case "pathPaymentStrictReceive":
@@ -730,13 +710,4 @@ export function inspectClose(xdrStr: string, passphrase: string): CloseInspectio
     preconditions: describePreconditions(tx),
     isClose: mergeOp !== undefined,
   };
-}
-
-// ── signature accounting (local, no server) ──────────────────────────────────
-// who has signed is read from the envelope's own signatures by signedSigners,
-// the same function the relay counts with.
-
-export function collectedWeight(signedKeys: readonly string[], audit: AccountAudit): number {
-  const byKey = new Map(audit.signers.map((s) => [s.key, s.weight]));
-  return signedKeys.reduce((sum, k) => sum + (byKey.get(k) ?? 0), 0);
 }
