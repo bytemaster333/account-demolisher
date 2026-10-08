@@ -21,8 +21,17 @@ import {
 import { getAquariusRouterId } from "@/lib/adapters/aquarius/client";
 import { poolIndexHexToBytes, readAquariusPoolAddress } from "@/lib/adapters/aquarius/pools";
 import { EMPTY_POSITIONS } from "@/lib/adapters/positions/interface";
-import { claimGaugeRewards, readGaugeRewards } from "@/lib/adapters/aquarius/gauges";
+import {
+  claimGaugeRewards,
+  readGaugeRewards,
+  readPositionGaugeRewards,
+} from "@/lib/adapters/aquarius/gauges";
 import { MAINNET } from "@/lib/config/networks";
+import { checkRequiredSorobanStep } from "@/lib/orchestrator/executor";
+import { generatePlan } from "@/lib/plan/generator";
+import { hydratePlanTransactions } from "@/lib/plan/hydration";
+import { buildPlanTree, nodeTransaction } from "@/lib/plan/tree";
+import { auditAccount } from "@/lib/stellar/account-audit";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { readExitPayouts } from "@/lib/soroban/stellar-asset";
 import { simulateRead } from "@/lib/soroban/simulate";
@@ -298,7 +307,7 @@ describe("integration: aquarius exits simulate against mainnet", () => {
     const paying = Object.entries(paid).filter(([, v]) => v > 0n);
     expect(paying.map(([t]) => t).sort()).toEqual(found!.owed.map((o) => o.token).sort());
     for (const o of found!.owed) expect(paid[o.token]).toBeGreaterThanOrEqual(o.amount);
-    const tx = await claimGaugeRewards(
+    const built = await claimGaugeRewards(
       {
         user: found!.user,
         poolAddress: pool,
@@ -309,9 +318,68 @@ describe("integration: aquarius exits simulate against mainnet", () => {
       },
       { server },
     );
-    const op = tx.operations[0] as unknown as { auth: xdr.SorobanAuthorizationEntry[] };
+    expect(built.routerPool).toBe(pool);
+    const op = built.transaction.operations[0] as unknown as {
+      auth: xdr.SorobanAuthorizationEntry[];
+    };
     expect(op.auth).toHaveLength(1);
     expect(op.auth[0]!.credentials.type).toBe("sorobanCredentialsSourceAccount");
     expect(op.auth[0]!.rootInvocation.subInvocations).toHaveLength(0);
+
+    // the plan's own path: discovery's reader finds the pool through the router,
+    // the generator plans the claim, hydration builds it, and the sign-time
+    // checks (allow-list with the router-resolved pool, auth guard, fee cap)
+    // pass on the simulated transaction
+    const shareBalance = BigInt(
+      scValToNative(
+        (
+          await simulateRead(
+            server,
+            share,
+            "balance",
+            [new Address(found!.user).toScVal()],
+            found!.user,
+            MAINNET,
+          )
+        ).retval,
+      ) as bigint,
+    );
+    expect(shareBalance).toBeGreaterThan(0n);
+    const positions = {
+      ...EMPTY_POSITIONS,
+      aquarius: [{ poolIndex: api.index, shareBalance, tokens: api.tokens_addresses }],
+    };
+    const gauges = await readPositionGaugeRewards(server, MAINNET, found!.user, positions);
+    expect(gauges.map((g) => g.poolAddress)).toEqual([pool]);
+    const planned = generatePlan(
+      await auditAccount(found!.user, MAINNET),
+      positions,
+      [],
+      "GC6K27OC6OAA6XWVE3GGMJ2US5MOVMYZT5OJ326KOWKH4ZVMHXT6A7X4",
+      { network: MAINNET, aquariusGaugeRewards: gauges },
+    );
+    const claimNode = [...planned.allNodes.values()].find(
+      (n) => n.kind === "ClaimAquariusGaugeRewards",
+    );
+    if (claimNode?.kind !== "ClaimAquariusGaugeRewards") throw new Error("no gauge claim planned");
+    const tree = buildPlanTree([{ ...claimNode, dependencies: [] }]);
+    const node = tree.allNodes.get(claimNode.id)!;
+    const { failures } = await hydratePlanTransactions(tree, found!.user, {
+      rpc: server,
+      horizon,
+      network: MAINNET,
+      currentLedger: (await server.getLatestLedger()).sequence,
+      fetchSourceAccount: (pk) => horizon.loadAccount(pk),
+    });
+    expect(failures).toEqual([]);
+    const tx = nodeTransaction(node);
+    if (tx === undefined) throw new Error("the gauge claim was not built");
+    const fee = checkRequiredSorobanStep(node, tx, found!.user, MAINNET);
+    expect(fee).toBeGreaterThan(0n);
+    // the same transaction is refused when the router's answer is not on the node
+    delete (node.metadata as { routerPool?: string }).routerPool;
+    expect(() => checkRequiredSorobanStep(node, tx, found!.user, MAINNET)).toThrow(
+      /not on MAINNET_ALLOWLIST/,
+    );
   });
 });

@@ -642,6 +642,46 @@ describe("what the preview found blocks the close until it is resolved", () => {
     actor.stop();
   });
 
+  it("hands the gauge rewards discovery read to the preview", async () => {
+    const previewInputs: Record<string, unknown>[] = [];
+    const gauges = [
+      {
+        poolAddress: "CPOOL",
+        tokens: ["CA", "CB"],
+        poolIndex: "ab".repeat(32),
+        rewards: [{ token: "CXLM", amount: 5n }],
+      },
+    ];
+    const machine = pageFlowMachine.provide({
+      actors: {
+        discover: fromPromise(async () => ({
+          audit: fakeAudit,
+          positions: EMPTY_POSITIONS,
+          allowances: [],
+          heldTokens: [],
+          unreadableHeldTokens: [],
+          heldTokenScanFailed: false,
+          discoveryWarnings: [],
+          discoveryDiagnostics: [],
+          exitTrustlineGaps: [],
+          unopenableExitLines: [],
+          aquariusGaugeRewards: gauges,
+        })) as never,
+        preview: fromPromise(async ({ input }: { input: Record<string, unknown> }) => {
+          previewInputs.push(input);
+          return { tree: emptyTree(), unroutableCredits: [], heldTokenWarnings: [] };
+        }) as never,
+      },
+    });
+    const actor = createActor(machine).start();
+    actor.send({ type: "START", input: fakeInput });
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    expect(previewInputs[0]!["aquariusGaugeRewards"]).toEqual(gauges);
+    actor.send({ type: "START", input: fakeInput });
+    expect(actor.getSnapshot().context.aquariusGaugeRewards).toEqual([]);
+    actor.stop();
+  });
+
   it("folds the review notes into the warnings the page shows", async () => {
     const { actor } = machineWith({
       execute: hang,

@@ -141,6 +141,10 @@ describe("soroban fee cap", () => {
     expect(() =>
       assertSorobanFeeWithinCap(prepared(6_317_225n, 6_200, 8), "pool-exit"),
     ).not.toThrow();
+    // pool.gauges_claim paying a gauge's XLM (CCNXGPE4, 2026-10-08)
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(1_694_330n, 1_532, 6), "pool-exit"),
+    ).not.toThrow();
   });
 
   it("bounds what a token in a permissionless pool may write during an exit", () => {

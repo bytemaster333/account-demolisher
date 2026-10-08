@@ -30,14 +30,22 @@ export class AllowlistViolation extends Error {
   }
 }
 
+// a root target allowed for one transaction only: an aquarius pool the pinned
+// router resolved for the step being signed (a gauge reward claim runs on the
+// pool itself, and pools are permissionless, so none is on the list)
+export interface RouterResolvedRoot {
+  readonly routerResolvedPool?: string;
+}
+
 // throws AllowlistViolation if any contract invocation isn't on the list for
 // the given network. the network is required so no caller silently gets the
 // other network's list
 export function assertTransactionAllowed(
   tx: Transaction | FeeBumpTransaction,
   network: NetworkConfig,
+  extra: RouterResolvedRoot = {},
 ): void {
-  const violations = getViolations(tx, network);
+  const violations = getViolations(tx, network, extra);
   if (violations.length > 0) throw new AllowlistViolation(violations);
 }
 
@@ -45,12 +53,13 @@ export function assertTransactionAllowed(
 export function getViolations(
   tx: Transaction | FeeBumpTransaction,
   network: NetworkConfig,
+  extra: RouterResolvedRoot = {},
 ): readonly AllowlistViolationDetail[] {
   const ops = collectOperations(tx);
   const out: AllowlistViolationDetail[] = [];
 
   for (const op of ops) {
-    const detail = inspectOperation(op, network);
+    const detail = inspectOperation(op, network, extra);
     if (detail !== null) out.push(detail);
   }
 
@@ -112,6 +121,7 @@ function inspectAuthEntries(ihf: Operation.InvokeHostFunction): AllowlistViolati
 function inspectOperation(
   op: OperationRecord,
   network: NetworkConfig,
+  extra: RouterResolvedRoot,
 ): AllowlistViolationDetail | null {
   if (op.type !== "invokeHostFunction") return null;
 
@@ -144,7 +154,7 @@ function inspectOperation(
         }
         // only entry points may be the root of a signed call; known tokens and
         // infrastructure are refused even though they are curated
-        if (!isAllowedRootTarget(addrStrkey, network)) {
+        if (!isAllowedRootTarget(addrStrkey, network) && addrStrkey !== extra.routerResolvedPool) {
           return {
             contractId: addrStrkey,
             reason: networkAwareReason(network),

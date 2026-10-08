@@ -1033,3 +1033,106 @@ describe("aquarius concentrated pools", () => {
     );
   });
 });
+
+// recorded read-only on mainnet 2026-10-08: pool.gauges_claim(user) for
+// GAVQHYD4... in stable pool CCNXGPE4..., whose gauge owed it XLM. one
+// source-account entry, root gauges_claim(user), nothing nested.
+const GAUGE = {
+  source: "GAVQHYD4UA3PD54IOLX22DYIQNWWGBJKTDEJEXWSU4CKORTQMG2PNEB2",
+  pool: "CCNXGPE4AQCSNEBZO3XJDKKDI3CRLYMVS6UWBBTVDLALLWMJEXBORQ2A",
+  args: ["AAAAEgAAAAAAAAAAKwPgfKA28feIcu+tDwiDbWMFKpjIkl7SpwSnRnBhtPY="],
+  auth: "AAAAAAAAAAAAAAABm3M8nAQFJpA5du6RqUNGxRXhlZepYIZ1GsC12YklwugAAAAMZ2F1Z2VzX2NsYWltAAAAAQAAABIAAAAAAAAAACsD4HygNvH3iHLvrQ8Ig21jBSqYyJJe0qcEp0ZwYbT2AAAAAA==",
+} as const;
+
+describe("aquarius gauge reward claims", () => {
+  const user = GAUGE.source;
+  const pool = GAUGE.pool;
+  const gaugeNode = (over: object = {}) =>
+    node({
+      id: "gc",
+      kind: "ClaimAquariusGaugeRewards",
+      metadata: {
+        kind: "ClaimAquariusGaugeRewards",
+        poolAddress: pool,
+        tokens: [
+          "CAUP7NFABXE5TJRL3FKTPMWRLC7IAXYDCTHQRFSCLR5TMGKHOOQO772J",
+          "CBIJBDNZNF4X35BJ4FFZWCDBSCKOP5NB4PLG4SNENRMLAPYG4P5FM6VN",
+        ],
+        poolIndex: "f56e6f3b43d99643950956cf1dfdfccfc1abe825bef484484911c9f428ff4ba7",
+        rewards: [{ token: XLM_SAC, amount: 108_996_593n }],
+        routerPool: pool,
+        ...over,
+      },
+    });
+  const recorded = () =>
+    buildTx(
+      user,
+      pool,
+      "gauges_claim",
+      GAUGE.args.map((a) => xdr.ScVal.fromXdr(a, "base64")),
+      [xdr.SorobanAuthorizationEntry.fromXdr(GAUGE.auth, "base64")],
+    );
+  const built = (
+    root: string,
+    fn: string,
+    args: xdr.ScVal[],
+    subs: xdr.SorobanAuthorizedInvocation[] = [],
+  ) => buildTx(user, root, fn, args, [entry(inv(root, fn, args, subs))]);
+
+  it("accepts the recorded gauges_claim on the pool the router resolved", () => {
+    expect(() => assertDefiAuthTree(gaugeNode(), recorded(), ctx(user))).not.toThrow();
+  });
+
+  it("refuses the claim unless the pinned router resolved that pool when it was built", () => {
+    expect(() =>
+      assertDefiAuthTree(gaugeNode({ routerPool: undefined }), recorded(), ctx(user)),
+    ).toThrow(/not resolved through the Aquarius router/);
+    expect(() =>
+      assertDefiAuthTree(gaugeNode({ routerPool: EVIL }), recorded(), ctx(user)),
+    ).toThrow(new RegExp(`the router lists ${EVIL}`));
+  });
+
+  it("refuses a call to any contract other than the planned pool", () => {
+    const tx = built(EVIL, "gauges_claim", [addr(user)]);
+    expect(() => assertDefiAuthTree(gaugeNode(), tx, ctx(user))).toThrow(
+      new RegExp(`targets ${EVIL}, not the pool ${pool}`),
+    );
+  });
+
+  it("refuses another function, another beneficiary or extra args", () => {
+    expect(() =>
+      assertDefiAuthTree(gaugeNode(), built(pool, "claim", [addr(user)]), ctx(user)),
+    ).toThrow(/calls claim/);
+    expect(() =>
+      assertDefiAuthTree(gaugeNode(), built(pool, "gauges_claim", [addr(ATTACKER)]), ctx(user)),
+    ).toThrow(/gauges_claim is not for the user/);
+    expect(() =>
+      assertDefiAuthTree(
+        gaugeNode(),
+        built(pool, "gauges_claim", [addr(user), addr(ATTACKER)]),
+        ctx(user),
+      ),
+    ).toThrow(/gauges_claim is not for the user/);
+  });
+
+  it("refuses a claim that nests a drain or carries a second authorization", () => {
+    const drain = inv(XLM_SAC, "transfer", [addr(user), addr(ATTACKER), i128(1n)]);
+    expect(() =>
+      assertDefiAuthTree(
+        gaugeNode(),
+        built(pool, "gauges_claim", [addr(user)], [drain]),
+        ctx(user),
+      ),
+    ).toThrow(/expected 0/);
+    const twice = buildTx(
+      user,
+      pool,
+      "gauges_claim",
+      [addr(user)],
+      [xdr.SorobanAuthorizationEntry.fromXdr(GAUGE.auth, "base64"), entry(drain)],
+    );
+    expect(() => assertDefiAuthTree(gaugeNode(), twice, ctx(user))).toThrow(
+      /expected 1 authorization entry, got 2/,
+    );
+  });
+});

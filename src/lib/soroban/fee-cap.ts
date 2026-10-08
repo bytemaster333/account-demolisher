@@ -29,17 +29,20 @@
 //   aquarius router claim, archived user state         -    16,305,049
 //   aquarius withdraw_position (concentrated)          -     4,517,897
 //   aquarius claim_all_position_fees                   -     6,317,225
+//   aquarius pool gauges_claim, paying XLM             -     1,694,330
 //   blend submit withdraw_collateral, live             -        35,811
 //   blend submit withdraw, archived Positions          -    11,763,314
 //   blend YieldBloxV2 withdraw_collateral, archived    -     1,060,719
 //   blend backstop queue_withdrawal, archived          -     2,524,898
-// the rows come from sweeps on 2026-10-06 and 2026-10-07: lp holders of every
-// archived mainnet soroswap pair (16) and of 70 archived testnet pairs, every
-// aquarius standard and stable pool (318) for a holder whose share balance is
-// archived, position holders of the 37 pinned concentrated pools (none of the
-// 1,017 User entries the sweep listed through stellar.expert was archived, so no
-// archived concentrated position could be measured), and archived blend
-// Positions and backstop balances in every pinned pool, YieldBloxV2 included.
+// the gauges_claim row is a holder owed XLM by the gauge of stable pool
+// CCNXGPE4... on 2026-10-08; the others come from sweeps on 2026-10-06 and
+// 2026-10-07: lp holders of every archived mainnet soroswap pair (16) and of
+// 70 archived testnet pairs, every aquarius standard and stable pool (318) for
+// a holder whose share balance is archived, position holders of the 37 pinned
+// concentrated pools (none of the 1,017 User entries the sweep listed through
+// stellar.expert was archived, so no archived concentrated position could be
+// measured), and archived blend Positions and backstop balances in every pinned
+// pool, YieldBloxV2 included.
 // the YieldBloxV2 row is the largest of its 8 archived holders (2 entries
 // restored, 1,232 to 1,336 write bytes, 5 read-write entries); those withdraws
 // trapped before 2026-10-07 only because the builder asked for i128::MAX of a
@@ -59,8 +62,9 @@
 // untrusted-token (revoke, held-token transfer): the archived-instance revoke.
 // untrusted-convert (a held token sold through the router, or a soroswap lp
 // exit; both run token code nobody vetted): the archived-pair remove_liquidity.
-// pool-exit (aquarius standard, stable and concentrated pools; the protocol code
-// is pinned but the pools are permissionless, so a pool token can be anything):
+// pool-exit (aquarius standard, stable and concentrated pools and their gauge
+// reward claims; the protocol code is pinned but the pools are permissionless,
+// so a pool token can be anything):
 // the archived router claim. defi-exit (blend steps against the pinned pools and
 // backstops): the archived blend withdraw, at 11,763,314 still the largest
 // blend row, so the cap stays where it was.

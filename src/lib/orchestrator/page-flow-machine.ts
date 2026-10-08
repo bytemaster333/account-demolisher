@@ -32,6 +32,7 @@ import { EMPTY_POSITIONS, type ProtocolPositions } from "@/lib/adapters/position
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import type { HeldToken } from "@/lib/soroban/held-tokens";
 import type { ExitTrustlineGap } from "@/lib/soroban/stellar-asset";
+import type { PoolGaugeRewards } from "@/lib/adapters/aquarius/gauges";
 import type { Connector } from "@/lib/wallet/connector";
 
 export { classifyFailure, isRetryableFailure, type FailureKind };
@@ -126,6 +127,9 @@ export interface PageFlowContext {
   // the token the aquarius reward claims pay, when discovery found a claim that
   // pays some; the plan opens a missing line for it ahead of the claims
   readonly aquariusRewardToken: string | null;
+  // what each aquarius pool's reward gauges owe; the plan claims them ahead of
+  // the pool's withdraw
+  readonly aquariusGaugeRewards: readonly PoolGaugeRewards[];
   readonly unroutableCredits: readonly UnroutableCredit[];
   // what the preview found that keeps the close from starting (mergeability,
   // the BLND trustline, the exchange-forward funding), in words for the user
@@ -198,6 +202,7 @@ const initialContext: PageFlowContext = {
   exitTrustlineGaps: [],
   unopenableExitLines: [],
   aquariusRewardToken: null,
+  aquariusGaugeRewards: [],
   unroutableCredits: [],
   reviewBlockers: [],
   refusedConversions: [],
@@ -364,6 +369,7 @@ const clearedDiscovery = {
   exitTrustlineGaps: [],
   unopenableExitLines: [],
   aquariusRewardToken: null,
+  aquariusGaugeRewards: [],
 } as const;
 
 export const pageFlowMachine = setup({
@@ -467,6 +473,7 @@ export const pageFlowMachine = setup({
             exitTrustlineGaps: ({ event }) => event.output.exitTrustlineGaps,
             unopenableExitLines: ({ event }) => event.output.unopenableExitLines,
             aquariusRewardToken: ({ event }) => event.output.aquariusRewardToken ?? null,
+            aquariusGaugeRewards: ({ event }) => event.output.aquariusGaugeRewards,
           }),
         },
         onError: {
@@ -525,6 +532,7 @@ export const pageFlowMachine = setup({
             ...(context.aquariusRewardToken !== null
               ? { aquariusRewardToken: context.aquariusRewardToken }
               : {}),
+            aquariusGaugeRewards: context.aquariusGaugeRewards,
           };
         },
         onDone: {

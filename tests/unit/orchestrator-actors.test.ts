@@ -7,6 +7,7 @@ import {
   Keypair,
   NotFoundError,
   Operation,
+  StrKey,
   TransactionBuilder,
   TransactionFailedError,
   type Transaction,
@@ -126,6 +127,13 @@ vi.mock("@/lib/plan/generator", async () => {
     },
   };
 });
+const claimGaugeRewards = vi.fn();
+vi.mock("@/lib/adapters/aquarius/gauges", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/adapters/aquarius/gauges")>(
+    "@/lib/adapters/aquarius/gauges",
+  );
+  return { ...actual, claimGaugeRewards: (...a: unknown[]) => claimGaugeRewards(...a) };
+});
 vi.mock("@/lib/soroban/held-tokens", async () => {
   const actual = await vi.importActual<typeof import("@/lib/soroban/held-tokens")>(
     "@/lib/soroban/held-tokens",
@@ -134,6 +142,7 @@ vi.mock("@/lib/soroban/held-tokens", async () => {
 });
 
 import {
+  confirmBlockers,
   fetchDestinationUsableKeys,
   pageFlowMachine,
   type PageFlowInput,
@@ -1783,6 +1792,47 @@ describe("the review quotes the claims the plan makes once the unwind ran", () =
       claimedBalanceIds: [cb],
     });
     expect(ctx.unroutableCredits.map((c) => c.key)).toContain(`EURT:${EURT_ISSUER}`);
+    actor.stop();
+  });
+});
+
+describe("the review plans the claim of what aquarius reward gauges owe", () => {
+  const POOL = StrKey.encodeContract(new Uint8Array(32).fill(81));
+  const pool = { poolIndex: "ab".repeat(32), shareBalance: 5n, tokens: [XLM_SAC, USDC_SAC] };
+  const gauges = [
+    {
+      poolAddress: POOL,
+      tokens: pool.tokens,
+      poolIndex: pool.poolIndex,
+      rewards: [{ token: XLM_SAC, amount: 1_126_439_834n }],
+    },
+  ];
+
+  it("claims them ahead of the withdraw, and blocks the review when the claim can't be built", async () => {
+    claimGaugeRewards.mockRejectedValue(
+      new Error(`${POOL} is not the Aquarius pool the router lists for these tokens`),
+    );
+    const machine = pageFlowMachine.provide({
+      actors: {
+        discover: fromPromise(async () => ({
+          ...discovered,
+          positions: { ...EMPTY_POSITIONS, aquarius: [pool] },
+          aquariusGaugeRewards: gauges,
+        })) as never,
+      },
+    });
+    const actor = createActor(machine).start();
+    actor.send({ type: "START", input: input({ destination: DEST, useMediator: false }) });
+    await settle(actor, "awaiting_confirmation");
+    const ctx = actor.getSnapshot().context;
+    const nodes = [...ctx.tree!.allNodes.values()];
+    const claim = nodes.find((n) => (n.kind as string) === "ClaimAquariusGaugeRewards");
+    const withdraw = nodes.find((n) => n.kind === "WithdrawAquarius");
+    expect(withdraw?.dependencies).toContain(claim!.id);
+    expect(claim?.status).toBe("failed");
+    expect(confirmBlockers(ctx).join(" ")).toMatch(
+      /is not the Aquarius pool the router lists for these tokens/,
+    );
     actor.stop();
   });
 });

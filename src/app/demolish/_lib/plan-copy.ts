@@ -75,6 +75,7 @@ export function phaseForNode(node: PlanNode): string {
     case "ClaimBlendEmissions":
     case "ClaimAquariusRewards":
     case "ClaimAquariusConcentratedFees":
+    case "ClaimAquariusGaugeRewards":
       return "Claim rewards";
     case "ConvertSorobanToXLM":
     case "TransferAsIs":
@@ -117,6 +118,8 @@ export function nodeLabel(node: PlanNode): string {
       return "Claim Aquarius rewards";
     case "ClaimAquariusConcentratedFees":
       return "Claim Aquarius concentrated fees";
+    case "ClaimAquariusGaugeRewards":
+      return "Claim Aquarius gauge rewards";
     case "ConvertSorobanToXLM":
       return "Convert SEP-41 → XLM";
     case "TransferAsIs":
@@ -162,6 +165,8 @@ export function nodePlainLabel(node: PlanNode): string {
       return "Collect Aquarius rewards";
     case "ClaimAquariusConcentratedFees":
       return "Collect Aquarius pool fees";
+    case "ClaimAquariusGaugeRewards":
+      return "Collect Aquarius gauge rewards";
     case "ConvertSorobanToXLM":
       return "Turn a leftover token into XLM";
     case "TransferAsIs":
@@ -215,6 +220,8 @@ export function nodeExplainer(
       return "Collects the reward tokens Aquarius owes you before you leave, so you don't leave them behind.";
     case "ClaimAquariusConcentratedFees":
       return "Collects the trading fees your Aquarius concentrated position earned, so you don't leave them behind.";
+    case "ClaimAquariusGaugeRewards":
+      return "Collects what the reward gauges of an Aquarius pool owe you, which the pool's other reward claim does not pay. It runs before your share of the pool is withdrawn, so you don't leave these rewards behind.";
     case "ClaimBackstopEmissions":
       return "Claims the BLND your Blend backstop deposit earned. The backstop adds it to your deposit as new shares, which the withdrawal queued next then includes.";
     case "BackstopWithdraw":

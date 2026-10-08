@@ -2243,3 +2243,82 @@ describe("the execute-time re-batch is bid at the real fee", () => {
     ]);
   });
 });
+
+describe("an aquarius gauge claim runs on the pool the router resolved", () => {
+  // standard pools are permissionless and not on the allow-list; the claim's
+  // build records the pool the pinned router listed for its tokens and index
+  const pool = HOSTILE_TOKEN;
+  const xlmSac = Asset.native().contractId(NETWORK.passphrase);
+  const gaugeNode = (): PlanNode =>
+    ({
+      id: "gauge",
+      kind: "ClaimAquariusGaugeRewards",
+      dependencies: [],
+      description: "claim gauge rewards",
+      status: "simulated",
+      metadata: {
+        kind: "ClaimAquariusGaugeRewards",
+        poolAddress: pool,
+        tokens: [xlmSac, USDC_SAC],
+        poolIndex: "ab".repeat(32),
+        rewards: [{ token: xlmSac, amount: 108_996_593n }],
+      },
+    }) as PlanNode;
+  const rebuild =
+    (
+      routerPool: string | undefined,
+      fee: bigint,
+      resources: { writeBytes: number; readWriteEntries: number },
+    ) =>
+    async (n: PlanNode) => {
+      const md = n.metadata as { transaction?: Transaction; routerPool?: string };
+      if (routerPool !== undefined) md.routerPool = routerPool;
+      md.transaction = invokeTx(
+        new Account(USER, "1"),
+        pool,
+        "gauges_claim",
+        [addr(USER)],
+        [sourceAuth(inv(pool, "gauges_claim", [addr(USER)]))],
+        (fee + 100_000n).toString(),
+        resources,
+      );
+    };
+
+  it("signs the claim measured on mainnet", async () => {
+    // pool CCNXGPE4..., 2026-10-08: 1,694,330 stroops, 1,532 bytes, 6 entries
+    const node = gaugeNode();
+    const d = deps({
+      rebuildSorobanNode: rebuild(pool, 1_694_330n, { writeBytes: 1_532, readWriteEntries: 6 }),
+    });
+    await run(tree(node), d);
+    expect(node.status).toBe("confirmed");
+    expect(d.connector.signTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a pool the router did not resolve, as off the allow-list", async () => {
+    const node = gaugeNode();
+    const d = deps({
+      rebuildSorobanNode: rebuild(undefined, 1_694_330n, {
+        writeBytes: 1_532,
+        readWriteEntries: 6,
+      }),
+    });
+    await expect(run(tree(node, finalNode(["gauge"])), d)).rejects.toMatchObject({
+      kind: "unsafe",
+    });
+    expect(node.error).toMatch(/not on MAINNET_ALLOWLIST|not on TESTNET_ALLOWLIST/);
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
+  });
+
+  it("bounds the writes like any exit through a permissionless pool", async () => {
+    const node = gaugeNode();
+    const d = deps({
+      rebuildSorobanNode: rebuild(pool, 400_000n, { writeBytes: 32_769, readWriteEntries: 1 }),
+    });
+    await expect(run(tree(node, finalNode(["gauge"])), d)).rejects.toMatchObject({
+      kind: "unsafe",
+    });
+    expect(node.error).toMatch(/write 32769 bytes/);
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
+  });
+});

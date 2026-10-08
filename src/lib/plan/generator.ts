@@ -37,6 +37,7 @@ import {
   planClassicUnwind,
   type ClassicUnwindTargets,
 } from "@/lib/plan/classic-batcher";
+import { gaugeRewardTokens, type PoolGaugeRewards } from "@/lib/adapters/aquarius/gauges";
 import { BACKSTOP_QUEUE_DURATION_SECONDS } from "@/lib/adapters/blend/constants";
 import { blndTrustlineRequirement } from "@/lib/adapters/blend/emissions-check";
 import {
@@ -112,6 +113,10 @@ export interface GeneratePlanOptions {
   // gap for it opens a line ahead of those claims; without it, a gap only counts
   // for the tokens the planned withdraws and fee claims pay.
   readonly aquariusRewardToken?: string;
+  // what the reward gauges of each aquarius pool the account is in owe it
+  // (discovery's readPositionGaugeRewards). each pool owed anything gets a
+  // gauges_claim ahead of its withdraw.
+  readonly aquariusGaugeRewards?: readonly PoolGaugeRewards[];
   // pools whose accrued backstop emissions the user agreed to forfeit because
   // the claim can't run; their queue is planned without a claim ahead of it
   readonly forfeitBackstopEmissionsPoolIds?: readonly string[];
@@ -181,6 +186,7 @@ export function generatePlan(
   }
 
   // trustlines the pool exits pay into, opened ahead of every exit that needs one
+  const gauges = owingGauges(opts.aquariusGaugeRewards);
   const exitLines = exitTrustlineNodes(
     positions,
     opts.exitTrustlineGaps ?? [],
@@ -188,6 +194,7 @@ export function generatePlan(
       ? requireNetwork("the payout trustlines of the DeFi exits")
       : undefined,
     opts.aquariusRewardToken,
+    gauges,
   );
   nodes.push(...exitLines.nodes);
   const linesFor = (tokens: readonly string[]): string[] => [
@@ -222,6 +229,36 @@ export function generatePlan(
   // tokens they pay out can fund it.
   const fundingExitIds: string[] = [];
 
+  // what an aquarius pool's reward gauges owe is claimed ahead of the pool's
+  // withdraw, one claim per pool, after the lines its reward tokens pay into
+  const gaugeClaimIds = new Map<string, string>();
+  for (const pool of gauges) {
+    const id = makeId("aquarius-gauge-claim", pool.poolAddress);
+    nodes.push({
+      id,
+      kind: "ClaimAquariusGaugeRewards",
+      dependencies: linesFor(pool.rewards.map((r) => r.token)),
+      status: "pending",
+      description:
+        `Claim the Aquarius gauge rewards of pool ${shortAddress(pool.poolAddress)}: ` +
+        pool.rewards.map((r) => owedLabel(r, passphrase)).join(" and "),
+      metadata: {
+        kind: "ClaimAquariusGaugeRewards",
+        poolAddress: pool.poolAddress,
+        tokens: pool.tokens,
+        poolIndex: pool.poolIndex,
+        rewards: pool.rewards,
+      },
+    });
+    gaugeClaimIds.set(gaugeKey(pool.tokens, pool.poolIndex), id);
+    gaugeClaimIds.set(pool.poolAddress, id);
+    fundingExitIds.push(id);
+  }
+  const gaugeClaimFor = (key: string): string[] => {
+    const id = gaugeClaimIds.get(key);
+    return id === undefined ? [] : [id];
+  };
+
   // aquarius LPs. pool_index is shared by pools of the same type across token
   // pairs, so a pool is identified by its tokens plus its index.
   const aquariusWithdraws: { readonly pool: AquariusPositionSummary; readonly id: string }[] = [];
@@ -231,7 +268,10 @@ export function generatePlan(
     nodes.push({
       id,
       kind: "WithdrawAquarius",
-      dependencies: linesFor(pool.tokens),
+      dependencies: [
+        ...gaugeClaimFor(gaugeKey(pool.tokens, pool.poolIndex)),
+        ...linesFor(pool.tokens),
+      ],
       status: "pending",
       description: `Withdraw ${pool.shareBalance.toString()} shares from Aquarius pool ${aquariusPoolLabel(pool)}`,
       metadata: {
@@ -249,7 +289,14 @@ export function generatePlan(
   // first, then each tick range is withdrawn on the pool itself
   for (const pos of positions.aquariusConcentrated) {
     fundingExitIds.push(
-      ...concentratedNodes(pos, nodes, linesFor(pos.tokens), exitLines.reward, rewardRef),
+      ...concentratedNodes(
+        pos,
+        nodes,
+        linesFor(pos.tokens),
+        exitLines.reward,
+        rewardRef,
+        gaugeClaimFor(pos.poolAddress),
+      ),
     );
   }
 
@@ -513,6 +560,7 @@ export function generatePlan(
       ...(opts.aquariusRewardToken !== undefined
         ? { aquariusRewardToken: opts.aquariusRewardToken }
         : {}),
+      aquariusGaugeRewards: gauges,
     });
   }
 
@@ -589,7 +637,7 @@ export function generatePlan(
     // are handled by the classic batches.
     if (passphrase !== undefined) {
       const classic = classicSacIds(audit, passphrase, exitLines.byToken.keys());
-      const paid = paidTokens(positions, opts.aquariusRewardToken);
+      const paid = paidTokens(positions, opts.aquariusRewardToken, gauges);
       for (const token of [...paid, ...backstopPayoutTokens]) {
         if (swept.has(token) || classic.has(token)) continue;
         // the payout isn't known until the exit lands; hydration reads it
@@ -709,12 +757,14 @@ export function assertExchangeCloseCanRun(
     readonly network?: NetworkConfig;
     readonly exitTrustlineGaps?: readonly ExitTrustlineGap[];
     readonly aquariusRewardToken?: string;
+    readonly aquariusGaugeRewards?: readonly PoolGaugeRewards[];
   } = {},
 ): void {
   const unlockedQueues = positions.backstop.some(
     (bs) => (bs.unlockedQueuedForWithdrawal ?? 0n) > 0n,
   );
-  const exitTokens = paidTokens(positions, opts.aquariusRewardToken);
+  const gauges = owingGauges(opts.aquariusGaugeRewards);
+  const exitTokens = paidTokens(positions, opts.aquariusRewardToken, gauges);
   const gaps = opts.exitTrustlineGaps ?? [];
   if (exitTokens.length === 0 && !unlockedQueues && gaps.length === 0) return;
   const network = opts.network;
@@ -725,7 +775,7 @@ export function assertExchangeCloseCanRun(
   }
   const comet = unlockedQueues ? blendCometId(network) : undefined;
   const payouts = [...exitTokens, ...(comet !== undefined ? [comet] : [])];
-  const lines = exitTrustlineNodes(positions, gaps, network, opts.aquariusRewardToken);
+  const lines = exitTrustlineNodes(positions, gaps, network, opts.aquariusRewardToken, gauges);
   const classic = classicSacIds(audit, network.passphrase, lines.byToken.keys());
   const stuck = [...new Set(payouts)].filter((t) => !classic.has(t));
   if (stuck.length === 0) return;
@@ -829,13 +879,15 @@ export function finalBatchOptions(
 
 // claim the reward and the fees, then withdraw every range; returns the node
 // ids, all of which pay tokens into the account. tokenLines and rewardLines are
-// the payout trustlines the pool's own tokens and the reward token need first.
+// the payout trustlines the pool's own tokens and the reward token need first;
+// gaugeClaim is the pool's gauge reward claim, which the ranges also wait for.
 function concentratedNodes(
   pos: AquariusConcentratedPositionSummary,
   nodes: PlanNode[],
   tokenLines: readonly string[],
   rewardLines: readonly string[],
   rewardRef: { readonly rewardToken?: string },
+  gaugeClaim: readonly string[],
 ): readonly string[] {
   const claims: string[] = [];
   const label = concentratedLabel(pos);
@@ -885,7 +937,7 @@ function concentratedNodes(
     nodes.push({
       id,
       kind: "WithdrawAquariusConcentrated",
-      dependencies: [...claims, ...tokenLines],
+      dependencies: [...gaugeClaim, ...claims, ...tokenLines],
       status: "pending",
       description:
         `Withdraw the ${range.tickLower} to ${range.tickUpper} tick range from concentrated ` +
@@ -906,14 +958,15 @@ function concentratedNodes(
 
 // the payout trustlines the plan opens, one per asset, and which of them the
 // exits need. a gap counts only for a token a planned step pays: a withdraw or
-// fee claim's pool token, or the reward token when a reward claim is planned.
-// any other gap (say a pool token of a position kept only for its reward) needs
-// no line and blocks nothing.
+// fee claim's pool token, the reward token when a reward claim is planned, or a
+// token a planned gauge claim pays. any other gap (say a pool token of a
+// position kept only for its reward) needs no line and blocks nothing.
 function exitTrustlineNodes(
   positions: ProtocolPositions,
   gaps: readonly ExitTrustlineGap[],
   network: NetworkConfig | undefined,
   rewardToken: string | undefined,
+  gauges: readonly PoolGaugeRewards[],
 ): {
   readonly nodes: readonly PlanNode[];
   // payout token contract id -> the node that opens its line
@@ -926,6 +979,7 @@ function exitTrustlineNodes(
   const nodes: PlanNode[] = [];
   if (gaps.length === 0 || network === undefined) return { nodes, byToken, reward };
   const paidByExit = new Set(exitPayoutTokens(positions));
+  const paidByGauge = new Set(gaugeRewardTokens(gauges));
   const rewardClaims = plansRewardClaim(positions);
   for (const gap of gaps) {
     // the line must be the asset the token wraps, or the exit still traps and
@@ -939,11 +993,15 @@ function exitTrustlineNodes(
     }
     const byExit = paidByExit.has(gap.contractId);
     const byReward = rewardClaims && gap.contractId === rewardToken;
-    if (!byExit && !byReward) continue;
+    const byGauge = paidByGauge.has(gap.contractId);
+    if (!byExit && !byReward && !byGauge) continue;
     if (isUnfixableGap(gap)) {
       const payers = [
         ...(byExit ? exitsPaying(positions, gap.contractId) : []),
         ...(byReward ? ["the Aquarius reward claims"] : []),
+        ...gauges
+          .filter((g) => g.rewards.some((r) => r.token === gap.contractId))
+          .map((g) => `the Aquarius gauge rewards of pool ${shortAddress(g.poolAddress)}`),
       ];
       const { cause, fix } = describeUnfixableGap(gap);
       throw new Error(`${cause} It can't receive the payout of ${payers.join(" and ")}. ${fix}`);
@@ -981,13 +1039,55 @@ function plansRewardClaim(positions: ProtocolPositions): boolean {
 }
 
 // the tokens the planned exits pay into the account, with the reward token when
-// the caller knows it and a reward claim is planned
-function paidTokens(positions: ProtocolPositions, rewardToken: string | undefined): string[] {
+// the caller knows it and a reward claim is planned, and every token a planned
+// gauge claim pays
+function paidTokens(
+  positions: ProtocolPositions,
+  rewardToken: string | undefined,
+  gauges: readonly PoolGaugeRewards[],
+): string[] {
   const out = [...exitPayoutTokens(positions)];
   if (rewardToken !== undefined && plansRewardClaim(positions) && !out.includes(rewardToken)) {
     out.push(rewardToken);
   }
+  for (const token of gaugeRewardTokens(gauges)) {
+    if (!out.includes(token)) out.push(token);
+  }
   return out;
+}
+
+// the pools whose gauges owe something, each with only the rewards it owes. a
+// pool listed twice is refused: one claim pays everything its gauges owe.
+function owingGauges(owed: readonly PoolGaugeRewards[] | undefined): readonly PoolGaugeRewards[] {
+  const out: PoolGaugeRewards[] = [];
+  for (const pool of owed ?? []) {
+    const rewards = pool.rewards.filter((r) => r.amount > 0n);
+    if (rewards.length === 0) continue;
+    if (out.some((o) => o.poolAddress === pool.poolAddress)) {
+      throw new Error(
+        `generatePlan: the gauge rewards of pool ${pool.poolAddress} are listed twice`,
+      );
+    }
+    out.push({ ...pool, rewards });
+  }
+  return out;
+}
+
+// a standard pool is keyed by its tokens and index, like the router keys it
+function gaugeKey(tokens: readonly string[], poolIndex: string): string {
+  return `${tokens.join(",")}|${poolIndex.toLowerCase()}`;
+}
+
+// what a gauge owes, for the step's description. XLM has 7 decimals; any other
+// token's decimals are not read, so its amount is given in base units.
+function owedLabel(
+  reward: { readonly token: string; readonly amount: bigint },
+  passphrase: string | undefined,
+): string {
+  if (passphrase !== undefined && reward.token === Asset.native().contractId(passphrase)) {
+    return `${stroopsToDecimal(reward.amount).replace(/\.?0+$/, "")} XLM`;
+  }
+  return `${reward.amount.toString()} base units of token ${shortAddress(reward.token)}`;
 }
 
 // the planned exits that pay out a token, named for the user

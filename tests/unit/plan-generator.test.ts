@@ -1550,3 +1550,165 @@ describe("the aquarius reward token counts as an exit payout when the plan knows
     ).not.toThrow();
   });
 });
+
+describe("aquarius gauge rewards are claimed before the pool is left", () => {
+  const ISSUER = Keypair.random().publicKey();
+  const XLM = Asset.native().contractId(TESTNET.passphrase);
+  const AQUA = new Asset("AQUA", ISSUER).contractId(TESTNET.passphrase);
+  // a gauge reward token that is no classic asset of this account
+  const GAUGE_TOKEN = StrKey.encodeContract(Buffer.alloc(32, 61));
+  const STANDARD_POOL = StrKey.encodeContract(Buffer.alloc(32, 62));
+  const CL_POOL = StrKey.encodeContract(Buffer.alloc(32, 63));
+  const standard = { poolIndex: "ab".repeat(32), shareBalance: 3n, tokens: [XLM, AQUA] };
+  const concentrated = {
+    poolAddress: CL_POOL,
+    poolIndex: "cd".repeat(32),
+    tokens: [XLM, AQUA],
+    ranges: [{ tickLower: -10, tickUpper: 10, liquidity: 7n }],
+    pendingFees: [0n, 0n],
+    pendingReward: 0n,
+  };
+  const aquaLine: AccountAudit["balances"][number] = {
+    asset: { kind: "credit", code: "AQUA", issuer: ISSUER },
+    amount: "0",
+    limit: "922337203685.4775807",
+    buyingLiabilities: "0",
+    sellingLiabilities: "0",
+    isAuthorized: true,
+  };
+  const standardGauge = {
+    poolAddress: STANDARD_POOL,
+    tokens: standard.tokens,
+    poolIndex: standard.poolIndex,
+    rewards: [{ token: XLM, amount: 1_126_439_834n }],
+  };
+  const clGauge = {
+    poolAddress: CL_POOL,
+    tokens: concentrated.tokens,
+    poolIndex: concentrated.poolIndex,
+    rewards: [{ token: GAUGE_TOKEN, amount: 40n }],
+  };
+  const positions = emptyPositions({ aquarius: [standard], aquariusConcentrated: [concentrated] });
+  const gaugeId = (pool: string) => id("aquarius-gauge-claim", pool);
+  const withdrawId = id("aquarius-withdraw", XLM, AQUA, standard.poolIndex);
+  const rangeId = id("aquarius-cl-withdraw", CL_POOL, "-10", "10");
+
+  it("plans pool.gauges_claim ahead of the pool's withdraw, keyed for the router check", () => {
+    const tree = generatePlan(makeAudit({ balances: [aquaLine] }), positions, [], DEST, {
+      network: TESTNET,
+      aquariusGaugeRewards: [standardGauge, clGauge],
+    });
+    const claim = tree.allNodes.get(gaugeId(STANDARD_POOL));
+    if (claim?.kind !== "ClaimAquariusGaugeRewards") throw new Error("expected a gauge claim");
+    expect(claim.metadata).toEqual({
+      kind: "ClaimAquariusGaugeRewards",
+      poolAddress: STANDARD_POOL,
+      tokens: [XLM, AQUA],
+      poolIndex: standard.poolIndex,
+      rewards: [{ token: XLM, amount: 1_126_439_834n }],
+    });
+    expect(claim.dependencies).toEqual([]);
+    expect(dependsOn(tree, withdrawId, gaugeId(STANDARD_POOL))).toBe(true);
+    expect(dependsOn(tree, rangeId, gaugeId(CL_POOL))).toBe(true);
+    expect(dependsOn(tree, "final-classic-tx", gaugeId(STANDARD_POOL))).toBe(true);
+    expect(dependsOn(tree, "final-classic-tx", gaugeId(CL_POOL))).toBe(true);
+    // the withdraw of a pool with no gauge reward waits on nothing new
+    const order = topologicalOrder(tree);
+    expect(indexOf(order, gaugeId(STANDARD_POOL))).toBeLessThan(indexOf(order, withdrawId));
+  });
+
+  it("counts what the gauges pay as exit payouts, for the merge guard and the sweep", () => {
+    const tree = generatePlan(makeAudit({ balances: [aquaLine] }), positions, [], DEST, {
+      network: TESTNET,
+      aquariusGaugeRewards: [clGauge],
+    });
+    expect(planExitPayoutTokens(tree)).toContain(GAUGE_TOKEN);
+    const sweep = tree.allNodes.get(id("drain-token", GAUGE_TOKEN));
+    expect(sweep?.kind).toBe("TransferAsIs");
+    expect(dependsOn(tree, sweep!.id, gaugeId(CL_POOL))).toBe(true);
+    // XLM lands on the native balance the final batch already sends
+    const xlmOnly = generatePlan(makeAudit({ balances: [aquaLine] }), positions, [], DEST, {
+      network: TESTNET,
+      aquariusGaugeRewards: [standardGauge],
+    });
+    expect(xlmOnly.allNodes.has(id("drain-token", XLM))).toBe(false);
+  });
+
+  it("opens the reward token's missing line ahead of the gauge claim", () => {
+    const tree = generatePlan(makeAudit(), emptyPositions({ aquarius: [standard] }), [], DEST, {
+      network: TESTNET,
+      exitTrustlineGaps: [{ contractId: AQUA, code: "AQUA", issuer: ISSUER, reason: "missing" }],
+      aquariusGaugeRewards: [{ ...standardGauge, rewards: [{ token: AQUA, amount: 5n }] }],
+    });
+    const line = id("exit-trustline", AQUA);
+    expect(tree.allNodes.get(line)?.kind).toBe("AddExitTrustline");
+    expect(dependsOn(tree, gaugeId(STANDARD_POOL), line)).toBe(true);
+  });
+
+  it("opens a line that only a gauge pays into", () => {
+    // the pool pays XLM and a soroban token; only the gauge pays AQUA
+    const pool = { poolIndex: "ef".repeat(32), shareBalance: 3n, tokens: [XLM, GAUGE_TOKEN] };
+    const tree = generatePlan(makeAudit(), emptyPositions({ aquarius: [pool] }), [], DEST, {
+      network: TESTNET,
+      exitTrustlineGaps: [{ contractId: AQUA, code: "AQUA", issuer: ISSUER, reason: "missing" }],
+      aquariusGaugeRewards: [
+        {
+          poolAddress: STANDARD_POOL,
+          tokens: pool.tokens,
+          poolIndex: pool.poolIndex,
+          rewards: [{ token: AQUA, amount: 5n }],
+        },
+      ],
+    });
+    expect(dependsOn(tree, gaugeId(STANDARD_POOL), id("exit-trustline", AQUA))).toBe(true);
+  });
+
+  it("refuses a gauge reward into a line the issuer has not authorized", () => {
+    expect(() =>
+      generatePlan(makeAudit(), emptyPositions({ aquarius: [standard] }), [], DEST, {
+        network: TESTNET,
+        exitTrustlineGaps: [
+          { contractId: AQUA, code: "AQUA", issuer: ISSUER, reason: "unauthorized" },
+        ],
+        aquariusGaugeRewards: [{ ...standardGauge, rewards: [{ token: AQUA, amount: 5n }] }],
+      }),
+    ).toThrow(/the Aquarius gauge rewards of pool/);
+  });
+
+  it("refuses an exchange close whose gauges pay a token it can't forward", () => {
+    const exchange = {
+      network: TESTNET,
+      useMediator: true,
+      mediatorPublicKey: MED,
+      flowToken: "flow",
+    } as const;
+    expect(() =>
+      generatePlan(makeAudit({ balances: [aquaLine] }), positions, [], DEST, {
+        ...exchange,
+        aquariusGaugeRewards: [clGauge],
+      }),
+    ).toThrow(/exchange close can only forward XLM/);
+    expect(() =>
+      assertExchangeCloseCanRun(makeAudit({ balances: [aquaLine] }), positions, {
+        network: TESTNET,
+        aquariusGaugeRewards: [clGauge],
+      }),
+    ).toThrow(/exchange close can only forward XLM/);
+    expect(() =>
+      generatePlan(makeAudit({ balances: [aquaLine] }), positions, [], DEST, {
+        ...exchange,
+        aquariusGaugeRewards: [standardGauge],
+      }),
+    ).not.toThrow();
+  });
+
+  it("plans no gauge claim when no gauge owes anything", () => {
+    const tree = generatePlan(makeAudit({ balances: [aquaLine] }), positions, [], DEST, {
+      network: TESTNET,
+      aquariusGaugeRewards: [{ ...standardGauge, rewards: [{ token: XLM, amount: 0n }] }],
+    });
+    const kinds = [...tree.allNodes.values()].map((n) => n.kind as string);
+    expect(kinds).not.toContain("ClaimAquariusGaugeRewards");
+    expect(tree.allNodes.get(withdrawId)?.dependencies).toEqual([]);
+  });
+});

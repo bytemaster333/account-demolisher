@@ -335,7 +335,7 @@ describe("discovery says when a token's approvals were cut", () => {
   });
 });
 
-describe("discovery says when aquarius gauge rewards would be left behind", () => {
+describe("discovery reads the aquarius gauge rewards the close claims", () => {
   const owed = {
     poolAddress: AQUARIUS_POOL,
     tokens: [XLM_SAC, USDC_SAC],
@@ -343,7 +343,7 @@ describe("discovery says when aquarius gauge rewards would be left behind", () =
     rewards: [{ token: XLM_SAC, amount: 1_126_439_834n }],
   };
 
-  it("warns with the pools whose gauges owe this account", async () => {
+  it("hands the plan the pools whose gauges owe this account", async () => {
     auditAccount.mockResolvedValue(makeAudit({ balances: [...makeAudit().balances, usdcLine] }));
     getPositions.mockResolvedValue(aquariusPosition);
     readPositionGaugeRewards.mockResolvedValue([owed]);
@@ -354,38 +354,52 @@ describe("discovery says when aquarius gauge rewards would be left behind", () =
       USER,
       aquariusPosition,
     );
-    expect(out.discoveryWarnings).toContain(
-      `Aquarius gauge rewards are owed to this account in pool ${AQUARIUS_POOL}. This app ` +
-        "can't claim gauge rewards, so closing now leaves them behind. Claim them outside " +
-        "this app before closing, then rebuild the plan.",
-    );
-    expect(out.discoveryDiagnostics).toContain(
-      `aquarius gauges: ${AQUARIUS_POOL} ${XLM_SAC}=1126439834`,
-    );
+    expect(out.aquariusGaugeRewards).toEqual([owed]);
+    // the claim is planned, so nothing warns that the rewards are left behind
+    expect(out.discoveryWarnings.join(" ")).not.toMatch(/gauge/i);
   });
 
-  it("says nothing when no gauge owes anything", async () => {
+  it("checks the trustline of a gauge reward token like any other payout", async () => {
+    // a gauge paying AQUA into an account with no AQUA line traps like an exit
+    auditAccount.mockResolvedValue(makeAudit({ balances: [...makeAudit().balances, usdcLine] }));
+    getPositions.mockResolvedValue(aquariusPosition);
+    readPositionGaugeRewards.mockResolvedValue([
+      { ...owed, rewards: [{ token: AQUA_SAC, amount: 5n }] },
+    ]);
+    const out = await discover();
+    expect(readWrappedAssets).toHaveBeenCalledWith(
+      expect.anything(),
+      NETWORK,
+      [XLM_SAC, USDC_SAC, AQUA_SAC],
+      USER,
+    );
+    expect(out.exitTrustlineGaps).toEqual([
+      { contractId: AQUA_SAC, code: "AQUA", issuer: AQUA_ISSUER, reason: "missing" },
+    ]);
+  });
+
+  it("returns no gauge rewards when no gauge owes anything", async () => {
     auditAccount.mockResolvedValue(makeAudit({ balances: [...makeAudit().balances, usdcLine] }));
     getPositions.mockResolvedValue(aquariusPosition);
     const out = await discover();
-    expect(out.discoveryWarnings.join(" ")).not.toMatch(/gauge/);
+    expect(out.aquariusGaugeRewards).toEqual([]);
   });
 
   it("does not read gauges without an aquarius position", async () => {
     getPositions.mockResolvedValue(lpPosition);
-    await discover();
+    const out = await discover();
     expect(readPositionGaugeRewards).not.toHaveBeenCalled();
+    expect(out.aquariusGaugeRewards).toEqual([]);
   });
 
-  it("says the rewards could not be checked when the read fails", async () => {
+  it("stops with the reason when the gauge read fails, rather than plan without them", async () => {
     auditAccount.mockResolvedValue(makeAudit({ balances: [...makeAudit().balances, usdcLine] }));
     getPositions.mockResolvedValue(aquariusPosition);
     readPositionGaugeRewards.mockRejectedValue({ code: -32001, message: "processing limit" });
-    const out = await discover();
-    expect(out.discoveryWarnings).toContain(
-      "We could not check this account's Aquarius gauge rewards, so any that accrued may be " +
-        "left behind by this close.",
+    await expect(discover()).rejects.toThrow(
+      "Could not read the Aquarius gauge rewards owed to this account (processing limit). " +
+        "Nothing was planned, so none of them are left behind. Retry once the network is " +
+        "responsive.",
     );
-    expect(out.discoveryDiagnostics).toContain("aquarius gauges: processing limit");
   });
 });

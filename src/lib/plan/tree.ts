@@ -45,6 +45,7 @@ export type PlanNodeKind =
   | "ClaimBlendEmissions"
   | "ClaimAquariusRewards"
   | "ClaimAquariusConcentratedFees"
+  | "ClaimAquariusGaugeRewards"
   | "ConvertSorobanToXLM"
   | "TransferAsIs"
   | "ClaimBackstopEmissions"
@@ -188,6 +189,26 @@ export interface ClaimAquariusConcentratedFeesMetadata {
   readonly kind: "ClaimAquariusConcentratedFees";
   readonly poolAddress: string;
   readonly tokens: readonly string[];
+  readonly transaction?: Transaction;
+}
+
+// pays what a pool's reward gauges owe the user with pool.gauges_claim(user),
+// called on the pool itself ahead of the pool's withdraw. pools are
+// permissionless and not on the allow-list, so the call is accepted only on the
+// address the pinned router resolves for the pool's tokens and index, which
+// every build reads again and records in routerPool.
+export interface ClaimAquariusGaugeRewardsMetadata {
+  readonly kind: "ClaimAquariusGaugeRewards";
+  readonly poolAddress: string;
+  // the pool's token set and index, as the router keys it
+  readonly tokens: readonly string[];
+  readonly poolIndex: string;
+  // what the gauges owed per reward token when the plan was built. the claim
+  // pays whatever they owe when it runs.
+  readonly rewards: readonly { readonly token: string; readonly amount: bigint }[];
+  // the pool the pinned router listed for (tokens, poolIndex) when the
+  // transaction was last built; unset until then
+  readonly routerPool?: string;
   readonly transaction?: Transaction;
 }
 
@@ -355,6 +376,10 @@ export interface ClaimAquariusConcentratedFeesNode extends PlanNodeBase {
   readonly kind: "ClaimAquariusConcentratedFees";
   readonly metadata: ClaimAquariusConcentratedFeesMetadata;
 }
+export interface ClaimAquariusGaugeRewardsNode extends PlanNodeBase {
+  readonly kind: "ClaimAquariusGaugeRewards";
+  readonly metadata: ClaimAquariusGaugeRewardsMetadata;
+}
 export interface ConvertSorobanToXLMNode extends PlanNodeBase {
   readonly kind: "ConvertSorobanToXLM";
   readonly metadata: ConvertSorobanToXLMMetadata;
@@ -397,6 +422,7 @@ export type PlanNode =
   | ClaimBlendEmissionsNode
   | ClaimAquariusRewardsNode
   | ClaimAquariusConcentratedFeesNode
+  | ClaimAquariusGaugeRewardsNode
   | ConvertSorobanToXLMNode
   | TransferAsIsNode
   | ClaimBackstopEmissionsNode
@@ -607,6 +633,9 @@ export function planExitPayoutTokens(tree: PlanTree): readonly string[] {
       case "ClaimAquariusRewards":
         if (node.metadata.rewardToken !== undefined) out.add(node.metadata.rewardToken);
         break;
+      case "ClaimAquariusGaugeRewards":
+        for (const reward of node.metadata.rewards) out.add(reward.token);
+        break;
       default:
         break;
     }
@@ -632,6 +661,7 @@ export function isSorobanNode(node: PlanNode): boolean {
     case "ClaimBlendEmissions":
     case "ClaimAquariusRewards":
     case "ClaimAquariusConcentratedFees":
+    case "ClaimAquariusGaugeRewards":
     case "ConvertSorobanToXLM":
     case "ClaimBackstopEmissions":
     case "BackstopQueue":

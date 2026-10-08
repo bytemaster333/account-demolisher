@@ -22,12 +22,14 @@
 //   blend backstop claim                   -> nothing nested
 //   aquarius concentrated withdraw_position, claim_all_position_fees
 //                                          -> nothing nested
+//   aquarius pool gauges_claim             -> nothing nested
 //
 // recorded on mainnet (2026-10): swap, remove_liquidity, aquarius withdraw and
 // claim (full-range and concentrated pools), concentrated withdraw_position and
 // claim_all_position_fees, blend repay, withdraw and claim, backstop
-// queue_withdrawal (v2) and withdraw (v1 and v2). the backstop claim traps inside the comet pool on
-// mainnet today, so its tree is read from source instead: claim calls
+// queue_withdrawal (v2) and withdraw (v1 and v2), and a pool's gauges_claim
+// paying a gauge's XLM (2026-10-08). the backstop claim traps inside the comet
+// pool on mainnet today, so its tree is read from source instead: claim calls
 // from.require_auth() and then authorizes the blnd approve and the comet
 // deposit as the backstop itself (blend-contracts-v2 backstop/src/contract.rs,
 // emissions/claim.rs).
@@ -476,6 +478,25 @@ function expectedFor(
           children: [],
         },
       ];
+    }
+    case "ClaimAquariusGaugeRewards": {
+      // pools are permissionless, so the call is held to the address the pinned
+      // router listed for the pool's tokens and index when the step was built.
+      // the gauges pay from their own balances, so the user authorizes nothing
+      // beneath the call.
+      const md = node.metadata;
+      if (md.routerPool === undefined) {
+        return "the pool was not resolved through the Aquarius router";
+      }
+      if (md.routerPool !== md.poolAddress) {
+        return `the router lists ${md.routerPool}, not the pool ${md.poolAddress}`;
+      }
+      if (root.contract !== md.poolAddress) {
+        return `targets ${root.contract}, not the pool ${md.poolAddress}`;
+      }
+      if (root.fn !== "gauges_claim") return `calls ${root.fn}`;
+      if (a.length !== 1 || a[0] !== user) return "gauges_claim is not for the user";
+      return [];
     }
     case "RepayBlend":
     case "WithdrawBlend": {

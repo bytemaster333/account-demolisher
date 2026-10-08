@@ -31,6 +31,7 @@ import {
   withdrawConcentratedPosition,
 } from "@/lib/adapters/aquarius/client";
 import { estimateConcentratedWithdraw } from "@/lib/adapters/aquarius/concentrated";
+import { claimGaugeRewards } from "@/lib/adapters/aquarius/gauges";
 import { poolIndexHexToBytes } from "@/lib/adapters/aquarius/pools";
 import { removeLiquidityByContractIds } from "@/lib/adapters/soroswap/lp";
 import {
@@ -101,6 +102,7 @@ export interface HydrationAdapterOverrides {
   readonly aquariusClaim?: typeof aquariusClaim;
   readonly withdrawConcentratedPosition?: typeof withdrawConcentratedPosition;
   readonly claimConcentratedFees?: typeof claimConcentratedFees;
+  readonly claimGaugeRewards?: typeof claimGaugeRewards;
   readonly estimateConcentratedWithdraw?: typeof estimateConcentratedWithdraw;
   readonly removeLiquidityByContractIds?: typeof removeLiquidityByContractIds;
   readonly buildSwapToXLM?: typeof buildSwapToXLM;
@@ -533,6 +535,28 @@ async function buildNode(
         { server: deps.rpc },
       );
       setTransaction(node, tx);
+      return;
+    }
+
+    case "ClaimAquariusGaugeRewards": {
+      const md = node.metadata as { routerPool?: string };
+      // the router's answer from an earlier build must not outlive this one
+      delete md.routerPool;
+      // the builder asks the pinned router which pool it lists for the tokens
+      // and index, and refuses any other address
+      const built = await (a.claimGaugeRewards ?? claimGaugeRewards)(
+        {
+          user: userPublicKey,
+          poolAddress: node.metadata.poolAddress,
+          tokens: node.metadata.tokens,
+          poolIndex: node.metadata.poolIndex,
+          sourceAccount: await getSourceAccount(),
+          network: deps.network,
+        },
+        { server: deps.rpc },
+      );
+      md.routerPool = built.routerPool;
+      setTransaction(node, built.transaction);
       return;
     }
 

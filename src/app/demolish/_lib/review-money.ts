@@ -96,6 +96,7 @@ export function computeReviewMoney(args: {
       case "ClaimBlendEmissions":
       case "ClaimAquariusRewards":
       case "ClaimAquariusConcentratedFees":
+      case "ClaimAquariusGaugeRewards":
       case "ConvertSorobanToXLM":
       case "BackstopWithdraw":
         defiProceeds += 1;

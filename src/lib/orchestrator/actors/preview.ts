@@ -47,6 +47,7 @@ import type { AccountAudit } from "@/lib/types/account";
 import { pathKey, type ClassicMemo } from "@/lib/types/plan";
 import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
 import { blndTrustlineRequirement } from "@/lib/adapters/blend/emissions-check";
+import { gaugeRewardTokens, type PoolGaugeRewards } from "@/lib/adapters/aquarius/gauges";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import type { HeldToken } from "@/lib/soroban/held-tokens";
 import {
@@ -87,6 +88,9 @@ export interface PreviewInput {
   readonly exitTrustlineGaps?: readonly ExitTrustlineGap[];
   // the token the aquarius reward claims pay (discovery), when a claim pays some
   readonly aquariusRewardToken?: string;
+  // what each aquarius pool's reward gauges owe (discovery); the plan claims
+  // them ahead of the pool's withdraw
+  readonly aquariusGaugeRewards?: readonly PoolGaugeRewards[];
   // missing payout lines the close can't open usefully (discovery)
   readonly unopenableExitLines?: readonly UnopenableExitLine[];
 }
@@ -272,6 +276,7 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
         network,
         ...(input.exitTrustlineGaps ? { exitTrustlineGaps: input.exitTrustlineGaps } : {}),
         ...(input.aquariusRewardToken ? { aquariusRewardToken: input.aquariusRewardToken } : {}),
+        ...(input.aquariusGaugeRewards ? { aquariusGaugeRewards: input.aquariusGaugeRewards } : {}),
       });
     } catch (err) {
       return blockedPreview(errorMessage(err));
@@ -283,6 +288,7 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
         passphrase: network.passphrase,
         exitTrustlineGaps: input.exitTrustlineGaps ?? [],
         ...(input.aquariusRewardToken ? { aquariusRewardToken: input.aquariusRewardToken } : {}),
+        ...(input.aquariusGaugeRewards ? { aquariusGaugeRewards: input.aquariusGaugeRewards } : {}),
       },
       async (asset) =>
         (await findPathToXLM(
@@ -346,6 +352,8 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
       // a missing payout line is opened ahead of the exits that pay into it
       ...(input.exitTrustlineGaps ? { exitTrustlineGaps: input.exitTrustlineGaps } : {}),
       ...(input.aquariusRewardToken ? { aquariusRewardToken: input.aquariusRewardToken } : {}),
+      // each pool whose gauges owe the user gets a gauges_claim ahead of its withdraw
+      ...(input.aquariusGaugeRewards ? { aquariusGaugeRewards: input.aquariusGaugeRewards } : {}),
     });
   let tree = plan();
 
@@ -686,11 +694,13 @@ export async function exchangePayoutPathBlockers(
     readonly passphrase: string;
     readonly exitTrustlineGaps: readonly ExitTrustlineGap[];
     readonly aquariusRewardToken?: string;
+    readonly aquariusGaugeRewards?: readonly PoolGaugeRewards[];
   },
   hasMarket: (asset: { readonly code: string; readonly issuer: string }) => Promise<boolean>,
 ): Promise<string[]> {
   const paid = new Set(exitPayoutTokens(positions));
   if (opts.aquariusRewardToken !== undefined) paid.add(opts.aquariusRewardToken);
+  for (const token of gaugeRewardTokens(opts.aquariusGaugeRewards ?? [])) paid.add(token);
   const assets = new Map<string, { readonly code: string; readonly issuer: string }>();
   // a missing line is opened by the plan; an unauthorized one is refused by it
   for (const gap of opts.exitTrustlineGaps) {

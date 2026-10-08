@@ -1796,3 +1796,76 @@ describe("hydration, an unauthorized BLND trustline", () => {
     expect(claim.status).toBe("failed");
   });
 });
+
+describe("hydration, aquarius gauge reward claims", () => {
+  const POOL = StrKey.encodeContract(new Uint8Array(32).fill(21));
+  const TOKENS = [StrKey.encodeContract(new Uint8Array(32).fill(22)), XLM_SAC];
+  const gaugeNode = (deps: string[] = []): PlanNode => ({
+    id: "gauge",
+    kind: "ClaimAquariusGaugeRewards",
+    dependencies: deps,
+    description: "gauge",
+    status: "pending",
+    metadata: {
+      kind: "ClaimAquariusGaugeRewards",
+      poolAddress: POOL,
+      tokens: TOKENS,
+      poolIndex: "ab".repeat(32),
+      rewards: [{ token: XLM_SAC, amount: 7n }],
+    },
+  });
+
+  it("builds gauges_claim through the router check and records the pool the router listed", async () => {
+    const claimGaugeRewards = vi.fn(async () => ({
+      transaction: { fake: "tx" },
+      routerPool: POOL,
+    })) as unknown as NonNullable<HydrationAdapterOverrides["claimGaugeRewards"]>;
+    const node = gaugeNode();
+    const deps = baseDeps({ adapters: { claimGaugeRewards } });
+    const { failures } = await hydratePlanTransactions(buildPlanTree([node]), USER, deps);
+    expect(failures).toEqual([]);
+    expect(claimGaugeRewards).toHaveBeenCalledWith(
+      expect.objectContaining({
+        user: USER,
+        poolAddress: POOL,
+        tokens: TOKENS,
+        poolIndex: "ab".repeat(32),
+        network: NETWORK,
+      }),
+      { server: deps.rpc },
+    );
+    expect(node.metadata).toMatchObject({ routerPool: POOL, transaction: { fake: "tx" } });
+  });
+
+  it("forgets the router's earlier answer when a rebuild's router check fails", async () => {
+    let answer: "ok" | "fail" = "ok";
+    const claimGaugeRewards = vi.fn(async () => {
+      if (answer === "fail") throw new Error(`${POOL} is not the Aquarius pool the router lists`);
+      return { transaction: { fake: "tx" }, routerPool: POOL };
+    }) as unknown as NonNullable<HydrationAdapterOverrides["claimGaugeRewards"]>;
+    const node = gaugeNode();
+    const deps = baseDeps({ adapters: { claimGaugeRewards } });
+    await hydratePlanTransactions(buildPlanTree([node]), USER, deps);
+    answer = "fail";
+    await expect(rebuildSorobanNodeTransaction(node, USER, deps)).rejects.toThrow(
+      /not the Aquarius pool the router lists/,
+    );
+    expect(node.metadata).not.toHaveProperty("routerPool");
+    expect(node.metadata).not.toHaveProperty("transaction");
+  });
+
+  it("fails the step with the reason when the claim can't be built, so the review blocks", async () => {
+    const claimGaugeRewards = vi.fn(async () => {
+      throw new Error("simulation failed: HostError: Error(Contract, #2004)");
+    }) as unknown as NonNullable<HydrationAdapterOverrides["claimGaugeRewards"]>;
+    const node = gaugeNode();
+    const { failures } = await hydratePlanTransactions(
+      buildPlanTree([node]),
+      USER,
+      baseDeps({ adapters: { claimGaugeRewards } }),
+    );
+    expect(failures).toMatchObject([{ nodeId: "gauge", deferred: false }]);
+    expect(node.status).toBe("failed");
+    expect(node.error).toMatch(/Error\(Contract, #2004\)/);
+  });
+});

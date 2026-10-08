@@ -5,9 +5,11 @@
 // the router's claim does not pay them. on mainnet 2026-10-08, GDLOF7... in
 // stable pool CCNXGPE4... was owed 1,126,439,834 stroops of XLM by its gauge:
 // router claim paid 0 AQUA and no XLM, while pool.gauges_claim(user) paid the
-// XLM straight from the gauge. a close that only runs the router claim leaves
-// these behind. 12 of the 365 mainnet pools had gauges that day, two of them
-// still paying.
+// XLM straight from the gauge. a close that only ran the router claim would
+// leave these behind, so the plan claims them with gauges_claim ahead of the
+// pool's withdraw. 12 of the 365 mainnet pools had gauges that day, two of them
+// still paying. a claim with nothing owed runs and pays 0 (GCUMSNS7... in the
+// same pool, same day).
 
 import {
   Contract,
@@ -141,6 +143,15 @@ export async function readPositionGaugeRewards(
   return out;
 }
 
+// every token the gauges pay, in the order the pools list them
+export function gaugeRewardTokens(owed: readonly PoolGaugeRewards[]): readonly string[] {
+  const out = new Set<string>();
+  for (const pool of owed) {
+    for (const reward of pool.rewards) if (reward.amount > 0n) out.add(reward.token);
+  }
+  return [...out];
+}
+
 export interface ClaimGaugeRewardsArgs {
   readonly user: string;
   readonly poolAddress: string;
@@ -156,6 +167,12 @@ export interface GaugeClaimDeps {
   readonly assemble?: typeof assembleSubmittable;
 }
 
+export interface BuiltGaugeClaim {
+  readonly transaction: Transaction;
+  // the pool the router listed for the tokens and index when this was built
+  readonly routerPool: string;
+}
+
 // build an unsigned pool.gauges_claim(user), which pays every gauge reward the
 // user has in that pool. pools are permissionless and not on the allow-list,
 // so the address is checked against the router's own get_pools before anything
@@ -165,7 +182,7 @@ export interface GaugeClaimDeps {
 export async function claimGaugeRewards(
   args: ClaimGaugeRewardsArgs,
   deps: GaugeClaimDeps,
-): Promise<Transaction> {
+): Promise<BuiltGaugeClaim> {
   const listed = await readAquariusPoolAddress(
     deps.server,
     args.network,
@@ -190,5 +207,5 @@ export async function claimGaugeRewards(
   if ("innerTransaction" in prepared) {
     throw new Error("Aquarius gauges_claim: assembling returned a FeeBumpTransaction unexpectedly");
   }
-  return prepared;
+  return { transaction: prepared, routerPool: listed };
 }

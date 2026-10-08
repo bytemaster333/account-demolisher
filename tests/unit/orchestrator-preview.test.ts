@@ -446,6 +446,26 @@ describe("an exchange close checks the market of what its exits pay into empty l
     expect(hasMarket).not.toHaveBeenCalled();
   });
 
+  it("checks the market of a gauge reward paid into a line the plan opens", async () => {
+    const out = await exchangePayoutPathBlockers(
+      makeAudit(),
+      EMPTY_POSITIONS,
+      {
+        ...opts([missing]),
+        aquariusGaugeRewards: [
+          {
+            poolAddress: "CPOOL",
+            tokens: [XLM_SAC, USDC_SAC],
+            poolIndex: "ab".repeat(32),
+            rewards: [{ token: USDC_SAC, amount: 5n }],
+          },
+        ],
+      },
+      async () => false,
+    );
+    expect(out).toEqual([BLOCKER]);
+  });
+
   it("asks nothing of a line no exit pays into, or one the issuer has not authorized", async () => {
     const hasMarket = vi.fn(async () => false);
     await exchangePayoutPathBlockers(

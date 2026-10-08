@@ -226,9 +226,9 @@ const MAX_SOROBAN_ATTEMPTS = 3;
 // measurements). a step that runs a token nobody vetted gets a class that also
 // bounds the writes it declares: the airdrop-reachable transfer and revoke, the
 // held-token swap, a soroswap lp exit, whose pair can hold any token, and the
-// aquarius exits, whose router is pinned but whose pools are permissionless, so
-// a pool token runs inside them too. the blend steps run only pinned pools and
-// backstops.
+// aquarius exits and gauge reward claims, whose router is pinned but whose pools
+// and gauges are permissionless, so a pool or reward token runs inside them too.
+// the blend steps run only pinned pools and backstops.
 function feeClassOf(node: PlanNode): SorobanFeeClass {
   switch (node.kind) {
     case "RevokeAllowance":
@@ -241,6 +241,7 @@ function feeClassOf(node: PlanNode): SorobanFeeClass {
     case "ClaimAquariusRewards":
     case "WithdrawAquariusConcentrated":
     case "ClaimAquariusConcentratedFees":
+    case "ClaimAquariusGaugeRewards":
       return "pool-exit";
     default:
       return "defi-exit";
@@ -880,7 +881,18 @@ export function checkRequiredSorobanStep(
   user: string,
   network: NetworkConfig,
 ): bigint {
-  assertTransactionAllowed(tx, network);
+  // a gauge reward claim runs on its pool, which is allowed as the root only
+  // when the build that made tx read it from the pinned router; the auth guard
+  // then holds the call to that pool
+  assertTransactionAllowed(
+    tx,
+    network,
+    node.kind === "ClaimAquariusGaugeRewards" &&
+      node.metadata.routerPool !== undefined &&
+      node.metadata.routerPool === node.metadata.poolAddress
+      ? { routerResolvedPool: node.metadata.routerPool }
+      : {},
+  );
   assertDefiAuthTree(node, tx, { user, network });
   return stepFee(node, tx);
 }

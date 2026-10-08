@@ -264,7 +264,7 @@ describe("claimGaugeRewards", () => {
   // sub-invocations, and paid the gauge's XLM straight from the gauge contract
   it("builds gauges_claim(user) on the pool the router lists for those tokens", async () => {
     let seen: Transaction | undefined;
-    await claimGaugeRewards(
+    const built = await claimGaugeRewards(
       {
         user: USER,
         poolAddress: GAUGED,
@@ -288,6 +288,9 @@ describe("claimGaugeRewards", () => {
     expect(call.functionName.toString()).toBe("gauges_claim");
     expect(call.args).toHaveLength(1);
     expect(Address.fromScVal(call.args[0]!).toString()).toBe(USER);
+    // the pool the router listed, which the auth guard and the allow-list accept
+    expect(built.routerPool).toBe(GAUGED);
+    expect(built.transaction).toBe(seen);
   });
 
   // a pool contract is permissionless, so the address must come from the router
