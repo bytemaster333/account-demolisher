@@ -106,6 +106,7 @@ describe("simulator: FinalClassicTx in-memory validation", () => {
     const out = await simulateNode(finalNode([batch(2)]), baseDeps({ ledgerCloseTime: closedAt }));
     if (out.kind !== "classic") throw new Error("expected classic");
     const tx = TransactionBuilder.fromXDR(out.xdr, TESTNET.passphrase);
+    if ("innerTransaction" in tx) throw new Error("expected a plain transaction");
     expect(tx.timeBounds).toEqual({ minTime: "0", maxTime: String(closedAt + 300) });
   });
 
