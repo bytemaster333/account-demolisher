@@ -351,6 +351,11 @@ export async function resumePendingForward(
 // a record that belongs to a running close from an abandoned one. web locks are
 // in every current browser; where they are missing the close runs unlocked and
 // other tabs simply can't see that it is running.
+//
+// only a close ever asks for this lock, and always in exclusive mode. watchers
+// poll query() instead of queueing a shared request: a granted shared request
+// holds the lock for a moment, and a close starting in that moment would take
+// it for another close running.
 function closeLockName(publicKey: string): string {
   return `account-demolisher:close:${publicKey}`;
 }
@@ -370,36 +375,72 @@ export async function runWithCloseLock<T>(publicKey: string, run: () => Promise<
 
 export type CloseLockAttempt<T> =
   | { readonly ran: true; readonly value: T }
-  // another close for this account holds the lock; run was not called
+  // another close for this account holds the lock or is queued for it; run was
+  // not called
   | { readonly ran: false };
 
-// takes the lock only if it is free right now, in the same step as the check,
-// so a close another tab starts after an isCloseInFlight check can't leave this
-// one waiting on the lock with no word to the user
+// a tab still on an older build watches with a shared request, which holds the
+// lock for an instant once a close ends. a few short retries get past that.
+const CLOSE_LOCK_RETRY_MS = 25;
+const CLOSE_LOCK_ATTEMPTS = 40;
+
+// every attempt takes the lock only if it is free right now, in the same step
+// as the check. a waiting request after a separate check could end up queued
+// behind a close another tab starts in between, with no word to the user.
 export async function tryRunWithCloseLock<T>(
   publicKey: string,
   run: () => Promise<T>,
 ): Promise<CloseLockAttempt<T>> {
   const locks = lockManager();
   if (locks === null) return { ran: true, value: await run() };
-  return locks.request(
-    closeLockName(publicKey),
-    { mode: "exclusive", ifAvailable: true },
-    async (lock): Promise<CloseLockAttempt<T>> =>
-      lock === null ? { ran: false } : { ran: true, value: await run() },
-  );
+  for (let attempt = 1; ; attempt++) {
+    const result = await locks.request(
+      closeLockName(publicKey),
+      { mode: "exclusive", ifAvailable: true },
+      async (lock): Promise<CloseLockAttempt<T> | null> =>
+        lock === null ? null : { ran: true, value: await run() },
+    );
+    if (result !== null) return result;
+    if (await isCloseInFlight(publicKey)) return { ran: false };
+    if (attempt === CLOSE_LOCK_ATTEMPTS) {
+      throw new Error(
+        "Could not take this account's close lock: another tab kept it busy without running a close. Close the app's other tabs and try again.",
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, CLOSE_LOCK_RETRY_MS));
+  }
 }
 
+// a close queued for the lock counts too: it runs as soon as the lock is free.
+// only a shared hold is left out, since no close takes one
 export async function isCloseInFlight(publicKey: string): Promise<boolean> {
   const locks = lockManager();
   if (locks === null) return false;
   const state = await locks.query();
-  return (state.held ?? []).some((l) => l.name === closeLockName(publicKey));
+  const name = closeLockName(publicKey);
+  return [...(state.held ?? []), ...(state.pending ?? [])].some(
+    (l) => l.name === name && l.mode !== "shared",
+  );
 }
 
-// resolves once no close for this account holds the lock
+const CLOSE_IDLE_POLL_MS = 500;
+
+// resolves once no close for this account holds or waits for the lock, and
+// rejects with the signal's reason when aborted
 export async function waitForCloseIdle(publicKey: string, signal: AbortSignal): Promise<void> {
-  const locks = lockManager();
-  if (locks === null) return;
-  await locks.request(closeLockName(publicKey), { mode: "shared", signal }, () => undefined);
+  signal.throwIfAborted();
+  while (await isCloseInFlight(publicKey)) {
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = (): void => {
+        clearTimeout(timer);
+        reject(signal.reason);
+      };
+      const timer = setTimeout(() => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, CLOSE_IDLE_POLL_MS);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+    signal.throwIfAborted();
+  }
 }
