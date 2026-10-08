@@ -1445,3 +1445,92 @@ describe("exit payouts need a trustline: the plan opens it first", () => {
     ).toThrow(/opts\.network is required/);
   });
 });
+
+describe("the aquarius reward token counts as an exit payout when the plan knows it", () => {
+  const ISSUER = Keypair.random().publicKey();
+  const AQUA = new Asset("AQUA", ISSUER).contractId(TESTNET.passphrase);
+  const XLM = Asset.native().contractId(TESTNET.passphrase);
+  // a reward token that is no classic asset of this account
+  const REWARD = StrKey.encodeContract(Buffer.alloc(32, 51));
+  const POOL = StrKey.encodeContract(Buffer.alloc(32, 52));
+  const pool = { poolIndex: "ab".repeat(32), shareBalance: 3n, tokens: [XLM, AQUA] };
+  const concentrated = {
+    poolAddress: POOL,
+    poolIndex: "cd".repeat(32),
+    tokens: [XLM, AQUA],
+    ranges: [],
+    pendingFees: [0n, 0n],
+    pendingReward: 9n,
+  };
+  const positions = emptyPositions({ aquarius: [pool], aquariusConcentrated: [concentrated] });
+  const rewardOnly = emptyPositions({ aquariusConcentrated: [concentrated] });
+  const aquaLine: AccountAudit["balances"][number] = {
+    asset: { kind: "credit", code: "AQUA", issuer: ISSUER },
+    amount: "0",
+    limit: "922337203685.4775807",
+    buyingLiabilities: "0",
+    sellingLiabilities: "0",
+    isAuthorized: true,
+  };
+  const claimIds = [id("aquarius-claim", XLM, AQUA, pool.poolIndex), id("aquarius-cl-claim", POOL)];
+  const exchange = {
+    network: TESTNET,
+    useMediator: true,
+    mediatorPublicKey: MED,
+    flowToken: "flow",
+  } as const;
+
+  it("records the reward token on every reward claim, and none when it is unknown", () => {
+    const known = generatePlan(makeAudit(), positions, [], DEST, {
+      network: TESTNET,
+      aquariusRewardToken: REWARD,
+    });
+    const unknown = generatePlan(makeAudit(), positions, [], DEST, { network: TESTNET });
+    for (const claimId of claimIds) {
+      expect(known.allNodes.get(claimId)?.metadata).toMatchObject({ rewardToken: REWARD });
+      expect(unknown.allNodes.get(claimId)?.metadata).not.toHaveProperty("rewardToken");
+    }
+    expect(planExitPayoutTokens(known)).toContain(REWARD);
+    expect(planExitPayoutTokens(unknown)).not.toContain(REWARD);
+  });
+
+  it("sweeps a reward token with no classic line to the destination after the claims", () => {
+    const tree = generatePlan(makeAudit(), positions, [], DEST, {
+      network: TESTNET,
+      aquariusRewardToken: REWARD,
+    });
+    const sweep = tree.allNodes.get(id("drain-token", REWARD));
+    expect(sweep?.kind).toBe("TransferAsIs");
+    for (const claimId of claimIds) expect(dependsOn(tree, sweep!.id, claimId)).toBe(true);
+  });
+
+  it("leaves a classic reward token to the final batch", () => {
+    const trusted = generatePlan(makeAudit({ balances: [aquaLine] }), positions, [], DEST, {
+      network: TESTNET,
+      aquariusRewardToken: AQUA,
+    });
+    expect(trusted.allNodes.has(id("drain-token", AQUA))).toBe(false);
+  });
+
+  it("refuses an exchange close whose reward claims pay a token it can't forward", () => {
+    expect(() =>
+      generatePlan(makeAudit(), rewardOnly, [], DEST, {
+        ...exchange,
+        aquariusRewardToken: REWARD,
+      }),
+    ).toThrow(/exchange close can only forward XLM/);
+    expect(() =>
+      assertExchangeCloseCanRun(makeAudit(), rewardOnly, {
+        network: TESTNET,
+        aquariusRewardToken: REWARD,
+      }),
+    ).toThrow(/exchange close can only forward XLM/);
+    // a classic reward token the account trusts is forwarded like any balance
+    expect(() =>
+      generatePlan(makeAudit({ balances: [aquaLine] }), rewardOnly, [], DEST, {
+        ...exchange,
+        aquariusRewardToken: AQUA,
+      }),
+    ).not.toThrow();
+  });
+});

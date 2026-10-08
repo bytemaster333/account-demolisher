@@ -178,6 +178,9 @@ export interface ClaimAquariusRewardsMetadata {
   readonly tokens: readonly string[];
   // set for a concentrated pool, whose rewards are claimed before its ranges
   readonly poolAddress?: string;
+  // the token the claim pays out, when the plan was told it (the router's
+  // RewardToken). it pays none of the pool's own tokens.
+  readonly rewardToken?: string;
   readonly transaction?: Transaction;
 }
 
@@ -600,6 +603,9 @@ export function planExitPayoutTokens(tree: PlanTree): readonly string[] {
         break;
       case "BackstopWithdraw":
         out.add(node.metadata.lpToken);
+        break;
+      case "ClaimAquariusRewards":
+        if (node.metadata.rewardToken !== undefined) out.add(node.metadata.rewardToken);
         break;
       default:
         break;

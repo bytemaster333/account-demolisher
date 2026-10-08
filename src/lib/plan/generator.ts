@@ -188,6 +188,10 @@ export function generatePlan(
   const linesFor = (tokens: readonly string[]): string[] => [
     ...new Set(tokens.flatMap((t) => exitLines.byToken.get(t) ?? [])),
   ];
+  // the reward claims carry the token they pay, so the merge guard and the sweep
+  // see it like any other exit payout
+  const rewardRef =
+    opts.aquariusRewardToken !== undefined ? { rewardToken: opts.aquariusRewardToken } : {};
 
   // allowance revocations
   for (const allowance of allowances) {
@@ -239,7 +243,9 @@ export function generatePlan(
   // aquarius concentrated positions: the reward and the swap fees are claimed
   // first, then each tick range is withdrawn on the pool itself
   for (const pos of positions.aquariusConcentrated) {
-    fundingExitIds.push(...concentratedNodes(pos, nodes, linesFor(pos.tokens), exitLines.reward));
+    fundingExitIds.push(
+      ...concentratedNodes(pos, nodes, linesFor(pos.tokens), exitLines.reward, rewardRef),
+    );
   }
 
   // soroswap LPs
@@ -404,6 +410,7 @@ export function generatePlan(
         kind: "ClaimAquariusRewards",
         poolIndex: pool.poolIndex,
         tokens: pool.tokens,
+        ...rewardRef,
       },
     });
     rewardClaimIds.push(id);
@@ -577,7 +584,8 @@ export function generatePlan(
     // are handled by the classic batches.
     if (passphrase !== undefined) {
       const classic = classicSacIds(audit, passphrase, exitLines.byToken.keys());
-      for (const token of [...exitPayoutTokens(positions), ...backstopPayoutTokens]) {
+      const paid = paidTokens(positions, opts.aquariusRewardToken);
+      for (const token of [...paid, ...backstopPayoutTokens]) {
         if (swept.has(token) || classic.has(token)) continue;
         // the payout isn't known until the exit lands; hydration reads it
         sweep(token, 0n, true);
@@ -701,7 +709,7 @@ export function assertExchangeCloseCanRun(
   const unlockedQueues = positions.backstop.some(
     (bs) => (bs.unlockedQueuedForWithdrawal ?? 0n) > 0n,
   );
-  const exitTokens = exitPayoutTokens(positions);
+  const exitTokens = paidTokens(positions, opts.aquariusRewardToken);
   const gaps = opts.exitTrustlineGaps ?? [];
   if (exitTokens.length === 0 && !unlockedQueues && gaps.length === 0) return;
   const network = opts.network;
@@ -822,6 +830,7 @@ function concentratedNodes(
   nodes: PlanNode[],
   tokenLines: readonly string[],
   rewardLines: readonly string[],
+  rewardRef: { readonly rewardToken?: string },
 ): readonly string[] {
   const claims: string[] = [];
   const label = concentratedLabel(pos);
@@ -838,6 +847,7 @@ function concentratedNodes(
         poolIndex: pos.poolIndex,
         tokens: pos.tokens,
         poolAddress: pos.poolAddress,
+        ...rewardRef,
       },
     });
     claims.push(id);
@@ -911,9 +921,7 @@ function exitTrustlineNodes(
   const nodes: PlanNode[] = [];
   if (gaps.length === 0 || network === undefined) return { nodes, byToken, reward };
   const paidByExit = new Set(exitPayoutTokens(positions));
-  const rewardClaims =
-    positions.aquarius.some((p) => p.shareBalance > 0n) ||
-    positions.aquariusConcentrated.some((p) => p.pendingReward > 0n);
+  const rewardClaims = plansRewardClaim(positions);
   for (const gap of gaps) {
     // the line must be the asset the token wraps, or the exit still traps and
     // the account opens a line nothing pays into
@@ -959,6 +967,25 @@ function exitTrustlineNodes(
     if (byReward) reward.push(id);
   }
   return { nodes, byToken, reward };
+}
+
+// every withdrawn standard pool gets a reward claim, and so does a concentrated
+// position with a pending reward
+function plansRewardClaim(positions: ProtocolPositions): boolean {
+  return (
+    positions.aquarius.some((p) => p.shareBalance > 0n) ||
+    positions.aquariusConcentrated.some((p) => p.pendingReward > 0n)
+  );
+}
+
+// the tokens the planned exits pay into the account, with the reward token when
+// the caller knows it and a reward claim is planned
+function paidTokens(positions: ProtocolPositions, rewardToken: string | undefined): string[] {
+  const out = [...exitPayoutTokens(positions)];
+  if (rewardToken !== undefined && plansRewardClaim(positions) && !out.includes(rewardToken)) {
+    out.push(rewardToken);
+  }
+  return out;
 }
 
 // the planned exits that pay out a token, named for the user
