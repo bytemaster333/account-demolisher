@@ -11,7 +11,11 @@ import {
   type Transaction,
 } from "@stellar/stellar-sdk";
 
-import { claimGaugeRewards, readGaugeRewards } from "@/lib/adapters/aquarius/gauges";
+import {
+  claimGaugeRewards,
+  readGaugeRewards,
+  readPositionGaugeRewards,
+} from "@/lib/adapters/aquarius/gauges";
 import { getAquariusRouterId } from "@/lib/adapters/aquarius/client";
 import { MAINNET } from "@/lib/config/networks";
 
@@ -170,6 +174,67 @@ describe("readGaugeRewards", () => {
         [GAUGED],
       ),
     ).rejects.toThrow(/gauges_get_reward_info/);
+  });
+});
+
+describe("readPositionGaugeRewards", () => {
+  const CONCENTRATED = StrKey.encodeContract(Buffer.alloc(32, 44));
+
+  it("finds the gauge rewards of every pool the user is in, keyed for the claim", async () => {
+    const { server: s, calls } = server(
+      {
+        [GAUGED]: [gauges({ [XLM_SAC]: OTHER })],
+        [CONCENTRATED]: [gauges({ [USDC_SAC]: OTHER })],
+        [PLAIN]: [],
+      },
+      (contract, fn, args) => {
+        if (fn === "get_pools") {
+          // the token set decides which standard pool the router answers with
+          const first = Address.fromScVal(args[0]!.vec![0]!).toString();
+          return xdr.ScVal.scvMap([
+            new xdr.ScMapEntry({
+              key: xdr.ScVal.scvBytes(Buffer.from(INDEX, "hex")),
+              val: new Address(first === TOKEN_A ? GAUGED : PLAIN).toScVal(),
+            }),
+          ]);
+        }
+        if (fn !== "gauges_get_reward_info") throw new Error(`unexpected ${fn}`);
+        return contract === GAUGED
+          ? rewardInfo({ [XLM_SAC]: 77n })
+          : rewardInfo({ [USDC_SAC]: 0n });
+      },
+    );
+    const got = await readPositionGaugeRewards(s, MAINNET, USER, {
+      aquarius: [
+        { poolIndex: INDEX, shareBalance: 5n, tokens: [TOKEN_A, TOKEN_B] },
+        { poolIndex: INDEX, shareBalance: 5n, tokens: [TOKEN_B, USDC_SAC] },
+        // no shares: no withdraw is planned and nothing is asked
+        { poolIndex: INDEX, shareBalance: 0n, tokens: [USDC_SAC, XLM_SAC] },
+      ],
+      aquariusConcentrated: [
+        {
+          poolAddress: CONCENTRATED,
+          poolIndex: INDEX,
+          tokens: [XLM_SAC, USDC_SAC],
+          ranges: [],
+          pendingFees: [0n, 0n],
+          pendingReward: 0n,
+        },
+      ],
+    });
+    expect(got).toEqual([
+      {
+        poolAddress: GAUGED,
+        tokens: [TOKEN_A, TOKEN_B],
+        poolIndex: INDEX,
+        rewards: [{ token: XLM_SAC, amount: 77n }],
+      },
+    ]);
+    expect(calls.filter((c) => c.fn === "get_pools")).toHaveLength(2);
+    expect(calls.filter((c) => c.fn === "gauges_get_reward_info").map((c) => c.contract)).toEqual([
+      GAUGED,
+      CONCENTRATED,
+    ]);
   });
 });
 

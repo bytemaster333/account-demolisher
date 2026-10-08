@@ -20,6 +20,7 @@ import {
 
 import { readInstanceStorage, storageValue } from "@/lib/adapters/aquarius/client";
 import { readAquariusPoolAddress } from "@/lib/adapters/aquarius/pools";
+import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { mapConcurrent } from "@/lib/soroban/concurrency";
 import { address as scvAddress, fromScValAddress, fromScValI128 } from "@/lib/soroban/scval";
@@ -87,6 +88,57 @@ function decodeRewardInfo(pool: string, v: xdr.ScVal): PendingGaugeReward[] {
     }
     return { poolAddress: pool, token, amount: fromScValI128(reward.val) };
   });
+}
+
+// one pool whose gauges owe the user, keyed the way claimGaugeRewards needs it
+export interface PoolGaugeRewards {
+  readonly poolAddress: string;
+  readonly tokens: readonly string[];
+  readonly poolIndex: string;
+  readonly rewards: readonly { readonly token: string; readonly amount: bigint }[];
+}
+
+// the gauge rewards owed in every aquarius pool the user has a position in:
+// each standard pool with shares (its address resolved through the router) and
+// each concentrated position. a pool the user already left is not in the
+// positions, so a reward still owed there is not found here.
+export async function readPositionGaugeRewards(
+  server: rpc.Server,
+  network: NetworkConfig,
+  user: string,
+  positions: Pick<ProtocolPositions, "aquarius" | "aquariusConcentrated">,
+): Promise<PoolGaugeRewards[]> {
+  const standard = positions.aquarius.filter((p) => p.shareBalance > 0n);
+  const addresses = await mapConcurrent(standard, GAUGE_READ_CONCURRENCY, (p) =>
+    readAquariusPoolAddress(server, network, p.tokens, p.poolIndex, user),
+  );
+  const pools = [
+    ...standard.map((p, i) => ({
+      poolAddress: addresses[i]!,
+      tokens: p.tokens,
+      poolIndex: p.poolIndex,
+    })),
+    ...positions.aquariusConcentrated.map((p) => ({
+      poolAddress: p.poolAddress,
+      tokens: p.tokens,
+      poolIndex: p.poolIndex,
+    })),
+  ];
+  const owed = await readGaugeRewards(
+    server,
+    network,
+    user,
+    pools.map((p) => p.poolAddress),
+  );
+  const out: PoolGaugeRewards[] = [];
+  for (const pool of pools) {
+    if (out.some((o) => o.poolAddress === pool.poolAddress)) continue;
+    const rewards = owed
+      .filter((r) => r.poolAddress === pool.poolAddress)
+      .map((r) => ({ token: r.token, amount: r.amount }));
+    if (rewards.length > 0) out.push({ ...pool, rewards });
+  }
+  return out;
 }
 
 export interface ClaimGaugeRewardsArgs {
