@@ -190,7 +190,8 @@ describe("readPositionGaugeRewards", () => {
       (contract, fn, args) => {
         if (fn === "get_pools") {
           // the token set decides which standard pool the router answers with
-          const first = Address.fromScVal(args[0]!.vec![0]!).toString();
+          const set = xdr.expectUnionVariant(args[0]!, "scvVec").vec!;
+          const first = Address.fromScVal(set[0]!).toString();
           return xdr.ScVal.scvMap([
             new xdr.ScMapEntry({
               key: xdr.ScVal.scvBytes(Buffer.from(INDEX, "hex")),
