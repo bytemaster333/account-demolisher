@@ -29,7 +29,7 @@ import { topologicalOrder } from "@/lib/plan/tree";
 //
 // The account is seeded with a real on-chain SEP-41 allowance (on a deployed
 // token) so the plan carries a RevokeAllowance node alongside the classic merge.
-// Seeding a live Blend/Aquarius/Soroswap/FxDAO POSITION additionally needs
+// Seeding a live Blend/Aquarius/Soroswap POSITION additionally needs
 // entry-side liquidity/pool state (the tool unwinds, it doesn't open positions),
 // so those unwinds are proven at the unit level + by the on-chain SEP-41 / classic
 // / pool / multisig closes; this test proves the pipeline itself runs live.
@@ -106,7 +106,7 @@ describe("integration: full DeFi close pipeline against live testnet", () => {
     // ── the production pipeline, all against live testnet ──
     const audit = await auditAccount(owner.publicKey(), TESTNET);
 
-    // real DeFi discovery across all four protocols — clean for this account
+    // real DeFi discovery across every supported protocol, clean for this account
     const positions = await new DirectContractProvider().getPositions(owner.publicKey(), TESTNET);
     expect(positions.errors).toEqual([]);
 

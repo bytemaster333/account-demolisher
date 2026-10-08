@@ -21,8 +21,8 @@ import type { AssetIdentifier } from "@/lib/types/account";
 
 // Live testnet reproduction of SEC-13. An account that holds a classic (CAP-38)
 // liquidity pool can't be closed in a single sweep: a liquidity_pool_withdraw
-// credits the pool's underlying assets, so removing their trustlines — or the
-// account_merge — in the SAME transaction reverts (the pre-withdraw audit never
+// credits the pool's underlying assets, so removing their trustlines (or the
+// account_merge) in the SAME transaction reverts (the pre-withdraw audit never
 // saw the credited balance). The fix isolates the withdraw into a leading batch
 // and re-audits between batches. This test seeds such an account and drives the
 // REAL executor (executePlanTreeOnChain), proving the two-phase close converges.
@@ -88,7 +88,7 @@ describe("integration: two-phase liquidity-pool close (testnet, SEC-13)", () => 
 
     // seed the pool-holding account:
     // 1. trust USDC, 2. receive EXACTLY the deposit amount (so no USDC remains at
-    //    audit time — the credited balance appears only AFTER the withdraw),
+    //    audit time; the credited balance appears only AFTER the withdraw),
     // 3. trust the pool share and deposit XLM+USDC to mint shares.
     await submitAs(kp, (b) => b.addOperation(Operation.changeTrust({ asset: usdc })));
     await submitAs(issuer, (b) =>

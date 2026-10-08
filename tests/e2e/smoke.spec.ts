@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 // Basic smoke coverage: every top-level route renders server-side without a
-// client-side crash and shows its primary content. No wallet needed — these
+// client-side crash and shows its primary content. No wallet needed: these
 // assert the app boots and routes resolve against the built production server.
 
 test("landing page renders the app", async ({ page }) => {

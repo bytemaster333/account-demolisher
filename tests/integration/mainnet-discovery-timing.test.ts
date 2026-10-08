@@ -8,7 +8,7 @@ import { fromScValU32 } from "@/lib/soroban/scval";
 import { MAINNET } from "@/lib/config/networks";
 
 // Guards the discovery path against the LIVE MAINNET contracts, which are larger
-// and busier than testnet's — testnet timing alone never caught either bug this
+// and busier than testnet's. Testnet timing alone never caught either bug this
 // covers:
 //   1. Soroswap enumeration used an O(pairs) simulate walk that blew the 30s
 //      discovery timeout once the factory had a few hundred pairs.
@@ -35,7 +35,7 @@ describe("integration: mainnet DeFi discovery (timing + endpoint failover)", () 
     expect(soroswapMs).toBeLessThan(DISCOVERY_TIMEOUT_MS);
 
     // the actual path discoverActor runs for the "DeFi positions" warning: probes
-    // blend/aquarius/soroswap/fxdao. With SDK failover, a transient 429 on one
+    // blend/aquarius/soroswap. With SDK failover, a transient 429 on one
     // endpoint must be absorbed rather than surfaced as a per-protocol error.
     const t1 = process.hrtime.bigint();
     const positions = await new DirectContractProvider().getPositions(fresh, MAINNET);

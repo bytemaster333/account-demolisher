@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
 // Accessibility sweep (Tranche-3 deliverable). We fail the build on CRITICAL and
-// SERIOUS axe violations — the impacts that meaningfully block users — and log
+// SERIOUS axe violations (the impacts that meaningfully block users) and log
 // lower-impact findings without failing, so a11y debt is visible without making
 // the gate brittle on advisory rules.
 const ROUTES = ["/", "/demolish", "/allowances", "/sign"] as const;

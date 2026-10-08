@@ -19,12 +19,12 @@ import { assertSafeTransferInvocation } from "@/lib/soroban/transfer-guard";
 // real SEP-41 token contract is deployed, an account is given a token balance and
 // an active allowance, then the ACTUAL production code drives:
 //   • discovery-by-simulation (sep41.balance) + per-token drain (buildTransfer,
-//     guarded by assertSafeTransferInvocation) — verified on-chain (balances move)
+//     guarded by assertSafeTransferInvocation), verified on-chain (balances move)
 //   • allowance enumeration by event scan (enumerateAllowances) + per-allowance
-//     revoke (buildRevoke) — verified on-chain (allowance() reads back 0)
+//     revoke (buildRevoke), verified on-chain (allowance() reads back 0)
 //
 // The on-chain token is a Stellar Asset Contract (SAC) over a freshly-issued
-// custom asset — the only REAL token contract deployable from a test without a
+// custom asset: the only REAL token contract deployable from a test without a
 // compiled Rust WASM. It exercises the exact SEP-41 code paths (balance/transfer/
 // approve/allowance) against a live contract. To upgrade this to a genuinely
 // non-SAC custom token, drop a compiled SEP-41 wasm at tests/fixtures and deploy
@@ -74,7 +74,7 @@ async function signSubmit(kp: Keypair, prepared: Transaction): Promise<string> {
 }
 
 describe("integration: custom SEP-41 drain + allowance revoke on live testnet", () => {
-  it("deploys a token, drains the balance, and zeroes an allowance — verified on-chain", async () => {
+  it("deploys a token, drains the balance, and zeroes an allowance, verified on-chain", async () => {
     const issuer = Keypair.random();
     const owner = Keypair.random();
     const dest = Keypair.random();
