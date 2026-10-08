@@ -184,7 +184,7 @@ export async function readAquariusPoolRewardTokens(
 
 // instance storage of each contract, read in one getLedgerEntries call (the
 // rpc takes up to 200 keys; a close touches a handful of pools)
-async function readInstanceStorage(
+export async function readInstanceStorage(
   server: rpc.Server,
   contractIds: readonly string[],
 ): Promise<Map<string, readonly xdr.ScMapEntry[]>> {
@@ -214,7 +214,10 @@ async function readInstanceStorage(
 }
 
 // the value stored under the one-symbol key [name]
-function storageValue(items: readonly xdr.ScMapEntry[], name: string): xdr.ScVal | undefined {
+export function storageValue(
+  items: readonly xdr.ScMapEntry[],
+  name: string,
+): xdr.ScVal | undefined {
   for (const item of items) {
     const key = item.key.type === "scvVec" ? item.key.vec : null;
     if (key?.length === 1 && key[0]!.type === "scvSymbol" && key[0]!.sym.toString() === name) {
