@@ -71,13 +71,38 @@ describe("submitRevoke enqueue guard", () => {
     await expect(submitRevoke(NETWORK, connector(), RECORD, USER)).resolves.toBe("HASH_DUP");
   });
 
-  it("throws on TRY_AGAIN_LATER instead of returning a phantom hash", async () => {
+  it("resends the same envelope while the RPC says TRY_AGAIN_LATER and returns the hash once queued", async () => {
+    vi.useFakeTimers();
+    try {
+      sendTransaction
+        .mockResolvedValueOnce({ status: "TRY_AGAIN_LATER", hash: "HASH_LATER" })
+        .mockResolvedValueOnce({ status: "PENDING", hash: "HASH_LATER" });
+      const p = submitRevoke(NETWORK, connector(), RECORD, USER);
+      await vi.runAllTimersAsync();
+      await expect(p).resolves.toBe("HASH_LATER");
+      expect(sendTransaction).toHaveBeenCalledTimes(2);
+      expect(sendTransaction.mock.calls[0]![0]).toBe(sendTransaction.mock.calls[1]![0]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("throws on a TRY_AGAIN_LATER that outlasts the resends instead of returning a phantom hash", async () => {
     // the RPC did NOT sequence this tx; returning send.hash would falsely report
     // the allowance as revoked. this is the regression the enqueue guard fixes.
-    sendTransaction.mockResolvedValue({ status: "TRY_AGAIN_LATER", hash: "HASH_PHANTOM" });
-    await expect(submitRevoke(NETWORK, connector(), RECORD, USER)).rejects.toThrow(
-      /did not enqueue.*TRY_AGAIN_LATER/,
-    );
+    vi.useFakeTimers();
+    try {
+      sendTransaction.mockResolvedValue({ status: "TRY_AGAIN_LATER", hash: "HASH_PHANTOM" });
+      const p = submitRevoke(NETWORK, connector(), RECORD, USER);
+      const settled = p.catch((e: unknown) => e);
+      await vi.runAllTimersAsync();
+      expect(await settled).toMatchObject({
+        message: expect.stringMatching(/did not enqueue.*TRY_AGAIN_LATER/),
+      });
+      expect(sendTransaction).toHaveBeenCalledTimes(6);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // importActual loads the whole sdk, which can take seconds on a busy machine
@@ -153,7 +178,7 @@ describe("submitRevoke per-source serialization", () => {
 
   it("still runs the next submit after a prior one rejects", async () => {
     sendTransaction
-      .mockResolvedValueOnce({ status: "TRY_AGAIN_LATER", hash: "PHANTOM" })
+      .mockResolvedValueOnce({ status: "ERROR", hash: "PHANTOM" })
       .mockResolvedValueOnce({ status: "PENDING", hash: "HASH_NEXT" });
 
     const p1 = submitRevoke(NETWORK, connector(), RECORD, USER);

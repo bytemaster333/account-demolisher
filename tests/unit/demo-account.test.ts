@@ -249,42 +249,80 @@ describe("demo soroban submission (L-110)", () => {
     "swap_exact_tokens_for_tokens",
     swapArgs(demo.publicKey()),
   );
-  // a generous deadline: each poll answers at once, so a passing run never waits
-  // for it, and a busy machine cannot run out the clock between two polls
-  const fast = { timeoutMs: 10_000, intervalMs: 1 };
+  const noWait = { sleep: async () => {} };
 
-  it("fails at once with the real status when the RPC says TRY_AGAIN_LATER", async () => {
-    const getTransaction = vi.fn();
+  it("resends the same envelope on TRY_AGAIN_LATER, then fails with the real status", async () => {
+    const pollTransaction = vi.fn();
     const server = {
       sendTransaction: vi.fn(async () => ({ status: "TRY_AGAIN_LATER", hash: "ab".repeat(32) })),
-      getTransaction,
+      pollTransaction,
     };
-    await expect(submitAndPollSoroban(server as never, tx, "soroswap-swap", fast)).rejects.toThrow(
-      /did not accept the transaction \(TRY_AGAIN_LATER\)/,
+    await expect(
+      submitAndPollSoroban(server as never, tx, "soroswap-swap", noWait),
+    ).rejects.toThrow(/did not accept the transaction \(TRY_AGAIN_LATER\)/);
+    expect(server.sendTransaction).toHaveBeenCalledTimes(6);
+    expect(pollTransaction).not.toHaveBeenCalled();
+  });
+
+  it("names the result code when the RPC refuses the transaction", async () => {
+    const pollTransaction = vi.fn();
+    const server = {
+      sendTransaction: vi.fn(async () => ({
+        status: "ERROR",
+        hash: "ab".repeat(32),
+        errorResult: new xdr.TransactionResult({
+          feeCharged: 100n,
+          result: xdr.TransactionResultResult.txBadSeq(),
+          ext: xdr.TransactionResultExt.v0(),
+        }),
+      })),
+      pollTransaction,
+    };
+    await expect(submitAndPollSoroban(server as never, tx, "step", noWait)).rejects.toThrow(
+      /did not accept the transaction \(ERROR\): txBadSeq/,
     );
-    expect(getTransaction).not.toHaveBeenCalled();
+    expect(server.sendTransaction).toHaveBeenCalledTimes(1);
+    expect(pollTransaction).not.toHaveBeenCalled();
   });
 
   it("polls a queued transaction to success", async () => {
     const server = {
       sendTransaction: vi.fn(async () => ({ status: "PENDING", hash: "cd".repeat(32) })),
-      getTransaction: vi
-        .fn()
-        .mockResolvedValueOnce({ status: "NOT_FOUND" })
-        .mockResolvedValueOnce({ status: "SUCCESS" }),
+      pollTransaction: vi.fn(async () => ({ status: "SUCCESS", ledger: 9 })),
     };
-    await expect(submitAndPollSoroban(server as never, tx, "step", fast)).resolves.toBe(
+    await expect(submitAndPollSoroban(server as never, tx, "step", noWait)).resolves.toBe(
       "cd".repeat(32),
     );
+    expect(server.pollTransaction).toHaveBeenCalledWith("cd".repeat(32), { attempts: 60 });
   });
 
   it("accepts DUPLICATE as already queued", async () => {
     const server = {
       sendTransaction: vi.fn(async () => ({ status: "DUPLICATE", hash: "ef".repeat(32) })),
-      getTransaction: vi.fn(async () => ({ status: "SUCCESS" })),
+      pollTransaction: vi.fn(async () => ({ status: "SUCCESS", ledger: 9 })),
     };
-    await expect(submitAndPollSoroban(server as never, tx, "step", fast)).resolves.toBe(
+    await expect(submitAndPollSoroban(server as never, tx, "step", noWait)).resolves.toBe(
       "ef".repeat(32),
+    );
+  });
+
+  it("says a queued transaction that never showed up was not in a ledger", async () => {
+    const server = {
+      sendTransaction: vi.fn(async () => ({ status: "PENDING", hash: "cd".repeat(32) })),
+      pollTransaction: vi.fn(async () => ({ status: "NOT_FOUND" })),
+    };
+    await expect(
+      submitAndPollSoroban(server as never, tx, "step", { ...noWait, pollAttempts: 3 }),
+    ).rejects.toThrow(/was accepted but not in a ledger after 3 lookups/);
+  });
+
+  it("reports an on-chain failure", async () => {
+    const server = {
+      sendTransaction: vi.fn(async () => ({ status: "PENDING", hash: "cd".repeat(32) })),
+      pollTransaction: vi.fn(async () => ({ status: "FAILED", diagnosticEventsXdr: [] })),
+    };
+    await expect(submitAndPollSoroban(server as never, tx, "step", noWait)).rejects.toThrow(
+      /^step failed on-chain$/,
     );
   });
 });

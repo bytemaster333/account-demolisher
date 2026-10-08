@@ -20,6 +20,12 @@ import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import { explorerAccountUrl } from "@/lib/explorer";
 import { getRpc } from "@/lib/soroban/rpc-client";
+import {
+  DEFAULT_POLL_ATTEMPTS,
+  pollSoroban,
+  sendSoroban,
+  SorobanNotQueuedError,
+} from "@/lib/soroban/submit";
 import { address as scvAddress, i128 as scvI128, vec as scvVec } from "@/lib/soroban/scval";
 import { balance, buildApprove } from "@/lib/soroban/sep41";
 import { assembleSubmittable, simulateRead } from "@/lib/soroban/simulate";
@@ -530,10 +536,6 @@ async function approveSep41(
   return submitAndPollSoroban(server, tx, "sep41-allowance");
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 // submitClassic equivalent that signs with a caller-supplied keypair instead
 async function submitFromAccount(
   horizon: Horizon.Server,
@@ -835,46 +837,41 @@ export function assertDemoSorobanTx(
   }
 }
 
-// how long and how often a demo submission is polled before it is reported as
-// not landed
-export interface PollOptions {
-  readonly timeoutMs: number;
-  readonly intervalMs: number;
+// test seams: the wait between resends of a TRY_AGAIN_LATER answer, and how
+// many times a queued transaction is looked up before it is reported as not
+// landed
+export interface SubmitOptions {
+  readonly sleep?: (ms: number) => Promise<void>;
+  readonly pollAttempts?: number;
 }
 
-const DEFAULT_POLL: PollOptions = { timeoutMs: 30_000, intervalMs: 800 };
-
-// send and wait for the result. only PENDING (queued) and DUPLICATE (already
-// queued) mean the network took the transaction; TRY_AGAIN_LATER and ERROR were
-// never queued, so polling for them would only wait out the timeout.
+// send and wait for the result through the same send and poll the close uses
 export async function submitAndPollSoroban(
-  server: Pick<ReturnType<typeof getRpc>, "sendTransaction" | "getTransaction">,
+  server: Pick<ReturnType<typeof getRpc>, "sendTransaction" | "pollTransaction">,
   tx: Transaction,
   stepLabel: string,
-  poll: PollOptions = DEFAULT_POLL,
+  opts: SubmitOptions = {},
 ): Promise<string> {
-  const sent = await server.sendTransaction(tx);
-  if (sent.status !== "PENDING" && sent.status !== "DUPLICATE") {
-    const detail = sent.errorResult ? `: ${sent.errorResult.toXdr("base64")}` : "";
-    throw new Error(
-      `${stepLabel}: the network did not accept the transaction (${sent.status})${detail}`,
-    );
-  }
-  const hash = sent.hash;
-  const deadline = Date.now() + poll.timeoutMs;
-  while (Date.now() < deadline) {
-    await delay(poll.intervalMs);
-    const st = await server.getTransaction(hash);
-    if (st.status === "SUCCESS") return hash;
-    if (st.status === "FAILED") {
+  let hash: string;
+  try {
+    hash = await sendSoroban(server, tx, opts.sleep);
+  } catch (err) {
+    if (err instanceof SorobanNotQueuedError) {
+      const detail = err.resultCode ? `: ${err.resultCode}` : "";
       throw new Error(
-        `${stepLabel} failed on-chain: ${st.resultXdr?.toXdr("base64") ?? "<no result>"}`,
+        `${stepLabel}: the network did not accept the transaction (${err.status})${detail}`,
+        { cause: err },
       );
     }
+    throw err;
+  }
+  const attempts = opts.pollAttempts ?? DEFAULT_POLL_ATTEMPTS;
+  const result = await pollSoroban(server, hash, attempts);
+  if (result.status === "SUCCESS") return hash;
+  if (result.status === "FAILED") {
+    throw new Error(`${stepLabel} failed on-chain${result.reason ? `: ${result.reason}` : ""}`);
   }
   throw new Error(
-    `${stepLabel} tx ${shortAddress(hash, 8, 0)} was accepted but not in a ledger after ${
-      poll.timeoutMs / 1000
-    }s`,
+    `${stepLabel} tx ${shortAddress(hash, 8, 0)} was accepted but not in a ledger after ${attempts} lookups`,
   );
 }

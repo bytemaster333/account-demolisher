@@ -13,10 +13,10 @@ import { TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { buildRevoke, type AllowanceRecord } from "@/lib/soroban/allowances";
-import { describeSorobanFailure } from "@/lib/soroban/diagnostics";
 import { assertSorobanFeeWithinCap } from "@/lib/soroban/fee-cap";
 import { assertSafeRevokeInvocation } from "@/lib/soroban/revoke-guard";
 import { getRpc } from "@/lib/soroban/rpc-client";
+import { pollSoroban, sendSoroban, SorobanNotQueuedError } from "@/lib/soroban/submit";
 import type { Connector } from "@/lib/wallet/connector";
 
 // serialize revokes per source account so the next one only *builds* after the
@@ -147,20 +147,23 @@ async function submitRevokeImpl(
     network.passphrase,
   ) as Transaction;
 
-  const send = await rpc.sendTransaction(reconstructed);
-  // only PENDING/DUPLICATE mean the RPC actually enqueued the tx. TRY_AGAIN_LATER
-  // (mempool full / rate-limited) and ERROR did NOT sequence it, so returning
-  // send.hash would hand back a phantom hash: the per-row button would flip to
-  // "confirmed" for a still-live allowance, and the bulk poller would waste 30
-  // attempts on a hash that never lands. mirror submitSoroban's allowlist guard.
-  if (send.status !== "PENDING" && send.status !== "DUPLICATE") {
-    const detail =
-      send.status === "ERROR" && send.errorResult
-        ? ` (${send.errorResult.result.type})`
-        : ` (status: ${send.status})`;
-    throw new Error(`RPC did not enqueue the revoke${detail}.`);
+  // only PENDING/DUPLICATE mean the RPC actually enqueued the tx. anything
+  // else did not sequence it, so returning its hash would hand back a phantom:
+  // the per-row button would flip to "confirmed" for a still-live allowance, and
+  // the bulk poller would wait out its window on a hash that never lands.
+  try {
+    return await sendSoroban(rpc, reconstructed);
+  } catch (err) {
+    if (err instanceof SorobanNotQueuedError) {
+      throw new Error(
+        `RPC did not enqueue the revoke (${err.resultCode ?? `status: ${err.status}`}).`,
+        {
+          cause: err,
+        },
+      );
+    }
+    throw err;
   }
-  return send.hash;
 }
 
 // poll a submitted revoke to ledger inclusion. throws if it fails to confirm.
@@ -169,12 +172,12 @@ async function submitRevokeImpl(
 // so the bulk sweep can report the right thing and not advance its sequence
 // view on a tx that never sequenced.
 export async function confirmRevoke(network: NetworkConfig, hash: string): Promise<void> {
-  const rpc = getRpc(network);
-  const result = await rpc.pollTransaction(hash, { attempts: 60 });
+  const result = await pollSoroban(getRpc(network), hash);
   if (result.status === "SUCCESS") return;
   if (result.status === "FAILED") {
-    const reason = describeSorobanFailure(result.diagnosticEventsXdr);
-    throw new Error(`Revoke transaction failed on-chain${reason ? `: ${reason}` : ""}`);
+    throw new Error(
+      `Revoke transaction failed on-chain${result.reason ? `: ${result.reason}` : ""}`,
+    );
   }
   throw new Error("Revoke did not confirm within the polling window; it may still land.");
 }

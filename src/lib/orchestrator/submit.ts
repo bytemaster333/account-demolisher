@@ -14,7 +14,12 @@ import {
 } from "@stellar/stellar-sdk";
 
 import { describeSubmitError, errorMessage } from "@/lib/errors";
-import { describeSorobanFailure } from "@/lib/soroban/diagnostics";
+import {
+  pollSoroban,
+  sendSoroban,
+  SorobanNotQueuedError,
+  type SorobanPollOutcome,
+} from "@/lib/soroban/submit";
 import {
   AmbiguousSubmitError,
   CloseFailure,
@@ -147,8 +152,6 @@ export class SorobanSubmitError extends Error {
 
 export type SorobanSubmitRpc = Pick<RpcNS.Server, "sendTransaction" | "pollTransaction">;
 
-const TRY_AGAIN_LATER_RESENDS = 5;
-
 export function createSorobanSubmitter(
   rpc: SorobanSubmitRpc,
   passphrase: string,
@@ -159,75 +162,53 @@ export function createSorobanSubmitter(
     const signed = TransactionBuilder.fromXdr(signedXdr, passphrase) as Transaction;
     const hash = txHashHex(signed);
     const maxTime = txMaxTime(signed);
-    // a send that drops in transit may still have reached the rpc, so the hash
-    // is kept for the retry to look up. a json-rpc error answer is the rpc
-    // refusing the request, which is definite.
-    const sendOnce = async () => {
-      try {
-        return await rpc.sendTransaction(signed);
-      } catch (err) {
-        if (isJsonRpcError(err)) {
-          throw new SorobanSubmitError(
-            null,
-            `submitSoroban: sendTransaction refused: ${errorMessage(err)}`,
+    let sentHash: string;
+    try {
+      sentHash = await sendSoroban(rpc, signed, sleep);
+    } catch (err) {
+      if (err instanceof SorobanNotQueuedError) {
+        if (err.status === "TRY_AGAIN_LATER") {
+          throw new CloseFailure(
+            "network",
+            `The Soroban RPC kept asking to try transaction ${err.hash} later; nothing landed.`,
           );
         }
-        throw new AmbiguousSubmitError(
-          hash,
-          maxTime,
-          `sendTransaction failed: ${errorMessage(err)}`,
+        const code = err.resultCode;
+        const diags =
+          err.diagnostics.length > 0 ? `; diagnostics ${err.diagnostics.join(" ")}` : "";
+        throw new SorobanSubmitError(
+          code,
+          `submitSoroban: sendTransaction returned ERROR${code ? `; result ${code}` : ""}${diags}`,
         );
       }
-    };
-    let send = await sendOnce();
-    // the rpc's queue is full: the identical signed envelope can be sent again
-    for (let i = 0; send.status === "TRY_AGAIN_LATER" && i < TRY_AGAIN_LATER_RESENDS; i++) {
-      await sleep(1_000 * 2 ** i);
-      send = await sendOnce();
-    }
-    if (send.status === "TRY_AGAIN_LATER") {
-      throw new CloseFailure(
-        "network",
-        `The Soroban RPC kept asking to try transaction ${send.hash} later; nothing landed.`,
-      );
-    }
-    if (send.status === "ERROR") {
-      let code: string | null = null;
-      try {
-        code = send.errorResult?.result.type ?? null;
-      } catch {
-        code = null;
+      // a json-rpc error answer is the rpc refusing the request, which is
+      // definite. a send that drops in transit may still have reached the rpc,
+      // so the hash is kept for the retry to look up.
+      if (isJsonRpcError(err)) {
+        throw new SorobanSubmitError(
+          null,
+          `submitSoroban: sendTransaction refused: ${errorMessage(err)}`,
+        );
       }
-      let diags = "";
-      try {
-        const list = send.diagnosticEvents?.map((e) => e.toXdr("base64")) ?? [];
-        if (list.length > 0) diags = `; diagnostics ${list.join(" ")}`;
-      } catch {
-        diags = "";
-      }
-      throw new SorobanSubmitError(
-        code,
-        `submitSoroban: sendTransaction returned ERROR${code ? `; result ${code}` : ""}${diags}`,
-      );
+      throw new AmbiguousSubmitError(hash, maxTime, `sendTransaction failed: ${errorMessage(err)}`);
     }
     // bounded poll (~60s); a NOT_FOUND after it means still pending, not failed
-    let result: Awaited<ReturnType<SorobanSubmitRpc["pollTransaction"]>>;
+    let result: SorobanPollOutcome;
     try {
-      result = await rpc.pollTransaction(send.hash, { attempts: 60 });
+      result = await pollSoroban(rpc, sentHash);
     } catch (err) {
-      throw new AmbiguousSubmitError(send.hash, maxTime, `polling failed: ${errorMessage(err)}`);
+      throw new AmbiguousSubmitError(sentHash, maxTime, `polling failed: ${errorMessage(err)}`);
     }
     if (result.status === "FAILED") {
-      const reason = describeSorobanFailure(result.diagnosticEventsXdr);
       throw new SorobanSubmitError(
         null,
-        `submitSoroban: transaction ${send.hash} failed on-chain${reason ? `: ${reason}` : ""}`,
+        `submitSoroban: transaction ${sentHash} failed on-chain${result.reason ? `: ${result.reason}` : ""}`,
       );
     }
     if (result.status !== "SUCCESS") {
-      throw new AmbiguousSubmitError(send.hash, maxTime, "still pending after polling");
+      throw new AmbiguousSubmitError(sentHash, maxTime, "still pending after polling");
     }
-    return { txHash: send.hash, ledger: result.ledger };
+    return { txHash: sentHash, ledger: result.ledger };
   };
 }
 
