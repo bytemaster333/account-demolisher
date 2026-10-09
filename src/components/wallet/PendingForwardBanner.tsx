@@ -183,9 +183,11 @@ export function PendingForwardBanner({
   );
 }
 
-// a record is written when a close starts, well before its merge. until it is
-// this old, "no merge yet" may just mean the close is still on its way there;
-// nothing has moved, so there is no reason to speak up early.
+// a record is saved right before the merge batch, which funds the temporary
+// account and merges in one transaction, is signed; its savedAt is when that
+// flow was issued. until the record is this old, "no merge yet" may just mean
+// the batch is still being signed (by co-signers too) or submitted. nothing has
+// moved, so there is no reason to speak up early.
 const NOT_MERGED_QUIET_MS = 15 * 60 * 1000;
 
 type RowState =
