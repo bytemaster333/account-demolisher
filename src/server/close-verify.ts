@@ -124,6 +124,12 @@ function countOps(ops: readonly HorizonOp[]): CloseOpCounts {
 
 class HorizonUnavailable extends Error {}
 
+// a next-page link that stays on the configured Horizon, or undefined
+function sameOriginHref(href: string | undefined, origin: string): string | undefined {
+  if (href === undefined || !URL.canParse(href)) return undefined;
+  return new URL(href).origin === origin ? href : undefined;
+}
+
 // why a transaction is not a close this app built, or null when it is one
 function shapeProblem(tx: HorizonTx, ops: readonly HorizonOp[]): string | null {
   const merges = ops.filter((o) => o.type === "account_merge");
@@ -191,14 +197,13 @@ export async function verifyCloseTx(
       if (res.body === null) throw new HorizonUnavailable(`status ${res.status}`);
       const records = res.body._embedded?.records ?? [];
       out.push(...records);
-      // Horizon always sends a next link; only a full page can have more after it
-      const href = res.body._links?.next?.href;
-      next =
-        records.length === PAGE_LIMIT &&
-        href !== undefined &&
-        new URL(href).origin === horizonOrigin
-          ? href
-          : undefined;
+      // only a full page can have more after it. Horizon always sends a next
+      // link, so a full page without one it can follow on the same server is a
+      // server problem, not the end of the data: stopping there would count a
+      // close from a partial read.
+      if (records.length < PAGE_LIMIT) break;
+      next = sameOriginHref(res.body._links?.next?.href, horizonOrigin);
+      if (next === undefined) throw new HorizonUnavailable("full page without a usable next link");
     }
     return out;
   };
@@ -228,6 +233,15 @@ export async function verifyCloseTx(
 
   // the reclaimed XLM is the merge operation's own credit to its destination
   const merge = ops.find((o) => o.type === "account_merge")!;
+  // the id goes into the effects url. without a numeric one that request can
+  // never succeed, so retrying would only repeat the same failure
+  if (typeof merge.id !== "string" || !/^[0-9]+$/.test(merge.id)) {
+    return {
+      ok: false,
+      reason: "Horizon reported the merge without a valid operation id",
+      retryable: false,
+    };
+  }
   let effects: HorizonEffect[];
   try {
     effects = await getAll<HorizonEffect>(

@@ -209,3 +209,74 @@ describe("verifyCloseTx", () => {
     expect(threw).toMatchObject({ ok: false, retryable: true });
   });
 });
+
+describe("verifyCloseTx paging and ids", () => {
+  // a full page of filler effects, the merge credit on the page after it
+  const filler = Array.from({ length: 200 }, () => ({
+    type: "trustline_removed",
+    account: SRC,
+  }));
+
+  function pagedEffects(nextHref: (url: string) => string | undefined) {
+    const urls: string[] = [];
+    const base = horizon({});
+    const fetchImpl = async (url: string): Promise<Response> => {
+      urls.push(url);
+      if (url.includes(`/operations/${MERGE_ID}/effects`)) {
+        const second = url.includes("cursor=page2");
+        const href = second ? undefined : nextHref(url);
+        return new Response(
+          JSON.stringify({
+            _embedded: { records: second ? mergeEffects : filler },
+            _links: href === undefined ? {} : { next: { href } },
+          }),
+          { status: 200 },
+        );
+      }
+      return base.fetchImpl(url);
+    };
+    return { fetchImpl, urls };
+  }
+
+  it("follows a same-origin next link off a full page", async () => {
+    const { fetchImpl } = pagedEffects((url) => `${url}&cursor=page2`);
+    const res = await verifyCloseTx(TESTNET, HASH, { fetchImpl });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.close.reclaimedStroops).toBe("99999999700");
+  });
+
+  it("fails retryable when a full page's next link points at another origin (NP5-58)", async () => {
+    const { fetchImpl, urls } = pagedEffects(() => "https://evil.example/effects?cursor=page2");
+    const res = await verifyCloseTx(TESTNET, HASH, { fetchImpl });
+    expect(res).toMatchObject({ ok: false, retryable: true });
+    expect(urls.some((u) => u.startsWith("https://evil.example"))).toBe(false);
+  });
+
+  it("fails retryable when a full page has no usable next link (NP5-58)", async () => {
+    const missing = await verifyCloseTx(TESTNET, HASH, {
+      fetchImpl: pagedEffects(() => undefined).fetchImpl,
+    });
+    expect(missing).toMatchObject({ ok: false, retryable: true });
+    const garbled = await verifyCloseTx(TESTNET, HASH, {
+      fetchImpl: pagedEffects(() => "not a url").fetchImpl,
+    });
+    expect(garbled).toMatchObject({ ok: false, retryable: true });
+  });
+
+  it("fails without retry when Horizon gives the merge no operation id (NP5-59)", async () => {
+    const { id: _omit, ...noId } = merge;
+    const { fetchImpl, urls } = horizon({ ops: [markerSet, markerDelete, noId] });
+    const res = await verifyCloseTx(TESTNET, HASH, { fetchImpl });
+    expect(res).toMatchObject({ ok: false, retryable: false });
+    expect(urls.some((u) => u.includes("/operations/undefined"))).toBe(false);
+  });
+
+  it("fails without retry when the merge's operation id is not a number (NP5-59)", async () => {
+    const { fetchImpl, urls } = horizon({
+      ops: [markerSet, markerDelete, { ...merge, id: "../../accounts/x" }],
+    });
+    const res = await verifyCloseTx(TESTNET, HASH, { fetchImpl });
+    expect(res).toMatchObject({ ok: false, retryable: false });
+    expect(urls.some((u) => u.includes("accounts"))).toBe(false);
+  });
+});
