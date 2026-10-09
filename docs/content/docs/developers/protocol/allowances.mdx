@@ -121,10 +121,19 @@ and is assembled from simulation. An assembled fee bump is refused.
 These checks are why `RevokeAllowance` is not held to the DeFi contract allow-list: the token
 contract comes from your own allowance scan, and the call is pinned to a zero approval on it.
 
-On the allowance viewer, revokes for one account run one at a time. The next revoke is built only
-after the previous one is included, reading the sequence number from the same RPC, so two quick
-revokes never collide on a sequence number. A row shows **Revoked** only after the ledger confirms
-it.
+On the allowance viewer, building and signing are two steps (`prepareRevoke` and
+`submitPreparedRevoke` in `src/lib/soroban/revoke.ts`), so the fee the signature authorizes is on
+screen before anything is signed. The token's own code sizes a revoke's resources, and a
+pasted-key connector signs without a prompt of its own, so for that connector the page is the only
+place the fee appears.
+
+Revokes for one account are signed one at a time: the next waits until the previous one is
+included, or at most 90 seconds (`REVOKE_GATE_RELEASE_MS`) when its confirmation never settles,
+and reads the sequence number from the same RPC. When the reviewed transaction can no longer land, because its sequence number is
+stale or its time bound passed, it is rebuilt and checked again, and the rebuilt one is signed only
+when its fee is no higher than the reviewed one. Otherwise `RevokeFeeChangedError` puts the rebuilt
+revoke and its fee up for review, and nothing is signed. A row shows **Revoked** only after the
+ledger confirms it.
 
 In a close, a revoke that fails is skipped with a note, and the allowance stays on the token
 contract. A merge does not remove allowances: they live in the token's storage.

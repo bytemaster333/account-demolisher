@@ -100,6 +100,18 @@ leading phase together with the offer cancels, and the executor audits the accou
 lands and rebuilds the rest. Claims of assets with an explicit disposal stay in the same
 transaction as that disposal.
 
+Conversions are quoted one by one against the untouched market, so two path payments that trade
+through the same market cannot share a transaction: the second would miss its floor once the first
+used up depth its quote counted on. `conversionStages` groups the conversions so that no two in a
+group share a market, a market being one directed asset pair along the path (sold asset, each
+path hop, XLM), order book and pools alike. Each conversion joins the first group it shares no
+market with. Every group but the last runs in a phase of its own, after the leading phase. When
+there is no leading phase, the offer cancels move into the first of those phases. The last group
+stays in the final phase. Because the executor quotes again before every phase, each group is
+priced after the one before it landed, and a fresh quote worse than the reviewed one by more than
+the slippage tolerance stops the close with `conversion_refused` before anything in that phase is
+signed.
+
 A transaction holds at most 100 operations (`MAX_OPS_PER_TX`). The leading phase packs front to
 back. The final phase packs from the end: the merge group takes the last batch whole, the body
 operations that fit go in front of it, and the rest fill earlier batches. A merge group over 100

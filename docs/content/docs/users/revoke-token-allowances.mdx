@@ -57,8 +57,14 @@ not make it malicious. Inspect it with the explorer link.
 
 ## Revoke one
 
-Select **Revoke** on a row. Your wallet asks you to sign, the approval is set to zero, and the row
-updates to **Revoked**.
+Select **Revoke** on a row. The app builds the revoke and shows **Network fee up to ... XLM**
+before anything is signed. Select **Sign** to sign it in your wallet, or **Cancel**. The approval
+is set to zero, and the row updates to **Revoked** once the ledger confirms it.
+
+The token's own code decides what a revoke costs, so the fee is on screen first. When the revoke has
+to be rebuilt before it is signed, because another revoke landed first or its time window ran out
+while you read the fee, and the rebuilt one costs more, nothing is signed: the row shows the new fee
+and asks you to check it.
 
 Only the owner of the approvals can change them, so revoking needs the wallet that owns the
 address you are viewing. With another wallet, or none, the page stays read-only and says so.
@@ -70,8 +76,13 @@ When an address has at least two active approvals you can revoke, a bar above th
 the app. Revoking also cancels approvals for apps you still use, and you re-approve those the next
 time you use them. If you are cleaning up, start with the unrecognized ones.
 
-The bar signs and confirms one approval at a time, so your wallet prompts once per approval. You
-can select **Stop after current** at any point, and whatever is already revoked stays revoked.
+The bar first builds every revoke and reads its fee, then asks you to confirm with the total:
+**Network fees: up to ... XLM in total**. A revoke that cannot be built is listed and not signed.
+After you confirm, the bar signs and confirms one approval at a time, so your wallet prompts once
+per approval. No revoke is signed for more than the fee you confirmed: one whose fee has gone up by
+then is not signed, the result lists it with its new fee, and you can revoke it again from its
+row. You can select **Stop after current** at any point, and whatever is already revoked stays
+revoked.
 
 <Callout type="warn">
   Keep the tab open until the bar finishes. Each approval is its own transaction, so leaving partway

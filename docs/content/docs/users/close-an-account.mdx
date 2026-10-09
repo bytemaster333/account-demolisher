@@ -75,6 +75,13 @@ can claim now, ticked. Untick one to leave it behind. A balance the account spon
 always collected, because leaving it would keep the account a sponsor and block the merge. A
 change applies when you rebuild the plan.
 
+**Balances this close sells for XLM** lists every token balance the close sells at the market
+price. For each one you choose **Sell for XLM** (the default), **Send it as-is to your
+destination**, or **Return to issuer (keep nothing)**. Sending as-is is offered only when the
+destination has an authorized trustline for that token with room for the whole balance, and never
+on an exchange close, because the payment would arrive without your memo. A change applies when you
+rebuild the plan.
+
 Tick each box, then select **Continue to review**.
 
 </Step>
@@ -90,6 +97,12 @@ The heading reads **Review before closing**. At the top:
 | **Destination receives**        | What arrives at the destination                                                                                   |
 | **Network fees**                | An estimate and the most the close can pay, shown as "about ... XLM, at most ... XLM". None of it goes to the app |
 | **Reserve released (included)** | The XLM the network kept locked in the account, already part of the amount above                                  |
+
+A step that cannot be built until the steps it depends on land, such as a withdrawal behind a
+repay, has no fee yet. The fee figure then reads "about ... XLM plus N steps priced when they are built,
+at most ... XLM": the estimate leaves those steps out, and the most counts each at the highest fee
+the app signs for that kind of step. Each step in the plan shows its own fee, as "fee about ...
+XLM, up to ... XLM", or as "fee up to ... XLM" for a step that is not built yet.
 
 Below the figures is the plan, grouped by phase in the order it runs, such as **Token permissions**,
 **Repay loans**, **Withdraw from apps**, **Collect rewards**, **Leftover tokens**, **Close the
@@ -153,9 +166,14 @@ The app is free and takes no cut. You pay the Stellar network fees of the transa
 submits, and Review shows their estimate and maximum before you sign.
 
 The classic transactions bid from what recent ledgers charged, and raise the bid when the network
-rejects it as too low, up to 0.1 XLM per operation. Each Soroban step bids a 0.01 XLM inclusion
-fee plus the resource fee its simulation priced, and the app refuses to sign a step whose fee is
-over the cap for its kind of step.
+rejects it as too low, up to 0.1 XLM per operation. On an exchange close, the forward to the
+exchange starts at the same bid and goes up to 0.2 XLM in total. Each Soroban step bids a 0.01 XLM
+inclusion fee plus the resource fee its simulation priced, and the app refuses to sign a step whose
+fee is over the cap for its kind of step. For an exit or a conversion, Review marks such a step as
+failed with the fee it would cost, and the close cannot be confirmed with that step in it. One
+cause is a step that would first restore a token's archived contract code from the ledger
+archive: the ones measured on testnet cost 3.7 to 17.4 XLM, and the app refuses them instead of
+paying.
 
 ## If a step fails
 

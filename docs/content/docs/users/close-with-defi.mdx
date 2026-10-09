@@ -36,8 +36,8 @@ that would pay less refuses the exit on chain instead of paying out less.
 
 FxDAO is no longer supported, because the protocol shut down on chain. Its mainnet vaults contract
 now runs code that only allows eviction and upgrades, its panic mode is on, and it holds no
-vaults; its testnet contracts no longer exist. FxDAO stablecoins your account still holds are ordinary balances: the close sells them for XLM, or you choose what happens to them
-when they have no market.
+vaults; its testnet contracts no longer exist. FxDAO stablecoins your account still holds are
+ordinary balances: the close sells them for XLM, or you choose what happens to them.
 
 ## Cases that need you to act
 
@@ -57,9 +57,12 @@ A backstop deposit is withdrawn through a queue: 17 days on the current backstop
 earlier one. The account has to stay open to receive the withdrawal, so a run that queues one only
 prepares the close:
 
-1. When backstop emissions have accrued, the plan claims them first so they are queued with your
-   deposit. When that claim fails on chain today, **Fix issues** shows the accrued BLND and asks you
-   to leave it unclaimed. These rewards never block the close.
+1. When backstop emissions have accrued on a deposit that is not queued yet, the plan claims them
+   first so they are queued with your deposit. When that claim fails on chain today, **Fix issues**
+   shows the accrued BLND and asks you to leave it unclaimed. Emissions on a deposit you already
+   queued in full, or in a pool where nothing is deposited any more, are not claimed: claiming them
+   would add new backstop shares under a new withdrawal lock. **About this plan** in the Warnings
+   step names the BLND each such pool leaves behind. These rewards never block the close.
 2. The plan queues the withdrawal and runs every other exit, and the account stays open. Review
    reads **Review the preparation**, the confirmation reads **Confirm preparing the close**, and the
    result reads **Preparation done, account still open** with the unlock date.
@@ -84,9 +87,13 @@ account forfeits. The close goes ahead either way.
 
 ## Leftover balances
 
-Unwinding a position leaves tokens in the account. The final transaction sells every classic
-balance for XLM through the Stellar DEX. A balance with no market, or one whose sale would move the
-price by more than 2%, is never sold without your answer. See
+Unwinding a position leaves tokens in the account. The classic close sells every classic balance
+for XLM through the Stellar DEX, unless you choose in the Warnings step to send it as-is or return
+it to its issuer. Two sales that trade through the same market run in separate transactions, and
+each one is quoted again after the one before it lands. When that fresh quote is worse than the
+one you reviewed by more than the slippage tolerance, the close stops before selling it and the
+rebuilt plan asks you what to do. A balance with no market, or one whose sale would move the price
+by more than 2%, is never sold without your answer. See
 [Clear a blocked closure](/docs/users/clear-a-blocked-closure).
 
 ## Standalone tokens

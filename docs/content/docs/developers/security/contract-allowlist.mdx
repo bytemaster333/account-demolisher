@@ -165,8 +165,18 @@ A transfer gets a class of its own because it can create the destination's balan
 rent for it, which a revoke never does. The largest legitimate transfer measured, a SEP-41 token
 creating a new balance on testnet, cost about 0.26 XLM.
 
+Restoring an archived contract code entry (a token's or an old pair's wasm, 17 to 24 KB each)
+puts the code's rent on the signer. In a sweep of 70 archived testnet Soroswap pairs, the 17
+removals that needed such a restore cost 36,812,907 to 174,084,607 stroops (3.7 to 17.4 XLM) in
+resource fees and declared 14,700 to 53,204 write bytes, all above the largest cap. That is the
+same shape a hostile token would use to push rent onto the signer, so the caps refuse it instead of
+paying for it, and the error states the fee the step would cost. No mainnet pair in the sweep
+needed a code restore.
+
 A one-operation trustline step carries no Soroban resources, and its bid is capped at 1,000,000 stroops.
-Before each Soroban signature the progress line shows the fee that signature allows.
+The review counts each Soroban step at most at the inclusion fee plus its class's cap, because the
+step is simulated again before it is signed and is never signed above that. Before each Soroban
+signature the progress line shows the fee that signature allows.
 
 ## The error
 

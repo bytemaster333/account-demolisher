@@ -69,7 +69,26 @@ The outcome's operation count, transaction count and fee cover every batch.
 The forward is built in the browser at execute time, against the forwarding account's live
 sequence once the merge into it has landed; the server only co-signs it. The preview checks that
 the node carries the forwarding account, the destination and the flow token, and reports 2
-operations and a fee of `MAX_FORWARD_FEE` (2,000,000 stroops), the most the forward can bid.
+operations priced at the classic starting bid per operation, the same `fee_stats` bid the classic
+batches use, capped at 1,000,000 stroops per operation. The forward raises its bid on a refusal up
+to `MAX_FORWARD_FEE` (2,000,000 stroops, 0.2 XLM), and the review shows that as its most.
+
+## Fees on the review
+
+`src/app/demolish/_lib/fees.ts` gives each step two figures, and the review adds them up:
+
+| Step                                | Usual fee                                  | Most it can be signed for                                                      |
+| ----------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------ |
+| A classic batch or a trustline step | The built bid                              | 1,000,000 stroops per operation, the executor's ceiling                        |
+| The mediator forward                | Two operations at the classic starting bid | `MAX_FORWARD_FEE`, 2,000,000 stroops                                           |
+| A simulated Soroban step            | The fee its built transaction authorizes   | The inclusion fee plus the resource fee cap of its class (`sorobanFeeCeiling`) |
+| A Soroban step built at execute     | None: it has no transaction yet            | The inclusion fee plus the resource fee cap of its class                       |
+
+A Soroban step is rebuilt and simulated again right before it is signed, so the fee it is signed
+for can differ from the preview's, and the executor never signs it above its class's cap. That cap
+is why it is the step's most. A step built only at execute time adds nothing to the usual figure:
+the total reads _about ... XLM plus N steps priced when they are built, at most ... XLM_, and its row
+reads _fee up to ... XLM_.
 
 ## Pricing conversions
 
