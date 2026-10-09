@@ -590,6 +590,29 @@ describe("resuming a signing request after a reload (L-54)", () => {
     // nothing new was published
     expect(ctl.published).toHaveLength(1);
   });
+
+  it("discards only this account's stored request (NP5-44)", async () => {
+    const other = {
+      planId: "e".repeat(64),
+      networkId: "testnet",
+      publicKey: DEST,
+      destination: ACC,
+      returnToIssuer: [],
+      sendToDestination: [],
+      selectedCbIds: [],
+      validUntil: null,
+      createdAt: Date.now(),
+    };
+    const otherKey = `account-demolisher:signing-request:testnet:${DEST}`;
+    window.localStorage.setItem(otherKey, JSON.stringify(other));
+    await publishThenReload();
+    fireEvent.click(screen.getByTestId("discard-request"));
+    await waitFor(() => expect(screen.queryByTestId("resume-signing-request")).toBeNull());
+    expect(window.localStorage.getItem(`account-demolisher:signing-request:testnet:${ACC}`)).toBe(
+      null,
+    );
+    expect(JSON.parse(window.localStorage.getItem(otherKey)!).planId).toBe("e".repeat(64));
+  });
 });
 
 describe("a run keeps its own network after a navbar switch (M-35)", () => {

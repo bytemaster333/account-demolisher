@@ -276,12 +276,16 @@ export function useSigningRequest(args: {
     [args.network.passphrase],
   );
 
+  // drop the request the screen is about: the one offered for resuming, and the
+  // run's own request (the same record unless the wallet or network changed)
+  const { runInput, network } = args;
   const discardStored = useCallback(() => {
-    clearSigningRequest();
+    if (stored !== null) clearSigningRequest(stored.publicKey, stored.networkId);
+    if (runInput !== null) clearSigningRequest(runInput.publicKey, network.id);
     setResuming(null);
     setResumeError(null);
     setStoreVersion((v) => v + 1);
-  }, []);
+  }, [stored, runInput, network.id]);
 
   // drop this tab's request state (start over / a new run). The stored record
   // stays, so a still-valid published request can be resumed later.
@@ -295,11 +299,12 @@ export function useSigningRequest(args: {
     setStoreVersion((v) => v + 1);
   }, []);
 
-  // the request was submitted: nothing left to resume
+  // the request was submitted: nothing left to resume. it was saved under the
+  // run's account and network.
   const finished = useCallback(() => {
-    clearSigningRequest();
+    if (runInput !== null) clearSigningRequest(runInput.publicKey, network.id);
     setStoreVersion((v) => v + 1);
-  }, []);
+  }, [runInput, network.id]);
 
   return {
     active,

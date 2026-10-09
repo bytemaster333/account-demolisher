@@ -24,7 +24,16 @@ export interface StoredSigningRequest {
   readonly createdAt: number;
 }
 
-const STORAGE_KEY = "account-demolisher:signing-request";
+// one record per account and network, so a request for a second shared
+// account (or the same account on the other network) doesn't replace the first
+const KEY_PREFIX = "account-demolisher:signing-request";
+
+function storageKey(publicKey: string, networkId: string): string {
+  return `${KEY_PREFIX}:${networkId}:${publicKey}`;
+}
+
+// where every request was stored before records were kept per account
+const LEGACY_KEY = KEY_PREFIX;
 
 function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((x) => typeof x === "string");
@@ -60,19 +69,67 @@ function isStored(v: unknown): v is StoredSigningRequest {
 // only lives in this tab, as it did before; the caller is told so it can say so.
 export function saveSigningRequest(record: StoredSigningRequest): boolean {
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(record));
+    window.localStorage.setItem(
+      storageKey(record.publicKey, record.networkId),
+      JSON.stringify(record),
+    );
     return true;
   } catch {
     return false;
   }
 }
 
-export function clearSigningRequest(): void {
+export function clearSigningRequest(publicKey: string, networkId: string): void {
+  removeKey(storageKey(publicKey, networkId));
+}
+
+function removeKey(key: string): void {
   try {
-    window.localStorage.removeItem(STORAGE_KEY);
+    window.localStorage.removeItem(key);
   } catch {
     // nothing stored, or storage unavailable: nothing to clear
   }
+}
+
+function readKey(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+// the record under the old single key, moved to its own account's key when it
+// belongs to this account and network. a record for another account stays put
+// until that account loads it; an unreadable or expired one is removed.
+function takeLegacy(
+  publicKey: string,
+  networkId: string,
+  nowMs: number,
+): StoredSigningRequest | null {
+  const raw = readKey(LEGACY_KEY);
+  if (raw === null) return null;
+  const record = parseLive(raw, nowMs);
+  if (record === null) {
+    removeKey(LEGACY_KEY);
+    return null;
+  }
+  if (record.publicKey !== publicKey || record.networkId !== networkId) return null;
+  if (saveSigningRequest(record)) removeKey(LEGACY_KEY);
+  return record;
+}
+
+// a stored record that is well formed and not expired, or null
+function parseLive(raw: string, nowMs: number): StoredSigningRequest | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isStored(parsed)) return null;
+  if (parsed.validUntil !== null && parsed.validUntil <= nowMs) return null;
+  return parsed;
 }
 
 // the stored request for this account and network, or null. An expired one is
@@ -82,30 +139,17 @@ export function loadSigningRequest(
   networkId: string,
   nowMs: number,
 ): StoredSigningRequest | null {
-  let raw: string | null;
-  try {
-    raw = window.localStorage.getItem(STORAGE_KEY);
-  } catch {
+  const key = storageKey(publicKey, networkId);
+  const raw = readKey(key);
+  if (raw === null) return takeLegacy(publicKey, networkId, nowMs);
+  const record = parseLive(raw, nowMs);
+  // the key names the account and network, but a record that says otherwise
+  // was not written by saveSigningRequest and is not offered
+  if (record === null || record.publicKey !== publicKey || record.networkId !== networkId) {
+    removeKey(key);
     return null;
   }
-  if (raw === null) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    clearSigningRequest();
-    return null;
-  }
-  if (!isStored(parsed)) {
-    clearSigningRequest();
-    return null;
-  }
-  if (parsed.validUntil !== null && parsed.validUntil <= nowMs) {
-    clearSigningRequest();
-    return null;
-  }
-  if (parsed.publicKey !== publicKey || parsed.networkId !== networkId) return null;
-  return parsed;
+  return record;
 }
 
 function hashHex(tx: Transaction): string {
