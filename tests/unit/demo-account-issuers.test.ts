@@ -11,7 +11,12 @@ const horizon = vi.hoisted(() => ({
   existing: new Set<string>(),
   loaded: [] as string[],
   submittedOps: [] as string[][],
+  maxTimes: [] as number[],
 }));
+
+// the network's clock, far from the test machine's, so a bound taken from
+// Date.now() fails
+const LEDGER_CLOSE = 1_700_000_000;
 
 vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
   const sdk = await importOriginal<typeof import("@stellar/stellar-sdk")>();
@@ -24,9 +29,22 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
       }
       return new sdk.Account(id, "100");
     }
+    // the latest ledger, which times every demo tx
+    ledgers() {
+      const page = {
+        records: [{ sequence: 1_000, closed_at: new Date(LEDGER_CLOSE * 1000).toISOString() }],
+      };
+      const query = {
+        order: () => query,
+        limit: () => query,
+        call: async () => page,
+      };
+      return query;
+    }
     async submitTransaction(tx: Transaction) {
       const types = tx.operations.map((op) => op.type);
       horizon.submittedOps.push(types);
+      horizon.maxTimes.push(Number(tx.timeBounds?.maxTime));
       if (types.includes("createAccount")) {
         throw {
           response: {
@@ -46,6 +64,7 @@ afterEach(() => {
   horizon.existing.clear();
   horizon.loaded = [];
   horizon.submittedOps = [];
+  horizon.maxTimes = [];
 });
 
 class StopAfterCredits extends Error {}
@@ -84,5 +103,8 @@ describe("demo credit balances after a failed trustlines step (I-18)", () => {
     const [demoAccount] = [...horizon.existing];
     expect(horizon.loaded.every((id) => id === demoAccount)).toBe(true);
     expect(horizon.submittedOps.some((ops) => ops.includes("payment"))).toBe(false);
+    // every demo tx is timed from the ledger's close time, not the browser's
+    expect(horizon.maxTimes.length).toBeGreaterThan(0);
+    expect(horizon.maxTimes.every((t) => t === LEDGER_CLOSE + 120)).toBe(true);
   });
 });

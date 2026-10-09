@@ -33,8 +33,14 @@ import { balance, buildApprove } from "@/lib/soroban/sep41";
 import { assembleSubmittable, simulateRead } from "@/lib/soroban/simulate";
 import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
 import { getHorizon } from "@/lib/stellar/horizon-client";
+import { fetchLedgerClock, ledgerMaxTime } from "@/lib/stellar/ledger-clock";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
 import { shortAddress } from "@/lib/safe-display";
+
+// how long a demo tx stays valid and how long the router accepts a demo swap or
+// deposit, both counted from the latest ledger's close time
+const DEMO_TX_TIMEOUT_SECONDS = 120;
+const DEMO_ROUTER_DEADLINE_SECONDS = 300;
 
 // circle testnet usdc: issuer published in https://testanchor.stellar.org/.well-known/stellar.toml
 const USDC_TESTNET_ISSUER = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
@@ -477,7 +483,9 @@ async function submitClassic(
     fee: "1000",
     networkPassphrase: network.passphrase,
   });
-  const tx = build(builder).setTimeout(120).build();
+  const tx = build(builder)
+    .setTimebounds(0, await demoMaxTime(network))
+    .build();
   tx.sign(Keypair.fromSecret(secret));
   try {
     const res = await horizon.submitTransaction(tx);
@@ -526,6 +534,7 @@ async function approveSep41(
   const latest = await server.getLatestLedger();
   // ~5 days of ledgers (one ledger ≈ 5s on testnet); plenty of headroom for the demolish flow
   const liveUntil = latest.sequence + 86_400;
+  const clock = await fetchLedgerClock(network);
   const tx = await buildApprove(
     server,
     nativeSac(network),
@@ -535,6 +544,7 @@ async function approveSep41(
     liveUntil,
     network,
     account,
+    clock.closedAt,
   );
   assertDemoSorobanTx(tx, publicKey, network, { contractId: nativeSac(network), fn: "approve" });
   tx.sign(Keypair.fromSecret(secret));
@@ -553,7 +563,9 @@ async function submitFromAccount(
     fee: "1000",
     networkPassphrase: network.passphrase,
   });
-  const tx = build(builder).setTimeout(120).build();
+  const tx = build(builder)
+    .setTimebounds(0, await demoMaxTime(network))
+    .build();
   tx.sign(signer);
   try {
     const res = await horizon.submitTransaction(tx);
@@ -609,7 +621,7 @@ async function blendSupplyXlm(
         xdr.ScVal.scvVec([request]),
       ),
     )
-    .setTimeout(120)
+    .setTimebounds(0, await demoMaxTime(network))
     .build();
 
   const prepared = await assembleSubmittable(server, tx);
@@ -639,10 +651,18 @@ async function routerRead(
   return scValToNative(retval);
 }
 
-// unix seconds the router compares against the ledger timestamp
-function routerDeadline(): xdr.ScVal {
-  const deadline = Math.floor(Date.now() / 1000) + 300;
+// unix seconds the router compares against the ledger timestamp, so it is
+// counted from the ledger's clock rather than the browser's
+function routerDeadline(ledgerCloseTime: number): xdr.ScVal {
+  const deadline = ledgerMaxTime(ledgerCloseTime, DEMO_ROUTER_DEADLINE_SECONDS);
   return xdr.ScVal.scvU64(xdr.Uint64.fromString(String(deadline)));
+}
+
+// a demo tx expires a fixed window after the latest ledger's close time. a
+// browser clock minutes off would otherwise give tx_too_late on submit.
+async function demoMaxTime(network: NetworkConfig): Promise<number> {
+  const clock = await fetchLedgerClock(network);
+  return ledgerMaxTime(clock.closedAt, DEMO_TX_TIMEOUT_SECONDS);
 }
 
 // XLM → USDC swap_exact_tokens_for_tokens against the soroswap router, the same
@@ -669,6 +689,7 @@ async function soroswapSwap(
   const server = getRpc(network);
   const routerId = getSoroswapRouterId(network);
   const account = await horizon.loadAccount(publicKey);
+  const clock = await fetchLedgerClock(network);
   const tx = new TransactionBuilder(account, {
     fee: "1000",
     networkPassphrase: network.passphrase,
@@ -680,10 +701,10 @@ async function soroswapSwap(
         scvI128(amountOutMin),
         path,
         scvAddress(publicKey),
-        routerDeadline(),
+        routerDeadline(clock.closedAt),
       ),
     )
-    .setTimeout(120)
+    .setTimebounds(0, ledgerMaxTime(clock.closedAt, DEMO_TX_TIMEOUT_SECONDS))
     .build();
 
   const prepared = await assembleSubmittable(server, tx);
@@ -753,6 +774,7 @@ async function soroswapAddLiquidity(
   const deposit = sizeLiquidityDeposit(200_000_000n, usdcHeld, reserveXlm, reserveUsdc);
 
   const account = await horizon.loadAccount(publicKey);
+  const clock = await fetchLedgerClock(network);
   const tx = new TransactionBuilder(account, {
     fee: "1000",
     networkPassphrase: network.passphrase,
@@ -767,10 +789,10 @@ async function soroswapAddLiquidity(
         scvI128(deposit.xlmMin),
         scvI128(deposit.usdcMin),
         scvAddress(publicKey),
-        routerDeadline(),
+        routerDeadline(clock.closedAt),
       ),
     )
-    .setTimeout(120)
+    .setTimebounds(0, ledgerMaxTime(clock.closedAt, DEMO_TX_TIMEOUT_SECONDS))
     .build();
 
   const prepared = await assembleSubmittable(server, tx);
