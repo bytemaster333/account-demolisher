@@ -138,6 +138,128 @@ describe("createPlan", () => {
     expect(loadAccount).not.toHaveBeenCalled();
   });
 
+  it("rejects a close where another operation acts on a different account (M-16)", async () => {
+    // the merge is sourced by the account, but a second operation names another
+    // account as its source: the relay would otherwise read only the closing
+    // account's signers while the envelope also moves the other account
+    const a = newAccount();
+    const other = Keypair.random();
+    loadAccount.mockResolvedValue(accountResponse(a));
+    const tx = buildClose(a, {
+      extraOps: [
+        Operation.payment({
+          source: other.publicKey(),
+          destination: a.kp.publicKey(),
+          asset: Asset.native(),
+          amount: "1",
+        }),
+      ],
+    });
+    const res = await createPlan("testnet", signedBy(tx, a.kp, other));
+    expect(res).toMatchObject({ ok: false, code: "NOT_A_CLOSE" });
+    expect(loadAccount).not.toHaveBeenCalled();
+  });
+
+  it("rejects a close whose transaction source is not the merged account (M-16)", async () => {
+    // every operation (the merge included) names the victim as its source, but
+    // the transaction source, whose sequence number the relay checks, is another
+    // account
+    const victim = newAccount();
+    const attacker = Keypair.random();
+    loadAccount.mockResolvedValue(accountResponse(victim));
+    const tx = new TransactionBuilder(new Account(attacker.publicKey(), "1000"), {
+      fee: BASE_FEE,
+      networkPassphrase: NET,
+      timebounds: { minTime: 0, maxTime: nowSec() + 72 * HOUR - 60 },
+    })
+      .addOperation(Operation.manageData({ source: victim.kp.publicKey(), name: "x", value: "1" }))
+      .addOperation(
+        Operation.accountMerge({
+          source: victim.kp.publicKey(),
+          destination: Keypair.random().publicKey(),
+        }),
+      )
+      .build();
+    const res = await createPlan("testnet", signedBy(tx, attacker, victim.kp));
+    expect(res).toMatchObject({ ok: false, code: "NOT_A_CLOSE" });
+    expect(loadAccount).not.toHaveBeenCalled();
+  });
+
+  it("refuses to open a request for a close no signer of the account signed (M-16)", async () => {
+    const a = newAccount(1);
+    loadAccount.mockResolvedValue(accountResponse(a));
+
+    const unsigned = await createPlan("testnet", buildClose(a, { memo: "none" }).toXdr());
+    expect(unsigned).toMatchObject({ ok: false, code: "UNSIGNED" });
+
+    const stranger = await createPlan(
+      "testnet",
+      signedBy(buildClose(a, { memo: "stranger" }), Keypair.random()),
+    );
+    expect(stranger).toMatchObject({ ok: false, code: "UNSIGNED" });
+
+    // a signature under the account key's own hint that is not its signature
+    const forged = buildClose(a, { memo: "forged" });
+    forged.signatures.push(
+      new xdr.DecoratedSignature({
+        hint: a.kp.signatureHint(),
+        signature: Buffer.alloc(64, 3),
+      }),
+    );
+    expect(await createPlan("testnet", forged.toXdr())).toMatchObject({
+      ok: false,
+      code: "UNSIGNED",
+    });
+    expect(getPlan(Buffer.from(forged.hash()).toString("hex"))).toBeNull();
+  });
+
+  it("a re-publish of a junk-padded envelope merges its signatures (NP5-60)", async () => {
+    const a = newAccount(1);
+    loadAccount.mockResolvedValue(accountResponse(a));
+    const tx = buildClose(a);
+    const first = await createPlan("testnet", signedBy(tx, a.kp));
+    expect(first.ok).toBe(true);
+    const id = first.ok ? first.id : "";
+
+    const padded = TransactionBuilder.fromXdr(signedBy(tx, a.cosigners[0]!), NET) as Transaction;
+    padded.signatures.push(
+      new xdr.DecoratedSignature({ hint: Buffer.from([1, 2, 3, 4]), signature: Buffer.alloc(64) }),
+    );
+    // the same envelope is accepted on a first publish, so a re-publish must not
+    // answer REJECTED
+    expect(await createPlan("testnet", padded.toXdr())).toEqual({ ok: true, id });
+    const stored = getPlan(id)!.xdr;
+    expect(TransactionBuilder.fromXdr(stored, NET).signatures).toHaveLength(2);
+    expect(signedSigners(stored, NET, [a.cosigners[0]!.publicKey()])).toEqual([
+      a.cosigners[0]!.publicKey(),
+    ]);
+  });
+
+  it("a concurrent publish of a junk-padded envelope merges its signatures (NP5-60)", async () => {
+    const a = newAccount(1);
+    const tx = buildClose(a);
+    let release1: (v: Horizon.AccountResponse) => void = () => {};
+    let release2: (v: Horizon.AccountResponse) => void = () => {};
+    loadAccount
+      .mockImplementationOnce(() => new Promise((r) => (release1 = r)))
+      .mockImplementationOnce(() => new Promise((r) => (release2 = r)));
+
+    const padded = TransactionBuilder.fromXdr(signedBy(tx, a.cosigners[0]!), NET) as Transaction;
+    padded.signatures.push(
+      new xdr.DecoratedSignature({ hint: Buffer.from([1, 2, 3, 4]), signature: Buffer.alloc(64) }),
+    );
+    const p1 = createPlan("testnet", signedBy(tx, a.kp));
+    const p2 = createPlan("testnet", padded.toXdr());
+    release1(accountResponse(a));
+    const r1 = await p1;
+    expect(r1.ok).toBe(true);
+    const id = r1.ok ? r1.id : "";
+
+    release2(accountResponse(a));
+    expect(await p2).toEqual({ ok: true, id });
+    expect(TransactionBuilder.fromXdr(getPlan(id)!.xdr, NET).signatures).toHaveLength(2);
+  });
+
   it("rejects a transaction without an upper time bound", async () => {
     const a = newAccount();
     loadAccount.mockResolvedValue(accountResponse(a));

@@ -347,9 +347,20 @@ export async function createPlan(network: string, xdr: string): Promise<CreateRe
   const id = Buffer.from(decoded.tx.hash()).toString("hex");
   const existing = plans.get(id);
   if (existing !== undefined) {
-    // same transaction re-published: merge in any new signatures. a malformed
-    // re-publish is rejected rather than silently reporting success.
-    const merged = mergeInto(existing, xdr);
+    // same transaction re-published: merge in any new signatures. the envelope
+    // is canonicalized against the record's signers first, as a first publish
+    // is, so junk that a first publish would have dropped doesn't get the same
+    // envelope rejected here.
+    let incoming: string;
+    try {
+      incoming = canonicalizeSignatures(xdr, net.passphrase, signerKeysOf(existing));
+    } catch (e) {
+      if (e instanceof TooManySignaturesError) {
+        return { ok: false, code: "TOO_MANY_SIGNATURES", reason: e.message };
+      }
+      throw e;
+    }
+    const merged = mergeInto(existing, incoming);
     return merged.ok ? { ok: true, id } : merged;
   }
 
@@ -421,10 +432,12 @@ export async function createPlan(network: string, xdr: string): Promise<CreateRe
 
   // a concurrent publish of the same transaction may have created the record
   // while the Horizon lookup was in flight: merge into it rather than replace
-  // it, which would drop collected signatures and orphan its subscribers.
+  // it, which would drop collected signatures and orphan its subscribers. the
+  // canonical envelope is merged, not the raw one, so padding is dropped here
+  // too.
   const raced = plans.get(id);
   if (raced !== undefined) {
-    const merged = mergeInto(raced, xdr);
+    const merged = mergeInto(raced, canonical.xdr);
     return merged.ok ? { ok: true, id } : merged;
   }
 
