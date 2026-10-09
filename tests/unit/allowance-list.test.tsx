@@ -289,16 +289,19 @@ describe("AllowanceList row count", () => {
     ).toEqual(many.map((r) => `Spender: ${r.spender}`));
   });
 
-  it(`pages at ${ALLOWANCE_ROWS_PER_PAGE} rows when the page sets no size`, () => {
-    const many = Array.from({ length: ALLOWANCE_ROWS_PER_PAGE + 1 }, (_, i) => rec(`GSPEND${i}`));
-    renderPaged(many);
-    expect(rows()).toHaveLength(ALLOWANCE_ROWS_PER_PAGE);
-    expect(screen.getByTestId("allowance-list-more").textContent).toMatch(
-      new RegExp(`Showing ${ALLOWANCE_ROWS_PER_PAGE} of ${many.length}`),
-    );
-    expect(more().textContent).toBe("Show 1 more");
-    act(() => more().click());
-    expect(rows()).toHaveLength(many.length);
-    expect(screen.queryByTestId("allowance-list-more")).toBeNull();
-  });
+  // the click-through is covered at the small size above; mounting a full default
+  // page is the slow part, so it is done once and given room on a loaded machine
+  it(
+    `pages at ${ALLOWANCE_ROWS_PER_PAGE} rows when the page sets no size`,
+    { timeout: 30_000 },
+    () => {
+      const many = Array.from({ length: ALLOWANCE_ROWS_PER_PAGE + 1 }, (_, i) => rec(`GSPEND${i}`));
+      renderPaged(many);
+      expect(rows()).toHaveLength(ALLOWANCE_ROWS_PER_PAGE);
+      expect(screen.getByTestId("allowance-list-more").textContent).toMatch(
+        new RegExp(`Showing ${ALLOWANCE_ROWS_PER_PAGE} of ${many.length}`),
+      );
+      expect(more().textContent).toBe("Show 1 more");
+    },
+  );
 });

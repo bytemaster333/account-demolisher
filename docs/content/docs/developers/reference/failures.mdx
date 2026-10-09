@@ -64,12 +64,13 @@ whose detail mentions an archived entry is never retried as a footprint race.
 The close loop refuses the merge with messages that start `account_merge blocked:`. Each is
 `not_mergeable`, except the ones below:
 
-| Message after `account_merge blocked:`                                       | Kind            | What Retry does                                         |
-| ---------------------------------------------------------------------------- | --------------- | ------------------------------------------------------- |
-| `N Soroban DeFi position(s) still open (blend=…, backstop=…, aquarius=…, …)` | `position_open` | Rebuilds the plan, so the open positions are unwound    |
-| `could not confirm your DeFi positions are all closed (…)`                   | `network`       | Runs the same plan once the protocol can be read        |
-| `could not re-check DeFi positions before the merge (…)`                     | `network`       | Runs the same plan once discovery answers               |
-| `could not read the balance of token … paid out by your DeFi exits (…)`      | `network`       | Runs the same plan once the token's balance can be read |
+| Message after `account_merge blocked:`                                                                                                                            | Kind                 | What Retry does                                                                                              |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `N Soroban DeFi position(s) still open (blend=…, backstop=…, aquarius=…, …)`                                                                                      | `position_open`      | Rebuilds the plan, so the open positions are unwound                                                         |
+| `could not confirm your DeFi positions are all closed (…)`                                                                                                        | `network`            | Runs the same plan once the protocol can be read                                                             |
+| `could not re-check DeFi positions before the merge (…)`                                                                                                          | `network`            | Runs the same plan once discovery answers                                                                    |
+| `could not read the balance of token … paid out by your DeFi exits (…)`                                                                                           | `network`            | Runs the same plan once the token's balance can be read                                                      |
+| `N credit balance(s) can't be disposed of as reviewed (…)`, when any listed balance has a market but its price moved past the review or over the price-impact cap | `conversion_refused` | Rebuilds the plan and asks for each balance: sell at the new price, send it as-is or return it to its issuer |
 
 The three `network` refusals are safety stops: a position or payout the close cannot read is never
 merged around and stranded.
