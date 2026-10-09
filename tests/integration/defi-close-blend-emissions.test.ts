@@ -177,6 +177,22 @@ describe("integration: closing an account with accrued Blend emissions (testnet)
     expect(claim?.status).toBe("confirmed");
     const claimTx = await rpc.getTransaction(claim!.executed!.txHash);
     expect(claimTx.status).toBe("SUCCESS");
+    // the pool's claim returns the BLND it paid out
+    if (claimTx.status !== "SUCCESS" || claimTx.returnValue === undefined) {
+      throw new Error("the emissions claim returned nothing");
+    }
+    const paid = BigInt(scValToNative(claimTx.returnValue) as bigint);
+    expect(paid).toBeGreaterThan(0n);
+    // and nothing is left accrued on the borrow side it claimed. the account is
+    // gone, so the read is simulated from the destination
+    const accruedAfter = (await read(
+      POOL,
+      "get_user_emissions",
+      [addr(user), nativeToScVal(borrowTokenId, { type: "u32" })],
+      destination.publicKey(),
+    )) as { index: bigint; accrued: bigint } | null;
+    expect(accruedAfter, "the pool holds no emissions record for the user").not.toBeNull();
+    expect(accruedAfter!.accrued).toBe(0n);
 
     // on chain: the account is gone and the pool holds nothing for it
     expect(await accountExists(horizon, user)).toBe(false);

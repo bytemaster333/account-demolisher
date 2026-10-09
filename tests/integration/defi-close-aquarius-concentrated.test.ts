@@ -17,6 +17,7 @@ import {
   friendbotFund,
   nativeBalance,
   outcomeSummary,
+  toStroops,
 } from "../helpers/headless-close";
 import { horizon, rpc, submitClassicAs, submitSorobanAs } from "../helpers/testnet-seed";
 
@@ -46,6 +47,15 @@ const USDT_SAC = USDT.contractId(TESTNET.passphrase);
 const CONCENTRATED_POOL = "CBM6DJUR6NYRLJPQZ3JNVOSWHLJKPATTCFJZCONNAVHIRHKDMFICMRGU";
 
 const u128 = (v: bigint): xdr.ScVal => nativeToScVal(v, { type: "u128" });
+
+// one entry of a horizon invoke_host_function operation's asset_balance_changes
+interface BalanceChange {
+  readonly asset_type: string;
+  readonly type: string;
+  readonly from?: string;
+  readonly to?: string;
+  readonly amount: string;
+}
 const addr = (a: string): xdr.ScVal => nativeToScVal(a, { type: "address" });
 
 async function concentratedPositions(
@@ -177,6 +187,32 @@ describe("integration: closing an account with a live Aquarius concentrated posi
     );
 
     expect(outcome.matches("succeeded"), outcomeSummary(outcome)).toBe(true);
+
+    // the fee claim ran, as its own transaction, and the pool paid the account
+    // at least what the range had earned before the close (fees only grow)
+    const claim = [...outcome.context.tree!.allNodes.values()].find(
+      (n) => n.kind === "ClaimAquariusConcentratedFees",
+    );
+    expect(claim?.status, outcomeSummary(outcome)).toBe("confirmed");
+    const claimHash = claim!.executed!.txHash;
+    const claimOps = await horizon.operations().forTransaction(claimHash).call();
+    const paidOut = new Map<string, bigint>();
+    for (const op of claimOps.records) {
+      const changes =
+        (op as unknown as { asset_balance_changes?: readonly BalanceChange[] })
+          .asset_balance_changes ?? [];
+      for (const c of changes) {
+        if (c.type !== "transfer" || c.from !== CONCENTRATED_POOL || c.to !== user) continue;
+        const token = c.asset_type === "native" ? XLM_SAC : USDT_SAC;
+        paidOut.set(token, (paidOut.get(token) ?? 0n) + toStroops(c.amount));
+      }
+    }
+    pool.tokens.forEach((token, i) => {
+      const earned = earning[0]!.pendingFees[i] ?? 0n;
+      if (earned > 0n) {
+        expect(paidOut.get(token) ?? 0n, `fees paid in ${token}`).toBeGreaterThanOrEqual(earned);
+      }
+    });
 
     // on chain: the account is gone and the pool no longer lists a range for it
     // (a fully withdrawn position is deleted, so get_position on it traps)

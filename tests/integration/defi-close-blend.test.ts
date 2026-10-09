@@ -95,6 +95,24 @@ describe("integration: closing an account with live Blend positions (testnet)", 
     expect(outcome.matches("succeeded"), outcomeSummary(outcome)).toBe(true);
     expect(outcome.context.result?.mergedTxHash).toMatch(/^[0-9a-f]{64}$/);
 
+    // every withdraw waits on the repays in the plan, and on chain each repay
+    // landed in an earlier ledger than any withdraw
+    const ran = [...outcome.context.tree!.allNodes.values()];
+    const repays = ran.filter((n) => n.kind === "RepayBlend");
+    const withdraws = ran.filter((n) => n.kind === "WithdrawBlend");
+    expect(repays.length).toBeGreaterThan(0);
+    expect(withdraws.length).toBeGreaterThan(0);
+    const landedAt = (n: (typeof ran)[number]): number => {
+      expect(n.status, `${n.id} ${n.kind}`).toBe("confirmed");
+      if (n.executed === undefined) throw new Error(`${n.id} has no receipt`);
+      return n.executed.ledger;
+    };
+    const lastRepay = Math.max(...repays.map(landedAt));
+    for (const w of withdraws) {
+      expect(w.dependencies).toEqual(expect.arrayContaining(repays.map((r) => r.id)));
+      expect(landedAt(w)).toBeGreaterThan(lastRepay);
+    }
+
     // on chain: the account is gone, the pool holds nothing for it, and the
     // destination got the supplied XLM back (10,000 from friendbot, less the 100
     // repaid with interest is a wash with the 100 borrowed, less fees)

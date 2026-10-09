@@ -119,6 +119,12 @@ describe("integration: closing an account with a live Aquarius pool share (testn
     expect(kinds).toEqual(expect.arrayContaining(["WithdrawAquarius", "FinalClassicTx"]));
 
     expect(outcome.matches("succeeded"), outcomeSummary(outcome)).toBe(true);
+    // a gauge claim planned while a reward pays on the pool must have landed
+    for (const n of outcome.context.tree!.allNodes.values()) {
+      if (n.kind === "ClaimAquariusGaugeRewards" || n.kind === "AddExitTrustline") {
+        expect(n.status, `${n.id} ${n.kind}`).toBe("confirmed");
+      }
+    }
 
     expect(await accountExists(horizon, user)).toBe(false);
     expect(await aquariusPools(user)).toHaveLength(0);

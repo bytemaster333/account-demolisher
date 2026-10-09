@@ -22,6 +22,7 @@ import {
   accountExists,
   confirm,
   friendbotFund,
+  nativeBalance,
   outcomeSummary,
   reachReview,
   retry,
@@ -111,11 +112,21 @@ export function node(s: FlowSnapshot, kind: string) {
   return found;
 }
 
+// the merge sends the destination what the account holds when the retry starts,
+// less the fees of the steps still to run. a close step's fee is a small
+// fraction of an XLM, so 1 XLM bounds them with room to spare.
+const RETRY_FEES_BOUND = 1_0000000n;
+
 export async function retryToSuccess(actor: FlowActor, f: Fixture): Promise<FlowSnapshot> {
+  const held = await nativeBalance(horizon, f.kp.publicKey());
+  const destinationBefore = await nativeBalance(horizon, f.destination);
   retry(actor, new SecretKeyConnector(f.kp.secret()));
   const done = await waitForOutcome(actor);
   expect(done.matches("succeeded"), outcomeSummary(done)).toBe(true);
   expect(await accountExists(horizon, f.kp.publicKey())).toBe(false);
+  const received = (await nativeBalance(horizon, f.destination)) - destinationBefore;
+  expect(received).toBeLessThanOrEqual(held);
+  expect(received).toBeGreaterThan(held - RETRY_FEES_BOUND);
   return done;
 }
 
@@ -124,11 +135,14 @@ export async function retryToSuccess(actor: FlowActor, f: Fixture): Promise<Flow
 // rebuilt review.
 export async function rebuildToSuccess(actor: FlowActor, f: Fixture): Promise<FlowSnapshot> {
   retry(actor, new SecretKeyConnector(f.kp.secret()));
-  const again = await waitFor(
-    actor,
-    (s) => s.matches("awaiting_confirmation") || s.matches("failed"),
-    { timeout: 240_000 },
-  );
+  // RETRY goes to discovery at once; a run that resumed the old plan instead
+  // fails here, not after the test timeout
+  const started = actor.getSnapshot();
+  expect(started.matches("discovering"), outcomeSummary(started)).toBe(true);
+  const again = await waitFor(actor, (s) => !s.matches("discovering") && !s.matches("previewing"), {
+    timeout: 200_000,
+  });
+  expect(again.matches("awaiting_confirmation"), outcomeSummary(again)).toBe(true);
   expect(reviewProblems(again)).toEqual([]);
   confirm(actor);
   const done = await waitForOutcome(actor);
