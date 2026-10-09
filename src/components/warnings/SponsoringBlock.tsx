@@ -14,9 +14,6 @@ export interface SponsoringBlockProps {
   // the account's own sponsored entries the close releases by itself
   readonly coverable: number;
   readonly onDismiss: () => void;
-  // ignored: this screen never continues. kept until the demolish page stops
-  // passing it.
-  readonly onProceed?: () => void;
   readonly className?: string;
 }
 
