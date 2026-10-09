@@ -20,9 +20,13 @@ vi.mock("@/lib/soroban/sep41", async (importOriginal) => ({
 let rpcServer: object = {};
 vi.mock("@/lib/soroban/rpc-client", () => ({ getRpc: () => rpcServer }));
 
-import { AllowanceList } from "@/components/allowance-viewer/AllowanceList";
+import {
+  ALLOWANCE_ROWS_PER_PAGE,
+  AllowanceList,
+} from "@/components/allowance-viewer/AllowanceList";
 import { TESTNET } from "@/lib/config/networks";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
+import type { Connector } from "@/lib/wallet/connector";
 
 const network = TESTNET;
 const C_OWNER = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
@@ -211,5 +215,60 @@ describe("AllowanceList token symbols", () => {
     await settle();
     expect(screen.getByTestId("row-token-symbol").textContent).toBe("USDC");
     expect(screen.queryByTestId("row-token-nonascii")).toBeNull();
+  });
+});
+
+describe("AllowanceList revoke on inactive rows", () => {
+  function renderWithWallet(records: readonly AllowanceRecord[]) {
+    render(
+      <AllowanceList
+        records={records}
+        userAddress={G_WALLET}
+        simulationSource={null}
+        network={network}
+        currentLedger={10}
+        connectorRef={{ current: {} as Connector }}
+        showExpired
+      />,
+    );
+  }
+
+  it("disables revoke on an expired row and on one the token reports as zero", () => {
+    renderWithWallet([
+      rec("GSPEND1", { expired: true }),
+      rec("GSPEND2", { onChainAmount: 0n }),
+      rec("GSPEND3"),
+    ]);
+    const expired = screen.getByTestId("revoke-button-CTOKENGSPEND1-GSPEND1");
+    const zero = screen.getByTestId("revoke-button-CTOKENGSPEND2-GSPEND2");
+    const live = screen.getByTestId("revoke-button-CTOKENGSPEND3-GSPEND3");
+    expect(expired.hasAttribute("disabled")).toBe(true);
+    expect(expired.getAttribute("title")).toMatch(/expired or already zero/);
+    expect(zero.hasAttribute("disabled")).toBe(true);
+    expect(live.hasAttribute("disabled")).toBe(false);
+  });
+});
+
+describe("AllowanceList row count", () => {
+  // every row is an approve event some contract emitted naming this address, so
+  // a flood of cheap contracts must not turn into an unbounded table
+  it("renders one page of rows and shows the rest on request", () => {
+    const many = Array.from({ length: ALLOWANCE_ROWS_PER_PAGE * 2 + 5 }, (_, i) =>
+      rec(`GSPEND${i}`),
+    );
+    renderList(many, null);
+    expect(screen.getAllByTestId("allowance-row")).toHaveLength(ALLOWANCE_ROWS_PER_PAGE);
+    expect(screen.getByTestId("allowance-list-more").textContent).toMatch(
+      new RegExp(`${ALLOWANCE_ROWS_PER_PAGE} of ${many.length}`),
+    );
+    act(() => {
+      screen.getByTestId("allowance-list-more-button").click();
+    });
+    expect(screen.getAllByTestId("allowance-row")).toHaveLength(ALLOWANCE_ROWS_PER_PAGE * 2);
+    act(() => {
+      screen.getByTestId("allowance-list-more-button").click();
+    });
+    expect(screen.getAllByTestId("allowance-row")).toHaveLength(many.length);
+    expect(screen.queryByTestId("allowance-list-more")).toBeNull();
   });
 });

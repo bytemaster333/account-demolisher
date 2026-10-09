@@ -25,6 +25,9 @@ export interface RevokeButtonProps {
   // a bulk revoke sweep is running: disable per-row revokes so a click can't
   // enqueue a redundant approve(0) the bulk progress wouldn't count
   readonly busy?: boolean;
+  // the row is expired or the token reports zero: approve(0) would change
+  // nothing and still cost a fee
+  readonly inactive?: boolean;
 }
 
 // submitting: building and signing. submitted: the rpc took it, waiting for a
@@ -39,6 +42,7 @@ export function RevokeButton({
   connectorRef,
   onRevoked,
   busy,
+  inactive,
 }: RevokeButtonProps): React.JSX.Element {
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -211,19 +215,24 @@ export function RevokeButton({
       </p>
     ) : null;
 
-  // disabled when no wallet that owns this address is connected, or while a bulk
-  // sweep runs (a per-row revoke would be redundant and uncounted)
+  // disabled when there is nothing to revoke, when no wallet that owns this
+  // address is connected, or while a bulk sweep runs (a per-row revoke would be
+  // redundant and uncounted)
+  const disabledReason =
+    inactive === true
+      ? "This approval is expired or already zero, so there is nothing to revoke"
+      : noConnector
+        ? "Connect the wallet that owns this address to revoke"
+        : busy === true
+          ? "A bulk revoke is in progress"
+          : null;
   const button =
-    noConnector || busy ? (
+    disabledReason !== null ? (
       <Button
         variant="secondary"
         size="sm"
         disabled
-        disabledReason={
-          noConnector
-            ? "Connect the wallet that owns this address to revoke"
-            : "A bulk revoke is in progress"
-        }
+        disabledReason={disabledReason}
         data-testid={testId}
       >
         Revoke

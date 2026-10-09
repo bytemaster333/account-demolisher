@@ -10,7 +10,7 @@ import {
   effectiveAmount,
   isActive,
 } from "@/components/allowance-viewer/allowance-state";
-import { Badge, Card, CopyableAddress, Dot, InfoTip } from "@/components/ui";
+import { Badge, Button, Card, CopyableAddress, Dot, InfoTip } from "@/components/ui";
 import { errorMessage } from "@/lib/errors";
 import { explorerContractUrl } from "@/lib/explorer";
 import type { NetworkConfig } from "@/lib/config/networks";
@@ -27,6 +27,11 @@ import { RevokeButton } from "./RevokeButton";
 const SECONDS_PER_LEDGER = 5;
 
 const GRID_COLS = "minmax(0, 1.5fr) minmax(0, 1.7fr) 0.9fr 0.8fr 118px";
+
+// any contract can emit approve events naming this address, and the per-contract
+// cap in allowances.ts does not bound how many contracts do it, so the table
+// renders a page at a time. each rendered row also queues a metadata read.
+export const ALLOWANCE_ROWS_PER_PAGE = 50;
 
 export interface AllowanceListProps {
   readonly records: readonly AllowanceRecord[];
@@ -69,6 +74,8 @@ export function AllowanceList({
     [records, showExpired],
   );
   const activeCount = useMemo(() => records.filter(isActive).length, [records]);
+  const [shownCount, setShownCount] = useState(ALLOWANCE_ROWS_PER_PAGE);
+  const shown = visible.slice(0, shownCount);
 
   return (
     <Card padding={0} style={{ overflow: "hidden" }} data-testid="allowance-list">
@@ -132,7 +139,7 @@ export function AllowanceList({
               </span>
               <span />
             </div>
-            {visible.map((record) => (
+            {shown.map((record) => (
               <AllowanceRow
                 key={`${record.contractId}|${record.spender}`}
                 record={record}
@@ -148,6 +155,33 @@ export function AllowanceList({
           </div>
         </div>
       )}
+      {shown.length < visible.length ? (
+        <div
+          data-testid="allowance-list-more"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            flexWrap: "wrap",
+            padding: "12px 20px",
+            fontSize: 12.5,
+            color: "var(--fg-2)",
+          }}
+        >
+          <span>
+            Showing {shown.length} of {visible.length}.
+          </span>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setShownCount((n) => n + ALLOWANCE_ROWS_PER_PAGE)}
+            data-testid="allowance-list-more-button"
+          >
+            Show {Math.min(ALLOWANCE_ROWS_PER_PAGE, visible.length - shown.length)} more
+          </Button>
+        </div>
+      ) : null}
     </Card>
   );
 }
@@ -417,6 +451,7 @@ function AllowanceRow({
           connectorRef={connectorRef}
           onRevoked={onRevoked}
           busy={busy ?? false}
+          inactive={!isActive(record)}
         />
       </div>
     </div>
