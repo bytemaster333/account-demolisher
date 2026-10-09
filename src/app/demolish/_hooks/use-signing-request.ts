@@ -65,6 +65,8 @@ export function reviewedClaimList(
   return final.metadata.claimableBalanceIds;
 }
 
+export type SigningRequest = ReturnType<typeof useSigningRequest>;
+
 // everything about the shared-account signing request on the initiator's side:
 // publishing the reviewed close, keeping it across a reload, and picking it up
 // again only once the rebuilt plan is shown to be the same transaction
