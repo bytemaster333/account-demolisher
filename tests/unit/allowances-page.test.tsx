@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // rpc reads, simulations and revoke transactions are network boundaries; the
@@ -256,5 +256,29 @@ describe("/allowances visit metric", () => {
     beacon.visits = [];
     render(<AllowancesPage />);
     expect(beacon.visits).toEqual([["allowances"]]);
+  });
+});
+
+describe("/allowances scanning card (L-82)", () => {
+  // a live region announces every change, and the quip under the title changes
+  // every 1.6s, so only the fixed title may be one
+  const LIVE_ROLES = new Set(["status", "alert", "log", "marquee", "timer"]);
+  const isLive = (el: Element): boolean =>
+    el.hasAttribute("aria-live") || LIVE_ROLES.has(el.getAttribute("role") ?? "");
+
+  it("keeps the rotating quip out of every live region and announces only the title", async () => {
+    scan.enumerate.mockImplementation(() => new Promise<never>(() => {}));
+    render(<AllowancesPage />);
+    await scanAddress(G_OWNER);
+
+    const card = screen.getByTestId("allowance-scanning");
+    const quip = within(card).getByText("Reading approve events…");
+    for (let el: Element | null = quip; el !== null; el = el.parentElement) {
+      expect(isLive(el), `live region around the quip: ${el.outerHTML.slice(0, 80)}`).toBe(false);
+    }
+    const live = [card, ...card.querySelectorAll("*")].filter(isLive);
+    expect(live).toHaveLength(1);
+    expect(live[0]!.getAttribute("role")).toBe("status");
+    expect(live[0]!.textContent).toBe("Looking up allowances on-chain…");
   });
 });
