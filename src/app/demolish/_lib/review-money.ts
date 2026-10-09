@@ -6,7 +6,7 @@
 import type { PlanNode } from "@/lib/plan/tree";
 import type { AccountAudit } from "@/lib/types/account";
 
-import { nodeFeeStroops, nodeMaxFeeStroops, xlmToStroops } from "./fees";
+import { feeIsUnbuilt, nodeFeeStroops, nodeMaxFeeStroops, xlmToStroops } from "./fees";
 
 export interface ReviewMoney {
   readonly nativeBalanceStroops: bigint;
@@ -16,6 +16,9 @@ export interface ReviewMoney {
   readonly nativeClaimStroops: bigint;
   readonly typicalFeeStroops: bigint;
   readonly maxFeeStroops: bigint;
+  // steps built only at execute time: the typical figure leaves them out, the
+  // max counts each at the most the executor signs it for
+  readonly unbuiltFeeSteps: number;
   // native + conversion floors + native claims - max fees, never below zero
   readonly atLeastStroops: bigint;
   // a step (a loan repayment) pays out of the balance by an amount only known
@@ -45,6 +48,7 @@ export function computeReviewMoney(args: {
   let sentAsIs = 0;
   let typicalFeeStroops = 0n;
   let maxFeeStroops = 0n;
+  let unbuiltFeeSteps = 0;
   let repays = 0;
   let defiProceeds = 0;
   let tokensAsIs = 0;
@@ -53,6 +57,7 @@ export function computeReviewMoney(args: {
     if (node.status === "skipped") continue;
     typicalFeeStroops += BigInt(nodeFeeStroops(node));
     maxFeeStroops += BigInt(nodeMaxFeeStroops(node));
+    if (feeIsUnbuilt(node)) unbuiltFeeSteps += 1;
     switch (node.kind) {
       case "FinalClassicTx":
         for (const op of node.metadata.batches.flatMap((b) => b.operations)) {
@@ -148,6 +153,7 @@ export function computeReviewMoney(args: {
     nativeClaimStroops,
     typicalFeeStroops,
     maxFeeStroops,
+    unbuiltFeeSteps,
     atLeastStroops,
     spendsBalance: repays > 0,
     notCounted,

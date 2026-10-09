@@ -58,7 +58,7 @@ describe("fee labels on a step row (L-19)", () => {
     expect(text).toContain(`up to ${max} XLM`);
   });
 
-  it("labels a soroban step's signed fee as the maximum", () => {
+  it("shows a soroban step's built fee as usual and its class cap as the most (NP5-42)", () => {
     const tree = makeTree({ positions: blendPositions() });
     const repay = [...tree.allNodes.values()].find((n) => n.kind === "RepayBlend")!;
     repay.status = "simulated";
@@ -73,7 +73,9 @@ describe("fee labels on a step row (L-19)", () => {
       restorePreambleRequired: false,
     } as never;
     render(<PlanRow node={repay} network={TESTNET} mode="plan" index={1} />);
-    expect(feeText()).toBe("fee up to 0.0131 XLM");
+    // the step is re-simulated before signing; a blend step is never signed
+    // above 0.01 XLM inclusion + 3.3 XLM
+    expect(feeText()).toBe("fee about 0.0131 XLM, up to 3.31 XLM");
   });
 
   it("shows an unreadable fee on its own row instead of failing the page", () => {
@@ -120,7 +122,7 @@ describe("a step built only after earlier steps land (H-18)", () => {
     return tree;
   }
 
-  it("names the step it waits for and shows no fee or error", () => {
+  it("names the step it waits for, shows the most it can be signed for and no error", () => {
     const tree = deferredTree();
     const ordered = topologicalOrder(tree);
     render(
@@ -139,9 +141,17 @@ describe("a step built only after earlier steps land (H-18)", () => {
     );
     const note = screen.getByTestId("deferred-note").textContent ?? "";
     expect(note).toMatch(/Built after Repay a loan on Blend confirms/);
-    expect(note).toMatch(/fee is shown when it is built/);
+    expect(note).toMatch(/exact fee is known once it is built/);
+    expect(note).toMatch(/never signed above the fee shown/);
     const row = screen.getByTestId("deferred-note").closest("[data-testid='plan-row']")!;
-    expect(row.querySelector("[data-testid='plan-row-fee']")).toBeNull();
+    expect(row.querySelector("[data-testid='plan-row-fee']")?.textContent).toBe(
+      "fee up to 3.31 XLM",
+    );
     expect(row.querySelector("[data-testid='plan-row-error']")).toBeNull();
+    // the review's total names the steps it could not price yet (the repay is
+    // not built in this fixture either)
+    expect(document.body.textContent).toContain(
+      "plus 2 steps priced when they are built, at most 6.92 XLM",
+    );
   });
 });

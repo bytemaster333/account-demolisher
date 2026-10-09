@@ -89,6 +89,13 @@ export const SOROBAN_RESOURCE_FEE_CAPS: Readonly<Record<SorobanFeeClass, bigint>
   "defi-exit": 33_000_000n,
 };
 
+// the most a step of this class is ever signed for: the inclusion bid every
+// soroban step carries plus its resource fee cap. the executor re-simulates each
+// step right before signing, so this, not the preview's simulated fee, bounds it
+export function sorobanFeeCeiling(feeClass: SorobanFeeClass): bigint {
+  return BigInt(SOROBAN_INCLUSION_FEE) + SOROBAN_RESOURCE_FEE_CAPS[feeClass];
+}
+
 export const UNTRUSTED_TOKEN_MAX_WRITE_BYTES = 8_192;
 export const UNTRUSTED_TOKEN_MAX_READ_WRITE_ENTRIES = 16;
 export const POOL_EXIT_MAX_WRITE_BYTES = 32_768;

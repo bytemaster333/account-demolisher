@@ -186,7 +186,13 @@ export function ReviewPanel({
             value:
               money === null
                 ? "can't be read"
-                : `about ${stroopsToXlm(money.typicalFeeStroops)} XLM, at most ${stroopsToXlm(money.maxFeeStroops)} XLM`,
+                : money.unbuiltFeeSteps > 0
+                  ? `about ${stroopsToXlm(money.typicalFeeStroops)} XLM plus ${
+                      money.unbuiltFeeSteps === 1
+                        ? "1 step priced when it is built"
+                        : `${money.unbuiltFeeSteps} steps priced when they are built`
+                    }, at most ${stroopsToXlm(money.maxFeeStroops)} XLM`
+                  : `about ${stroopsToXlm(money.typicalFeeStroops)} XLM, at most ${stroopsToXlm(money.maxFeeStroops)} XLM`,
           },
           {
             label: "Reserve released (included)",

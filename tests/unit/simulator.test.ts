@@ -240,26 +240,33 @@ describe("simulator: Soroban node routes to rpc simulate", () => {
   });
 });
 
-describe("simulator: the forward reports its fee ceiling, not a fixed base fee (M-01)", () => {
-  it("shows the most the forward can bid while it escalates", async () => {
-    const out = await simulateNode(
-      {
-        id: "fwd",
-        kind: "MediatorForward",
-        dependencies: [],
-        status: "pending",
-        description: "fwd",
-        metadata: {
-          kind: "MediatorForward",
-          mediatorPublicKey: MED,
-          ultimateDestination: DEST,
-          flowToken: "tok",
-        },
-      },
-      baseDeps(),
-    );
+describe("simulator: the forward is priced at its starting bid, not a fixed base fee (M-01)", () => {
+  const forward = {
+    id: "fwd",
+    kind: "MediatorForward",
+    dependencies: [],
+    status: "pending",
+    description: "fwd",
+    metadata: {
+      kind: "MediatorForward",
+      mediatorPublicKey: MED,
+      ultimateDestination: DEST,
+      flowToken: "tok",
+    },
+  } as const;
+
+  // the forward starts from fee_charged by the same rule the classic batches are
+  // priced with here (the mode while ledgers have room, the p90 under surge)
+  it("bids the per-op fee the preview read from the network for each operation", async () => {
+    const out = await simulateNode(forward, baseDeps({ classicFeePerOp: 25_000 }));
     if (out.kind !== "classic") throw new Error("expected classic");
     expect(out.operationCount).toBe(FORWARD_OPERATION_COUNT);
+    expect(out.estimatedFee).toBe(String(FORWARD_OPERATION_COUNT * 25_000));
+  });
+
+  it("never prices it above the ceiling the forward escalates to", async () => {
+    const out = await simulateNode(forward, baseDeps({ classicFeePerOp: 5_000_000 }));
+    if (out.kind !== "classic") throw new Error("expected classic");
     expect(out.estimatedFee).toBe(MAX_FORWARD_FEE.toString());
   });
 });

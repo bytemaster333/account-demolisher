@@ -94,7 +94,7 @@ describe("computeReviewMoney (M-33)", () => {
     );
   });
 
-  it("counts each Soroban step at the fee its built transaction authorizes", () => {
+  it("counts each Soroban step at its built fee as usual, and at its class cap as the most", () => {
     const audit = makeAudit();
     const tree = makeTree({ audit, positions: blendPositions() });
     const ordered = topologicalOrder(tree);
@@ -102,11 +102,34 @@ describe("computeReviewMoney (M-33)", () => {
     // flat inclusion-plus-resource guess
     for (const n of ordered) if (n.kind !== "FinalClassicTx") simulateSoroban(n, "5000", "2524898");
     const sorobanCount = ordered.filter((n) => n.kind !== "FinalClassicTx").length;
+    expect(sorobanCount).toBe(2);
     const money = computeReviewMoney({ audit, ordered });
     const final = tree.allNodes.get("final-classic-tx")!;
     if (final.kind !== "FinalClassicTx") throw new Error("expected the final node");
     const ops = final.metadata.batches.reduce((n, b) => n + b.operations.length, 0);
-    expect(money.maxFeeStroops).toBe(BigInt(sorobanCount) * 2_524_898n + BigInt(ops) * 1_000_000n);
+    expect(money.typicalFeeStroops).toBe(BigInt(sorobanCount) * 2_524_898n + BigInt(ops) * 100n);
+    // each step is re-simulated before signing, so the preview's fee is not its
+    // most: a blend step is never signed above 0.01 XLM inclusion + 3.3 XLM
+    expect(money.maxFeeStroops).toBe(BigInt(sorobanCount) * 33_100_000n + BigInt(ops) * 1_000_000n);
+    expect(money.unbuiltFeeSteps).toBe(0);
+  });
+
+  it("counts a step built only at execute time at its cap, and says it is unpriced", () => {
+    const audit = makeAudit();
+    const tree = makeTree({ audit, positions: blendPositions() });
+    const ordered = topologicalOrder(tree);
+    const repay = ordered.find((n) => n.kind === "RepayBlend")!;
+    const withdraw = ordered.find((n) => n.kind === "WithdrawBlend")!;
+    simulateSoroban(repay, "5000", "2524898");
+    withdraw.status = "pending";
+    withdraw.deferred = { after: [repay.id], reason: "the collateral is known after the repay" };
+    const money = computeReviewMoney({ audit, ordered });
+    const final = tree.allNodes.get("final-classic-tx")!;
+    if (final.kind !== "FinalClassicTx") throw new Error("expected the final node");
+    const ops = final.metadata.batches.reduce((n, b) => n + b.operations.length, 0);
+    expect(money.unbuiltFeeSteps).toBe(1);
+    expect(money.typicalFeeStroops).toBe(2_524_898n + BigInt(ops) * 100n);
+    expect(money.maxFeeStroops).toBe(2n * 33_100_000n + BigInt(ops) * 1_000_000n);
   });
 
   it("flags DeFi steps it cannot express in XLM instead of folding them in", () => {

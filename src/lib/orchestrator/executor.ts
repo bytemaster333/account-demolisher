@@ -47,6 +47,7 @@ import { assertDefiAuthTree, UnsafeDefiAuthError } from "@/lib/soroban/defi-auth
 import {
   assertSorobanFeeWithinCap,
   SorobanFeeCapError,
+  sorobanFeeCeiling,
   type SorobanFeeClass,
 } from "@/lib/soroban/fee-cap";
 import {
@@ -247,6 +248,11 @@ function feeClassOf(node: PlanNode): SorobanFeeClass {
     default:
       return "defi-exit";
   }
+}
+
+// the most this soroban step is signed for, whatever its rebuild re-simulates to
+export function sorobanStepFeeCeiling(node: PlanNode): bigint {
+  return sorobanFeeCeiling(feeClassOf(node));
 }
 
 // the exchange-forward token must outlive the merge (a classic tx valid for 300s

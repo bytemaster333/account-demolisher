@@ -8,7 +8,7 @@ import type { PlanNode } from "@/lib/plan/tree";
 import { SR_ONLY } from "../_lib/a11y";
 import { errorMessage } from "@/lib/errors";
 
-import { nodeFeeStroops, nodeMaxFeeStroops, stroopsToXlm } from "../_lib/fees";
+import { feeIsUnbuilt, nodeFeeStroops, nodeMaxFeeStroops, stroopsToXlm } from "../_lib/fees";
 import { nodeExplainer, nodeLabel, nodePlainLabel, simulatedBadgeLabel } from "../_lib/plan-copy";
 import { shortAddress } from "@/lib/safe-display";
 
@@ -48,11 +48,11 @@ export function PlanRow({
 
   // plan mode surfaces the network fee up-front so cost is visible before
   // signing; live mode drops it (once submitted the fee is spent and the tx
-  // link is what matters). A step built only after earlier ones land has no fee
-  // yet, and a fee the page can't read is shown on this row rather than taking
-  // the whole Review down.
+  // link is what matters). A step built only after earlier ones land shows the
+  // most it can be signed for, and a fee the page can't read is shown on this
+  // row rather than taking the whole Review down.
   const deferred = node.deferred !== undefined && node.status === "pending";
-  const fee = mode === "plan" && !deferred ? stepFee(node) : null;
+  const fee = mode === "plan" ? stepFee(node) : null;
   // a swap shows what it expects and the floor it signs (XLM has 7 decimals)
   const quote =
     mode === "plan" && node.kind === "ConvertSorobanToXLM"
@@ -351,7 +351,7 @@ export function PlanRow({
                 skipped
               </span>
             ) : null}
-            {fee !== null && fee.kind !== "error" && fee.typical > 0 ? (
+            {fee !== null && fee.kind !== "error" && (fee.kind === "unbuilt" || fee.typical > 0) ? (
               <span
                 data-testid="plan-row-fee"
                 style={{
@@ -361,9 +361,11 @@ export function PlanRow({
                   whiteSpace: "nowrap",
                 }}
               >
-                {fee.kind === "capped"
-                  ? `fee up to ${stroopsToXlm(fee.typical)} XLM`
-                  : `fee about ${stroopsToXlm(fee.typical)} XLM, up to ${stroopsToXlm(fee.max)} XLM`}
+                {fee.kind === "unbuilt"
+                  ? `fee up to ${stroopsToXlm(fee.max)} XLM`
+                  : fee.kind === "capped"
+                    ? `fee up to ${stroopsToXlm(fee.typical)} XLM`
+                    : `fee about ${stroopsToXlm(fee.typical)} XLM, up to ${stroopsToXlm(fee.max)} XLM`}
               </span>
             ) : null}
           </div>
@@ -459,7 +461,8 @@ export function PlanRow({
                 ? deferredAfter.join(", ")
                 : "the steps before it"}{" "}
               confirm{deferredAfter !== undefined && deferredAfter.length === 1 ? "s" : ""}, since
-              it depends on what they leave behind. Its fee is shown when it is built.
+              it depends on what they leave behind. Its exact fee is known once it is built, and it
+              is never signed above the fee shown.
             </div>
           ) : null}
           {node.error && !landed ? (
@@ -484,16 +487,21 @@ export function PlanRow({
 type StepFee =
   // the figure is what the signed transaction authorizes: a real maximum
   | { readonly kind: "capped"; readonly typical: number }
+  // nothing is built yet: only the most it can be signed for is known
+  | { readonly kind: "unbuilt"; readonly max: number }
   // the usual fee, and the most the executor's surge bidding can reach
   | { readonly kind: "estimate"; readonly typical: number; readonly max: number }
   | { readonly kind: "error"; readonly message: string };
 
-// a soroban step's built fee is its maximum; a classic step and the forward are
-// bid at the preview's fee and may be re-bid up to the executor's ceiling
+// a classic step and the forward are bid at the preview's fee and may be re-bid
+// up to the executor's ceiling; a soroban step is re-simulated before signing and
+// is never signed above its class's cap, which is all a step built at execute
+// time has
 function stepFee(node: PlanNode): StepFee {
   try {
-    const typical = nodeFeeStroops(node);
     const max = nodeMaxFeeStroops(node);
+    if (feeIsUnbuilt(node)) return { kind: "unbuilt", max };
+    const typical = nodeFeeStroops(node);
     return max > typical ? { kind: "estimate", typical, max } : { kind: "capped", typical };
   } catch (err) {
     return { kind: "error", message: errorMessage(err) };

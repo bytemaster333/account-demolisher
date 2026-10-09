@@ -5,7 +5,7 @@ import { Account, BASE_FEE, type Horizon, type Transaction, type rpc } from "@st
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
-import { FORWARD_OPERATION_COUNT, MAX_FORWARD_FEE } from "@/lib/mediator/forward-terms";
+import { FORWARD_OPERATION_COUNT, MAX_FORWARD_FEE_PER_OP } from "@/lib/mediator/forward-terms";
 import { simulate, type SimulationResult } from "@/lib/soroban/simulate";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
 import { DEFAULT_TX_VALIDITY_SECONDS } from "@/lib/stellar/ledger-clock";
@@ -150,7 +150,7 @@ async function simulateClassicBatches(
 
 async function simulateMediatorForward(
   node: Extract<PlanNode, { kind: "MediatorForward" }>,
-  _deps: SimulationDeps,
+  deps: SimulationDeps,
 ): Promise<SimulationOutcome> {
   // the forward is one payment plus one accountMerge out of the mediator. the
   // browser builds it against the mediator's live sequence once the merge has
@@ -166,13 +166,19 @@ async function simulateMediatorForward(
     );
   }
   // its bid starts from recent fee_charged stats (the mode while ledgers have
-  // room, p90 under surge), triples on an insufficient-fee or expired attempt and
-  // stops at MAX_FORWARD_FEE, so that ceiling is the most it can cost
+  // room, p90 under surge), the same rule that prices the classic batches here,
+  // so it is priced at that per-op fee like them. it triples on an
+  // insufficient-fee or expired attempt up to MAX_FORWARD_FEE, which the review
+  // shows as its most (app/demolish/_lib/fees.ts)
+  const feePerOp = Math.min(
+    deps.classicFeePerOp ?? Number.parseInt(BASE_FEE, 10),
+    MAX_FORWARD_FEE_PER_OP,
+  );
   return {
     kind: "classic",
     xdr: "",
     operationCount: FORWARD_OPERATION_COUNT,
-    estimatedFee: MAX_FORWARD_FEE.toString(),
+    estimatedFee: (FORWARD_OPERATION_COUNT * feePerOp).toString(),
     transactionCount: 1,
   };
 }
