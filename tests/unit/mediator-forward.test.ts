@@ -17,14 +17,13 @@ import { BASE_RESERVE, FakeHorizon, XLM } from "./mediator-horizon-fake";
 const MEMO = { type: "id", value: "90210" } as const;
 
 let fake: FakeHorizon;
-let clockOffset = 0;
 const sleeps: number[] = [];
+// an injected sleep passes time on the network's clock
 const deps = {
   sleep: async (ms: number) => {
     sleeps.push(ms);
-    clockOffset += ms;
+    fake.elapse(ms);
   },
-  now: () => Date.now() + clockOffset,
 };
 
 let user: string;
@@ -61,7 +60,6 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(fake.fetch));
   signRoute.__resetRateLimiterForTests();
   reissueRoute.__resetRateLimiterForTests();
-  clockOffset = 0;
   sleeps.length = 0;
   user = Keypair.random().publicKey();
   cex = Keypair.random().publicKey();
@@ -239,6 +237,41 @@ describe("submitMediatorForward", () => {
     // simply never makes a ledger; the rebuild bids three times as much
     expect(fake.submitted.map((t) => t.fee)).toEqual(["200", "600"]);
     expect(fake.lastForward!.amount).toBe(102n * XLM - 2n * BASE_RESERVE - 600n);
+  });
+
+  it("times the forward from the ledger clock when the browser clock is ten minutes slow", async () => {
+    const input = await mergedFlow();
+    fake.ledgerClockAheadMs = 10 * 60 * 1000;
+    const result = await submitMediatorForward(input, deps);
+    expect(result.ok).toBe(true);
+    // one submission, not a run of tx_too_late rebuilds
+    expect(fake.submitted).toHaveLength(1);
+    const bounds = fake.submitted[0]!.timeBounds!;
+    expect(Number(bounds.maxTime)).toBe(fake.ledgerCloseTime() + 180);
+  });
+
+  it("waits for the ledger clock, not the browser's, before rebuilding a dropped forward", async () => {
+    const input = await mergedFlow();
+    // the browser runs ten minutes fast: by its clock the first forward expired
+    // the moment it was sent, while the network can still include it
+    fake.ledgerClockAheadMs = -10 * 60 * 1000;
+    fake.submitScript.push({ kind: "drop-504" });
+    // bounded, so a forward that waits on the wrong clock fails here instead of
+    // polling forever
+    const bounded = {
+      sleep: async (ms: number) => {
+        if (sleeps.length >= 200) throw new Error("the forward never stopped waiting");
+        await deps.sleep(ms);
+      },
+    };
+    const result = await submitMediatorForward(input, bounded);
+    expect(result.ok).toBe(true);
+    expect(fake.submitted).toHaveLength(2);
+    const firstMaxTime = Number(fake.submitted[0]!.timeBounds!.maxTime);
+    // the rebuild came only once a ledger closed past the first one's maxTime
+    // and the grace, and it is timed from that later ledger
+    expect(Number(fake.submitted[1]!.timeBounds!.maxTime)).toBeGreaterThan(firstMaxTime + 30);
+    expect(sleeps.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(210_000);
   });
 
   it("sends both the payment and the merge to the committed destination", async () => {

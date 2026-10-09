@@ -44,6 +44,10 @@ type RouteHandler = (req: Request) => Response | Promise<Response>;
 
 export class FakeHorizon {
   ledger = 1000;
+  // how far the network's clock runs ahead of this process's Date.now(); a
+  // positive value is a client clock that is slow. elapse() moves it forward
+  // the way a test's injected sleep passes time
+  ledgerClockAheadMs = 0;
   readonly accounts = new Map<string, FakeAccount>();
   readonly ops = new Map<string, OpRecord[]>();
   readonly txs = new Map<string, { ledger: number; successful: boolean }>();
@@ -71,6 +75,15 @@ export class FakeHorizon {
       reissue: RouteHandler;
     },
   ) {}
+
+  // close time (unix seconds) of the latest ledger
+  ledgerCloseTime(): number {
+    return Math.floor((Date.now() + this.ledgerClockAheadMs) / 1000);
+  }
+
+  elapse(ms: number): void {
+    this.ledgerClockAheadMs += ms;
+  }
 
   createAccount(id: string, balance: bigint): void {
     this.ledger += 1;
@@ -151,7 +164,13 @@ export class FakeHorizon {
       return Response.json({
         _links: { self: { href: url.href }, next: { href: url.href }, prev: { href: url.href } },
         _embedded: {
-          records: [{ sequence: this.ledger, base_reserve_in_stroops: Number(BASE_RESERVE) }],
+          records: [
+            {
+              sequence: this.ledger,
+              closed_at: new Date(this.ledgerCloseTime() * 1000).toISOString(),
+              base_reserve_in_stroops: Number(BASE_RESERVE),
+            },
+          ],
         },
       });
     }
@@ -236,8 +255,8 @@ export class FakeHorizon {
       return { transaction: "tx_bad_auth" };
     }
     const maxTime = Number(tx.timeBounds?.maxTime ?? "0");
-    if (maxTime !== 0 && Math.floor(Date.now() / 1000) > maxTime)
-      return { transaction: "tx_too_late" };
+    // the network judges maxTime against its own close time
+    if (maxTime !== 0 && this.ledgerCloseTime() > maxTime) return { transaction: "tx_too_late" };
 
     const charged = this.surgeFeePerOp * ops;
     const minBalance = 2n * BASE_RESERVE;

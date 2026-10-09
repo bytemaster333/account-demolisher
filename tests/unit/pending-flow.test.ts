@@ -231,12 +231,11 @@ describe("resume and inspect against chain state", () => {
   let fake: FakeHorizon;
   let user: string;
   let cex: string;
-  let offset = 0;
+  // an injected sleep passes time on the network's clock
   const deps = {
     sleep: async (ms: number) => {
-      offset += ms;
+      fake.elapse(ms);
     },
-    now: () => Date.now() + offset,
   };
 
   async function pendingAfterMerge(merge = true): Promise<PendingMediatorForward> {
@@ -270,7 +269,6 @@ describe("resume and inspect against chain state", () => {
     vi.stubGlobal("fetch", vi.fn(fake.fetch));
     signRoute.__resetRateLimiterForTests();
     reissueRoute.__resetRateLimiterForTests();
-    offset = 0;
     user = Keypair.random().publicKey();
     cex = Keypair.random().publicKey();
     fake.createAccount(user, 50n * XLM);

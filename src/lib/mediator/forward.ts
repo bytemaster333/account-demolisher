@@ -32,6 +32,7 @@ import {
 } from "@/lib/mediator/forward-terms";
 import { decimalToStroops, stroopsToDecimal } from "@/lib/stellar/amount";
 import { getHorizon } from "@/lib/stellar/horizon-client";
+import { fetchLedgerClock, ledgerMaxTime } from "@/lib/stellar/ledger-clock";
 import type { ClassicMemo } from "@/lib/types/plan";
 
 export interface MediatorForwardInput {
@@ -62,11 +63,11 @@ export type MediatorForwardResult =
 
 export interface MediatorForwardDeps {
   readonly sleep?: (ms: number) => Promise<void>;
-  readonly now?: () => number;
 }
 
 const NETWORK_MIN_FEE_PER_OP = 100;
-// the forward's own validity window; short, so an ambiguous submit resolves fast
+// the forward's own validity window, counted from the latest ledger's close
+// time; short, so an ambiguous submit resolves fast
 const FORWARD_TIMEOUT_SECONDS = 180;
 const MAX_FORWARD_ATTEMPTS = 4;
 // the merge was just confirmed by a possibly different horizon node; give the
@@ -74,8 +75,9 @@ const MAX_FORWARD_ATTEMPTS = 4;
 const VIEW_POLL_ATTEMPTS = 10;
 const VIEW_POLL_DELAY_MS = 2_000;
 const RECONCILE_POLL_DELAY_MS = 5_000;
-// how long past maxTime a tx may still show up in horizon's history
-const RECONCILE_GRACE_MS = 30_000;
+// how far past maxTime the ledger clock must run before a forward missing from
+// horizon's history counts as expired; a load-balanced horizon node may lag
+const RECONCILE_GRACE_SECONDS = 30;
 const READ_ATTEMPTS = 3;
 // below this share of a full ledger there is no classic surge to outbid
 const SURGE_CAPACITY_USAGE = 0.5;
@@ -91,7 +93,6 @@ export async function submitMediatorForward(
   deps: MediatorForwardDeps = {},
 ): Promise<MediatorForwardResult> {
   const sleep = deps.sleep ?? defaultSleep;
-  const now = deps.now ?? Date.now;
   const server = getHorizon(input.network);
   let flowToken = input.flowToken;
   const fail = (error: string): MediatorForwardResult => ({ ok: false, error, flowToken });
@@ -153,6 +154,9 @@ export async function submitMediatorForward(
           `Mediator balance ${nativeLine(account)?.balance ?? "0"} XLM does not cover its minimum balance and the forward fee.`,
         );
       }
+      // timed from the network's clock: a browser clock minutes slow would
+      // otherwise build a forward that is tx_too_late on arrival
+      const clock = await read(() => fetchLedgerClock(input.network));
       const unsigned = new TransactionBuilder(account, {
         fee: String(feePerOp),
         networkPassphrase: input.network.passphrase,
@@ -166,7 +170,7 @@ export async function submitMediatorForward(
           }),
         )
         .addOperation(Operation.accountMerge({ destination: input.destination }))
-        .setTimeout(FORWARD_TIMEOUT_SECONDS)
+        .setTimebounds(0, ledgerMaxTime(clock.closedAt, FORWARD_TIMEOUT_SECONDS))
         .build();
 
       // 4. co-sign, renewing the token once if it has expired
@@ -210,7 +214,10 @@ export async function submitMediatorForward(
       }
 
       // 5. submit, and reconcile by hash whenever the outcome is unknown
-      const outcome = await submitAndReconcile(server, signed, txHash, sleep, now);
+      const outcome = await submitAndReconcile(server, signed, txHash, sleep, async () => {
+        const latest = await read(() => fetchLedgerClock(input.network));
+        return latest.closedAt;
+      });
       if (outcome.kind === "landed") {
         return { ok: true, txHash, ledger: outcome.ledger, alreadyDelivered: false, flowToken };
       }
@@ -385,7 +392,7 @@ async function submitAndReconcile(
   signed: Transaction,
   txHash: string,
   sleep: (ms: number) => Promise<void>,
-  now: () => number,
+  ledgerTime: () => Promise<number>,
 ): Promise<SubmitOutcome> {
   // SEP-29 check on its own, so a failure here is known to have sent nothing
   try {
@@ -411,7 +418,7 @@ async function submitAndReconcile(
       return { kind: "error", message: `Forward submission refused: ${describe(err)}` };
     }
   }
-  const maxTimeMs = Number(signed.timeBounds?.maxTime ?? "0") * 1000;
+  const maxTime = Number(signed.timeBounds?.maxTime ?? "0");
   for (;;) {
     try {
       const record = await server.transactions().transaction(txHash).call();
@@ -425,7 +432,18 @@ async function submitAndReconcile(
         };
       }
     }
-    if (now() > maxTimeMs + RECONCILE_GRACE_MS) return { kind: "expired" };
+    // the network refuses the tx in any ledger closed after maxTime, so only the
+    // ledger clock says it can no longer land
+    let closedAt: number;
+    try {
+      closedAt = await ledgerTime();
+    } catch (err) {
+      return {
+        kind: "error",
+        message: `Could not confirm forward ${txHash}: ${describe(err)}. Check it on an explorer before retrying.`,
+      };
+    }
+    if (closedAt > maxTime + RECONCILE_GRACE_SECONDS) return { kind: "expired" };
     await sleep(RECONCILE_POLL_DELAY_MS);
   }
 }
