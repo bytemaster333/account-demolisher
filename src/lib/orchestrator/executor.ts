@@ -1289,17 +1289,17 @@ async function runFinalClassic(node: FinalClassicTxNode, run: Run): Promise<Conf
       }
       const batch = freshBatches[0]!;
 
-      // conversions in one batch are quoted one by one against the same book; if
-      // they share a market, the later ones miss their floor. a rebuild that
-      // quotes exactly what just failed would fail the same way.
+      // the batcher never puts two conversions over one market in a batch, so a
+      // missed floor means the market pays less than Horizon quotes for it. a
+      // rebuild that quotes exactly what just failed would fail the same way.
       const quotes = quoteSignature(batch, freshPaths);
       if (refusedQuotes !== null && quotes === refusedQuotes) {
         throw new CloseFailure(
           "not_mergeable",
-          "Converting these balances to XLM failed twice against the same market quotes. They " +
-            "trade through a shared market, so selling them in one transaction moves its price past " +
-            "the 1% limit. Nothing was sold. Convert some of them yourself, or return them to their " +
-            "issuer, then rebuild the plan.",
+          "Converting these balances to XLM failed twice against the same market quotes: the " +
+            "market pays less than its quote, so the sale misses the 1% limit. Nothing in that " +
+            "transaction was sold. Convert them yourself, or return them to their issuer, then " +
+            "rebuild the plan.",
         );
       }
 

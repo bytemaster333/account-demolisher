@@ -502,7 +502,7 @@ describe("FinalClassicTx fee bid and in-call rebuilds", () => {
   });
 });
 
-describe("conversions that share a market", () => {
+describe("a conversion that misses its floor on chain", () => {
   const usdcBalance = {
     asset: { kind: "credit" as const, code: "USDC", issuer: USDC_ISSUER },
     amount: "500.0000000",
@@ -557,6 +557,108 @@ describe("conversions that share a market", () => {
     await run(t, d);
     expect(d.connector.signTransaction).toHaveBeenCalledTimes(2);
     expect(t.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
+  });
+});
+
+describe("conversions that trade through one market land in separate phases (M-14)", () => {
+  // EURC sells through USDC, so it trades on the USDC/XLM market the USDC sale
+  // uses too. each is quoted against the untouched book; in one transaction the
+  // second misses its floor once the first has eaten into that market.
+  const EURC = { kind: "credit" as const, code: "EURC", issuer: USDC_ISSUER };
+  const USDC_ID = { kind: "credit" as const, code: "USDC", issuer: USDC_ISSUER };
+  const line = (asset: typeof EURC, amount: string) => ({
+    asset,
+    amount,
+    buyingLiabilities: "0",
+    sellingLiabilities: "0",
+    limit: "1000",
+  });
+  const assetKey = (a: Asset): string =>
+    a.isNative() ? "native" : `${a.getCode()}:${a.getIssuer()}`;
+
+  it("sells each in its own phase, re-quoted after the first landed, and closes", async () => {
+    // the account as the landed transactions leave it
+    const held = new Map<string, { asset: typeof EURC; amount: string }>([
+      [`USDC:${USDC_ISSUER}`, { asset: USDC_ID, amount: "500.0000000" }],
+      [`EURC:${USDC_ISSUER}`, { asset: EURC, amount: "300.0000000" }],
+    ]);
+    let merged = false;
+    auditAccount.mockImplementation(async () => {
+      if (merged) throw new AccountNotFoundError(USER);
+      const lines = [...held.values()].map((h) => line(h.asset, h.amount));
+      return makeAudit({
+        balances: [...makeAudit().balances, ...lines],
+        subentryCount: lines.length,
+      });
+    });
+    const quoteFor = (key: string, amount: string): PathResultRef => ({
+      sourceAmount: amount,
+      destinationAmount: (Number(amount) * 4).toFixed(7),
+      // EURC routes through USDC
+      path: key.startsWith("EURC") ? [USDC_ID] : [],
+      reference: { sourceAmount: "0.1000000", destinationAmount: "0.4000000" },
+    });
+    resolveCreditPaths.mockImplementation(
+      async (a: {
+        balances: { asset: { kind: string; code?: string; issuer?: string }; amount: string }[];
+      }) => {
+        const out = new Map<string, PathResultRef>();
+        for (const b of a.balances) {
+          if (b.asset.kind !== "credit" || Number(b.amount) === 0) continue;
+          const key = `${b.asset.code}:${b.asset.issuer}`;
+          out.set(key, quoteFor(key, b.amount));
+        }
+        return out;
+      },
+    );
+
+    const d = deps();
+    // the network: two sales over one market in one transaction miss the floor
+    d.submitClassic.mockImplementation(async (signedXdr: string) => {
+      const tx = TransactionBuilder.fromXdr(signedXdr, NETWORK.passphrase) as Transaction;
+      const sales = tx.operations.filter(
+        (o): o is Operation.PathPaymentStrictSend => o.type === "pathPaymentStrictSend",
+      );
+      const markets = sales.map((o) => {
+        const hops = [o.sendAsset, ...o.path, o.destAsset].map(assetKey);
+        return new Set(hops.slice(1).map((to, i) => `${hops[i]}>${to}`));
+      });
+      const shared = markets.some((m, i) =>
+        markets.slice(i + 1).some((n) => [...m].some((e) => n.has(e))),
+      );
+      if (shared) {
+        throw new SubmitRejectedError(
+          { transaction: "tx_failed", operations: ["op_success", "op_under_dest_min"] },
+          400,
+        );
+      }
+      for (const o of sales) {
+        const k = assetKey(o.sendAsset);
+        const h = held.get(k)!;
+        held.set(k, { ...h, amount: "0.0000000" });
+      }
+      for (const o of tx.operations) {
+        if (o.type === "changeTrust" && o.limit === "0.0000000") {
+          held.delete(assetKey(o.line as Asset));
+        }
+        if (o.type === "accountMerge") merged = true;
+      }
+      return receipt();
+    });
+
+    const t = tree(finalNode());
+    await run(t, d);
+    expect(t.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
+    expect(merged).toBe(true);
+    const salesPerTx = d.connector.signed.map(
+      (tx) => tx.operations.filter((o) => o.type === "pathPaymentStrictSend").length,
+    );
+    // both sold, never together, and nothing was rejected on the way
+    expect(salesPerTx.reduce((a, b) => a + b, 0)).toBe(2);
+    expect(Math.max(...salesPerTx)).toBe(1);
+    expect(d.submitClassic).toHaveBeenCalledTimes(d.connector.signed.length);
+    // the second sale was quoted after the first one landed
+    expect(resolveCreditPaths.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 });
 

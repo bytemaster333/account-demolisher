@@ -11,7 +11,12 @@ import {
   routableCredits,
   unroutableCredits,
 } from "@/lib/plan/classic-batcher";
-import type { AccountAudit, AuditBalance, ClaimableBalanceEntry } from "@/lib/types/account";
+import type {
+  AccountAudit,
+  AssetIdentifier,
+  AuditBalance,
+  ClaimableBalanceEntry,
+} from "@/lib/types/account";
 import type {
   BatchOptions,
   BatchedOperation,
@@ -19,6 +24,7 @@ import type {
   ClassicOpKind,
   PathResultRef,
 } from "@/lib/types/plan";
+import { pathKey } from "@/lib/types/plan";
 import { TESTNET } from "@/lib/config/networks";
 import { CLOSE_MARKER_NAME, CLOSE_MARKER_VALUE } from "@/lib/metrics/close-marker";
 import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
@@ -1035,6 +1041,74 @@ describe("M-18: a balance the close sells can be opted out of the sale", () => {
         (c) => c.key,
       ),
     ).toEqual([USDC_KEY]);
+  });
+});
+
+describe("M-14: conversions through one market are never in one transaction", () => {
+  const EURC = { kind: "credit", code: "EURC", issuer: ISSUER } as const;
+  const EURC_KEY = `EURC:${ISSUER}`;
+  const AQUA = { kind: "credit", code: "AQUA", issuer: ISSUER } as const;
+  const AQUA_KEY = `AQUA:${ISSUER}`;
+  const line = (asset: typeof EURC | typeof AQUA, amount: string): AuditBalance => ({
+    ...usdcLine(amount),
+    asset,
+  });
+  const sales = (b: { readonly operations: readonly BatchedOperation[] }) =>
+    b.operations.filter((o) => o.kind === "path_payment_strict_send");
+  const sold = (b: { readonly operations: readonly BatchedOperation[] }) =>
+    sales(b).map((o) => pathKey(o.metadata["sendAsset"] as AssetIdentifier));
+
+  it("puts a sale routed through another sale's market in a later phase", () => {
+    const audit = makeAudit({
+      balances: [usdcLine("500"), line(EURC, "300")],
+      offers: [
+        {
+          id: "9",
+          selling: EURC,
+          buying: { kind: "native" },
+          amount: "10",
+          priceR: { n: 1, d: 1 },
+        },
+      ],
+    });
+    // EURC sells through USDC, onto the USDC/XLM market the USDC sale uses
+    const paths = new Map<string, PathResultRef>([
+      [USDC_KEY, pricedPath("500", "2000")],
+      [EURC_KEY, { ...pricedPath("300", "1300"), path: [USDC] }],
+    ]);
+    const batches = batchClassicDemolition(audit, directOptions, paths);
+    expect(batches.length).toBe(2);
+    // the offer goes before the first sale, and each sale has a transaction of its own
+    expect(batches[0]!.operations[0]!.kind).toBe("manage_sell_offer_cancel");
+    expect(sold(batches[0]!)).toEqual([USDC_KEY]);
+    expect(sold(batches[1]!)).toEqual([EURC_KEY]);
+    expect(batches[1]!.operations.at(-1)!.kind).toBe("account_merge");
+  });
+
+  it("keeps sales over separate markets in one transaction", () => {
+    const audit = makeAudit({ balances: [usdcLine("500"), line(AQUA, "300")] });
+    const paths = new Map<string, PathResultRef>([
+      [USDC_KEY, pricedPath("500", "2000")],
+      [AQUA_KEY, pricedPath("300", "3")],
+    ]);
+    const batches = batchClassicDemolition(audit, directOptions, paths);
+    expect(batches.length).toBe(1);
+    expect(sold(batches[0]!).sort()).toEqual([AQUA_KEY, USDC_KEY].sort());
+  });
+
+  it("groups three sales by the markets they share", () => {
+    // USDC and EURC both cross USDC/XLM; AQUA trades on its own market and
+    // rides with the first
+    const audit = makeAudit({
+      balances: [usdcLine("500"), line(EURC, "300"), line(AQUA, "300")],
+    });
+    const paths = new Map<string, PathResultRef>([
+      [USDC_KEY, pricedPath("500", "2000")],
+      [EURC_KEY, { ...pricedPath("300", "1300"), path: [USDC] }],
+      [AQUA_KEY, pricedPath("300", "3")],
+    ]);
+    const batches = batchClassicDemolition(audit, directOptions, paths);
+    expect(batches.map(sold)).toEqual([[USDC_KEY, AQUA_KEY], [EURC_KEY]]);
   });
 });
 

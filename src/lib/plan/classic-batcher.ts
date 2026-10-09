@@ -153,6 +153,7 @@ export function batchClassicDemolition(
   // conversion within the price-impact cap. Anything else is left in place with
   // its trustline, which blocks the merge until the user resolves it.
   const disposals: BatchedOperation[] = [];
+  const conversions: BatchedOperation[] = [];
   const credits: { readonly asset: AssetIdentifier; readonly removable: boolean }[] = [];
   const tailPayments: BatchedOperation[] = [];
   const tailRemovals: BatchedOperation[] = [];
@@ -201,7 +202,7 @@ export function batchClassicDemolition(
         credits.push({ asset: balance.asset, removable: true });
         break;
       case "convert":
-        disposals.push({
+        conversions.push({
           kind: "path_payment_strict_send",
           summary: `Convert ${amount} ${balance.asset.code} to XLM`,
           metadata: {
@@ -330,10 +331,21 @@ export function batchClassicDemolition(
   // own; the executor re-audits after it confirms and rebuilds the rest.
   const isolate = poolWithdraws.length > 0 || isolatedClaims.length > 0;
   const leading = isolate ? [...poolWithdraws, ...offerCancels, ...isolatedClaims] : [];
+  // conversions are quoted one by one against the untouched market, so two that
+  // trade through the same market can't share a transaction: the second misses
+  // its floor once the first has used up depth its quote counted on. all but the
+  // last group run in phases of their own, and the executor quotes each phase
+  // again once the one before it landed. the offers selling what they convert
+  // are cancelled ahead of the first of them.
+  const stages = conversionStages(conversions);
+  const staged = stages.slice(0, -1);
+  const stagedOps = staged.flat();
+  const offersInStages = !isolate && staged.length > 0;
   const body = [
-    ...(isolate ? [] : offerCancels),
+    ...(isolate || offersInStages ? [] : offerCancels),
     ...sameTxClaims,
     ...disposals,
+    ...(stages.at(-1) ?? []),
     ...removals,
     ...dataDeletes,
   ];
@@ -343,7 +355,14 @@ export function batchClassicDemolition(
   // mediator funding, which then sees the same balance it would without it. when
   // the account can't spare it, or the merge transaction has no room for two more
   // ops, the close goes ahead unmarked and is not counted.
-  const withoutMarker = [...leading, ...body, ...mergeGroup, ...(mediatorOp ? [mediatorOp] : [])];
+  const withoutMarker = [
+    ...leading,
+    ...(offersInStages ? offerCancels : []),
+    ...stagedOps,
+    ...body,
+    ...mergeGroup,
+    ...(mediatorOp ? [mediatorOp] : []),
+  ];
   const mergeTxOps = mergeGroup.length + (mediatorOp ? 1 : 0) + 1;
   if (
     mergeTxOps + 2 <= MAX_OPS_PER_TX &&
@@ -353,7 +372,45 @@ export function batchClassicDemolition(
   }
   if (mediatorOp) mergeGroup.push(mediatorOp);
   mergeGroup.push(mergeOp);
-  return [...packLeading(leading, options), ...packFinal(body, mergeGroup, options)];
+  return [
+    ...packLeading(leading, options),
+    ...staged.flatMap((ops, i) =>
+      packLeading(i === 0 && offersInStages ? [...offerCancels, ...ops] : ops, options),
+    ),
+    ...packFinal(body, mergeGroup, options),
+  ];
+}
+
+// groups conversions so that no two in a group trade through the same market
+// (a directed asset pair along the path, order book and pools alike). each
+// conversion goes in the first group it shares no market with.
+function conversionStages(
+  conversions: readonly BatchedOperation[],
+): readonly (readonly BatchedOperation[])[] {
+  const stages: { ops: BatchedOperation[]; markets: Set<string> }[] = [];
+  for (const op of conversions) {
+    const markets = conversionMarkets(op);
+    let stage = stages.find((s) => markets.every((m) => !s.markets.has(m)));
+    if (stage === undefined) {
+      stage = { ops: [], markets: new Set() };
+      stages.push(stage);
+    }
+    stage.ops.push(op);
+    for (const m of markets) stage.markets.add(m);
+  }
+  return stages.map((s) => s.ops);
+}
+
+// the markets a path payment sells through: each hop from the asset sold, along
+// its path, to the asset bought
+function conversionMarkets(op: BatchedOperation): string[] {
+  const md = op.metadata as {
+    readonly sendAsset: AssetIdentifier;
+    readonly path: readonly AssetIdentifier[];
+    readonly destAsset: AssetIdentifier;
+  };
+  const hops = [md.sendAsset, ...md.path, md.destAsset].map(pathKey);
+  return hops.slice(1).map((to, i) => `${hops[i]}>${to}`);
 }
 
 // whether the batches carry the close marker. a close without it still merges,
