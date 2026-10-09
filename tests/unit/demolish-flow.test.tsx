@@ -6,7 +6,7 @@
 
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor, act } from "@testing-library/react";
-import { Account, TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
+import { Account, Keypair, TransactionBuilder, type Transaction } from "@stellar/stellar-sdk";
 import { fromPromise } from "xstate";
 
 import type { Connector } from "@/lib/wallet/connector";
@@ -488,6 +488,26 @@ function setUpSharedAccount(): void {
 function state(): string {
   return (screen.getByTestId("machine-state") as HTMLInputElement).value;
 }
+
+describe("the shared-account bar counts every threshold (L-89)", () => {
+  it("asks for the medium threshold when it is above high", async () => {
+    const shared = makeAudit({
+      requiresMultisig: true,
+      thresholds: { low: 1, medium: 3, high: 2, masterWeight: 1 },
+      signers: [
+        { key: ACC, type: "ed25519_public_key", weight: 1 },
+        { key: DEST, type: "ed25519_public_key", weight: 1 },
+        { key: Keypair.random().publicKey(), type: "ed25519_public_key", weight: 1 },
+      ],
+    });
+    ctl.preflightAudit = shared;
+    connect();
+    render(<DemolishFlow />);
+    const bar = await screen.findByText(/Signing weight needed/, {}, { timeout: 3000 });
+    expect(bar.textContent).toMatch(/Signing weight needed:\s*3/);
+    expect(bar.textContent).toMatch(/at least 3 signers/);
+  });
+});
 
 describe("Back returns to Configure with the form kept (L-62)", () => {
   it("goes from Review to Configure without a cancelled screen", async () => {

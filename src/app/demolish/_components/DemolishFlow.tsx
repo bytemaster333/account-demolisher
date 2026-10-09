@@ -28,7 +28,11 @@ import {
 } from "@/lib/orchestrator/page-flow-machine";
 import { getPublicEnv } from "@/lib/config/env";
 import type { SignerSnapshot } from "@/lib/multisig/bundle-freshness";
-import { SIGNING_WINDOW_SECONDS, assessBundleability } from "@/lib/multisig/signing-request";
+import {
+  SIGNING_WINDOW_SECONDS,
+  assessBundleability,
+  thresholdForClose,
+} from "@/lib/multisig/signing-request";
 import {
   destinationRequiresMediator,
   lookupCex,
@@ -195,7 +199,7 @@ export function DemolishFlow(): React.JSX.Element {
     if (audit) {
       return {
         required: audit.requiresMultisig,
-        threshold: audit.thresholds.high,
+        threshold: thresholdForClose(audit.thresholds),
         signers: audit.signers,
         hasClassicPoolShares: hasClassicPoolShares(audit),
       };

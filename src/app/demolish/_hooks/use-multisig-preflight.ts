@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
+import { thresholdForClose } from "@/lib/multisig/signing-request";
 import { AccountNotFoundError, auditAccount } from "@/lib/stellar/account-audit";
 import type { AuditSigner } from "@/lib/types/account";
 
@@ -11,6 +12,7 @@ import { hasClassicPoolShares } from "../_lib/signing-bundle";
 
 export interface MultisigInfo {
   readonly required: boolean;
+  // the signing weight a close needs (thresholdForClose), not the high threshold alone
   readonly threshold: number;
   readonly signers: readonly AuditSigner[];
   // a classic pool share rules out a signing request (withdrawn in its own tx)
@@ -50,7 +52,9 @@ export function useMultisigPreflight(
           status: "ready",
           info: {
             required: a.requiresMultisig,
-            threshold: a.thresholds.high,
+            // the bundle holds medium and high ops and core checks low too, so
+            // the weight it needs is the largest of the three
+            threshold: thresholdForClose(a.thresholds),
             signers: a.signers,
             hasClassicPoolShares: hasClassicPoolShares(a),
           },
