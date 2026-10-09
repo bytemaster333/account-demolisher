@@ -1,178 +1,160 @@
 ---
 title: Execution and recovery
-description: The topological walk, every retry path with its exact bounds, and the guards that refuse a merge.
+description: How the executor walks the plan, what it retries, and the checks that stand between a close and its merge.
 ---
 
-`executePlanTreeOnChain` in `src/lib/orchestrator/executor.ts` walks the plan in
-topological order and submits each node. Every recovery rule lives where the failure
-actually happens; there is no single retry classifier module.
+`executePlanTreeOnChain` in `src/lib/orchestrator/executor.ts` walks a hydrated plan in
+topological order and signs and submits each node. The execute actor
+(`src/lib/orchestrator/actors/execute.ts`) wires it to Horizon, Soroban RPC, the connector and the
+mediator, and turns its outcome into a result and a failure kind.
+
+## Before the walk
+
+- **One run per account.** A second run for the same account and network in the same tab is
+  refused with `close_running`. Across tabs the run holds a Web Lock named after the account; when
+  another tab holds it, the run does not start and reports `close_running`.
+- **Retry resets the tree.** On entering `executing`, `prepareTreeForExecution` sets every node that
+  has no receipt and is `failed`, `signed`, `submitted`, or skipped because of a dependency back to
+  `pending`. Nodes with a receipt are skipped by the walk; best-effort steps skipped on purpose stay
+  skipped.
 
 ## The walk
 
-Nodes run in the order `topologicalOrder` produced. For each node the executor:
+For each node in order:
 
-1. Rebuilds it against fresh state
-2. Runs any guard, then the allow-list check
-3. Hands the unsigned envelope to the connector for signing
-4. Submits it and waits for the receipt
+1. A node with a receipt is marked `confirmed` and skipped.
+2. A `failed` or `skipped` node is left alone.
+3. Unless the node is the forward, a stop request ends the run here, before anything else is
+   signed. The forward runs regardless, because it moves the balance out of the forwarding account
+   and asks the user to sign nothing.
+4. A dependency that is not `confirmed` (a best-effort step skipped on purpose excepted) skips the
+   node with `Skipped: dependency "<id>" did not complete`. The forward requires a confirmed merge.
+5. The node runs by kind:
 
-A node whose dependency did not reach `confirmed` or `skipped` is itself skipped. Failed
-dependencies cascade rather than being worked around.
+| Kind                                  | How it runs                                                                                     | On failure                                                                                                                                                                   |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Required Soroban steps and trustlines | Rebuilt from fresh state, allow-list, authorization tree and fee cap checked, signed, submitted | Fails the node and stops the close                                                                                                                                           |
+| `RevokeAllowance`                     | Rebuilt, held to exactly `approve(user, spender, 0, ledger)`, signed, submitted                 | Skipped with a note: the allowance stays on the token                                                                                                                        |
+| `TransferAsIs`                        | Rebuilt for the live balance, held to exactly `transfer(user, destination, amount)`             | Skipped with a note: the token stays on the closed account                                                                                                                   |
+| `ConvertSorobanToXLM`                 | Like a required step                                                                            | A price refusal or missing route stops the close with `conversion_refused`; any other failure sends the token as-is on a direct close, and stops the close if that fails too |
+| `ClassicUnwind`                       | Classic batches planned from a fresh audit, touching only the reviewed offers and pools         | Fails the node and stops the close                                                                                                                                           |
+| `FinalClassicTx`                      | The close loop below                                                                            | Fails the node and stops the close                                                                                                                                           |
+| `MediatorForward`                     | Renews the token when needed, then `submitMediatorForward`                                      | Stops the close with `forward_pending`                                                                                                                                       |
 
-## Constants
+Before every Soroban signature the progress line names the step and the network fee its signature allows.
 
-| Constant                | Value                           |
-| ----------------------- | ------------------------------- |
-| `DEFAULT_FEE_BASE`      | 100 stroops per operation       |
-| `MAX_PER_OP_FEE`        | 1,000,000 stroops per operation |
-| `MAX_MERGE_ATTEMPTS`    | 3                               |
-| `MAX_CLOSE_PHASES`      | 30                              |
-| `MAX_SOROBAN_ATTEMPTS`  | 3                               |
-| `SOROBAN_INCLUSION_FEE` | 100,000 stroops                 |
-| `MAX_OPS_PER_TX`        | 100                             |
+## Submitting and unknown outcomes
 
-## Classic submission failures
+Every submission is journaled per node (`src/lib/orchestrator/journal.ts`) with its hash and
+`maxTime`. When the network does not confirm either way, the error is `AmbiguousSubmitError` and the
+hash stays in the journal. The next run looks the hash up first: a landed transaction counts as the
+step's receipt, a failed or expired one is forgotten, and one that can still land stops the run
+with `ambiguous` until it settles. Nothing is signed again while an earlier submission of the same
+step can still land.
 
-The classifier matches substrings against the JSON-serialized `result_codes` Horizon
-returned. Matching is case-sensitive and checked in this order:
+Soroban submissions go through `sendSoroban` and `pollSoroban` in `src/lib/soroban/submit.ts`. Only
+`PENDING` and `DUPLICATE` count as queued; a full RPC queue is resent up to five times, and a result
+is polled for about a minute.
 
-| Result code           | Kind         | What the retry does                                       |
-| --------------------- | ------------ | --------------------------------------------------------- |
-| `tx_insufficient_fee` | `fee`        | Triples the per-operation bid, capped at `MAX_PER_OP_FEE` |
-| `tx_bad_seq`          | `resequence` | Reloads the account so the rebuild is in sequence         |
-| `op_under_dest_min`   | `reprice`    | Re-resolves paths and recomputes minimums                 |
-| `op_too_few_offers`   | `reprice`    | Same                                                      |
-| `op_over_source_max`  | `reprice`    | Same                                                      |
-| `tx_too_late`         | `reprice`    | Same                                                      |
-| anything else         | terminal     | Rethrown at once, never retried                           |
+## Soroban retries
 
-Three attempts at most, with **no delay between them**. `op_no_issuer` is deliberately
-terminal, and the test suite pins that behaviour.
-
-### The starting fee
-
-`surgeFeeBase` reads Horizon's fee statistics and bids from `fee_charged`, what recent
-ledgers actually charged per operation. While `ledger_capacity_usage` is below 0.5 it
-starts at the mode; from 0.5 up it starts at the p90. The bid is clamped to the range 100
-to 1,000,000 stroops per operation, and the executor then caps it at what the account can
-spend above its reserves. The review reads the same bid to size its reserve checks.
-
-That figure is per operation. The SDK multiplies by operation count, and `computeFee`
-throws when the total would exceed the uint32 ceiling.
-
-A read that meets a 429, a 5xx, or no response runs up to three times with a backoff.
-When it still fails, or the answer carries no readable capacity usage or bid, the step
-fails as a retryable `network` failure that says the network fees could not be read. The
-close never bids the 100 stroop minimum in place of a fee it could not read.
-
-## Soroban submission failures
-
-Matching here is lowercased.
-
-| Matched substring                                              | Kind         |
-| -------------------------------------------------------------- | ------------ |
-| `tx_bad_seq`, `txbadseq`, `bad_seq`                            | `resequence` |
-| `footprint`, `restorepreamble`, `restore_preamble`             | `footprint`  |
-| `entryarchived`, `entry_archived`, `archived`, `entry_expired` | `footprint`  |
-| `scecexceededlimit`, `exceededlimit`, `exceeded_limit`         | `footprint`  |
-| anything else                                                  | terminal     |
-
-Three attempts at most, no delay, and **no fee escalation** on this path.
-
-The node is rebuilt before every attempt, including the first, which gives it a fresh
-sequence number and a re-simulated footprint. Without a rebuild callback nothing is
-retried at all, because resubmitting an identical stale transaction only reproduces the
-rejection.
-
-The `scecExceededLimit` family counts as recoverable on purpose: it is an on-chain trap
-from a simulated footprint under-declaring a time-dependent contract write, such as Blend
-emission accrual. The transaction simulated clean but the real write set was larger, and a
-rebuild re-derives the full footprint.
-
-A genuine contract revert is not classified as recoverable. The rebuild's re-simulation
-fails fast and surfaces the real error instead of looping.
-
-## Horizon reads
-
-`withHorizonRetry` wraps the account reads during merge preparation. Three attempts, with
-300 ms then 600 ms of backoff.
-
-Two cases are never retried and rethrow immediately: `AccountNotFoundError`, because a
-merged or missing account is a real terminal answer, and any deterministic response status
-below 500.
+A Soroban step is attempted up to three times. Before each attempt it is rebuilt (fresh sequence,
+fresh simulation, fresh time bound) and checked again. A failure is retried only when a rebuild can
+clear it: a bad sequence number, a changed or archived footprint (including a write the simulation
+did not see), or a stale resource fee. A refused step is never retried, because an unsafe tree does
+not become safe on a rebuild.
 
 ## The close loop
 
-The classic close is a bounded convergence loop of at most **30 phases**. Each phase
-submits exactly one batch and then re-audits.
+`runFinalClassic` runs one classic batch per phase, up to 30 phases, and audits the account again
+after each lands. For each phase it:
 
-The loop ends when the fresh batch list has length one, which is the batch carrying the
-merge. Exhausting the budget throws rather than reporting the last intermediate receipt as
-success:
+1. Audits the account. A missing account means a merge already landed, even if its reply was lost:
+   `findAccountMerge` reads the account's history, and a merge into the expected account (the
+   destination, or the forwarding account) finishes the close.
+2. Quotes the conversions for the balances plus what the close claims into them.
+3. Discovers DeFi positions again and refuses while any is open (`account_merge blocked: N Soroban
+DeFi position(s) still open`) or a protocol could not be read (`network`).
+4. Refuses when a balance can no longer be disposed of as reviewed: `conversion_refused` for a
+   price refusal, `not_mergeable` for a balance with no path.
+5. Checks that a balance the user chose to send to the destination is still receivable there.
+6. Reads the ledger clock, leaves out claims that would not stay claimable for the signing window,
+   and quotes again when that changed the claims.
+7. On an exchange close, probes the forwarding account (see below).
+8. Re-batches and runs `assessMergeability` against the claims the batch makes and the transactions
+   still to come.
+9. When the batch funds the forwarding account, checks the account can spare its 2 XLM.
+10. Before the merge batch, reads every token the DeFi exits paid out that is not a classic balance
+    and refuses while any is still on the account.
+11. Refuses conversions that just failed against the same quotes.
+12. Caps the fee to the spendable XLM, builds, signs and submits the batch.
 
-```
-executing: node "<id>" did not converge within 30 phases
-```
+The receipt of `FinalClassicTx` is set only when the batch carrying the merge lands.
 
-Thirty is comfortable: a close needs `ceil(totalOps / 100) + 1` phases, and Stellar's
-classic subentry ceiling bounds that well below the limit.
+### Classic rejections
 
-## The merge guard
+The whole close loop is attempted up to three times. A rejection the next attempt can clear is
+retried:
 
-Every phase, before a batch is built or signed, runs this sequence:
+| Rejection                                                               | What changes                                      |
+| ----------------------------------------------------------------------- | ------------------------------------------------- |
+| `tx_insufficient_fee`                                                   | The per-op bid triples, up to 1,000,000 stroops   |
+| `tx_insufficient_balance`                                               | The bid drops to the 100-stroop minimum           |
+| `tx_bad_seq`, `tx_too_late`                                             | A fresh audit and build                           |
+| `op_under_dest_min`, `op_too_few_offers`, `op_over_source_max`          | Fresh quotes; the same quotes failing twice stops |
+| Ledger drift (`op_underfunded`, `op_already_exists`, and similar codes) | A fresh audit and build                           |
 
-1. Re-audit the account through `withHorizonRetry`
-2. Re-resolve credit paths
-3. Re-check mergeability
-4. Re-probe Soroban positions
-5. Check for un-routable credits
-6. Re-batch, then guard against an empty batch list
+### The starting bid
 
-### Fail-closed on open positions
+`surgeFeeBase` reads Horizon `fee_stats`. Below 50% ledger capacity it bids `fee_charged.mode`,
+above it `fee_charged.p90`, clamped between 100 and 1,000,000 stroops per operation. An unreadable
+answer throws a `network` failure, `The network fees could not be read`, instead of bidding the
+minimum, which never lands while fees surge.
 
-The re-probe counts open positions across Blend, backstop, Aquarius, Soroswap, and FxDAO.
-Any open position refuses the merge:
+## Horizon reads
 
-```
-account_merge blocked: N Soroban DeFi position(s) still open (...).
-Close them before merging, or the funds will be stranded on the deleted account.
-```
+Reads that prepare a phase (the account, the latest ledger, fee stats, the audit) are retried up to
+three times on a server error, a rate limit or no response, with a delay that doubles from 300 ms.
+A 404 or another 4xx is an answer and is not retried.
 
-A queued backstop still blocks, because the 17-day lock means the account has to survive to
-receive the withdrawal.
+## The forwarding account on an exchange close
 
-### Fail-closed on an unreadable probe
+The forward needs a flow token that is still valid at the merge and through the forward. The
+executor tracks when the token on the plan was issued:
 
-Any recorded probe error also refuses the merge:
+- **Probe.** When the forwarding account on the plan exists, or the account's last recorded flow on
+  this network names one that exists, that account already holds funds and is adopted, never
+  replaced. A recorded flow for a different destination or memo is refused, and the user resumes
+  that forward first. When fewer than eight minutes (the merge's 300-second validity plus the
+  forward's 180) remain on the token, it is renewed through `/api/mediator/reissue`; when it still
+  cannot cover that, the merge is refused with `mediator_expired`.
+- **Funding.** A new flow is minted only right before the batch that funds the forwarding account,
+  and its recovery record is written to browser storage before that batch is signed. A close whose
+  record cannot be stored does not start.
+- **Forward.** When the forwarding account is gone after the merge, a forward already landed:
+  `findForward` reads it, and an emptying into any other address is reported as such. Otherwise
+  the token is renewed when fewer than 180 seconds remain, and `submitMediatorForward` runs. A
+  failure stops the close with `forward_pending`, and Retry runs the forward again.
 
-```
-account_merge blocked: could not confirm your DeFi positions are all closed (...).
-This is a safety stop so an unreadable position isn't merged around and stranded.
-```
-
-This is the important one. Discovery uses `Promise.allSettled`, so a rate-limited or
-timed-out protocol probe returns an **empty array and records the failure**. Treating
-"zero open" as safe would merge around a position nobody could read. The guard fails closed
-instead.
-
-### Un-routable credits
-
-A credit balance with no XLM path and no disposal consent refuses the merge, naming the
-asset codes.
-
-## Mediator funding is idempotent
-
-Before the loop, the mediator account is probed once. A transient probe failure defaults to
-"not funded", because a redundant funding operation is caught by the outer retry, whereas
-skipping a needed one is not.
-
-Once a batch containing the funding operation confirms, the flag flips and later re-batches
-omit it.
+[The mediator forward protocol](/docs/developers/protocol/mediator) covers the forward itself.
 
 ## What is never reported as success
 
-- A node without a receipt throws rather than reporting completion.
-- Horizon accepting a transaction but returning no hash throws, rather than fabricating a
-  sentinel hash.
-- Intermediate classic batches do not record an executed hash, so a retry cannot skip a
-  still-unrun merge while reporting success.
+- A close whose merge batch did not land: the result is a failure, whatever ran before it.
+- An exchange close whose forward did not land: `forward_pending`, with the merge hash.
+- A prepare-only run where a required step did not complete: `The close was not prepared`.
+- A step without its own receipt.
+
+A run that only prepares the close ends in the `prepared` state with the unlock date, read from the
+queue transaction that was signed.
+
+## Multisig bundles
+
+A collected multisig close is submitted as-is (`submitBundle`). Before submitting, the actor checks
+the bundle has not already landed, refuses when the plan holds any step other than the classic close,
+discovers DeFi positions again, compares the account with the signer snapshot the relay checked
+(sequence, balances, offers, signers), and trims the signatures to what the current signers need.
+A `tx_insufficient_fee` refusal is answered with a fee bump paid by the connected wallet.
+
+See [Failure reference](/docs/developers/reference/failures) for every failure kind and what Retry
+does with it.

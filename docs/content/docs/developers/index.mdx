@@ -4,26 +4,25 @@ description: How Account Demolisher is built, what runs where, and where to find
 icon: Home
 ---
 
-Account Demolisher is a Next.js application that closes Stellar accounts. It runs almost
-entirely in the browser: discovery, plan generation, simulation, the allow-list check, the
-safety gates, and signing all happen client-side.
+Account Demolisher is a Next.js application that closes Stellar accounts. The close runs in the
+browser: the account audit, DeFi discovery, plan generation, simulation, the sign-time checks, and
+signing all happen client-side, and the browser submits every transaction itself.
 
-The server exists for three narrow jobs, none of which involve your key.
+The server has four narrow jobs, and none of them involves a user's key.
 
 ## What runs where
 
-| Runs in the browser                 | Runs on the server                           |
-| ----------------------------------- | -------------------------------------------- |
-| Reading the account from Horizon    | Co-signing the mediator forward              |
-| Discovering DeFi positions on chain | Holding a multisig signing request in memory |
-| Generating and validating the plan  | Proxying the Soroswap aggregator             |
-| Simulating every Soroban node       |                                              |
-| Enforcing the contract allow-list   |                                              |
-| Signing and submitting transactions |                                              |
+| Runs in the browser                           | Runs on the server                                                |
+| --------------------------------------------- | ----------------------------------------------------------------- |
+| Reading the account from Horizon              | Minting, renewing and co-signing exchange forwards (the mediator) |
+| Discovering DeFi positions on chain           | Holding multisig signing requests in memory (the signing relay)   |
+| Generating the plan and simulating every step | Recording first-party usage metrics and verified closes           |
+| Checking every step before it is signed       | Proxying the Soroswap aggregator API, which the app does not call |
+| Signing through the wallet and submitting     |                                                                   |
 
-Position discovery has no server-side proxy and needs no API key. Blend, Soroswap, and
-FxDAO are read directly from their contracts. Aquarius is the one protocol read through a
-REST API, and its on-chain event scan runs alongside as a second source.
+Position discovery needs no server and no API key. Blend, Soroswap and Aquarius concentrated pools
+are read directly from their contracts. Aquarius standard pools are read from the Aquarius REST API
+and from an on-chain event scan, and the two results are combined.
 
 ## Start here
 
@@ -61,7 +60,7 @@ REST API, and its on-chain event scan runs alongside as a second source.
   <Card
     title="The classic batch"
     href="/docs/developers/internals/classic-batch"
-    description="The nine operation phases and how they split across transactions."
+    description="How the classic close is ordered and split across transactions."
   />
   <Card
     title="Simulation"
@@ -71,7 +70,7 @@ REST API, and its on-chain event scan runs alongside as a second source.
   <Card
     title="Execution and recovery"
     href="/docs/developers/internals/execution"
-    description="The topological walk, retry rules, and the merge guard."
+    description="The topological walk, retry rules, and the checks before the merge."
   />
 </Cards>
 
@@ -81,7 +80,7 @@ REST API, and its on-chain event scan runs alongside as a second source.
   <Card
     title="Mediator forward"
     href="/docs/developers/protocol/mediator"
-    description="Per-flow key derivation and the single envelope shape the server co-signs."
+    description="Per-close key derivation, renewal, and the single envelope shape the server co-signs."
   />
   <Card
     title="Signing relay API"
@@ -101,7 +100,7 @@ REST API, and its on-chain event scan runs alongside as a second source.
   <Card
     title="Wallet integration"
     href="/docs/developers/protocol/wallet-integration"
-    description="For wallet developers: the SEP-43 surface the app uses."
+    description="For wallet developers: the wallet calls the app makes."
   />
   <Card
     title="SEP support"
@@ -121,7 +120,12 @@ REST API, and its on-chain event scan runs alongside as a second source.
   <Card
     title="Contract allow-list"
     href="/docs/developers/security/contract-allowlist"
-    description="The compiled-in contract set and how it is enforced."
+    description="The pinned contract set and how it is enforced."
+  />
+  <Card
+    title="Audit status"
+    href="/docs/developers/security/audit"
+    description="The pre-audit review, what it found, and what was fixed."
   />
   <Card
     title="Configuration"
@@ -148,4 +152,4 @@ REST API, and its on-chain event scan runs alongside as a second source.
 ## Source
 
 [github.com/bytemaster333/account-demolisher](https://github.com/bytemaster333/account-demolisher),
-Apache 2.0.
+licensed under Apache 2.0.

@@ -1,37 +1,41 @@
 ---
 title: Exchange integration
-description: For exchange operators. What a close delivers to your deposit address, how the registry works, and how to add an entry.
+description: For exchange operators. What a close delivers to your deposit address, how the registry and memo rules work, and how to add an entry.
 ---
 
-Account Demolisher is a non-custodial closer that people run in their own browser. It is not
-a service you call, and it holds no keys. Nothing about it needs you to integrate before
-someone can close an account into your deposit address.
+Account Demolisher is a non-custodial closer that people run in their own browser. It is not a
+service you call, and it holds no user keys. Someone can close an account into your deposit
+address without any integration on your side.
 
-There is exactly one thing that determines whether those closes are creditable at your
-exchange: whether your hot-wallet address is in the compiled-in registry.
+Whether that close is credited depends on one thing: the close has to arrive as a payment carrying
+the deposit memo. The app does that for every destination it knows needs a memo: an address in its
+compiled-in registry, or an account that publishes the SEP-29 memo flag.
 
 ## Why a plain merge is not enough
 
-`ACCOUNT_MERGE` moves an account's whole balance, including its base reserve, to a
-destination. Exchanges credit _payments_ carrying a deposit memo, not merges, so a merge
-lands on the ledger at your hot wallet with nothing attributing it to a customer.
+`ACCOUNT_MERGE` moves an account's whole balance, including its reserve, to a destination.
+Exchanges credit _payments_ carrying a deposit memo, not merges, so a merge lands at your address
+with nothing that attributes it to a customer.
 
-## What a registry-listed address receives
+## What a memo-required destination receives
 
-When the destination is in the registry, the close routes through an ephemeral mediator
-account:
+The close routes through an ephemeral mediator account created for that one close:
 
-1. The closing account funds a fresh mediator with 2 XLM and merges into it.
-2. The server co-signs a two-operation forward from that mediator: a native `PAYMENT` to
-   your deposit address carrying the memo, then an `ACCOUNT_MERGE` sending the remainder to
-   the **same** address.
-3. The mediator account is removed in that same transaction.
+1. The closing account funds a fresh mediator with 2 XLM and merges into it, in one transaction.
+2. The server co-signs a two-operation forward from the mediator: a native `PAYMENT` to your
+   deposit address carrying the memo, then an `ACCOUNT_MERGE` of the mediator into the **same**
+   address.
+3. The mediator account is removed by that same transaction.
 
-**From your side this is a standard native XLM payment with a memo.** You do not need to run
-a SEP anchor, expose an API, or change how your deposit addresses work.
+**From your side this is a native XLM payment with a memo, followed by a merge of about 1 XLM with
+no memo.** The payment carries everything above the mediator's minimum balance and the forward's
+fee. You do not need to run a SEP server, expose an API, or change how your deposit addresses work.
 
-[The mediator forward protocol](/docs/developers/protocol/mediator) has the cryptographic
-detail.
+Only XLM reaches a memo-required destination. The close sells every other balance for XLM first,
+or returns it to its issuer when it has no market, and it never sends a Soroban token or a classic
+credit balance there.
+
+[The mediator forward protocol](/docs/developers/protocol/mediator) has the cryptographic detail.
 
 ## The registry
 
@@ -39,105 +43,119 @@ detail.
 
 ```ts
 export interface CexInfo {
-  readonly address: string; // G... hot-wallet account id
-  readonly name: string; // human-readable name shown in the UI
+  readonly address: string; // G... deposit account id
+  readonly name: string; // name shown in the UI
   readonly requiresMemo: boolean;
   readonly memoType?: CexMemoType; // "text" | "id" | "hash" | "return"
+  readonly acceptedMemoTypes?: readonly CexMemoType[]; // instead of memoType, when several are accepted
   readonly minimumDeposit?: string;
   readonly verifiedAt: string; // ISO date the address and policy were checked
   readonly source: string; // citation for both
 }
 ```
 
-Twelve entries, every one requiring a memo, every one verified against the stellar.expert
-exchange directory plus the exchange's own published deposit documentation.
+Thirteen entries, every one requiring a memo:
 
-| Exchange          | Memo type | Published minimum |
-| ----------------- | --------- | ----------------- |
-| Kraken            | `text`    | 1 XLM             |
-| Binance           | `id`      | 0.1 XLM           |
-| Binance Deposits  | `id`      |                   |
-| Bitfinex          | `text`    |                   |
-| Bitstamp          | `id`      |                   |
-| KuCoin            | `text`    |                   |
-| Upbit             | `text`    |                   |
-| CEX.IO            | `text`    |                   |
-| Crypto.com        | `text`    |                   |
-| Robinhood         | `text`    |                   |
-| Coinbase Deposits | `text`    |                   |
-| Blockchain.com    | `text`    |                   |
+| Exchange          | Address                                                    | Memo type      | Published minimum |
+| ----------------- | ---------------------------------------------------------- | -------------- | ----------------- |
+| Kraken            | `GA5XIGA5C7QTPTWXQHY6MCJRMTRZDOSHR6EFIBNDQTCQHG262N4GGKTM` | `text`         | 1 XLM             |
+| Binance           | `GAHK7EEG2WWHVKDNT4CEQFZGKF2LGDSW2IVM4S5DP42RBW3K6BTODB4A` | `id`           | 0.1 XLM           |
+| Binance Deposits  | `GABFQIK63R2NETJM7T673EAMZN4RJLLGP3OFUEJU5SZVTGWUKULZJNL6` | `id`           |                   |
+| Bitfinex          | `GAWPTHY6233GRWZZ7JXDMVXDUDCVQVVQ2SXCSTG3R3CNP5LQPDAHNBKL` | `text`         |                   |
+| Bitstamp          | `GA3NTBDIKQVDDM6ZDKJLGXJFESWJ636AGRIW34RH5WL24LUMX3YASKX2` | `id`           |                   |
+| KuCoin            | `GAJ4BSGJE6UQHZAZ5U5IUOABPDCYPKPS3RFS2NVNGFGFXGVQDLBQJW2P` | `text`         |                   |
+| Upbit             | `GAW4E6NGM4NPNX2LO2BKDPCCTUX3FJLKWHPU4VQPGBIBQGD6JTVF5C7C` | `text`         |                   |
+| Upbit Deposits    | `GCZLCMUM4Q4H324CTT3753P6656CYR4KPLHYFPGYPGE6JVHONGLNRDI5` | `id` or `text` |                   |
+| CEX.IO            | `GB3RMPTL47E4ULVANHBNCXSXM2ZA5JFY5ISDRERPCXNJUDEO73QFZUNK` | `text`         |                   |
+| Crypto.com        | `GB67TJFJO3GUA432EJ4JTODHFYSBTM44P4XQCDOFTXJNNPV2UKUJYVBF` | `text`         |                   |
+| Robinhood         | `GB2ES2N326MZK4EGJBKN3ZARCQ5RTFQSAWIJAAKFVIIIJSCC35TXIMLB` | `text`         |                   |
+| Coinbase Deposits | `GB5CLRWUCBQ6DFK2LR5ZMWJ7QCVEB3XKMPTQUYCDIYB4DRZJBEW6M26D` | `text`         |                   |
+| Blockchain.com    | `GARAR5QR7WRL24MQMSO4INWV7C5SE4EE2YVXTLD6ORONYFHSUAGZYSLN` | `text`         |                   |
 
-`minimumDeposit` is recorded for provenance. No code path reads it, so it documents the
-published terms rather than gating a close.
+Each entry's `source` cites the stellar.expert exchange directory, plus the exchange's own deposit
+documentation where one exists. Upbit shows deposit addresses only to logged-in customers, so the
+two Upbit entries rest on the directory alone, which tags both as exchange accounts that require a
+memo. Upbit Deposits accepts an `id` or a `text` memo, because no Upbit-published source names the
+type.
+
+`minimumDeposit` records the published terms. No code path reads it, so it does not gate a close.
+
+### Refused destinations
+
+`REFUSED_DESTINATIONS` lists exchange accounts that are not deposit addresses: seven Upbit cold
+storage, cold wallet and withdrawal accounts from the same directory. A close to one is refused
+whatever the memo, and the mediator route refuses to mint a flow for one (`REFUSED_DESTINATION`),
+because a merge into an exchange's internal wallet is credited to no customer.
 
 ## Adding or correcting an entry
 
-The registry is source code, not runtime configuration. A pasted or discovered address can
-never add itself, which is the same posture the contract allow-list takes.
+The registry is source code, not runtime configuration. A pasted or discovered address never adds
+itself, which is the same posture the contract allow-list takes.
 
-1. Append a `CexInfo` to `KNOWN_CEXES` with your hot-wallet `address`, `name`,
-   `requiresMemo`, the `memoType` your deposits need, and a `source` citing where the
-   address and policy were verified.
-2. `lookupCex(address)` then returns your entry, closes to it route through the mediator,
-   and the memo gate starts enforcing your policy.
+1. Append a `CexInfo` to `KNOWN_CEXES` with your deposit `address`, `name`, `requiresMemo`, the
+   `memoType` your deposits need (or `acceptedMemoTypes` when you accept several), and a `source`
+   citing where the address and policy were verified.
+2. `lookupCex(address)` then returns your entry, closes to it route through the mediator, and the
+   memo gate enforces your memo type.
 
-Keep `verifiedAt` and `source` accurate. They exist so the address is auditable, and a wrong
-hot-wallet address here sends funds to the wrong place.
+Keep `verifiedAt` and `source` accurate. They make the address auditable, and a wrong address here
+sends funds to the wrong place.
+
+Publishing `config.memo_required` under SEP-29 on your deposit account already routes closes through
+the mediator without a registry entry, with any well-formed memo accepted.
 
 ## Memo enforcement
 
-`requireMemoEnforcement(destination, memo)` gates the close before it starts. Checks run in
-this order:
+`requireMemoEnforcement(destination, memo, { sep29MemoRequired })` gates the close before it starts.
+The Configure step reads the destination from Horizon first, and refuses to continue while the
+destination does not exist or cannot be read, because an unreadable destination is not confirmed
+free of a memo requirement. The checks then run in this order:
 
-| #   | Condition                              | Outcome                                        |
-| --- | -------------------------------------- | ---------------------------------------------- |
-| 1   | The destination is not in the registry | Allowed, never gated                           |
-| 2   | The entry does not require a memo      | Allowed                                        |
-| 3   | No memo supplied                       | Refused, naming the exchange and required type |
-| 4   | The memo type differs from the entry's | Refused                                        |
-| 5   | The memo value is empty after trimming | Refused                                        |
-| 6   | The value is malformed for its type    | Refused with the format error                  |
+| #   | Condition                                    | Outcome                                        |
+| --- | -------------------------------------------- | ---------------------------------------------- |
+| 1   | The destination is a refused exchange wallet | Refused                                        |
+| 2   | Not in the registry, and no SEP-29 flag      | Allowed with no memo requirement               |
+| 3   | Not in the registry, SEP-29 flag set         | A non-empty, well-formed memo of any type      |
+| 4   | In the registry, no memo supplied            | Refused, naming the exchange and the memo type |
+| 5   | The memo type is not one the entry accepts   | Refused                                        |
+| 6   | The memo value is empty after trimming       | Refused                                        |
+| 7   | The value is malformed for its type          | Refused with the format error                  |
 
 Format rules, from `validateMemoFormat`:
 
-| Type             | Rule                                                                                                                     |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `id`             | Digits only, parsing to a `uint64` in range. `0` and `18446744073709551615` both pass. Surrounding whitespace is trimmed |
-| `text`           | At most **28 bytes**, counted as UTF-8, not characters. Fourteen `é` characters pass at 28 bytes; fifteen do not         |
-| `hash`, `return` | Exactly 32 bytes, as 64 hex characters or 43 base64 characters plus `=`                                                  |
+| Type             | Rule                                                                          |
+| ---------------- | ----------------------------------------------------------------------------- |
+| `id`             | Digits only, in the `uint64` range. Surrounding whitespace is trimmed         |
+| `text`           | At most **28 bytes**, counted as UTF-8 bytes, not characters                  |
+| `hash`, `return` | Exactly 32 bytes, as 64 hex characters or base64 (44 characters with padding) |
 
-Because check 4 rejects any type mismatch and all twelve entries declare a `memoType`, the
-`hash` and `return` branches are unreachable through the enforcement path with the current
-registry.
+The memo builder decodes `hash` and `return` values with the same function, so a value that passes
+always encodes. `validateMemoFormat` also runs in the general pre-flight, so a malformed memo never
+reaches a transaction builder on any destination.
 
-The memo's _content_ cannot be checked against your books from a browser, so only the type
-and shape are validated. The person closing the account is responsible for the value.
+The memo's _content_ cannot be checked against your books from a browser, so the app validates only
+the type and shape. The person closing the account is responsible for the value. Review shows the
+memo, and the mediator binds it into the flow token so the forward carries exactly that memo.
 
-`validateMemoFormat` is also used by the general pre-flight, so a malformed memo cannot
-reach the SDK's memo constructors and throw mid-close on any destination, registry-listed or
-not.
+## Closes to an address with no memo requirement
 
-## Closes to an address that is not listed
+They run as a direct `ACCOUNT_MERGE` to the address, and a memo the user enters rides on the merge
+transaction. An exchange that credits only payments does not credit that, and the user docs tell
+people to withdraw to a wallet they control and send a normal payment instead.
 
-They still work. The close runs as a direct `ACCOUNT_MERGE` to your address, which most
-exchanges do not credit, and the app warns the person closing to follow your own deposit
-instructions.
+## Limits
 
-That is why registry membership is what matters for creditability.
+**Standalone Soroban tokens are not delivered.** A memo-required close forwards XLM only, so the
+app tells the user to move standalone tokens they want to keep to a personal wallet first.
 
-## Two limits worth knowing
+**A shared account cannot close to a memo-required destination.** The mediator route is several
+transactions, and a multisig signing request collects signatures on exactly one.
 
-**Raw Soroban tokens cannot be delivered to you.** An exchange deposit address cannot
-receive a contract token, so the app flags those for the user to move to a personal wallet
-first rather than sweeping them.
-
-**A multisig account cannot close to an exchange in one signing request.** The mediator path
-is several transactions, and a signing request collects signatures on exactly one. Those
-users are directed to a self-custody destination.
+**A self-hosted build does not run the mediator.** A deployment built with
+`NEXT_PUBLIC_DEPLOYMENT_MODE=self-hosted` refuses closes that need it.
 
 ## Running your own instance
 
-Exchanges that want to operate the closer under their own domain with their own mediator key
-can self-host it. The key is per-deployment and derives throwaway per-flow keys, so you
-generate a seed and fund nothing. See
-[Self-hosting](/docs/developers/operations/self-hosting).
+An exchange that wants to run the closer under its own domain with its own mediator secret can
+self-host it. The secret is a seed used only to derive throwaway per-flow keys, so you generate one
+and fund nothing. See [Self-hosting](/docs/developers/operations/self-hosting).

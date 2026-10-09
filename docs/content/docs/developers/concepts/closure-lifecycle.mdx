@@ -1,88 +1,88 @@
 ---
 title: Closure lifecycle
-description: The four stages a closure moves through, and what each one guarantees.
+description: The four stages a close moves through, and what each one guarantees.
 ---
 
-A closure is a sequence of ordinary Stellar transactions. The app's job is to assemble the
-right ones in the right order, ground them in real network state before you sign, and
-recover cleanly when that state shifts underneath.
+A close is a sequence of ordinary Stellar transactions. The app assembles the right ones in the
+right order, grounds them in live network state before you sign, and recovers when that state
+shifts underneath.
 
-Four stages: **audit**, **plan**, **simulate**, **execute**.
+Four stages: **discover**, **plan**, **preview**, **execute**.
 
-## 1. Audit
+## 1. Discover
 
-Horizon is read for the full account state, Soroban RPC for active SEP-41 allowances, and
-the four supported protocols for open positions. The result is one read-only snapshot
-everything downstream works from.
+Horizon is read for the full account state. Soroban RPC is scanned for the account's SEP-41
+approvals, and each one is read back from the token's `allowance()`; those that read zero are
+dropped. Blend, Aquarius and Soroswap are probed for open positions, the Aquarius reward gauges
+for what they owe, and the account's transfer history for standalone tokens.
 
-The audit also computes a merge verdict. Two conditions block a close outright: the
-`auth_immutable` flag, and sponsorships the account holds for _other_ accounts. Entries the
-account sponsors for itself are counted separately, because they are released during the
-close.
-
-Where discovery cannot see everything, the preview says so rather than proceeding as if
-the account were fully understood.
+The audit, the reads of positions that keep the account from merging, and the payout trustline
+checks are required: a failure there fails discovery or blocks the close. The allowance and
+standalone-token scans are best effort, and an incomplete scan is reported as a warning with how
+much it covered.
 
 [Account audit](/docs/developers/internals/account-audit) ·
 [Position discovery](/docs/developers/internals/position-discovery)
 
 ## 2. Plan
 
-The audit, the discovered positions, and the discovered allowances feed a pure generator
-that emits a directed acyclic graph. There are 13 node kinds, and a node is emitted only
-when the account actually needs it.
+The audit, the positions and the allowances feed a pure generator that emits a directed acyclic
+graph of steps. There are 20 node kinds, and a node is emitted only when the account needs it.
 
-Each node carries its dependencies as explicit edges. A Blend withdraw waits for that
-pool's repay. A rewards claim waits for its withdraw. The classic close waits for every
-Soroban node, so a merge never runs while a position is open.
+Each node lists its dependencies. A Blend withdraw waits for that pool's repays, a repay waits for
+the exits that can fund it, an exit that pays into a new trustline waits for that trustline, and
+the classic close waits for every other node, so the merge never runs while a position is open.
+When a Blend backstop withdrawal stays locked after the run, the plan has no merge at all and only
+prepares the close.
 
-The graph is validated when built: duplicate ids, missing dependency targets, and cycles
-are all rejected.
+The graph is validated when built: duplicate ids, missing dependency targets and cycles are
+rejected.
 
 [The plan graph](/docs/developers/internals/plan-graph) ·
 [The classic batch](/docs/developers/internals/classic-batch)
 
-## 3. Simulate
+## 3. Preview
 
-Every Soroban node is run through the RPC's `simulateTransaction`. The returned resource
-fee, authorization entries, and ledger footprint are baked into the envelope.
+Each Soroban step is built and run through the RPC's `simulateTransaction`, and its resource fee,
+authorization entries and footprint are assembled into the transaction. The sign-time checks then
+run on every required step: an allow-listed root contract, exactly the authorization tree the call
+needs, and a fee under the cap for its kind of step. A step that fails any of this is marked failed
+with its reason, and confirming is disabled while any required step is failed.
 
-The classic transaction is not RPC-simulated. It is built locally and its operation count
-and fee floor are surfaced, because the real envelope is rebuilt from fresh state at
-submit time anyway.
+A step that runs after other steps and cannot be built against today's state (a collateral
+withdraw behind its repay, a sweep behind the exits that pay it) is deferred: it is built and
+simulated at execute time once those steps have landed.
 
-A node that cannot be simulated is marked failed or skipped in the preview rather than
-being carried silently into execution.
+The classic close is not RPC-simulated. Its batches are built locally from the audit, and the
+preview checks mergeability against the claims the plan really makes.
 
 [Simulation](/docs/developers/internals/simulation)
 
 ## 4. Execute
 
-Execution walks the graph in topological order using Kahn's algorithm, so the order is
-stable and deterministic.
+Execution walks the graph in a stable topological order. Each Soroban step is rebuilt from fresh
+state, checked again, signed through the connector, submitted and confirmed before its dependents
+run. The classic close is rebuilt from a fresh audit before every phase.
 
-For each node the executor rebuilds it against current state, hands the unsigned envelope
-to the connector for signing, checks it against the contract allow-list immediately before
-signing every Soroban node, submits it, and waits for the receipt before marking the row
-confirmed.
-
-You sign once per transaction, not once for the plan, because Stellar cannot bundle
-Soroban and classic operations into one signed envelope.
+You sign once per transaction, because Stellar does not combine Soroban and classic operations in
+one transaction.
 
 [Execution and recovery](/docs/developers/internals/execution)
 
 ## What holds across the stages
 
-**The merge never runs early.** Before the classic close the executor re-audits, re-checks
-mergeability, re-probes for open Soroban positions, and refuses when the probe recorded any
-error at all. It fails closed rather than assuming a failed read means no position.
+**The merge never runs early.** Before each classic phase the executor audits the account again,
+discovers DeFi positions again and refuses while any is open or a protocol could not be read,
+checks that no exit payout token is still on the account, and checks mergeability against what the
+batch really claims.
 
-**Failed dependencies cascade.** A node whose dependency did not confirm is skipped rather
-than worked around.
+**A step that did not land blocks its dependents.** A dependent of a failed step is skipped, never
+run around it. Only a best-effort step (an allowance revoke, a standalone token sweep or
+conversion) that was skipped on purpose lets its dependents run.
 
-**Nothing is reported done until it confirmed.** A node's executed record is what marks it
-complete, and intermediate classic batches deliberately do not set it, so a retry cannot
-skip an unrun merge while reporting success.
+**Nothing is reported done until it confirmed.** A node is complete only when it carries the
+receipt of its own transaction. The classic close records its receipt only when the merge batch
+lands, and an exchange close succeeds only when the forward out of the forwarding account lands.
 
-**Reads are re-verified.** Allowances derived from events are confirmed against the token's
-own on-chain `allowance()` before they are acted on.
+**A retry re-runs what did not land.** A retryable failure runs the same reviewed plan again: steps
+with a receipt are skipped and every other step is reset and runs again.

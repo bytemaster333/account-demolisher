@@ -1,41 +1,39 @@
 ---
 title: Signing relay API
-description: The four routes that collect signatures for a multisig close, their guards, and how signatures are verified and merged.
+description: The four routes that collect signatures for a shared-account close, their guards, and how signatures are verified, merged and trimmed.
 ---
 
-A multisig close needs enough signatures on **one** canonical transaction. The relay in
-`src/server/signing-relay.ts` holds that transaction, merges signatures into it as they
-arrive, and streams progress to everyone watching.
+A shared-account close needs enough signer weight on **one** transaction. The relay in
+`src/server/signing-relay.ts` holds that transaction, merges each co-signer's signature into it,
+and streams every change to the people watching.
 
-It never sees a secret key. It holds only the partly-signed envelope, in process memory,
-for a bounded window.
+The relay never sees a secret key. It holds only the transaction envelope, a public artifact, in
+process memory, until the request expires.
 
 ## Routes
 
-All four run on the Node.js runtime and are force-dynamic. Each creates its own per-IP
-token-bucket limiter.
+All four run on the Node.js runtime, are force-dynamic, and rate-limit per client address, keyed
+as described in [Self-hosting](/docs/developers/operations/self-hosting#proxy-and-rate-limits).
 
-| Route                   | Method | Purpose                               | Rate limit |
-| ----------------------- | ------ | ------------------------------------- | ---------- |
-| `/api/plan`             | `POST` | Publish a canonical close transaction | 10 / 60s   |
-| `/api/plan/[id]`        | `GET`  | Fetch the current envelope            | 60 / 60s   |
-| `/api/plan/[id]/sign`   | `POST` | Merge a co-signer's signature         | 30 / 60s   |
-| `/api/plan/[id]/events` | `GET`  | Server-sent stream of the envelope    | 20 / 60s   |
+| Route                   | Method | Purpose                                   | Rate limit |
+| ----------------------- | ------ | ----------------------------------------- | ---------- |
+| `/api/plan`             | `POST` | Publish a close transaction               | 10 / 60 s  |
+| `/api/plan/[id]`        | `GET`  | Fetch the current state of a request      | 60 / 60 s  |
+| `/api/plan/[id]/sign`   | `POST` | Add a co-signer's signature               | 30 / 60 s  |
+| `/api/plan/[id]/events` | `GET`  | Server-sent stream of the request's state | 20 / 60 s  |
 
-The `id` is the transaction's own hash, hex-encoded.
+The `id` is the transaction hash, hex-encoded, so a co-signer can check that the transaction they
+fetch is the one the link names.
 
 ### Publish
 
 ```http
 POST /api/plan
-{ "network": "testnet", "xdr": "<base64>" }
+{ "network": "mainnet", "xdr": "<base64 envelope signed by one signer>" }
 ```
 
-Returns `{ "ok": true, "id": "<64-hex tx hash>" }`.
-
-Every `createPlan` failure maps to **400**, including capacity and account-unreachable.
-There is no 404 or 503 on this route. Body-level failures return 400, an oversized body
-returns 413, and a throttled request returns 429.
+Success answers `{ "ok": true, "id": "<64-hex hash>" }`. `CAPACITY` answers 503 and every other
+refusal 400 with `code` and `reason`. A body over 32,768 bytes answers 413, and a throttled request 429.
 
 ### Fetch
 
@@ -43,8 +41,22 @@ returns 413, and a throttled request returns 429.
 GET /api/plan/[id]
 ```
 
-Returns `{ "ok": true, "network": "...", "xdr": "<base64>" }`, or 404 with code
-`NOT_FOUND`. Expired plans are swept before the lookup.
+Success answers the request's public state:
+
+```json
+{
+  "ok": true,
+  "network": "mainnet",
+  "xdr": "<base64>",
+  "account": "G...",
+  "signers": [{ "key": "G...", "weight": 1 }],
+  "thresholds": { "low": 0, "med": 2, "high": 2 },
+  "expiresAt": 1760000000000
+}
+```
+
+`signers` and `thresholds` are the account's, read from Horizon at publish. A missing or expired
+request answers 404 `NOT_FOUND`.
 
 ### Sign
 
@@ -53,11 +65,9 @@ POST /api/plan/[id]/sign
 { "xdr": "<base64 envelope carrying the co-signer's signature>" }
 ```
 
-Only `xdr` is read. The network comes from the stored record, not the request body.
-
-Returns the **full merged envelope**, so the caller sees the canonical state after its own
-signature landed. `NOT_FOUND` maps to 404; every other failure maps to 400 with code
-`BAD_XDR` or `REJECTED`.
+Only `xdr` is read; the network comes from the stored request. Success answers the full public
+state after the merge, in the same shape as Fetch. `NOT_FOUND` answers 404, and `BAD_XDR`,
+`REJECTED` and `TOO_MANY_SIGNATURES` answer 400.
 
 ### Events
 
@@ -65,118 +75,115 @@ signature landed. `NOT_FOUND` maps to 404; every other failure maps to 400 with 
 GET /api/plan/[id]/events
 ```
 
-A `text/event-stream` that pushes the updated envelope whenever a signature is accepted,
-with a 25-second keep-alive heartbeat. This is a live stream, not polling.
+A `text/event-stream`. Each event carries the full public state as JSON: one on open, and one
+whenever a signature is accepted. A `: ping` comment keeps the stream open every 25 seconds. The
+stream closes when the request expires.
 
-Responses are plain text, not JSON: 404 `signing request not found`, 429
-`too many requests`, and 503 `too many live listeners; retry shortly` with a
-`retry-after: 5` header.
-
-The 503 is deliberate rather than a silently closed stream, so a client can back off and
-fall back to fetch-polling.
+Refusals are plain text: 404 `signing request not found`, and 503
+`too many live listeners for this signing request` with `retry-after: 30` when the request already
+has 50 listeners, or 3 from the same client address. On a refused stream the browser client
+(`src/lib/multisig/plan-client.ts`) polls `GET /api/plan/[id]`, starting at 5 seconds and backing
+off to 60, and tries the stream again every 60 seconds.
 
 ## Publish guards
 
-`createPlan` runs these in exact order. Expired plans are swept first.
+`createPlan` sweeps expired requests, then checks in this order:
 
-| #   | Guard                                                                          | Code                  |
-| --- | ------------------------------------------------------------------------------ | --------------------- |
-| 1   | XDR is a non-empty string no longer than 12,000 characters                     | `BAD_XDR`             |
-| 2   | Network resolves to exactly the id supplied                                    | `BAD_NETWORK`         |
-| 3   | The transaction decodes as a classic account close                             | `NOT_A_CLOSE`         |
-| 4   | A re-publish of an existing id merges instead, and a rejected merge fails here | `REJECTED`            |
-| 5   | Fewer than 500 plans are open                                                  | `CAPACITY`            |
-| 6   | The account being closed is readable from Horizon                              | `ACCOUNT_UNREACHABLE` |
-| 7   | The transaction already carries a signature from an authorized signer          | `UNSIGNED`            |
-| 8   | The capacity check runs again after the Horizon round-trip                     | `CAPACITY`            |
+| #   | Guard                                                                                                         | Code                              |
+| --- | ------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| 1   | The XDR is a non-empty string of at most 24,576 characters                                                    | `BAD_XDR`                         |
+| 2   | The network is `mainnet` or `testnet`                                                                         | `BAD_NETWORK`                     |
+| 3   | A classic transaction with an account merge, whose source and every operation's source is the closing account | `NOT_A_CLOSE`                     |
+| 4   | The transaction has an upper time bound                                                                       | `NO_EXPIRY`                       |
+| 5   | That bound is within 72 hours (plus 5 minutes of clock skew)                                                  | `EXPIRY_TOO_FAR`                  |
+| 6   | The lower time bound is not more than 60 seconds in the future                                                | `NOT_YET_VALID`                   |
+| 7   | The request stays open for more than 10 minutes                                                               | `EXPIRED`                         |
+| 8   | A transaction already published merges into its request instead                                               | `REJECTED`, `TOO_MANY_SIGNATURES` |
+| 9   | The closing account is readable from Horizon                                                                  | `ACCOUNT_UNREACHABLE`             |
+| 10  | The transaction uses the account's next sequence number                                                       | `STALE_SEQUENCE`                  |
+| 11  | The envelope holds no more than 20 signatures                                                                 | `TOO_MANY_SIGNATURES`             |
+| 12  | The envelope carries a verified signature from one of the account's signers                                   | `UNSIGNED`                        |
+| 13  | The network has room: 400 open requests on mainnet, 100 on testnet                                            | `CAPACITY`                        |
 
-Guard 2 exists because network resolution falls back to testnet for anything unrecognized,
-so the relay compares the resolved id back against the caller's string.
+Guard 3 identifies the account by the account merge's effective source, and refuses a transaction
+whose operations act on any other account, so a publisher cannot read one account's signer set
+while merging another.
 
-Guard 3 rejects a fee-bump envelope, a transaction with no operations, and anything that is
-not a classic account close.
+Guard 12 is the proof of control: only an account's own signer can open a request to close it.
 
-Guard 7 is the important one. Requiring a signature from a real on-chain signer, checked
-against the account's signer set read from Horizon, proves the publisher controls the
-account. Without it, anyone could open a signing request against a stranger's account.
+Between guards 12 and 13, the relay manages the account's other open requests. Requests whose
+sequence number is already used can never be submitted and are dropped. An account holds at most
+3 open requests: at the cap, the request with the least signer weight collected (the oldest among
+equals) gives way to the new one. All of an account's open requests share one sequence number, so
+at most one of them can land.
 
-## Signature merging
+A publish that races another publish of the same transaction merges into the request that won,
+instead of replacing it.
 
-`mergeSignatures` in `src/lib/multisig/partial-xdr.ts` throws on every failure. Checks run
-in this order:
+## Signatures
 
-1. The canonical XDR is a non-empty string
-2. The network passphrase is non-empty
-3. The canonical envelope decodes
-4. The canonical envelope is classic, not a fee-bump
-5. Each partial is a non-empty string
-6. Each partial decodes
-7. Each partial is classic, not a fee-bump
-8. **Each partial's transaction hash byte-equals the canonical hash**
-9. **Each signature's signing key is recoverable from the candidate set**
+### On publish
 
-Check 8 is what stops a signature made over a different transaction from being merged in.
+The published envelope is rebuilt with exactly one verified signature per signer, in signer order,
+and then trimmed to the close threshold. Junk, duplicates and signatures from other keys are
+dropped, so a padded envelope cannot block later co-signers.
 
-### How a signer is recovered
+### The close threshold
 
-`recoverSigningKey` runs two passes. First it narrows by the decorated signature's hint
-_and_ verifies the signature. If that finds nothing, it sweeps every candidate verifying
-the signature alone, which covers wallets that write unusual hints.
+`thresholdForClose` in `src/lib/multisig/partial-xdr.ts` is the largest of the account's low,
+medium and high thresholds, and at least 1. The bundle holds high operations (the merge, signer
+cleanup) and medium ones (the close marker, trustline and offer cleanup), and the network checks
+the low threshold for the transaction as a whole. The relay and the app count with this one rule.
 
-A signature is admitted only when it **cryptographically verifies over the canonical
-transaction hash** under a candidate public key. The hint is never authoritative.
+### On sign
 
-The candidate set is the account's Horizon-derived signer keys. Both relay call sites always
-pass them explicitly, so no other key is admitted.
+`mergeNewSignatures` merges a co-signer's envelope into the stored one and throws on any failure,
+which the relay answers as `REJECTED`:
 
-### Deduplication
+1. The stored and incoming envelopes decode as classic transactions, not fee bumps.
+2. **The incoming transaction hash equals the stored one**, so a signature over a different
+   transaction is never merged.
+3. **Every new signature verifies over that hash under one of the account's signer keys**, read
+   from Horizon at publish. The 4-byte hint only decides which key is tried first; a signature from
+   a wallet with an unusual hint is still matched by verifying against every signer.
 
-**The dedup key is the recovered signer public key, not the signature's wire bytes.**
+Signatures are deduplicated by the recovered signer key, not by their wire bytes. The hint is
+chosen by whoever sends the envelope, so keying on wire bytes would let one captured signature be
+replayed under many hints until the envelope hits the 20-signature limit. A merged signature is
+stored with its signer's canonical hint.
 
-The 4-byte hint on a decorated signature is attacker-chosen. Keying on wire bytes would let
-one captured signature be replayed under many forged hints, bloating the envelope to
-Stellar's 20-signature cap and wedging the request. A unit test pins this behaviour.
-
-On admission, a signature is re-stamped with the canonical hint for its recovered key.
+Once the stored envelope meets the threshold it is final: a later valid signature is acknowledged
+but not added, because the network rejects a transaction that carries a signature it did not need
+(`tx_bad_auth_extra`). An envelope that brings several new signatures at once is trimmed to the
+threshold in envelope order, as the network counts them. A replayed envelope that adds nothing
+answers success without notifying listeners.
 
 ## Bounds
 
-| Bound                | Value             | Scope                                           |
-| -------------------- | ----------------- | ----------------------------------------------- |
-| Signing window       | 72 hours          | Per plan                                        |
-| Expiry grace         | 60 seconds        | Subtracted from the transaction's own `maxTime` |
-| Max concurrent plans | 500               | Whole relay process                             |
-| Max XDR length       | 12,000 characters | Publish and sign                                |
-| Max SSE subscribers  | 50                | Per plan                                        |
-| SSE heartbeat        | 25 seconds        | Per stream                                      |
-| JSON body cap        | 16,384 bytes      | Both POST routes                                |
-| Rate-limit buckets   | 20,000 keys       | Per limiter                                     |
+| Bound                     | Value                                | Scope                                           |
+| ------------------------- | ------------------------------------ | ----------------------------------------------- |
+| Signing window            | 72 hours                             | Per request                                     |
+| Expiry grace              | 60 seconds                           | Subtracted from the transaction's own `maxTime` |
+| Minimum time left         | 10 minutes                           | At publish                                      |
+| Open requests             | 400 mainnet, 100 testnet             | Whole relay process                             |
+| Open requests per account | 3                                    | Per network and account                         |
+| XDR length                | 24,576 characters                    | Publish and sign                                |
+| Request body              | 32,768 bytes                         | Both `POST` routes                              |
+| Signatures per envelope   | 20                                   | The XDR limit                                   |
+| Listeners                 | 50 per request, 3 per client address | Events                                          |
+| Expired-request sweep     | Every 60 seconds                     | Whole relay process                             |
 
-A plan's life is the shorter of the 72-hour window and the transaction's own `maxTime`
-minus the grace period.
-
-The signing request's transaction is built with a 72-hour timeout, against the 300-second
-default used for a live single-signer close.
-
-## Client IP resolution
-
-Rate limiting keys on the client IP, resolved through `TRUSTED_PROXY_HOPS` (default 1).
-Setting it to `0` ignores `X-Forwarded-For` entirely.
-
-With hops greater than zero, the entry picked is counted from the right of the
-`X-Forwarded-For` chain. If the chain is shorter than the configured hops, the header is
-not used at all and resolution falls through to `X-Real-IP`, because the leftmost value is
-client-controlled and must never become the rate-limit key.
+A request is served until the earlier of 72 hours after publish and the transaction's `maxTime`
+minus 60 seconds. The app builds a signing request's transaction with a 72-hour validity window
+(`SIGNING_WINDOW_SECONDS` in `src/lib/multisig/signing-request.ts`).
 
 ## State is in process memory
 
-The relay keeps its plans in memory. That fits a single instance. Running more than one
-instance behind a load balancer means they do not share signing requests, and a co-signer
-routed to a different instance does not see the request.
-
-See [Self-hosting](/docs/developers/operations/self-hosting).
+The relay keeps its requests in memory: a restart loses them, and instances behind a load balancer
+do not share them. A co-signer routed to another instance does not find the request. Run one
+instance; see [Self-hosting](/docs/developers/operations/self-hosting).
 
 ## Cross-network replay
 
-Stellar binds the network passphrase into the transaction hash, so a signature collected on
-one network cannot complete the same close on another.
+Stellar binds the network passphrase into the transaction hash, so a signature collected on one
+network cannot complete the same close on another.

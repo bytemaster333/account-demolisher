@@ -1,73 +1,83 @@
 ---
 title: SEP support
-description: Which Stellar Ecosystem Proposals the app implements, and what each one is used for.
+description: Which Stellar Ecosystem Proposals the app implements, what each one is used for, and the full server surface.
 ---
 
-The app touches a small, specific set of Stellar Ecosystem Proposals. Being precise about
-which matters, because most anchor-oriented SEPs are deliberately not part of an account
-closer.
+The app implements the Stellar Ecosystem Proposals an account closer needs. Most anchor-oriented
+SEPs are not part of an account closer, and this page says which ones are and are not here.
 
 ## Implemented
 
 ### SEP-1, stellar.toml
 
-`public/stellar.toml` is an origin declaration for the deployment: organization details, a
-canonical URL, and a responsible principal.
+`public/stellar.toml` declares the deployment's origin: organization details, the canonical URL,
+the GitHub repository and a responsible principal.
 
-The canonical SEP-1 location is `/.well-known/stellar.toml`. Next.js publishes anything
-under `public/` at the matching path, so the app ships a rewrite mapping the well-known path
-to the served file, plus headers setting `Access-Control-Allow-Origin: *` and a plain-text
-content type. Both paths resolve.
+The canonical SEP-1 location is `/.well-known/stellar.toml`. `next.config.ts` rewrites that path to
+the served file and sets `Access-Control-Allow-Origin: *` and a `text/plain` content type on it, so
+both `/stellar.toml` and the well-known path resolve.
 
-The file declares **no `SIGNING_KEY` and no `SIGNERS`**, by design. The mediator co-signs
-with a per-flow ephemeral key derived fresh for every close, so there is no long-lived
-account a SEP-1 signing block could name. All user-side signing happens client-side and is
-never transmitted to the server. Declaring a fixed key would be misleading, so it is omitted
-rather than filled with a placeholder.
+The file declares **no `SIGNING_KEY`, no `SIGNERS` and no `WEB_AUTH_ENDPOINT`**. The mediator
+co-signs with a key derived for each close from a server-held master, so there is no long-lived
+account a signing entry could name, and no SEP-10 server runs. Users sign in their own wallet or
+with a key pasted into the page, and that key never reaches the server.
 
-No `[[CURRENCIES]]` entries: the app issues no assets. No `[[VALIDATORS]]` entries: it runs
-no validation nodes.
+There are no `[[CURRENCIES]]` entries, because the app issues no assets, and no `[[VALIDATORS]]`,
+because it runs no validator. `ORG_LOGO` points at `https://demolisher.app/logo.png`, served from
+`public/logo.png`.
 
-Self-hosters replace the organization details and canonical URL with their own and serve the
-file from their domain.
+When you self-host, replace the organization details and the canonical URL with your own and serve
+the file from your domain.
+
+### SEP-29, account memo requirements
+
+Before a close starts, the Configure step reads the destination account from Horizon. When its data
+entry `config.memo_required` is `1`, the close requires a memo and routes through the mediator, the
+same as a registry exchange, and accepts any well-formed memo. A destination that cannot be read
+blocks the close, because it is not confirmed free of a memo requirement.
+
+The mediator forward runs Horizon's `checkMemoRequired` as its own step before submitting, so a
+failure there is known to have sent nothing. See
+[Exchange integration](/docs/developers/protocol/exchange-integration#memo-enforcement).
 
 ### SEP-41, Soroban token interface
 
-The allowance viewer and every revoke work against SEP-41 tokens.
+The allowance viewer, the revoke steps of a close, and the standalone-token steps work against
+SEP-41 tokens.
 
-Allowances are enumerated from on-chain `approve` events, read back from the token's own
-`allowance(from, spender)` to confirm the event was not fabricated, and revoked by building
-`approve(from, spender, 0, ledger)`.
-
-Standalone token balances are read and moved through the same interface.
+Allowances are found from on-chain `approve` events, read back from the token's own
+`allowance(from, spender)`, and revoked with `approve(from, spender, 0, ledger)`. Standalone token
+balances are found from `transfer` and `mint` events, read with `balance(id)`, and moved with
+`transfer(from, to, amount)`.
 
 See [SEP-41 allowances](/docs/developers/protocol/allowances).
 
 ### SEP-43, wallet interface
 
-Used through Stellar Wallets Kit. The app calls exactly `getAddress`, `signTransaction`, and
-`signAuthEntry`.
+Used through Stellar Wallets Kit. The app calls `authModal` to pick a wallet, `getAddress`, and
+`signTransaction`, and tears sessions down itself. It does not call `signAuthEntry` or
+`signMessage`: every Soroban call it builds is authorized by the source account, so the envelope
+signature covers it.
 
 See [Wallet integration](/docs/developers/protocol/wallet-integration).
 
 ## Not implemented
 
-These are listed because integrators reasonably ask, and the answer is architectural rather
-than incidental: an account closer is not an anchor.
+An account closer is not an anchor, so these are not here:
 
-| Proposal                                      | Why it is not here                                                                                                                                                                                                     |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **SEP-10**, web authentication                | There is no challenge flow. Authentication is holding the key and signing a real closure transaction. `public/stellar.toml` reuses the `WEB_AUTH_ENDPOINT` key only to record the canonical URL; no SEP-10 server runs |
-| **SEP-6**, **SEP-24**, deposit and withdrawal | The app is not an anchor and runs no interactive or programmatic deposit flows. Exchange interoperation is the mediator payment path, not an anchor protocol                                                           |
-| **SEP-31**, cross-border payments             | Not applicable. The app moves an account owner's own balance to a destination they chose; it is not a payment corridor                                                                                                 |
+| Proposal                                      | Why it is not here                                                                                                                  |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| **SEP-10**, web authentication                | There is no challenge flow. Authority is holding the key and signing the close itself, and the toml declares no `WEB_AUTH_ENDPOINT` |
+| **SEP-6**, **SEP-24**, deposit and withdrawal | The app runs no deposit or withdrawal flows. Exchange delivery is the mediator payment path, not an anchor protocol                 |
+| **SEP-31**, cross-border payments             | The app moves an account owner's own balance to a destination they chose; it is not a payment corridor                              |
 
 If you are integrating an anchor, none of those endpoints exist here to call.
 
 ## The complete server surface
 
-Three route groups, all documented:
-
-- [The mediator co-signer](/docs/developers/protocol/mediator)
-- [The multisig signing relay](/docs/developers/protocol/signing-relay)
-- The Soroswap aggregator proxy, covered in
-  [Security model](/docs/developers/security/model)
+| Route                                                                         | Documented in                                                        |
+| ----------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `GET`, `POST /api/mediator/sign`, `POST /api/mediator/reissue`                | [Mediator forward protocol](/docs/developers/protocol/mediator)      |
+| `/api/plan`, `/api/plan/[id]`, `/api/plan/[id]/sign`, `/api/plan/[id]/events` | [Signing relay API](/docs/developers/protocol/signing-relay)         |
+| `POST`, `GET /api/metrics`                                                    | [Security model](/docs/developers/security/model#usage-metrics)      |
+| `POST /api/soroswap`                                                          | [Security model](/docs/developers/security/model#the-soroswap-proxy) |

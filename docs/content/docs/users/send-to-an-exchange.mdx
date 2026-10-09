@@ -5,20 +5,23 @@ icon: Landmark
 ---
 
 You can send a closed account's balance directly to an exchange deposit address. The app
-handles the part that normally makes this fail.
+handles the part that makes a plain close to an exchange go uncredited.
 
 ## Why this needs special handling
 
-Closing an account on Stellar uses `ACCOUNT_MERGE`. Most exchanges credit _payments_, not
-merges, and a payment is what carries your deposit memo. Merge straight into an exchange
-and the lumens land on the ledger at the exchange's wallet, but nothing tells the exchange
-the deposit is yours.
+Closing an account on Stellar ends with an account merge. Exchanges share one deposit address
+across their customers and credit deposits by the memo on a payment. A merge is not a payment,
+so a merge straight into an exchange lands in the exchange's wallet with nothing that ties it to
+you.
 
-When the destination is an exchange the app recognizes, it routes the close through a
-short-lived helper account instead. Your account merges into the helper, and the helper
-sends the exchange a normal XLM payment carrying your memo, then removes itself.
+When the destination needs a memo, the app routes the close through a temporary forwarding
+account created for this one close. Your account merges into it, and the forwarding account then
+pays the exchange in XLM with your memo and merges itself into the same address. From the
+exchange's side the payment is an ordinary memo-bearing deposit.
 
-From the exchange's side this is an ordinary memo-bearing deposit.
+The app takes this route when the destination is one of the exchange addresses it knows, or when
+the destination account declares that it requires a memo (the `config.memo_required` data entry
+from SEP-29).
 
 ## Do this
 
@@ -28,8 +31,8 @@ From the exchange's side this is an ordinary memo-bearing deposit.
 
 ### Get your deposit address and memo from the exchange
 
-Copy both. Exchanges share one deposit address across all customers, so the memo is the
-only thing that tells them the deposit is yours.
+Copy both from the exchange's XLM deposit page. The memo is the part that tells the exchange the
+deposit is yours.
 
 </Step>
 
@@ -37,8 +40,7 @@ only thing that tells them the deposit is yours.
 
 ### Paste the address into the destination field
 
-If the app recognizes it, an **Exchange detected** notice names the exchange and tells you
-which memo type it needs.
+When the app knows the address, a notice names the exchange and the memo types it takes.
 
 </Step>
 
@@ -46,9 +48,8 @@ which memo type it needs.
 
 ### Set the memo type and value
 
-Pick the type the exchange asked for and paste the value. The app refuses to start when
-the memo is missing, the wrong type, or malformed for its type, and it names the exchange
-in the refusal.
+Pick the type the exchange asked for and paste the value. **Continue** stays disabled while the
+memo is missing, of a type the exchange does not take, or malformed for its type.
 
 </Step>
 
@@ -56,65 +57,93 @@ in the refusal.
 
 ### Continue as normal
 
-The rest is the standard flow in [Close an account](/docs/users/close-an-account). The
-plan gains a final step, **Deliver to destination**, which is the helper account forwarding
-your funds. That step needs no signature from you.
+The rest is the standard flow in [Close an account](/docs/users/close-an-account). The plan gains
+a last step, **Deliver to destination**: the forwarding account paying the exchange. That step
+needs no signature from you.
 
 </Step>
 
 </Steps>
 
-## Exchanges the app recognizes
+## What arrives at the exchange
 
-Twelve deposit addresses are built in. All twelve require a memo.
+The close funds the forwarding account with 2 XLM in the same transaction that merges your account
+into it. The forward then pays the exchange everything above the forwarding account's own minimum
+balance and the forward's fee, with your memo, and merges the forwarding account into the exchange
+address. The merge carries the rest, about 1 XLM, with no payment and no memo, so count on the
+exchange crediting the payment only.
 
-| Exchange          | Memo type |
-| ----------------- | --------- |
-| Kraken            | Text      |
-| Binance           | ID        |
-| Binance Deposits  | ID        |
-| Bitfinex          | Text      |
-| Bitstamp          | ID        |
-| KuCoin            | Text      |
-| Upbit             | Text      |
-| CEX.IO            | Text      |
-| Crypto.com        | Text      |
-| Robinhood         | Text      |
-| Coinbase Deposits | Text      |
-| Blockchain.com    | Text      |
+Only XLM reaches an exchange. Every other balance is sold for XLM first, or, where it has no
+market, returned to its issuer. Sending a token as-is is not offered, because it would reach the
+exchange without your memo.
 
-Kraken publishes a 1 XLM minimum deposit and Binance a 0.1 XLM minimum. Check your
-exchange's own deposit page for its current terms before you close.
+## Exchanges the app knows
 
-## Sending to an exchange that is not listed
+Thirteen deposit addresses are built in, and all of them require a memo.
 
-You can still use the address. The close runs as a direct merge, so the exchange most
-likely will not credit it.
+| Exchange          | Memo type  |
+| ----------------- | ---------- |
+| Kraken            | Text       |
+| Binance           | ID         |
+| Binance Deposits  | ID         |
+| Bitfinex          | Text       |
+| Bitstamp          | ID         |
+| KuCoin            | Text       |
+| Upbit             | Text       |
+| Upbit Deposits    | ID or Text |
+| CEX.IO            | Text       |
+| Crypto.com        | Text       |
+| Robinhood         | Text       |
+| Coinbase Deposits | Text       |
+| Blockchain.com    | Text       |
 
-Withdraw to a wallet you control and move the funds to the exchange yourself. That gets
-you a normal payment the exchange can credit.
+Kraken publishes a 1 XLM minimum deposit and Binance a 0.1 XLM minimum. Check your exchange's own
+deposit page for its current terms before you close.
+
+Upbit shows its deposit address only to logged-in customers. The two Upbit entries come from the
+public stellar.expert directory, which tags both as exchange accounts that require a memo.
+Seven other Upbit accounts in that directory are cold storage and withdrawal wallets, not deposit
+addresses, so the app refuses them as a destination.
+
+## An exchange that is not listed
+
+When the destination account declares a memo requirement under SEP-29, the app takes the
+forwarding route for it too and accepts any well-formed memo.
+
+When it declares nothing, the close is a direct merge, and a memo you enter rides on the merge
+transaction. An exchange that credits only payments does not credit that. Withdraw to a wallet you
+control instead and send the funds to the exchange from there as a normal payment.
 
 If you run an exchange and want closes to reach your deposit addresses, see
 [Exchange integration](/docs/developers/protocol/exchange-integration).
 
 ## Things worth knowing
 
-**Custom tokens cannot go to an exchange.** An exchange deposit address cannot receive a
-raw Soroban token. If the account holds standalone tokens, the app tells you to move them
-to a personal wallet first, or they stay behind on the closed account.
+**Standalone tokens cannot go to an exchange.** An exchange deposit address cannot receive a
+Soroban token. The app tells you to move any you want to keep to a personal wallet first;
+otherwise they stay on the closed account.
 
-**A shared account cannot close to an exchange in one signing request.** The exchange path
-runs as several transactions, which cannot be bundled into the single transaction a
-multisig signing request collects signatures on. Close to a self-custody address instead.
-See [Close a shared account](/docs/users/close-a-shared-account).
+**DeFi payouts have to be sellable.** An exchange close forwards XLM only, so the plan refuses a
+DeFi exit whose payout cannot become a classic balance the close sells, such as the LP token a
+Blend backstop withdrawal pays. Close to your own address in that case.
 
-**If the forward is interrupted.** If the final delivery does not complete, the next time
-you open the app with that account connected a banner reads **An exchange forward was
-interrupted**, with a **Resume the forward** button that sweeps the funds on to your
-destination.
+**A shared account cannot close to an exchange.** The exchange route runs as several transactions,
+and a multisig signing request collects signatures on exactly one. See
+[Close a shared account](/docs/users/close-a-shared-account).
+
+**A Blend backstop still locked.** When a backstop withdrawal stays locked after the run, the run
+only prepares the close: it creates no forwarding account and sends nothing to the exchange. Come
+back after the unlock date to run the close to the exchange.
+
+**Self-hosted deployments.** A deployment built in self-hosted mode does not run the forwarding
+service, so it refuses a close that needs it. Withdraw to an address you control instead.
+
+**If the forward is interrupted.** The failure screen and, on later visits with that account
+connected, a banner reading **An exchange forward was interrupted** offer **Resume the forward**,
+which delivers the balance with your memo. See
+[When a step fails](/docs/users/when-a-step-fails#if-an-exchange-forward-was-interrupted).
 
 ## How it works underneath
 
-[The mediator forward protocol](/docs/developers/protocol/mediator) covers the helper
-account, how its signing key is derived per closure, and the exact envelope the server
-will co-sign.
+[The mediator forward protocol](/docs/developers/protocol/mediator) covers the forwarding account,
+how its key is derived for each close, and the exact transaction the server co-signs.

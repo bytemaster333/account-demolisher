@@ -1,97 +1,110 @@
 ---
 title: Architecture
-description: The module map, how a request flows through the app, and where the trust boundaries fall.
+description: The module map, how a close flows through the app, and where the trust boundaries fall.
 ---
 
-The app is a Next.js 16 application. One page drives the whole closure, backed by a state
-machine, a pure plan generator, and an executor that walks the plan on chain.
+The app is a Next.js 16 application served by `next start` behind a reverse proxy. One page,
+`/demolish`, drives the whole close through an XState machine, a pure plan generator, and an
+executor that walks the plan on chain.
 
 ## Request flow
 
-A closure runs through `/demolish`, which is a React page wired to an XState machine.
-
 ```
 /demolish (React)
-  └─ pageFlowMachine            src/lib/orchestrator/page-flow-machine.ts
-       ├─ discover
+  └─ pageFlowMachine                 src/lib/orchestrator/page-flow-machine.ts
+       ├─ discover                   src/lib/orchestrator/actors/discover.ts
        │    ├─ auditAccount               Horizon
-       │    ├─ DirectContractProvider     on-chain DeFi discovery
-       │    └─ enumerateAllowances        Soroban RPC
-       ├─ preview
-       │    ├─ resolveCreditPaths
+       │    ├─ scanAllowances             Soroban RPC events, then allowance() on chain
+       │    ├─ DirectContractProvider     Blend, Aquarius, Soroswap positions
+       │    ├─ discoverHeldTokens         standalone SEP-41 tokens
+       │    └─ gauge rewards and payout trustline gaps
+       ├─ preview                    src/lib/orchestrator/actors/preview.ts
+       │    ├─ surgeFeeBase, resolveCreditPaths
        │    ├─ generatePlan               pure
-       │    ├─ hydratePlanTransactions
-       │    └─ simulateNode               real Soroban RPC simulation
-       └─ execute
-            └─ executePlanTreeOnChain     src/lib/orchestrator/executor.ts
+       │    ├─ hydratePlanTransactions    builds each Soroban step
+       │    ├─ simulatePreviewTree        Soroban RPC simulation
+       │    ├─ refuseUnsafeSteps          the sign-time checks, run early
+       │    └─ assessMergeability
+       └─ execute                    src/lib/orchestrator/actors/execute.ts
+            ├─ executePlanTreeOnChain     src/lib/orchestrator/executor.ts
+            └─ submitBundle               a collected multisig close
 ```
 
 The machine's states are `idle`, `discovering`, `previewing`, `awaiting_confirmation`,
-`executing`, `succeeded`, `failed`, and `cancelled`.
+`executing`, `succeeded`, `prepared`, `failed` and `cancelled`. `prepared` ends a run that only
+prepares the close, because a Blend backstop withdrawal stays locked after it.
 
 ## Module map
 
-| Area         | Path                                        | Responsibility                                                   |
-| ------------ | ------------------------------------------- | ---------------------------------------------------------------- |
-| Flow machine | `src/lib/orchestrator/page-flow-machine.ts` | Screen sequencing, discovery and preview actors                  |
-| Executor     | `src/lib/orchestrator/executor.ts`          | The on-chain topological walk                                    |
-| Audit        | `src/lib/stellar/account-audit.ts`          | Account state, mergeability, multisig detection                  |
-| Discovery    | `src/lib/adapters/`                         | One subdirectory per protocol, plus `positions/`                 |
-| Plan         | `src/lib/plan/`                             | `generator`, `tree`, `classic-batcher`, `simulator`, `hydration` |
-| Wallet       | `src/lib/wallet/`                           | Connector abstraction over Stellar Wallets Kit                   |
-| Mediator     | `src/lib/mediator/`                         | Client, forward construction, envelope validator                 |
-| Multisig     | `src/lib/multisig/`                         | Signing requests and partial-XDR merging                         |
-| Server       | `src/server/`                               | Signing relay, mediator secret, rate limiting                    |
-| Config       | `src/lib/config/`                           | Networks, contracts, CSP, environment                            |
+| Area          | Path                    | Responsibility                                                            |
+| ------------- | ----------------------- | ------------------------------------------------------------------------- |
+| Orchestration | `src/lib/orchestrator/` | The flow machine, its actors, the executor, failure taxonomy, journal     |
+| Audit         | `src/lib/stellar/`      | Account audit, mergeability, path finding, classic transaction builder    |
+| DeFi adapters | `src/lib/adapters/`     | One directory per protocol (`blend`, `aquarius`, `soroswap`), `positions` |
+| Plan          | `src/lib/plan/`         | Generator, tree, classic batcher, hydration, simulator, price impact      |
+| Soroban       | `src/lib/soroban/`      | RPC, simulation, allowances, held tokens, sign-time guards, fee caps      |
+| Safety        | `src/lib/safety/`       | Exchange registry, scam heuristics, slippage, high-value gate             |
+| Wallet        | `src/lib/wallet/`       | Connector abstraction over Stellar Wallets Kit, secret-key connector      |
+| Mediator      | `src/lib/mediator/`     | Flow client, forward construction, envelope validator, recovery records   |
+| Multisig      | `src/lib/multisig/`     | Signing requests, partial-XDR merging, bundle freshness                   |
+| Metrics       | `src/lib/metrics/`      | The usage beacon, event schema, on-chain close marker                     |
+| Server        | `src/server/`           | Mediator secret, signing relay, rate limiter, metrics store, close check  |
+| Config        | `src/lib/config/`       | Networks, pinned contracts, CSP, public environment                       |
 
 ## Server surface
 
-Three route groups, and nothing else:
+| Route                                                                         | Purpose                                                                  |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `GET /api/mediator/sign`                                                      | Mints an exchange-forward flow bound to a destination, network and memo  |
+| `POST /api/mediator/sign`                                                     | Co-signs one forward envelope that meets the flow's terms                |
+| `POST /api/mediator/reissue`                                                  | Renews a flow token, expired or not, while its forwarding account exists |
+| `/api/plan`, `/api/plan/[id]`, `/api/plan/[id]/sign`, `/api/plan/[id]/events` | The multisig signing relay                                               |
+| `POST /api/metrics`                                                           | Records a visit, a funnel step, or a close it verifies on Horizon        |
+| `GET /api/metrics`                                                            | The aggregate metrics, behind a bearer token                             |
+| `POST /api/soroswap`                                                          | A proxy to the Soroswap aggregator's quote and build endpoints           |
 
-| Route                                                                         | Purpose                                                  |
-| ----------------------------------------------------------------------------- | -------------------------------------------------------- |
-| `/api/mediator/sign`                                                          | Mints a flow and co-signs one validated forward envelope |
-| `/api/plan`, `/api/plan/[id]`, `/api/plan/[id]/sign`, `/api/plan/[id]/events` | The multisig signing relay                               |
-| `/api/soroswap`                                                               | Server-side proxy to the Soroswap aggregator             |
+No code in the app calls `/api/soroswap`: held-token conversions go through the pinned Soroswap
+router on chain. The route stays in place as a documented proxy.
 
-The server never receives a user key, never builds a transaction on a user's behalf, and
-never submits one.
+Two pieces run outside the routes. `src/proxy.ts` sets the Content-Security-Policy on every
+document response, and `src/instrumentation.ts` refuses to start the server when
+`TRUSTED_PROXY_HOPS` is not a whole number of at least 1.
+
+The server never receives a user key, never builds a transaction for a user to sign, and never
+submits one.
 
 ## Purity boundaries
 
-Two core pieces take no network calls at all, which is what makes them testable and
-deterministic:
+Two core pieces make no network calls, which keeps them deterministic and testable:
 
-- **`generatePlan`** is pure over `(audit, positions, allowances, destination, options)`.
-  Its only impurity is reading the clock to estimate a Blend backstop unlock date, and
-  tests pass a fixed value.
-- **`batchClassicDemolition`** is a pure function from an account audit to an ordered list
-  of classic batches.
-
-Everything that touches the network sits outside those two.
+- **`generatePlan`** is pure over `(audit, positions, allowances, destination, options)`. Its only
+  impurity is reading the clock to estimate a Blend backstop unlock date, which tests pass in.
+- **`batchClassicDemolition`** is a pure function from an account audit and the resolved paths to
+  an ordered list of classic batches.
 
 ## Trust boundaries
 
-| Boundary                | Trust level             | Why                                                                                             |
-| ----------------------- | ----------------------- | ----------------------------------------------------------------------------------------------- |
-| Browser                 | Highest                 | The user's key lives here and nowhere else                                                      |
-| Server                  | Bounded                 | Holds one HMAC master secret, never a user key; its powers are constrained by strict validators |
-| Horizon and Soroban RPC | Untrusted for integrity | Reads are treated as hints and re-verified before signing                                       |
-| Wallet                  | Separate trusted signer | Shows its own confirmation and signs on its own                                                 |
-| On-chain contracts      | Untrusted               | Checked against the allow-list immediately before every signature                               |
+| Boundary                | Trust                       | What bounds it                                                                                                                                                                                          |
+| ----------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Browser                 | Highest                     | The user's key lives here or in the wallet and nowhere else                                                                                                                                             |
+| Wallet                  | Separate signer             | Shows its own confirmation. The app verifies the signed envelope is the transaction it built                                                                                                            |
+| Server                  | Trusted for exchange closes | Holds the HMAC master that derives every forwarding account's key and serves the app code. A compromised server can redirect an exchange close in flight. Direct closes never touch the server          |
+| Horizon and Soroban RPC | Untrusted                   | They supply the state and simulations the plan is built from. Before each signature the app checks the call target, the authorization tree and the fee, so a lying endpoint cannot widen what is signed |
+| On-chain contracts      | Untrusted                   | Only pinned entry points can be the root of a signed call, each held to the exact authorization tree its call needs                                                                                     |
 
 [The security model](/docs/developers/security/model) covers what defends each boundary.
 
 ## Rebuilding from fresh state
 
-A plan you review is not the transaction that gets submitted. Before each classic phase
-the executor re-reads the account, re-runs the audit, re-resolves credit paths, and
-re-batches from that fresh state. Soroban nodes are rebuilt and re-simulated the same way.
+The plan you review is not byte for byte what gets submitted. Before each classic phase the
+executor audits the account again, quotes the conversions again, and rebuilds the batch, and it
+refuses a conversion whose fresh price is worse than the reviewed one by more than the slippage
+tolerance. Each Soroban step is rebuilt and simulated again right before it is signed.
 
-This is what makes a stale sequence number self-correcting, and what stops a read from a
-hostile RPC at preview time deciding what you actually sign.
+This makes a stale sequence number or time bound self-correcting, and it means an account that
+changed during review is closed as it is, within the limits the review set.
 
 ## The docs site
 
-This documentation is a separate Next.js app in `docs/`, tracked in the same repository.
-It runs on port 3020 in development.
+This documentation is a separate Next.js app in `docs/`, tracked in the same repository. It runs on
+port 3020 in development.

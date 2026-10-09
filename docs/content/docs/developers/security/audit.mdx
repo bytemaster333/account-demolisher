@@ -1,65 +1,125 @@
 ---
-title: Security audit and remediation
-description: The audit scope, the completed hardening and its code references, and the dependency posture that gates every release.
+title: Audit and review status
+description: The state of the external audit, the internal pre-audit review and its remediation by severity and status, the FxDAO removal, and the dependency posture.
 ---
 
-This page is the published record of Account Demolisher's security audit and the remediation
-of its findings. It stays current as the audit proceeds. Before it operates on mainnet, the app
-requires you to acknowledge the tool's independent-audit status, a deliberate safety gate
-(`src/components/layout/MainnetConfirm.tsx`).
+## External audit
 
-## Audit scope
+An independent external audit of Account Demolisher has not been performed yet. The app tells you
+so: whenever it is on mainnet, from the build default, a restored selection or a switch, the
+browser has to acknowledge that the code has not had an independent audit before the app operates
+(`src/components/layout/AppShell.tsx`, `src/components/layout/MainnetConfirm.tsx`). A co-signer on
+`/sign` signs on the network the signing request names and does not see that notice.
 
-The independent audit covers five areas:
+When the external audit runs, its findings and their resolutions are published on this page.
 
-- Mediator key handling: the `MEDIATOR_SECRET` HMAC master and the per-flow ephemeral keys.
-- The merge-envelope validator: the single forward shape the mediator co-signs.
-- Plan-generation correctness: the plan tree, cycle detection, and the anti-stranding ordering.
-- Transaction and signature handling: fees, time bounds, sequence handling, and multisig signature merging.
-- An SDK supply-chain review of the dependency graph.
+## Internal pre-audit review
 
-## External audit status
+Before the external audit, the codebase went through an internal review at commit `764d808`
+(2026-10-02):
 
-The independent audit runs through Audit Bank and is a release blocker for the mainnet launch.
-Each finding it delivers is listed here with its severity and its resolution: fixed with a code
-reference, or formally accepted with a rationale. No high or critical finding stays open at launch.
+- Seventeen area reviewers read every line of `src/` (136 files, 32,341 lines), the Docker, CI and
+  release configuration, `package.json`, `public/`, every page of this documentation, the root
+  markdown, and every file under `tests/` and `scripts/qa/`, recording the exact line ranges read.
+- An independent verifier tried to refute each finding against the code and the installed
+  library sources, and where possible proved it with a scratch script, a focused test, or a
+  read-only testnet or mainnet query. Verifiers also reported issues the reviewers missed.
+- A completeness pass compared the coverage against the file tree and sent six further reviewer
+  and verifier pairs into cross-cutting areas: the sign-time guards, slippage, fail-open error
+  handling, secret and token data flow, concurrency, and drift between discovery and execution.
+- 483 raw findings: 479 survived verification and 4 were refuted. They were merged into 259
+  distinct issues, one per root cause, and two more found while fixing were added, for 261.
+- Nothing was signed or submitted on mainnet during the review.
 
-Ahead of that audit, the team ran its own multi-agent security review across the same five areas
-and remediated every finding it raised. Those fixes are merged into `main`, and the codebase is at
-its maximum ready state for the external audit to build on.
+Each fix was made with a regression test written to fail first, and checked by a separate reviewer
+before it was merged.
 
-## Remediation completed
+### Severity scale
 
-The following defensive changes ship in `main` as part of the mainnet-readiness work:
+| Severity | Meaning                                                                                                             |
+| -------- | ------------------------------------------------------------------------------------------------------------------- |
+| CRITICAL | Loss or stranding of user funds, key or secret compromise, or signing something the user did not intend             |
+| HIGH     | A close fails or misreports for a realistic account, a security control is bypassed, or success is reported falsely |
+| MEDIUM   | A real bug with a narrower trigger or recoverable impact, or misleading UI on a money path                          |
+| LOW      | An edge case, robustness, minor UX or accessibility                                                                 |
+| INFO     | Code quality, dead code, stale comments, or documentation drift with no runtime impact                              |
 
-- **Authorization-entry guard.** The sign-time allow-list inspects each Soroban operation's
-  authorization entries and refuses any that authorize contract creation or wasm upload, closing a
-  gap the operation-level check alone leaves open (`src/lib/stellar/allowlist.ts`).
-- **Dependency audit as a release gate.** Continuous integration fails on any high or critical
-  advisory in the production dependency tree (`pnpm audit --prod --audit-level high`) rather than
-  only reporting it, and the release workflow runs the same gate before it builds the attested
-  artifact.
-- **Toolchain and dependencies on current releases.** The app runs on Node.js 24 LTS and pnpm 12,
-  with Stellar SDK 17, Next.js 16.3 and React 19.3, and the lockfile is resolved fresh from those
-  versions. Every transitive advisory with a compatible fix resolves to its patched version.
-- **Mainnet allow-list provenance.** Every mainnet contract entry cites a real upstream source,
-  verified against the protocols' own published deployment files, and a source-level test asserts the
-  list stays complete and correctly enforced (`tests/unit/allowlist-mainnet.test.ts`).
+### Results
+
+As recorded in the review's tracking file at the time of this documentation revision:
+
+| Severity  | Issues  | Fixed   | Partial | Open   | Not a bug |
+| --------- | ------- | ------- | ------- | ------ | --------- |
+| CRITICAL  | 8       | 8       | 0       | 0      | 0         |
+| HIGH      | 39      | 35      | 1       | 2      | 1         |
+| MEDIUM    | 64      | 53      | 3       | 8      | 0         |
+| LOW       | 125     | 104     | 6       | 12     | 3         |
+| INFO      | 25      | 17      | 2       | 6      | 0         |
+| **Total** | **261** | **217** | **12**  | **28** | **4**     |
+
+- **Fixed**: every CRITICAL issue, and 217 in all.
+- **Partial**: the fix landed for part of the issue, and a follow-up in another area remains
+  tracked.
+- **Open**: 25 of the 28 are documentation issues (2 HIGH, 7 MEDIUM, 10 LOW, 6 INFO): pages that
+  described behavior the code no longer has, or had not yet had. This documentation revision,
+  together with `README.md`, `SECURITY.md`, `ARCHITECTURE.md` and `.env.example`, is the work that
+  addresses them. The other 3 are test-coverage gaps: the integration suite does not execute a
+  live DeFi exit end to end (MEDIUM), the end-to-end suite covers only a direct single-signer close
+  (LOW), and the Playwright configuration reuses an already running local server and runs
+  friendbot-funded specs fully in parallel (LOW).
+- **Not a bug**: 4 issues the fix work showed were already handled.
+
+### What the CRITICAL fixes changed
+
+| Issue                                                                                                | Now                                                                                                                                                                 |
+| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Allow-listed DeFi steps signed simulation-recorded authorization trees without checking nested calls | Every DeFi step is held to the exact authorization tree its call needs (`src/lib/soroban/defi-auth-guard.ts`)                                                       |
+| Retry after a failed forward could report success while the balance sat in the mediator              | A forward that did not land ends `forward_pending`, and Retry runs it                                                                                               |
+| A merge whose confirmation was lost could lead Retry to re-mint the mediator and strand the balance  | Submissions are journaled by hash and looked up before anything is signed again; a funded mediator is adopted                                                       |
+| The mediator token's 15-minute lifetime could run out before the merge                               | A new flow is minted right before the funding batch, and tokens renew through `/api/mediator/reissue`                                                               |
+| Two-pass Soroban builds reused one account object and submitted at the wrong sequence                | Every build gets its own copy of the account at the same sequence, so a probe build never advances the real one                                                     |
+| Aquarius discovery failed open when its API and event scan both came back empty                      | A protocol that cannot be read records an error, and the merge guard refuses on it                                                                                  |
+| Blend discovery read only the V2 backstop                                                            | Both backstops are read, and V1 pools resolve to the V1 backstop                                                                                                    |
+| A shared-account signing request could merge around open Soroban positions                           | A signing request is refused while the plan holds any step besides the classic close, or discovery reported an error, and the bundle is checked again before submit |
+
+## FxDAO
+
+FxDAO was a supported protocol and is no longer, because the protocol shut down on chain. The
+evidence, gathered on 2026-10-06:
+
+- The mainnet vaults contract `CCUN4RXU5VNDHSF4S4RKV4ZJYMX2YWKOH6L4AKEKVNVDQ7HY5QIAO4UB` now runs a
+  wasm whose interface exports only `evict` and `upgrade`.
+- Its `CoreState.panic_mode` is `true`.
+- `VaultsInfo` shows `total_vaults = 0` and `total_col = 0` for USD, EUR and GBP.
+- The contract's data on stellar.expert holds only the instance entry, so no vault record remains,
+  live or archived.
+- The six testnet FxDAO contracts the app had pinned no longer exist.
+
+There are no FxDAO positions left to unwind, so the app no longer discovers them or plans exits for
+them, and the allow-list carries no FxDAO entries. The FxDAO stablecoins already issued (about
+17,504 USD, 3,857 EUR and 3,110 GBP by the debt counters) are ordinary balances: a close sells them
+for XLM, returns them to their issuer, or asks you, like any other credit balance.
 
 ## Dependency posture
 
-Runtime dependencies are pinned by a committed `pnpm-lock.yaml`. One override in
-`pnpm-workspace.yaml` lifts `axios` to 1.20.0 under the Stellar SDK 16 copy that
-`@blend-capital/blend-sdk` pins, which would otherwise ship `axios` 1.18.0 and its high-severity
-advisories. The release gate blocks on any high or critical advisory, and the production tree
-carries none.
+Runtime dependencies are pinned by the committed `pnpm-lock.yaml` and installed with
+`--frozen-lockfile`. CI and the release workflow both run `pnpm audit --prod --audit-level high`
+and fail on any high or critical advisory in the production tree. The production tree carries none.
 
-No advisory is suppressed. `pnpm audit --prod` reports three below that threshold. All three sit
-under `@hot-wallet/sdk`, a dependency of the Stellar Wallets Kit HOT wallet module, which the app
-never imports, and none has a fix inside the version ranges that pull it in:
+One override in `pnpm-workspace.yaml` lifts `axios` to 1.20.0 under the Stellar SDK 16 copy that
+`@blend-capital/blend-sdk` pins, which would otherwise ship `axios` 1.18.0 and its advisories.
 
-- `GHSA-848j-6mx2-7j84` (elliptic 6.6.1, low): no patched release exists. Signing here is ed25519 through the Stellar SDK, not ECDSA.
-- `GHSA-w5hq-g745-h8pq` (uuid 8.3.2, moderate): fixed in uuid 11.1.1, while `jayson` 4 requires uuid 8. It affects the `v3`/`v5`/`v6` buffer-writing paths, and `jayson` calls `v4`.
-- `GHSA-528h-pc64-c93x` (stream-json 1.9.1, moderate): fixed in stream-json 3.5.0, while `jayson` 4 requires stream-json 1. It affects the pick, ignore, filter and replace filters, and `jayson` uses only `StreamValues` and `Verifier`.
+No advisory is suppressed. `pnpm audit --prod` reports five below the gate, on 2026-10-09. All five
+sit under `@hot-wallet/sdk`, which the Stellar Wallets Kit's HOT Wallet module depends on. The app
+does not import that module (it is not in the kit's default modules), and none of the five has a
+fix inside the version ranges that pull it in:
 
-Each finding is revisited when the external audit runs.
+| Advisory              | Package           | Severity | Why it stays                                                                  |
+| --------------------- | ----------------- | -------- | ----------------------------------------------------------------------------- |
+| `GHSA-848j-6mx2-7j84` | elliptic 6.6.1    | Low      | No patched release exists. The app signs with ed25519 through the Stellar SDK |
+| `GHSA-w5hq-g745-h8pq` | uuid 8.3.2        | Moderate | Fixed in uuid 11.1.1; `jayson` 4 requires uuid `^8.3.2`                       |
+| `GHSA-528h-pc64-c93x` | stream-json 1.9.1 | Moderate | Fixed in stream-json 3.5.0; `jayson` 4 requires stream-json `^1.9.1`          |
+| `GHSA-hqr4-qq8f-hg3x` | stream-json 1.9.1 | Moderate | Fixed in stream-json 3.6.0; same constraint                                   |
+| `GHSA-mjw6-4jj6-33hc` | stream-json 1.9.1 | Moderate | Fixed in stream-json 3.6.0; same constraint                                   |
+
+The toolchain is Node.js 24 LTS and pnpm 12, with Stellar SDK 17, Next.js 16.3 and React 19.3.

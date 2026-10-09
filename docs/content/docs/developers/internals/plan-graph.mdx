@@ -1,152 +1,138 @@
 ---
 title: The plan graph
-description: The 13 node kinds, the dependency edges between them, how the graph is validated, and how it is ordered.
+description: The 20 node kinds, the dependency edges between them, how the graph is validated, and how it is ordered.
 ---
 
-`generatePlan(audit, positions, allowances, destination, options)` in
-`src/lib/plan/generator.ts` emits a directed acyclic graph of nodes. It is a pure
-function: no network calls, and its only impurity is reading the clock to estimate a Blend
-backstop unlock date.
+`generatePlan(audit, positions, allowances, destination, options)` in `src/lib/plan/generator.ts`
+emits a directed acyclic graph of nodes. It makes no network calls; its only impurity is reading
+the clock to estimate a Blend backstop unlock date, which tests pass in as `options.now`.
 
-A node is emitted only when the account needs it. Every node in a generated plan is a real
-step that runs on chain.
+A node is emitted only when the account needs it.
 
 ## Node kinds
 
-Thirteen kinds, in declaration order.
+Twenty kinds, declared in `src/lib/plan/tree.ts`.
 
-| Kind                   | What it does                                         | Soroban |
-| ---------------------- | ---------------------------------------------------- | ------- |
-| `RevokeAllowance`      | Sets a SEP-41 approval to zero                       | Yes     |
-| `RepayBlend`           | Repays a Blend liability                             | Yes     |
-| `PayFxDAODebt`         | Pays an FxDAO vault debt, returning its collateral   | Yes     |
-| `WithdrawBlend`        | Withdraws Blend collateral or supply                 | Yes     |
-| `WithdrawAquarius`     | Withdraws an Aquarius pool share                     | Yes     |
-| `WithdrawSoroswapLp`   | Withdraws a Soroswap LP position                     | Yes     |
-| `ClaimBlendEmissions`  | Claims BLND emissions for a pool                     | Yes     |
-| `ClaimAquariusRewards` | Claims Aquarius rewards for a pool                   | Yes     |
-| `ConvertSorobanToXLM`  | Swaps a leftover token to XLM via Soroswap           | Yes     |
-| `TransferAsIs`         | Sends a leftover token to the destination unchanged  | Yes     |
-| `BackstopQueue`        | Queues a Blend backstop withdrawal                   | Yes     |
-| `FinalClassicTx`       | The batched classic close, ending in `ACCOUNT_MERGE` | No      |
-| `MediatorForward`      | The exchange delivery hop                            | No      |
+| Kind                            | What it does                                                             | Own transaction |
+| ------------------------------- | ------------------------------------------------------------------------ | --------------- |
+| `RevokeAllowance`               | Sets a SEP-41 approval to zero                                           | Soroban         |
+| `ClassicUnwind`                 | Cancels offers and withdraws classic pool shares that hold a repay asset | Classic batches |
+| `RepayBlend`                    | Repays a Blend liability                                                 | Soroban         |
+| `WithdrawBlend`                 | Withdraws Blend collateral or supply                                     | Soroban         |
+| `WithdrawAquarius`              | Withdraws an Aquarius standard pool share                                | Soroban         |
+| `WithdrawAquariusConcentrated`  | Withdraws one tick range of an Aquarius concentrated position            | Soroban         |
+| `WithdrawSoroswapLp`            | Withdraws a Soroswap LP position                                         | Soroban         |
+| `AddBlndTrustline`              | Opens a BLND trustline for the emissions claims                          | Classic         |
+| `AddExitTrustline`              | Opens a trustline for a classic asset a pool exit pays out               | Classic         |
+| `ClaimBlendEmissions`           | Claims BLND emissions for a pool                                         | Soroban         |
+| `ClaimAquariusRewards`          | Claims Aquarius pool rewards through the router                          | Soroban         |
+| `ClaimAquariusConcentratedFees` | Collects the swap fees of a concentrated position                        | Soroban         |
+| `ClaimAquariusGaugeRewards`     | Claims what a pool's reward gauges owe with `gauges_claim`               | Soroban         |
+| `ConvertSorobanToXLM`           | Swaps a standalone token to XLM through the Soroswap router              | Soroban         |
+| `TransferAsIs`                  | Sends a standalone token to the destination unchanged                    | Soroban         |
+| `ClaimBackstopEmissions`        | Claims accrued backstop BLND into backstop shares                        | Soroban         |
+| `BackstopQueue`                 | Queues a Blend backstop withdrawal                                       | Soroban         |
+| `BackstopWithdraw`              | Withdraws an unlocked backstop queue                                     | Soroban         |
+| `FinalClassicTx`                | The batched classic close, ending in the account merge                   | Classic batches |
+| `MediatorForward`               | The exchange delivery out of the forwarding account                      | Mediator        |
 
-`isSorobanNode` returns true for the first eleven and false for `FinalClassicTx` and
-`MediatorForward`.
+`isSorobanNode` is true for every kind that carries its own prebuilt transaction, the two
+trustline kinds included, and false for `ClassicUnwind`, `FinalClassicTx` and `MediatorForward`,
+whose transactions the executor builds itself.
 
 ## Node status
 
-Seven values: `pending`, `simulated`, `signed`, `submitted`, `confirmed`, `failed`,
-`skipped`.
+Seven values: `pending`, `simulated`, `signed`, `submitted`, `confirmed`, `failed`, `skipped`. A
+node can also carry `deferred` (built at execute time, see
+[Simulation](/docs/developers/internals/simulation)), `simulated` (the preview's outcome) and
+`executed` (its own receipt).
 
 ## Dependency edges
 
-`dependencies` lists the ids a node waits on. A node runs once every dependency reaches
-`confirmed` or `skipped`.
+A node runs once every dependency is `confirmed`. A dependency that was skipped counts as done only
+when it is a best-effort kind (`TransferAsIs`, `ConvertSorobanToXLM`, `RevokeAllowance`) skipped on
+purpose, not because of its own dependency. `MediatorForward` runs only after a confirmed merge.
 
-| Kind                   | Waits on                                                            |
-| ---------------------- | ------------------------------------------------------------------- |
-| `RevokeAllowance`      | Nothing                                                             |
-| `RepayBlend`           | Nothing                                                             |
-| `PayFxDAODebt`         | Nothing                                                             |
-| `WithdrawBlend`        | Every `RepayBlend` for the same pool                                |
-| `WithdrawAquarius`     | Nothing                                                             |
-| `WithdrawSoroswapLp`   | Nothing                                                             |
-| `ClaimBlendEmissions`  | Every `WithdrawBlend` for the same pool                             |
-| `ClaimAquariusRewards` | The `WithdrawAquarius` for the same pool index                      |
-| `ConvertSorobanToXLM`  | Nothing                                                             |
-| `TransferAsIs`         | Nothing                                                             |
-| `BackstopQueue`        | Nothing                                                             |
-| `FinalClassicTx`       | Every node that is not itself `FinalClassicTx` or `MediatorForward` |
-| `MediatorForward`      | `final-classic-tx`                                                  |
+| Kind                                                                       | Waits on                                                                                      |
+| -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `AddBlndTrustline`, `AddExitTrustline`, `RevokeAllowance`, `ClassicUnwind` | Nothing                                                                                       |
+| `ClaimAquariusGaugeRewards`                                                | The trustlines its reward tokens need                                                         |
+| `WithdrawAquarius`                                                         | The pool's gauge claim and the trustlines its tokens need                                     |
+| `ClaimAquariusRewards`                                                     | The pool's withdraw (standard) and the reward token's trustline                               |
+| `ClaimAquariusConcentratedFees`                                            | The trustlines its tokens need                                                                |
+| `WithdrawAquariusConcentrated`                                             | The pool's gauge claim, reward and fee claims, and its token trustlines                       |
+| `WithdrawSoroswapLp`                                                       | The trustlines its tokens need                                                                |
+| `WithdrawBlend` (pool without debt)                                        | The trustline its asset needs                                                                 |
+| `RepayBlend`                                                               | Every exit that pays tokens in without a repay (they can fund it), and `ClassicUnwind`        |
+| `WithdrawBlend` (pool with debt)                                           | That pool's repays and the trustline its asset needs                                          |
+| `ClaimBlendEmissions`                                                      | That pool's withdraws and the BLND trustline                                                  |
+| `ClaimBackstopEmissions`, `BackstopWithdraw`                               | Nothing                                                                                       |
+| `BackstopQueue`                                                            | The pool's backstop emissions claim                                                           |
+| `ConvertSorobanToXLM`, `TransferAsIs`                                      | Every exit, withdraw, reward claim and backstop payout, since those can pay more of the token |
+| `FinalClassicTx`                                                           | Every other node except `MediatorForward`                                                     |
+| `MediatorForward`                                                          | `final-classic-tx`                                                                            |
 
-The `FinalClassicTx` edge set is the important one: every Soroban node must complete before
-the merge, so the account is never closed with a position still open.
+## Plans that only prepare
+
+`preparePlanFor(positions)` returns a `PreparePlan` when a Blend backstop withdrawal stays locked
+after the run: shares this run queues, or a queued part that has not unlocked. Such a plan carries
+`prepareOnly`, sweeps no standalone tokens, has no `FinalClassicTx` and no `MediatorForward`, and
+`buildPlanTree` refuses a prepare-only plan that carries a merge.
+
+## Exchange closes
+
+A plan with `useMediator: true` that merges needs both `mediatorPublicKey` and `flowToken`, or the
+generator throws. `assertExchangeCloseCanRun` refuses a plan whose DeFi exits pay out a token that
+is not a classic balance the close can sell, because an exchange close forwards only XLM. An
+exchange close sweeps no standalone tokens.
 
 ## Node ids
 
 `FinalClassicTx` and `MediatorForward` use the literal ids `final-classic-tx` and
-`mediator-forward`. Every other id is built by lowercasing its parts and joining them with
-`:`.
-
-| Prefix                      | Parts                |
-| --------------------------- | -------------------- |
-| `revoke`                    | contract id, spender |
-| `blend-repay`               | pool id, asset       |
-| `fxdao-pay-debt`            | vault denomination   |
-| `blend-withdraw-collateral` | pool id, asset       |
-| `blend-withdraw-supply`     | pool id, asset       |
-| `aquarius-withdraw`         | pool index           |
-| `soroswap-withdraw`         | token A, token B     |
-| `blend-claim`               | pool id              |
-| `aquarius-claim`            | pool index           |
-| `convert-token`             | contract id          |
-| `drain-token`               | contract id          |
-| `backstop-queue`            | pool id              |
-
-## Entry guards
-
-Generating a mediator plan requires both pieces of mediator state, or the generator throws:
-
-- `useMediator: true` without `mediatorPublicKey`
-- `useMediator: true` without `flowToken`
+`mediator-forward`, the classic unwind `classic-unwind`, and the BLND trustline `blnd-trustline`.
+Every other id joins its lowercased parts with `:`, for example `blend-repay:<pool>:<asset>`,
+`aquarius-withdraw:<tokens...>:<index>`, `aquarius-cl-withdraw:<pool>:<lower>:<upper>`,
+`exit-trustline:<token>`, `backstop-queue:<pool>` and `drain-token:<contract>`.
 
 ## Validation
 
-`buildPlanTree(nodes)` runs three checks in order, each throwing a plain `Error`:
+`buildPlanTree(nodes, extras)` runs these checks, each throwing a plain `Error`:
 
-1. **Duplicate ids** — `buildPlanTree: duplicate node id "<id>"`
-2. **Missing dependency targets** — `buildPlanTree: node "<id>" depends on missing node id "<depId>"`
-3. **Cycles** — `buildPlanTree: cycle detected in plan dependencies: <a -> b -> a>`
+1. Duplicate ids: `buildPlanTree: duplicate node id "<id>"`
+2. Missing dependency targets: `buildPlanTree: node "<id>" depends on missing node id "<depId>"`
+3. Cycles: `buildPlanTree: cycle detected in plan dependencies: <a -> b -> a>`
+4. A prepare-only plan with a merge: `buildPlanTree: a prepare-only plan must not carry the final merge`
 
-### Cycle detection
-
-`assertAcyclic` is an iterative depth-first search with three-colour marking and an
-explicit stack, so it does not recurse.
-
-Every node starts white. A node being visited is grey, a finished node is black. Reaching
-a grey node is a back edge, which is a cycle. The reported path is reconstructed from the
-current stack frame's path, sliced from the first appearance of the repeated node, so the
-message reads as the cycle itself rather than the whole traversal.
-
-Traversal follows the dependency direction, so the path reads in dependency order.
+Cycle detection is an iterative depth-first search with three-colour marking and an explicit stack.
+The reported path starts at the repeated node, so the message reads as the cycle itself.
 
 ## Ordering
 
-`topologicalOrder(tree)` is Kahn's algorithm.
-
-In-degree is a node's dependency count. Every zero-in-degree node seeds a FIFO queue;
-draining it appends each node to the order and decrements its children, enqueueing a child
-when it reaches zero.
-
-A short result means a cycle survived, and throws
+`topologicalOrder(tree)` is Kahn's algorithm with a FIFO queue. The seed scan and the children lists
+follow `Map` insertion order, which is the order `generatePlan` pushed the nodes, so the order is
+deterministic. A short result means a cycle and throws
 `topologicalOrder: cycle detected at runtime: produced N of M nodes`.
-
-The order is deterministic. Both the seed scan and the children lists preserve `Map`
-insertion order, which is the order `buildPlanTree` inserted the nodes, which is the order
-`generatePlan` pushed them.
 
 ## The tree shape
 
-`PlanTree` has two fields: `rootNodes`, the nodes with no dependencies, and `allNodes`, a
-flat id-to-node index.
+`PlanTree` holds `rootNodes` (no dependencies), `allNodes` (the id-to-node index), and optionally
+`prepareOnly` and `forfeitedBackstopEmissions` (pools whose backstop BLND the user agreed to leave
+unclaimed).
 
 ## Metadata worth knowing
 
-Two metadata fields carry warnings in the source, both about memos:
-
-- `FinalClassicTxMetadata.memo` is the deposit memo for a direct merge to a memo-required
-  destination. It has to be re-applied during execute-time re-batching or the signed merge
-  drops it.
-- `MediatorForwardMetadata.memo` must be carried verbatim, because that forward is the only
-  hop that reaches the exchange. A dropped numeric or hash memo means the deposit is not
-  credited.
-
-`PayFxDAODebtMetadata` carries `collateral` alongside `debt` so the on-chain vault key,
-derived from both, can be reconstructed.
+- `FinalClassicTxMetadata` records the reviewed claimable-balance list, the disposal choices, the
+  accepted price-impact keys, the reviewed reference and full-size quotes, the deposit memo and
+  whether the batches carry the close marker. The executor re-batches from a fresh audit with
+  exactly these, so it can never claim a balance the user did not review or sell below the
+  reviewed price beyond the slippage tolerance.
+- `MediatorForwardMetadata.memo` is carried verbatim, because the forward is the only hop that
+  reaches the exchange.
+- `ClaimAquariusGaugeRewardsMetadata.routerPool` records the pool the pinned router listed when the
+  transaction was last built, which the allow-list check requires.
 
 ## Next
 
 - [The classic batch](/docs/developers/internals/classic-batch) for what `FinalClassicTx` contains
-- [Simulation](/docs/developers/internals/simulation) for how nodes are grounded before signing
+- [Simulation](/docs/developers/internals/simulation) for how nodes are built before signing
 - [Execution and recovery](/docs/developers/internals/execution) for how the order is walked

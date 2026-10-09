@@ -1,161 +1,179 @@
 ---
 title: Self-hosting
-description: Install, configure, run, and deploy Account Demolisher under your own domain.
+description: Install, configure, run and deploy Account Demolisher under your own domain, behind the reverse proxy it requires.
 ---
 
-The app is a standard Next.js 16 application. Clone it, set a few environment variables, and
-run it.
+Account Demolisher is a Next.js 16 application served by `next start`. You run it behind a reverse
+proxy: the repository's Docker Compose file ships one.
 
 ## Requirements
 
-- **Node.js 24** (pinned in `.nvmrc`, `engines` requires `>=24`)
-- **pnpm 12** (pinned at `pnpm@12.8.1`, `engines` requires `>=12`)
+- **Node.js 24** (`.nvmrc` pins 24.21.0, and `engines` requires `>=24`)
+- **pnpm 12** (`packageManager` pins `pnpm@12.8.1`, and `engines` requires `>=12`)
+- For the container route, Docker with Compose
 
-## Install and run
+## Local development
 
 ```bash
 git clone https://github.com/bytemaster333/account-demolisher.git
 cd account-demolisher
-pnpm install
+pnpm install --frozen-lockfile
 cp .env.example .env.local
 pnpm dev
 ```
 
-The dev server runs at `http://localhost:3000`.
+The dev server runs at `http://localhost:3000`. When a request carries no `X-Forwarded-For`, Next
+fills it with the connection's address, so the default `TRUSTED_PROXY_HOPS=1` works on localhost.
 
-For production:
+## Docker Compose
 
 ```bash
-pnpm build
-pnpm start
+docker compose up --build -d
 ```
 
-The production server binds to port 3000. Override with `PORT`.
+Compose runs two services:
+
+| Service | What it is                                                                                                                                                    |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `proxy` | Caddy 2.11.7, pinned by digest. The only published service, on ports 80 and 443 (TCP and UDP). It refuses request bodies over 64 KB and proxies to `app:3000` |
+| `app`   | The app image. It is not published: only the proxy reaches it, on the Compose network                                                                         |
+
+Compose reads a `.env` file next to `docker-compose.yml` only to fill in its own `${...}` values.
+No other variable reaches the containers.
+
+| Where it goes  | Variables                                                                                                                                                                                                                                  |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| App build args | `NEXT_PUBLIC_STELLAR_NETWORK` (default `testnet`), `NEXT_PUBLIC_DEPLOYMENT_MODE` (default `self-hosted`), `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID`, `NEXT_PUBLIC_SITE_URL`, `NEXT_PUBLIC_SLIPPAGE_BPS`, `NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS` |
+| App runtime    | `MEDIATOR_SECRET`, `MEDIATOR_ALLOWED_ORIGIN`, `SOROSWAP_API_URL`, `SOROSWAP_API_KEY`, `METRICS_ADMIN_TOKEN`, `TRUSTED_PROXY_HOPS` (default `1`), and `METRICS_DB_DIR`, fixed to `/app/data`                                                |
+| Proxy runtime  | `SITE_ADDRESS`: your domain, for which Caddy obtains and renews a TLS certificate automatically. The default `:80` serves plain HTTP on any host name                                                                                      |
+
+The public variables are build arguments because `next build` inlines them. After changing one,
+rebuild with `docker compose up --build -d`.
+
+Compose defaults `NEXT_PUBLIC_DEPLOYMENT_MODE` to `self-hosted`, so exchange closes stay off until you
+set it to `reference` together with `MEDIATOR_SECRET`.
+
+Three named volumes keep state across container recreation: `metrics` (the metrics store at
+`/app/data`), and `caddy-data` and `caddy-config` (certificates and Caddy state).
+
+### The image
+
+The `Dockerfile` builds on `node:24-slim` pinned by digest, installs with `--frozen-lockfile`,
+builds with the public build arguments, and ships only production dependencies. The runtime image
+has no pnpm: it starts `node node_modules/next/dist/bin/next start` as the non-root user `appuser`
+(uid 1001), exposes port 3000, and checks health by fetching `/` every 30 seconds. `/app/data` is
+the only path that user can write, and it is declared as a volume. The build context is an
+allow-list (`.dockerignore`), so `.env` files and anything else outside the sources never reach the
+builder.
+
+## Proxy and rate limits
+
+Every API route is rate-limited per client address. A route handler has no peer address, so the
+limiter reads it from `X-Forwarded-For`: the entry `TRUSTED_PROXY_HOPS` places from the right,
+which the nearest trusted proxy appended. Everything to its left is client-controlled and ignored.
+An IPv6 client is keyed by its `/64` prefix.
+
+The app is supported only behind a reverse proxy, and `TRUSTED_PROXY_HOPS` is a whole number of at
+least 1:
+
+- **The shipped Caddy proxy**: `1`, the default. Caddy ignores any `X-Forwarded-For` a client sends
+  and sets it to the connecting address.
+- **A CDN or another proxy in front of Caddy**: add it under Caddy's `trusted_proxies` and raise
+  `TRUSTED_PROXY_HOPS` to the number of proxies.
+- **Your own proxy instead of Caddy**: it has to overwrite or append `X-Forwarded-For` with the
+  connecting address, and you set the hop count to match.
+
+The server checks the value when it starts and exits on `0` or anything that is not a whole number.
+A request whose header has fewer entries than the hop count, or whose trusted entry is not an IP
+address, answers 500 `PROXY_MISCONFIGURED` and is logged, rather than sharing one bucket with every
+other client.
+
+The limiter holds up to 20,000 client keys per route and evicts the least recently used one, so a
+flood of rotating addresses can neither exhaust memory nor lock new clients out. It lives in process
+memory, per instance.
+
+Do not publish the app's port 3000 directly. Next fills `X-Forwarded-For` with the connection's
+address only when the request has none, so a client talking to the app directly can choose its own
+rate-limit key.
 
 ## Configure
 
 Every variable, with its default and validation, is in
-[Configuration](/docs/developers/reference/configuration).
+[Configuration](/docs/developers/reference/configuration). Two decisions matter:
 
-The minimum for a working deployment is nothing at all: it starts on testnet in reference
-mode. Two decisions matter:
+- **To support exchange closes**, build with `NEXT_PUBLIC_DEPLOYMENT_MODE=reference` and set
+  `MEDIATOR_SECRET`.
+- **To leave them out**, build with `NEXT_PUBLIC_DEPLOYMENT_MODE=self-hosted`. A close that needs
+  the mediator, to a registry exchange or a destination that publishes the SEP-29 memo flag, is
+  refused before it starts, and direct closes work as usual.
 
-- **To support exchange closes**, set `MEDIATOR_SECRET` and keep
-  `NEXT_PUBLIC_DEPLOYMENT_MODE=reference`.
-- **To skip them**, set `NEXT_PUBLIC_DEPLOYMENT_MODE=self-hosted`. Closes to a recognized
-  exchange are then refused in the UI, leaving direct merges.
+## The mediator secret
 
-## The mediator key
+You need `MEDIATOR_SECRET` only for exchange closes.
 
-You need `MEDIATOR_SECRET` only for the exchange path.
+1. Generate a fresh Stellar keypair, for example with Stellar Laboratory or
+   `Keypair.random()` from the Stellar SDK, and keep its secret seed (`S...`).
+2. Set `MEDIATOR_SECRET` to that seed in the server's environment.
+3. Restart the app.
 
-1. Generate a fresh Stellar keypair. The Stellar Laboratory's account creator works.
-2. Set `MEDIATOR_SECRET` to that seed in `.env.local`.
-3. Restart. The seed loads once and is memoized.
-
-**You do not fund anything.** There is no standing mediator account. Each closure derives a
-fresh throwaway keypair from the seed, and that ephemeral account is created and funded with
-2 XLM on the fly by the closing account itself.
-
-The seed is only ever an HMAC master. It never signs a transaction directly and never holds
-a balance. Use a dedicated key per deployment.
+**Do not fund it.** The seed is only an HMAC master: each exchange close derives its own throwaway
+mediator key from it, and the closing account creates and funds that mediator with 2 XLM in its
+final transaction. Use a dedicated seed per deployment, and keep it as secret as a signing key,
+because whoever holds it can derive every mediator key. If you rotate it, finish or recover any
+interrupted forwards first: flow tokens and mediator keys from the old seed stop working.
 
 See [Mediator forward protocol](/docs/developers/protocol/mediator).
 
-## Docker
+## Metrics
+
+The app records first-party usage events in `METRICS_DB_DIR` (`closes.jsonl` and `counters.json`);
+see [Usage metrics](/docs/developers/security/model#usage-metrics). The directory must be writable
+by the app's user; the Docker image uses `/app/data` on the `metrics` volume. Set
+`METRICS_ADMIN_TOKEN` to a random value of at least 16 characters to read the totals:
 
 ```bash
-docker compose up --build          # http://localhost:3000
+curl -H "Authorization: Bearer $METRICS_ADMIN_TOKEN" https://yourdomain.example/api/metrics
 ```
-
-or:
-
-```bash
-docker build -t account-demolisher .
-docker run -p 3000:3000 -e MEDIATOR_SECRET=S... account-demolisher
-```
-
-The image builds on `node:24-slim`, **pinned by digest** so the base cannot drift under the
-tag, and runs as a non-root user. It ships production-only dependencies, not the build
-stage's devDependencies. Port 3000 is exposed.
-
-Public `NEXT_PUBLIC_*` config is baked at build time and defaults to testnet. Server-only
-secrets are supplied at runtime.
-
-The bundled compose file publishes the app directly with no reverse proxy, so it sets
-`TRUSTED_PROXY_HOPS=0`: with nothing in front, `X-Forwarded-For` is fully client-controlled
-and must be ignored so the rate limiter keys on the real connection.
-
-## Behind a reverse proxy
-
-Any TLS-terminating proxy works. A minimal Caddy site block:
-
-```
-yourdomain.example {
-    encode zstd gzip
-    reverse_proxy 127.0.0.1:3000
-}
-```
-
-Set `TRUSTED_PROXY_HOPS` to the number of proxies you control so rate limiting keys on the
-real client IP rather than the proxy's.
 
 ## Content Security Policy
 
-The CSP is built in `src/lib/config/csp.ts` and applied per response in `src/proxy.ts`,
-which is Next 16's renamed middleware convention. `next.config.ts` sets only the static
-headers such as HSTS.
+The CSP is built in `src/lib/config/csp.ts` and set on every document response by `src/proxy.ts`.
+`connect-src` follows the endpoints in `src/lib/config/networks.ts`. Any other host the browser
+needs goes into `csp.ts`, or the browser blocks it.
 
-To add an upstream the app needs to reach, add its URL to `CONNECT_SRC_ENDPOINTS`. The
-browser blocks anything not on the list.
-
-See [Security model](/docs/developers/security/model).
+See [Security model](/docs/developers/security/model#content-security-policy).
 
 ## Your own SEP-1 declaration
 
-`public/stellar.toml` carries the reference deployment's organization details and canonical
-URL. Replace them with your own and set `NEXT_PUBLIC_SITE_URL` to your origin.
-
-The app ships a rewrite serving the file at the canonical `/.well-known/stellar.toml` path,
-so both paths resolve without extra proxy rules.
+`public/stellar.toml` carries the reference deployment's organization details and canonical URL.
+Replace them with your own, and set `NEXT_PUBLIC_SITE_URL` to your origin. The app serves the file
+at `/.well-known/stellar.toml` too, with the CORS and content-type headers SEP-1 asks for.
 
 See [SEP support](/docs/developers/protocol/sep-support).
 
-## Running more than one instance
+## Run one instance
 
-The multisig signing relay keeps its state in process memory. That fits a single instance.
-
-Behind a load balancer, instances do not share signing requests, and a co-signer routed to a
-different instance does not see the request. Run a single instance, or add sticky sessions
-keyed on the request id, if you use the multisig flow.
+The signing relay and the rate limiter keep their state in process memory, and the metrics store
+serializes its writes inside one process. Behind a load balancer, instances do not share signing
+requests, and a co-signer routed to another instance does not find the request. Run one instance.
 
 See [Signing relay API](/docs/developers/protocol/signing-relay).
 
 ## Choosing your RPC
 
 Horizon and Soroban RPC endpoints are pinned in `src/lib/config/networks.ts`, not set by
-environment variables. The mainnet Soroban RPC default is a third-party gateway; review it
-or point it at an endpoint you operate.
+environment variables. The mainnet Soroban RPC default is a third-party gateway; review it, or point
+it at an endpoint you operate.
 
 See [Networks and endpoints](/docs/developers/reference/networks).
 
-## Static export
-
-A build-time `OUTPUT=export` switch emits a fully static site.
-
-<Callout type="warn">
-  Static export drops every server route: the mediator, the signing relay, and the Soroswap proxy.
-  Rewrites do not run and no per-request CSP is emitted, so the host has to supply security headers
-  itself. Use it only when you deliberately want a client-only build.
-</Callout>
-
 ## The docs site
 
-This documentation is a separate Next.js app in `docs/`, tracked in the same repository. It
-runs on port 3020:
+This documentation is a separate Next.js app in `docs/`, tracked in the same repository. It runs on
+port 3020:
 
 ```bash
 cd docs
-pnpm install
+pnpm install --frozen-lockfile
 pnpm dev
 ```

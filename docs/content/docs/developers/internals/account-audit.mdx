@@ -3,100 +3,103 @@ title: Account audit
 description: What is read from Horizon, how the merge verdict is computed, and which conditions block a close.
 ---
 
-`auditAccount(publicKey, network)` in `src/lib/stellar/account-audit.ts` produces the
-read-only snapshot every later stage works from. It is uncached: every call re-reads
-Horizon.
+`auditAccount(publicKey, network)` in `src/lib/stellar/account-audit.ts` produces the read-only
+snapshot the plan is built from. It is uncached: every call reads Horizon again.
 
 ## What it reads
 
-Four Horizon calls. Offers, claimable balances, and pool shares are fetched concurrently.
+| Call                                                 | Notes                                                                                      |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `loadAccount(publicKey)`                             | Balances, signers, thresholds, flags, data entries, sponsorship counts                     |
+| The latest ledger                                    | Read after the account, so the clock is never older than the state                         |
+| `offers().forAccount(publicKey).limit(200)`          | Pages until a page holds fewer than 200                                                    |
+| `claimableBalances().claimant(publicKey).limit(200)` | The same 200-per-page loop                                                                 |
+| `liquidityPools().liquidityPoolId(poolId)`           | One per pool-share trustline, in parallel                                                  |
+| `loadAccount(issuer)`                                | One per distinct issuer of a claimable-now credit balance the account has no trustline for |
 
-| Call                                                 | Pagination                                |
-| ---------------------------------------------------- | ----------------------------------------- |
-| `loadAccount(publicKey)`                             | Single call                               |
-| `offers().forAccount(publicKey).limit(200)`          | Loops until a page returns fewer than 200 |
-| `claimableBalances().claimant(publicKey).limit(200)` | Same 200-per-page loop                    |
-| `liquidityPools().liquidityPoolId(poolId)`           | One per pool-share trustline, in parallel |
+Offers, claimable balances and pools load concurrently. A pool read that fails fails the whole
+audit with one error naming every failed pool, because the pool reserves size the withdraw floors.
+Issuer lookups run eight at a time, each retried on a rate limit or server error. A missing issuer
+leaves its balances untagged; any other failure fails the audit.
 
-From the account record it parses balances, signers, thresholds, flags, data entries,
-sequence, subentry count, home domain, and the three sponsorship counters
-(`num_sponsoring`, `num_sponsored`, `sponsor`).
+The ledger clock (`LedgerClock`: sequence and close time) travels with the audit. Claimable-balance
+predicates, transaction time bounds and the merge sequence ceiling are judged against it, never
+against the browser's clock.
 
-Loading pool details is fail-closed: if any pool read rejects, the audit throws a single
-error naming every failed pool id rather than continuing with a partial picture.
+## Details of the parse
 
-## Two details worth knowing
+**The master key is the signer whose key equals the account id**, not the first ed25519 signer.
+`masterWeight` is its weight, or `0` when no such signer exists.
 
-**The master key is identified by key equality with the account id**, not by being the
-first ed25519 signer. `masterWeight` is the weight of the signer whose key equals the
-account id, or `0` when no such signer exists.
+**A claimable balance is marked `claimableNow`** only when this account's predicate holds at the
+ledger close time and stays true for the whole signing window (300 seconds by default).
 
-**A claimable balance with no sponsor becomes an empty string** rather than being
-dropped, and the entry's `predicate` field carries the whole `claimants` array.
+**An untrusted credit claimable balance carries `issuerAuthRequired`**, the issuer's
+`auth_required` flag. `false` means the close can open the trustline and then claim. A balance in
+the account's own asset is tagged `issuedByAccount` instead: the claim burns it and needs no
+trustline.
 
 ## Account not found
 
 A Horizon 404 raises `AccountNotFoundError` with the message
-`Stellar account not found on this network: <publicKey>`. Any other error re-throws
-unchanged, so a 500 is never mistaken for a missing account.
-
-## The merge verdict
-
-`computeMergeability(flags, sponsorship)` runs at audit time and again at execute time
-against a fresh re-audit. It returns one of three outcomes, in this order:
-
-1. `flags.authImmutable === true` → not mergeable, reason `AUTH_IMMUTABLE`.
-2. `numSponsoring - coverable > 0` → not mergeable, reason `IS_SPONSOR`, with a detail
-   string naming the count of entries sponsored for other accounts.
-3. Otherwise → mergeable.
-
-The reason union also declares `MISSING_ACCOUNT`, which no code path produces.
+`Stellar account not found on this network: <publicKey>`. Any other error is rethrown unchanged,
+so a server error is never mistaken for a missing account.
 
 ## Coverable sponsorships
 
-The `IS_SPONSOR` check subtracts sponsorships the account holds for _itself_, because the
-close releases those on its way through. `computeCoverableSponsorships` sums:
+An account cannot sponsor its own trustlines, offers, signers or data entries, so the only entries
+in `num_sponsoring` that the close releases on its own are claimable balances the account created
+with itself as a claimant. `computeCoverableSponsorships(accountId, claimableBalances,
+claimedBalanceIds)` counts those that are claimable now and in the given claim list, once per
+claimant, because the network counts a sponsored claimable balance once per claimant.
 
-- balances whose sponsor is the account itself
-- offers whose sponsor is the account itself
-- signers whose sponsor is the account itself
-- claimable balances whose sponsor is the account itself **and** which are claimable now
-- every data entry, unconditionally
+The stored audit value, `sponsorship.coverable`, assumes every balance the audit sees as
+collectable is claimed: claimable now and, for a credit asset, the account's own asset, an
+authorized trustline with room left (after what the pool withdraws credit to it), or no trustline
+and an issuer that does not require authorization. Everything in `num_sponsoring` beyond
+`coverable` is sponsorship for another account.
 
-The data-entry term is unconditional because Horizon's account record carries no
-per-data-entry sponsor field. The close deletes every data entry anyway, and the call site
-clamps the total with `Math.min(coverable, num_sponsoring)`, which absorbs any overcount.
+## The merge verdict
 
-This is why an account whose only sponsorships are its own self-claimable balances closes
-normally: they are claimed during the close, so the sponsoring count reaches zero before
-the merge.
+The audit stores a first verdict, `computeMergeability(flags, sponsorship)`:
+
+1. `flags.authImmutable` gives `AUTH_IMMUTABLE`.
+2. `numSponsoring - coverable > 0` gives `IS_SPONSOR`, with a detail naming the count.
+3. Otherwise mergeable.
+
+The full check is `assessMergeability(audit, { ledger, claimedBalanceIds,
+transactionsBeforeMerge })`. The preview runs it against the claims the plan really makes and every
+transaction the account still sources before the merge, and the executor runs it again on a fresh
+audit before every classic phase. It returns the first blocker in the order a user resolves them:
+
+| Reason             | Condition                                                                                                                                                     |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AUTH_IMMUTABLE`   | The `auth_immutable` flag is set                                                                                                                              |
+| `FROZEN_TRUSTLINE` | A positive credit balance on a trustline the issuer deauthorized                                                                                              |
+| `IS_SPONSOR`       | `num_sponsoring` exceeds the self-sponsored claimable balances the plan claims                                                                                |
+| `SEQNUM_TOO_FAR`   | The sequence number after the transactions before the merge is at or above `(next ledger) << 32`, which the network refuses as `ACCOUNT_MERGE_SEQNUM_TOO_FAR` |
+
+The `SEQNUM_TOO_FAR` detail names the first ledger the merge can land in and an estimate of the wait.
 
 ## Multisig detection
 
-`computeRequiresMultisig` is `masterWeight === 0 || masterWeight < high`.
+`computeRequiresMultisig` is `masterWeight === 0 || masterWeight < max(low, medium, high)`. The
+close touches all three thresholds: the merge and `set_options` are high, path payments, payments,
+`change_trust` and offers are medium, and claims are low. The three are independent, so medium or
+low can sit above high.
 
-Both `account_merge` and the `set_options` that clears signers and resets thresholds are
-high-threshold operations, so the high threshold is the one that matters.
+## What blocks the page
 
-## What blocks the UI
+Two conditions take over the page before any plan is built:
 
-The flow is suppressed entirely when either hard block applies:
+| Block                 | Condition                                       |
+| --------------------- | ----------------------------------------------- |
+| Auth immutable        | `flags.authImmutable`                           |
+| Sponsoring for others | `numSponsoring > coverable` on the stored audit |
 
-| Block                 | Condition                   | Continue path |
-| --------------------- | --------------------------- | ------------- |
-| Auth immutable        | `flags.authImmutable`       | None          |
-| Sponsoring for others | `numSponsoring > coverable` | None          |
+Everything else that keeps a close from starting is a review blocker: the plan-specific
+mergeability verdict, a balance with no disposal, a refused conversion, a failed required step,
+and the rest listed in [Clear a blocked closure](/docs/users/clear-a-blocked-closure).
 
-A third condition, an un-routable credit balance, does not block the flow but does gate
-the close behind a resolution step. A positive credit balance is un-routable when no
-conversion path exists for it and you have not chosen a disposal for it. See
-[The classic batch](/docs/developers/internals/classic-batch).
-
-## Execute-time re-checks
-
-The audit is not trusted across time. Before each classic phase the executor re-audits and
-re-runs `computeMergeability`, throwing
-`account_merge blocked: <reason>` when the verdict changed.
-
-[Execution and recovery](/docs/developers/internals/execution) covers the rest of the
-merge guard.
+[Execution and recovery](/docs/developers/internals/execution) covers the checks the executor runs
+before the merge.
