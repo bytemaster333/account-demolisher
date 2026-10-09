@@ -287,6 +287,131 @@ describe("co-signing does not replace the app's wallet session (L-106)", () => {
   });
 });
 
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+// the co-signer can close or leave /sign while the wallet is still open: the
+// restore after run() then never happens, so leaving has to do it
+describe("leaving /sign mid-signing does not keep the co-signer's wallet (L-106)", () => {
+  it("puts the initiator's session back when the tab is closed", async () => {
+    const { connector } = await pageLoad({ [ADDRESS]: A, [MODULE]: "freighter" });
+    const wallet = deferred<string>();
+    const teardown = vi.fn();
+    const signing = connector.withScopedKitSession(
+      TESTNET,
+      async () => {
+        pickInModal("xbull", B);
+        return wallet.promise;
+      },
+      teardown,
+    );
+    expect(window.localStorage.getItem(ADDRESS)).toBe(B);
+
+    window.dispatchEvent(new Event("pagehide"));
+    // written before anything is awaited, so it lands even while the page unloads
+    expect(window.localStorage.getItem(ADDRESS)).toBe(A);
+    expect(window.localStorage.getItem(MODULE)).toBe("freighter");
+
+    // the next page load brings back the initiator, not the co-signer
+    const stored = {
+      [ADDRESS]: window.localStorage.getItem(ADDRESS)!,
+      [MODULE]: window.localStorage.getItem(MODULE)!,
+    };
+    wallet.resolve("signed");
+    await expect(signing).resolves.toBe("signed");
+    await settle();
+    expect(teardown).not.toHaveBeenCalled();
+    const next = await pageLoad(stored);
+    await expect(next.kit.restoreKitSession(TESTNET)).resolves.toBe(A);
+  });
+
+  it("leaves no session when there was none and the tab is closed", async () => {
+    const { connector } = await pageLoad({});
+    const wallet = deferred<string>();
+    const signing = connector.withScopedKitSession(
+      TESTNET,
+      async () => {
+        pickInModal("xbull", B);
+        return wallet.promise;
+      },
+      vi.fn(),
+    );
+    window.dispatchEvent(new Event("pagehide"));
+    expect(window.localStorage.getItem(ADDRESS)).toBeNull();
+    expect(window.localStorage.getItem(MODULE)).toBeNull();
+    wallet.resolve("signed");
+    await signing;
+    await settle();
+    const next = await pageLoad({});
+    await expect(next.kit.restoreKitSession(TESTNET)).resolves.toBeNull();
+  });
+
+  it("stops listening for the tab closing once the session settled", async () => {
+    const { connector } = await pageLoad({ [ADDRESS]: A, [MODULE]: "freighter" });
+    await connector.withScopedKitSession(TESTNET, async () => pickInModal("xbull", B), vi.fn());
+    // the app's own wallet changes afterwards; a late pagehide must not undo it
+    pickInModal("xbull", B);
+    window.dispatchEvent(new Event("pagehide"));
+    expect(window.localStorage.getItem(ADDRESS)).toBe(B);
+  });
+
+  it("puts the initiator's session back when the page is left in the app", async () => {
+    const { connector } = await pageLoad({ [ADDRESS]: A, [MODULE]: "freighter" });
+    const left = new AbortController();
+    const wallet = deferred<string>();
+    const signing = connector.withScopedKitSession(
+      TESTNET,
+      async () => {
+        pickInModal("xbull", B);
+        return wallet.promise;
+      },
+      vi.fn(),
+      left.signal,
+    );
+    left.abort();
+    expect(window.localStorage.getItem(ADDRESS)).toBe(A);
+    expect(kitApi.selectedModuleId.value).toBe("freighter");
+
+    // the app connects another wallet before the co-signer's wallet answers;
+    // that late answer must not put the old session back over it
+    pickInModal("xbull", B);
+    wallet.resolve("signed");
+    await expect(signing).resolves.toBe("signed");
+    await settle();
+    expect(window.localStorage.getItem(ADDRESS)).toBe(B);
+  });
+
+  it("lets go of a wallet picked after the page was left", async () => {
+    const { connector } = await pageLoad({ [ADDRESS]: A, [MODULE]: "freighter" });
+    const left = new AbortController();
+    const picker = deferred<{ address: string }>();
+    vi.spyOn(kitApi.StellarWalletsKit, "authModal").mockImplementation(async () => {
+      const picked = await picker.promise;
+      pickInModal("xbull", picked.address);
+      return picked;
+    });
+    const signing = connector.withScopedKitSession(
+      TESTNET,
+      async (c) => {
+        await c.connect();
+        return "signed";
+      },
+      vi.fn(),
+      left.signal,
+    );
+    left.abort();
+    picker.resolve({ address: B });
+    await expect(signing).rejects.toThrow(/left before the wallet was picked/);
+    expect(window.localStorage.getItem(ADDRESS)).toBe(A);
+    expect(window.localStorage.getItem(MODULE)).toBe("freighter");
+  });
+});
+
 describe("the co-signer's own wallet connection is closed afterwards", () => {
   it("disconnects a different extension the co-signer used, not the app's", async () => {
     const { connector } = await pageLoad({ [ADDRESS]: A, [MODULE]: "freighter" });

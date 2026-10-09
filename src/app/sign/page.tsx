@@ -16,7 +16,7 @@
 // balance, a rotated signer) and to notice when the account is already gone.
 
 import { NotFoundError, type Transaction } from "@stellar/stellar-sdk";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AppShell } from "@/components/layout/AppShell";
 import { CloseFacts } from "@/components/multisig/CloseFacts";
@@ -351,9 +351,20 @@ export default function SignPage(): React.JSX.Element {
   );
 
   // the wallet picked here signs this one transaction and is then let go, so it
-  // never becomes this browser's connected wallet for the rest of the app
+  // never becomes this browser's connected wallet for the rest of the app.
+  // leaving this page while the wallet is still open aborts the session, which
+  // puts the app's own wallet session back right away.
+  const leftRef = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      leftRef.current?.abort();
+    },
+    [],
+  );
   const signWithWallet = useCallback(() => {
     if (network === null) return;
+    const left = new AbortController();
+    leftRef.current = left;
     void signWith((tx) =>
       withScopedKitSession(
         network,
@@ -362,6 +373,7 @@ export default function SignPage(): React.JSX.Element {
           return connector.signTransaction(tx, network.passphrase);
         },
         (e) => setTeardownNotice(teardownFailureDetail(e)),
+        left.signal,
       ),
     );
   }, [signWith, network]);

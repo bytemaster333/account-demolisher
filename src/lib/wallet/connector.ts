@@ -94,12 +94,37 @@ export class WalletKitConnector implements Connector {
   }
 }
 
+// the connector a scoped session hands to run(): once the picker answers it
+// checks whether the page was left in the meantime
+class ScopedKitConnector extends WalletKitConnector {
+  constructor(
+    network: NetworkConfig,
+    private readonly afterPick: () => Promise<void>,
+  ) {
+    super(network);
+  }
+
+  override async connect(): Promise<{ publicKey: string }> {
+    const picked = await super.connect();
+    await this.afterPick();
+    return picked;
+  }
+}
+
 // sign with a wallet picked just for this one signature (a co-signer on /sign)
 // without it becoming the app's connected wallet. the kit persists whatever the
 // picker selects, so without this a later page load would restore the
 // co-signer's account as the connected one. the session that existed before is
 // put back afterwards, or the kit is disconnected if there was none, whether the
 // signature succeeded or not.
+//
+// the co-signer can also leave while the wallet is still open. closing or
+// reloading the tab fires pagehide, and the restore runs there: it writes the
+// kit's state (and so localStorage) before it awaits anything, so it lands even
+// while the page unloads. leaving /sign inside the app aborts `left`; the
+// session is put back at once and not again when run() settles, so a wallet the
+// app connects in the meantime is kept. a wallet picked in the still open
+// picker after that is let go straight away.
 //
 // a teardown failure (an extension or the walletconnect relay refusing the
 // disconnect) goes to onTeardownError and never replaces run()'s outcome: a
@@ -110,20 +135,45 @@ export async function withScopedKitSession<T>(
   network: NetworkConfig,
   run: (connector: WalletKitConnector) => Promise<T>,
   onTeardownError: (error: unknown) => void,
+  left?: AbortSignal,
 ): Promise<T> {
+  if (left?.aborted === true) {
+    throw new Error("The signing page was left before the wallet was opened.");
+  }
   getKit(network);
   const before = snapshotKitSession();
+  const restore = async (): Promise<void> => {
+    try {
+      await restoreKitSessionSnapshot(before);
+    } catch (error) {
+      reportTeardownError(onTeardownError, error);
+    }
+  };
+  const onPageHide = (): void => {
+    void restore();
+  };
+  let wasLeft = false;
+  const onLeft = (): void => {
+    wasLeft = true;
+    void restore();
+  };
+  window.addEventListener("pagehide", onPageHide);
+  left?.addEventListener("abort", onLeft, { once: true });
   let outcome: { ok: true; value: T } | { ok: false; error: unknown };
   try {
-    outcome = { ok: true, value: await run(new WalletKitConnector(network)) };
+    const connector = new ScopedKitConnector(network, async () => {
+      if (!wasLeft) return;
+      await restore();
+      throw new Error("The signing page was left before the wallet was picked, so it was let go.");
+    });
+    outcome = { ok: true, value: await run(connector) };
   } catch (error) {
     outcome = { ok: false, error };
+  } finally {
+    window.removeEventListener("pagehide", onPageHide);
+    left?.removeEventListener("abort", onLeft);
   }
-  try {
-    await restoreKitSessionSnapshot(before);
-  } catch (error) {
-    reportTeardownError(onTeardownError, error);
-  }
+  if (!wasLeft) await restore();
   if (!outcome.ok) throw outcome.error;
   return outcome.value;
 }

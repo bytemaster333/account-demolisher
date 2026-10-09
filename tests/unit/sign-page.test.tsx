@@ -65,16 +65,25 @@ const wallet = {
   keypair: null as Keypair | null,
   teardownError: null as Error | null,
   sessions: 0,
+  // the signal the page hands the session, aborted when the page goes away
+  left: null as AbortSignal | null,
+  // when set, the wallet picker waits for it
+  picker: null as Promise<void> | null,
 };
 vi.mock("@/lib/wallet/connector", () => ({
   withScopedKitSession: async (
     _network: unknown,
     run: (connector: unknown) => Promise<unknown>,
     onTeardownError: (e: unknown) => void,
+    left?: AbortSignal,
   ) => {
     wallet.sessions += 1;
+    wallet.left = left ?? null;
     const connector = {
-      connect: async () => ({ publicKey: wallet.keypair!.publicKey() }),
+      connect: async () => {
+        if (wallet.picker) await wallet.picker;
+        return { publicKey: wallet.keypair!.publicKey() };
+      },
       signTransaction: async (tx: Transaction) => {
         tx.sign(wallet.keypair!);
         return { signedXdr: tx.toXdr(), signerPublicKey: wallet.keypair!.publicKey() };
@@ -185,6 +194,8 @@ beforeEach(() => {
   horizon.transaction.mockReset();
   horizon.loadAccount.mockResolvedValue(accountResponse(T3, [owner, a, b, c]));
   wallet.keypair = null;
+  wallet.left = null;
+  wallet.picker = null;
   wallet.teardownError = null;
   wallet.sessions = 0;
   beacon.visits = [];
@@ -405,6 +416,21 @@ describe("/sign wallet signing", () => {
     await settle();
     const notice = screen.getByTestId("sign-teardown-notice").textContent ?? "";
     expect(notice).toContain("relay down. Freighter refused.");
+  });
+});
+
+describe("/sign left mid-signing (L-106)", () => {
+  it("ends the scoped wallet session when the page unmounts", async () => {
+    wallet.keypair = a;
+    wallet.picker = new Promise<void>(() => {});
+    await openPage();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("sign-wallet"));
+    });
+    expect(wallet.left).not.toBeNull();
+    expect(wallet.left!.aborted).toBe(false);
+    cleanup();
+    expect(wallet.left!.aborted).toBe(true);
   });
 });
 
