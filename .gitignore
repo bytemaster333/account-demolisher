@@ -69,9 +69,6 @@ frontend.md
 # design assets
 design/
 
-# qa / test tooling (dev-only)
-scripts/qa/
-
 # IDE / tooling
 .idea/
 .vscode/
@@ -80,12 +77,14 @@ scripts/qa/
 # os
 Thumbs.db
 
-# all markdown by default except the repo readme and the two public policy
-# documents (the disclosure policy and the architecture overview)
+# all markdown by default except the repo readme, the two public policy
+# documents (the disclosure policy and the architecture overview) and the qa
+# seeders' readme, which auditors use to reproduce manual testnet checks
 *.md
 !README.md
 !SECURITY.md
 !ARCHITECTURE.md
+!scripts/qa/README.md
 
 # internal working files (owner rule: internal artifacts live in resources/ and are never committed)
 resources/
