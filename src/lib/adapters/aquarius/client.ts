@@ -20,8 +20,9 @@ import { findConcentratedPool } from "@/lib/adapters/aquarius/concentrated-pools
 import { address as scvAddress, fromScValU128, u128, vec as scvVec } from "@/lib/soroban/scval";
 import { assembleSubmittable, simulateRead, SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
 import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
+import { ledgerMaxTime } from "@/lib/stellar/ledger-clock";
 
-// five-minute timeout
+// every built tx expires five minutes after the latest ledger's close time
 const MAX_TIMEOUT_SECONDS = 300;
 
 const POOL_INDEX_LENGTH_BYTES = 32;
@@ -33,6 +34,8 @@ export interface WithdrawArgs {
   readonly shareAmount: bigint;
   readonly minAmounts: readonly bigint[];
   readonly sourceAccount: TransactionSource;
+  // close time (unix seconds) of the latest ledger the tx is timed from
+  readonly ledgerCloseTime: number;
   readonly network: NetworkConfig;
 }
 
@@ -45,6 +48,8 @@ export interface ClaimArgs {
   readonly tokens?: readonly string[];
   readonly poolIndex: Uint8Array;
   readonly sourceAccount: TransactionSource;
+  // close time (unix seconds) of the latest ledger the tx is timed from
+  readonly ledgerCloseTime: number;
   readonly network: NetworkConfig;
 }
 
@@ -78,7 +83,15 @@ export async function withdraw(args: WithdrawArgs, deps: AquariusClientDeps): Pr
     scvVec(args.minAmounts.map((m) => u128(m))),
   ];
 
-  return buildAndAssemble(routerId, "withdraw", callArgs, args.sourceAccount, args.network, deps);
+  return buildAndAssemble(
+    routerId,
+    "withdraw",
+    callArgs,
+    args.sourceAccount,
+    args.ledgerCloseTime,
+    args.network,
+    deps,
+  );
 }
 
 // build an unsigned claim tx for AQUA rewards
@@ -103,7 +116,15 @@ export async function claim(args: ClaimArgs, deps: AquariusClientDeps): Promise<
     bytesN32(args.poolIndex),
   ];
 
-  return buildAndAssemble(routerId, "claim", callArgs, args.sourceAccount, args.network, deps);
+  return buildAndAssemble(
+    routerId,
+    "claim",
+    callArgs,
+    args.sourceAccount,
+    args.ledgerCloseTime,
+    args.network,
+    deps,
+  );
 }
 
 // router.get_user_reward(user, tokens, pool_index) -> u128: the AQUA a claim
@@ -254,6 +275,8 @@ export interface WithdrawConcentratedArgs {
   // per-token floors in the pool's token order
   readonly minAmounts: readonly bigint[];
   readonly sourceAccount: TransactionSource;
+  // close time (unix seconds) of the latest ledger the tx is timed from
+  readonly ledgerCloseTime: number;
   readonly network: NetworkConfig;
 }
 
@@ -296,6 +319,7 @@ export async function withdrawConcentratedPosition(
     "withdraw_position",
     callArgs,
     args.sourceAccount,
+    args.ledgerCloseTime,
     args.network,
     deps,
   );
@@ -308,6 +332,7 @@ export async function claimConcentratedFees(
     readonly user: string;
     readonly poolAddress: string;
     readonly sourceAccount: TransactionSource;
+    readonly ledgerCloseTime: number;
     readonly network: NetworkConfig;
   },
   deps: AquariusClientDeps,
@@ -318,6 +343,7 @@ export async function claimConcentratedFees(
     "claim_all_position_fees",
     [scvAddress(args.user)],
     args.sourceAccount,
+    args.ledgerCloseTime,
     args.network,
     deps,
   );
@@ -350,16 +376,18 @@ async function buildAndAssemble(
   fnName: string,
   callArgs: xdr.ScVal[],
   sourceAccount: TransactionSource,
+  ledgerCloseTime: number,
   network: NetworkConfig,
   deps: AquariusClientDeps,
 ): Promise<Transaction> {
+  const maxTime = ledgerMaxTime(ledgerCloseTime, MAX_TIMEOUT_SECONDS);
   const contract = new Contract(contractId);
   const tx = new TransactionBuilder(sourceAccount, {
     fee: SOROBAN_INCLUSION_FEE,
     networkPassphrase: network.passphrase,
   })
     .addOperation(contract.call(fnName, ...callArgs))
-    .setTimeout(MAX_TIMEOUT_SECONDS)
+    .setTimebounds(0, maxTime)
     .build();
 
   const assemble = deps.assemble ?? assembleSubmittable;

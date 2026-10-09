@@ -26,6 +26,9 @@ import { fromScValI32, u128 } from "@/lib/soroban/scval";
 import type { simulateRead } from "@/lib/soroban/simulate";
 
 const USER = "GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3";
+// the network's clock, far from the test machine's, so a bound taken from
+// Date.now() fails
+const LEDGER_CLOSE = 1_700_000_000;
 const POOL_A = MAINNET_CONCENTRATED_POOLS[0]!;
 const POOL_B = MAINNET_CONCENTRATED_POOLS[1]!;
 
@@ -217,6 +220,7 @@ describe("concentrated exit builders", () => {
         liquidity: 20_805_200_856_410n,
         minAmounts: [437_000_000_000n, 76_800_000_000n],
         sourceAccount: sourceAccount(),
+        ledgerCloseTime: LEDGER_CLOSE,
         network: MAINNET,
       },
       deps,
@@ -237,7 +241,13 @@ describe("concentrated exit builders", () => {
   it("encodes claim_all_position_fees(owner) on the pool", async () => {
     const { deps, captured } = captureDeps();
     await claimConcentratedFees(
-      { user: USER, poolAddress: POOL_A.address, sourceAccount: sourceAccount(), network: MAINNET },
+      {
+        user: USER,
+        poolAddress: POOL_A.address,
+        sourceAccount: sourceAccount(),
+        ledgerCloseTime: LEDGER_CLOSE,
+        network: MAINNET,
+      },
       deps,
     );
     const call = invokeCall(captured());
@@ -246,6 +256,37 @@ describe("concentrated exit builders", () => {
       "claim_all_position_fees",
       [USER],
     ]);
+  });
+
+  it("expires both builds five minutes after the supplied ledger close time", async () => {
+    const { deps, captured } = captureDeps();
+    await claimConcentratedFees(
+      {
+        user: USER,
+        poolAddress: POOL_A.address,
+        sourceAccount: sourceAccount(),
+        ledgerCloseTime: LEDGER_CLOSE,
+        network: MAINNET,
+      },
+      deps,
+    );
+    expect(Number(captured().timeBounds?.maxTime)).toBe(LEDGER_CLOSE + 300);
+    await withdrawConcentratedPosition(
+      {
+        user: USER,
+        poolAddress: POOL_A.address,
+        tickLower: -10,
+        tickUpper: 10,
+        liquidity: 1n,
+        minAmounts: [0n, 0n],
+        sourceAccount: sourceAccount(),
+        ledgerCloseTime: LEDGER_CLOSE,
+        network: MAINNET,
+      },
+      deps,
+    );
+    expect(Number(captured().timeBounds?.minTime)).toBe(0);
+    expect(Number(captured().timeBounds?.maxTime)).toBe(LEDGER_CLOSE + 300);
   });
 
   it("refuses a pool that is not pinned, an inverted range and a wrong floor count", async () => {
@@ -258,6 +299,7 @@ describe("concentrated exit builders", () => {
       liquidity: 1n,
       minAmounts: [0n, 0n],
       sourceAccount: sourceAccount(),
+      ledgerCloseTime: LEDGER_CLOSE,
       network: MAINNET,
     };
     const stranger = StrKey.encodeContract(Buffer.alloc(32, 9));

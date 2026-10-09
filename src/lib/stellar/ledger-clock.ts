@@ -18,6 +18,20 @@ export interface LedgerClock {
 // passes its own, much longer window.
 export const DEFAULT_TX_VALIDITY_SECONDS = 300;
 
+// the maxTime of a transaction built now: the network's close time plus the
+// validity window. builders take the close time from a ledger read, never the
+// browser's clock, so a client clock minutes off can't produce a transaction
+// that is already tx_too_late, or close to it, when it reaches the network.
+export function ledgerMaxTime(ledgerCloseTime: number, validitySeconds: number): number {
+  if (!Number.isSafeInteger(ledgerCloseTime) || ledgerCloseTime <= 0) {
+    throw new Error(`invalid ledger close time ${String(ledgerCloseTime)}`);
+  }
+  if (!Number.isSafeInteger(validitySeconds) || validitySeconds <= 0) {
+    throw new Error(`invalid transaction validity window ${String(validitySeconds)}`);
+  }
+  return ledgerCloseTime + validitySeconds;
+}
+
 export async function fetchLedgerClock(network: NetworkConfig): Promise<LedgerClock> {
   const page = await getHorizon(network).ledgers().order("desc").limit(1).call();
   const record = page.records[0];

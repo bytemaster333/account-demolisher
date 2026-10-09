@@ -4,6 +4,7 @@ import { Asset, Horizon, Keypair } from "@stellar/stellar-sdk";
 import { blndTokenForNetwork } from "@/lib/adapters/blend/constants";
 import { TESTNET } from "@/lib/config/networks";
 import { buildTrustlineTx } from "@/lib/stellar/trustline-tx";
+import { fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 
 // live testnet check that the change_trust a close adds before a blend
 // emissions claim lands, and leaves a line the BLND SAC can pay into
@@ -20,6 +21,7 @@ describe("integration: BLND trustline for emissions claims on testnet", () => {
       TESTNET,
       await horizon.loadAccount(kp.publicKey()),
       new Asset(blnd.code, blnd.issuer),
+      (await fetchLedgerClock(TESTNET)).closedAt,
     );
     tx.sign(kp);
     await horizon.submitTransaction(tx);

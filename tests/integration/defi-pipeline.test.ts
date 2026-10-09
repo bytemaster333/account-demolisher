@@ -100,6 +100,7 @@ describe("integration: full DeFi close pipeline against live testnet", () => {
       latest.sequence + 500_000,
       TESTNET,
       await horizonDirect.loadAccount(owner.publicKey()),
+      (await fetchLedgerClock(TESTNET)).closedAt,
     );
     await signSubmitSoroban(owner, approve);
 
@@ -128,18 +129,19 @@ describe("integration: full DeFi close pipeline against live testnet", () => {
 
     // hydrate: builds the Soroban RevokeAllowance transaction on-chain
     const ledger = await rpc.getLatestLedger();
+    const clock = await fetchLedgerClock(TESTNET);
     const { failures } = await hydratePlanTransactions(tree, owner.publicKey(), {
       rpc,
       horizon,
       network: TESTNET,
       currentLedger: ledger.sequence,
+      ledgerCloseTime: clock.closedAt,
       fetchSourceAccount: (pk) => horizonDirect.loadAccount(pk),
     });
     expect(failures).toEqual([]);
 
     // simulate EVERY step: the Soroban revoke against live RPC, the classic merge
     // built + validated in-memory. A doomed step would throw here.
-    const clock = await fetchLedgerClock(TESTNET);
     for (const node of topologicalOrder(tree)) {
       const outcome = await simulateNode(node, {
         server: rpc,

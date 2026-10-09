@@ -26,6 +26,7 @@ import { BLEND_TESTNET_INFRASTRUCTURE, BLEND_TESTNET_POOL_IDS } from "@/lib/adap
 import { MAINNET, TESTNET } from "@/lib/config/networks";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
+import { fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 
 // discovery dates an existing backstop queue from the chain's own q4w entries
 // (M-25). mainnet has too little backstop activity to always hold a locked
@@ -214,7 +215,7 @@ describe("integration: backstop queue unlock date from testnet q4w (M-25)", () =
       { poolId: POOL },
       user,
       await horizon.loadAccount(user),
-      { server: rpc },
+      { server: rpc, ledgerCloseTime: (await fetchLedgerClock(TESTNET)).closedAt },
     );
     expect(queue.shares).toBe(shares - shares / 2n);
     const ret = await signAndSend(kp, queue.transaction);

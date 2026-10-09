@@ -32,6 +32,7 @@ import {
   validateIntegerAmount,
 } from "@/lib/adapters/soroswap/router";
 import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
+import { ledgerMaxTime } from "@/lib/stellar/ledger-clock";
 import type { NetworkConfig } from "@/lib/config/networks";
 import {
   address as scvAddress,
@@ -64,6 +65,9 @@ export interface SwapToXLMArgs {
   readonly userAddress: string;
   // unix seconds; the router compares against env.ledger().timestamp()
   readonly deadline: number;
+  // close time (unix seconds) of the latest ledger; the tx expires five minutes
+  // after it
+  readonly ledgerCloseTime: number;
   readonly network: NetworkConfig;
   // the route from quoteRouteToXLM, assetIn first and XLM last. omitted means the
   // direct [assetIn, XLM] pair
@@ -92,6 +96,7 @@ export async function buildSwapToXLM(
   validateIntegerAmount(CALLER, "amountIn", args.amountIn);
   validateIntegerAmount(CALLER, "amountOutMin", args.amountOutMin);
   validateDeadline(CALLER, args.deadline);
+  const maxTime = ledgerMaxTime(args.ledgerCloseTime, FIVE_MINUTES_SECONDS);
   if (BigInt(args.amountIn) <= 0n) {
     throw new RangeError(`buildSwapToXLM: amountIn must be > 0; got ${args.amountIn}`);
   }
@@ -118,7 +123,7 @@ export async function buildSwapToXLM(
     networkPassphrase: args.network.passphrase,
   })
     .addOperation(contract.call("swap_exact_tokens_for_tokens", ...callArgs))
-    .setTimeout(FIVE_MINUTES_SECONDS)
+    .setTimebounds(0, maxTime)
     .build();
 
   const assemble = deps.assemble ?? assembleSubmittable;

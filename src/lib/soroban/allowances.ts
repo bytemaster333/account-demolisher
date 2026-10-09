@@ -415,7 +415,8 @@ function tryDecodeApproveData(v: xdr.ScVal): { amount: bigint; live_until_ledger
   return null;
 }
 
-// builds a revoke by calling approve(from, spender, 0, currentLedger)
+// builds a revoke by calling approve(from, spender, 0, currentLedger). the tx
+// expires five minutes after ledgerCloseTime, the latest ledger's close time
 export async function buildRevoke(
   server: rpc.Server,
   contractId: string,
@@ -424,6 +425,7 @@ export async function buildRevoke(
   currentLedger: number,
   network: NetworkConfig,
   sourceAccount: Horizon.AccountResponse | Account,
+  ledgerCloseTime: number,
 ): Promise<Transaction> {
   return buildApprove(
     server,
@@ -434,5 +436,6 @@ export async function buildRevoke(
     currentLedger,
     network,
     sourceAccount,
+    ledgerCloseTime,
   );
 }

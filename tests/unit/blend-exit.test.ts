@@ -36,6 +36,7 @@ import {
   BLEND_BACKSTOP_MAINNET_ID,
   BLEND_BACKSTOP_V1_MAINNET_ID,
   I128_MAX,
+  MAX_TIMEOUT_SECONDS,
   blndTokenForNetwork,
 } from "@/lib/adapters/blend/constants";
 import { MAINNET } from "@/lib/config/networks";
@@ -74,8 +75,12 @@ function account(balances: Parameters<typeof horizonAccount>[0]["balances"], sub
   return horizonAccount({ accountId: USER, sequence: "1000", balances, subentryCount });
 }
 
+// the network's clock, far from the test machine's, so a bound taken from
+// Date.now() fails
+const LEDGER_CLOSE = 1_700_000_000;
+
 function deps(extra: Partial<BuildExitSequenceDeps> = {}): BuildExitSequenceDeps {
-  return { assemble, server: {} as rpc.Server, ...extra };
+  return { assemble, server: {} as rpc.Server, ledgerCloseTime: LEDGER_CLOSE, ...extra };
 }
 
 // the shape hydration synthesizes for one plan node: every position is labelled
@@ -954,5 +959,69 @@ describe("allow-list gate", () => {
         deps(),
       ),
     ).rejects.toThrow(/not on the mainnet allow-list/);
+  });
+});
+
+describe("validity window", () => {
+  const expiry = (tx: Transaction) => ({
+    min: Number(tx.timeBounds?.minTime),
+    max: Number(tx.timeBounds?.maxTime),
+  });
+  const window = { min: 0, max: LEDGER_CLOSE + MAX_TIMEOUT_SECONDS };
+
+  it("expires every pool and backstop step after the supplied ledger close time", async () => {
+    const pool = makePool({
+      version: "V1",
+      poolId: POOL_V1,
+      backstop: BLEND_BACKSTOP_V1_MAINNET_ID,
+      reserves: [{ assetId: XLM_SAC, index: 0, dRate: V1_RATE_1, bRate: V1_RATE_1 }],
+      user: { collateral: [[0, 10_0000000n]] },
+    });
+    const steps = await buildExitSequence(
+      MAINNET,
+      {
+        poolId: POOL_V1,
+        liabilities: new Map(),
+        collateral: new Map([[XLM_SAC, 1n]]),
+        supply: new Map(),
+      },
+      USER,
+      account([{ balance: "50.0000000" }]),
+      deps({
+        poolLoader: loaderFor(pool),
+        backstopLoader: backstopLoader({ shares: 5n, totalQ4W: 7n, unlockedQ4W: 7n }),
+        backstopShares: 5n,
+        backstopWithdrawAmount: 7n,
+      }),
+    );
+    expect(steps.map((s) => s.kind)).toEqual([
+      "withdraw_collateral",
+      "backstop_queue_withdrawal",
+      "backstop_withdraw",
+    ]);
+    for (const step of steps) expect(expiry(step.transaction)).toEqual(window);
+  });
+
+  it("refuses to build without a usable ledger close time", async () => {
+    await expect(
+      buildBackstopWithdrawTx(
+        MAINNET,
+        { poolId: POOL_V1 },
+        USER,
+        account([{ balance: "10.0000000" }]),
+        deps({
+          ledgerCloseTime: 0,
+          poolLoader: loaderFor(
+            makePool({
+              version: "V1",
+              poolId: POOL_V1,
+              backstop: BLEND_BACKSTOP_V1_MAINNET_ID,
+              reserves: [{ assetId: XLM_SAC, index: 0, dRate: V1_RATE_1, bRate: V1_RATE_1 }],
+            }),
+          ),
+          backstopLoader: backstopLoader({ totalQ4W: 7n, unlockedQ4W: 7n }),
+        }),
+      ),
+    ).rejects.toThrow(/ledger close time/);
   });
 });

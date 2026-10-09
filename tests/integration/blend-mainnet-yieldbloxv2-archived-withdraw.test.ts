@@ -8,6 +8,7 @@ import { MAINNET } from "@/lib/config/networks";
 import { assertSorobanFeeWithinCap } from "@/lib/soroban/fee-cap";
 
 import { findInContractData, type IndexedEntry } from "./blend-mainnet-holders";
+import { fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 
 // read-only: a YieldBloxV2 collateral withdraw for a user whose Positions entry
 // is archived, built by the app's own builder and simulated against mainnet.
@@ -83,6 +84,7 @@ describe("integration: YieldBloxV2 archived withdraw (mainnet, read-only)", () =
         { poolId: entry.pool_id, asset: reserve.assetId, bucket: "collateral" },
         user,
         account,
+        { ledgerCloseTime: (await fetchLedgerClock(MAINNET)).closedAt },
       );
       const tx = built.transaction as Transaction;
       if (archivedEntries(tx) === 0) {

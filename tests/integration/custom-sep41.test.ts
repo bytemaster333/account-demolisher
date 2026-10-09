@@ -14,6 +14,7 @@ import { TESTNET } from "@/lib/config/networks";
 import { balance, buildApprove, buildTransfer, allowance } from "@/lib/soroban/sep41";
 import { enumerateAllowances, buildRevoke } from "@/lib/soroban/allowances";
 import { assertSafeTransferInvocation } from "@/lib/soroban/transfer-guard";
+import { fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 
 // End-to-end proof of Deliverable-1 completion criterion A on LIVE testnet: a
 // real SEP-41 token contract is deployed, an account is given a token balance and
@@ -121,6 +122,7 @@ describe("integration: custom SEP-41 drain + allowance revoke on live testnet", 
       latest.sequence + 500_000,
       TESTNET,
       await horizon.loadAccount(owner.publicKey()),
+      (await fetchLedgerClock(TESTNET)).closedAt,
     );
     await signSubmit(owner, approveTx);
 
@@ -145,6 +147,7 @@ describe("integration: custom SEP-41 drain + allowance revoke on live testnet", 
       afterApprove.sequence + 500_000,
       TESTNET,
       await horizon.loadAccount(owner.publicKey()),
+      (await fetchLedgerClock(TESTNET)).closedAt,
     );
     await signSubmit(owner, revokeTx);
     const confirmed = await allowance(
@@ -166,6 +169,7 @@ describe("integration: custom SEP-41 drain + allowance revoke on live testnet", 
       1000_0000000n,
       TESTNET,
       await horizon.loadAccount(owner.publicKey()),
+      (await fetchLedgerClock(TESTNET)).closedAt,
     );
     // the production auth guard must accept this legitimate source-account transfer
     assertSafeTransferInvocation(transferTx, {

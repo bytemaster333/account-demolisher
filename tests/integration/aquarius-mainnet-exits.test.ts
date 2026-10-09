@@ -36,6 +36,7 @@ import { getRpc } from "@/lib/soroban/rpc-client";
 import { readExitPayouts } from "@/lib/soroban/stellar-asset";
 import { simulateRead } from "@/lib/soroban/simulate";
 import { u128 } from "@/lib/soroban/scval";
+import { fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 
 // read-only checks against live mainnet state: every call below is built by the
 // app's own code and run through prepareTransaction (simulation). nothing is
@@ -148,6 +149,7 @@ describe("integration: aquarius exits simulate against mainnet", () => {
         liquidity: range.liquidity,
         minAmounts: estimate.map((e) => (e * 99n) / 100n),
         sourceAccount: await horizon.loadAccount(user),
+        ledgerCloseTime: (await fetchLedgerClock(MAINNET)).closedAt,
         network: MAINNET,
       },
       { server },
@@ -159,6 +161,7 @@ describe("integration: aquarius exits simulate against mainnet", () => {
         user,
         poolAddress: position!.poolAddress,
         sourceAccount: await horizon.loadAccount(user),
+        ledgerCloseTime: (await fetchLedgerClock(MAINNET)).closedAt,
         network: MAINNET,
       },
       { server },
@@ -178,6 +181,7 @@ describe("integration: aquarius exits simulate against mainnet", () => {
         tokens: position!.tokens,
         poolIndex,
         sourceAccount: await horizon.loadAccount(user),
+        ledgerCloseTime: (await fetchLedgerClock(MAINNET)).closedAt,
         network: MAINNET,
       },
       { server },
@@ -314,6 +318,7 @@ describe("integration: aquarius exits simulate against mainnet", () => {
         tokens: api.tokens_addresses,
         poolIndex: api.index,
         sourceAccount: await horizon.loadAccount(found!.user),
+        ledgerCloseTime: (await fetchLedgerClock(MAINNET)).closedAt,
         network: MAINNET,
       },
       { server },
@@ -369,6 +374,7 @@ describe("integration: aquarius exits simulate against mainnet", () => {
       horizon,
       network: MAINNET,
       currentLedger: (await server.getLatestLedger()).sequence,
+      ledgerCloseTime: (await fetchLedgerClock(MAINNET)).closedAt,
       fetchSourceAccount: (pk) => horizon.loadAccount(pk),
     });
     expect(failures).toEqual([]);

@@ -16,6 +16,7 @@ import { BLEND_TESTNET_POOL_IDS } from "@/lib/adapters/blend/pools";
 import { TESTNET } from "@/lib/config/networks";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
+import { fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 
 // Live testnet proof that a Blend borrower can be closed out: open a real loan
 // on the testnet v2 pool, then repay and withdraw with the transactions the
@@ -100,7 +101,7 @@ describe("integration: Blend borrower exit on testnet", () => {
       { poolId: POOL, asset: XLM_SAC },
       user,
       await horizon.loadAccount(user),
-      { server: rpc },
+      { server: rpc, ledgerCloseTime: (await fetchLedgerClock(TESTNET)).closedAt },
     );
     expect(repay.amount).toBeLessThan(2n ** 63n);
     expect(repay.amount).toBeGreaterThan(repay.debt);
@@ -115,7 +116,7 @@ describe("integration: Blend borrower exit on testnet", () => {
       { poolId: POOL, asset: XLM_SAC, bucket: "collateral" },
       user,
       await horizon.loadAccount(user),
-      { server: rpc },
+      { server: rpc, ledgerCloseTime: (await fetchLedgerClock(TESTNET)).closedAt },
     );
     await signAndSend(kp, withdraw.transaction);
 

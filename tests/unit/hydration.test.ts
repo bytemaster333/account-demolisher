@@ -8,6 +8,9 @@ import {
   StrKey,
   nativeToScVal,
   rpc as StellarRpc,
+  scValToNative,
+  xdr,
+  type Operation,
   type Transaction,
 } from "@stellar/stellar-sdk";
 
@@ -97,6 +100,9 @@ function withNative(
 }
 
 const SOURCE_ACCOUNT = accountAt(100n);
+// the network's clock, far from the test machine's, so a time bound or router
+// deadline taken from Date.now() fails
+const LEDGER_CLOSE = 1_700_000_000;
 
 // build a simulateTransaction mock whose retval is an ScVal vec of the given
 // integer amounts, so readExpectedAmounts derives its floors from these.
@@ -119,6 +125,7 @@ function baseDeps(overrides: Partial<HydrationDeps>): HydrationDeps {
     horizon: {} as never,
     network: NETWORK,
     currentLedger: 100,
+    ledgerCloseTime: LEDGER_CLOSE,
     fetchSourceAccount: vi.fn(async () => SOURCE_ACCOUNT),
     ...overrides,
   } as HydrationDeps;
@@ -551,8 +558,10 @@ describe("hydratePlanTransactions, held-token sweeps use the live balance", () =
 
   it("transfers the balance read at build time, not the discovered amount", async () => {
     const amounts: bigint[] = [];
+    const clocks: unknown[] = [];
     const buildTransfer = vi.fn(async (...args: unknown[]) => {
       amounts.push(args[4] as bigint);
+      clocks.push(args[7]);
       return { fake: "tx" };
     }) as unknown as NonNullable<HydrationAdapterOverrides["buildTransfer"]>;
     const node = transferNode();
@@ -561,6 +570,7 @@ describe("hydratePlanTransactions, held-token sweeps use the live balance", () =
     await rebuildSorobanNodeTransaction(node, USER, deps);
 
     expect(amounts).toEqual([900n]);
+    expect(clocks).toEqual([LEDGER_CLOSE]);
     expect((node.metadata as { amount: bigint }).amount).toBe(900n);
   });
 
@@ -758,6 +768,7 @@ describe("hydration, two-pass builds sign at on-chain sequence + 1", () => {
       horizon: {} as never,
       network: TESTNET,
       currentLedger: 100,
+      ledgerCloseTime: LEDGER_CLOSE,
       fetchSourceAccount: async () => accountAt(ONCHAIN_SEQ),
       // the held-token swap reads the live balance and searches a route first;
       // answer both directly
@@ -792,7 +803,36 @@ describe("hydration, two-pass builds sign at on-chain sequence + 1", () => {
       await rebuildSorobanNodeTransaction(node, USER, deps(c.retval));
       expect(signedSequence(node)).toBe((ONCHAIN_SEQ + 1n).toString());
     });
+
+    it(`${c.name}: times the tx and any router deadline from the ledger close time`, async () => {
+      const node = c.node();
+      await rebuildSorobanNodeTransaction(node, USER, deps(c.retval));
+      const tx = (node.metadata as { transaction?: Transaction }).transaction!;
+      expect(Number(tx.timeBounds?.minTime)).toBe(0);
+      expect(Number(tx.timeBounds?.maxTime)).toBe(LEDGER_CLOSE + 300);
+      const op = tx.operations[0] as Operation.InvokeHostFunction;
+      const call = xdr.expectUnionVariant(op.func, "hostFunctionTypeInvokeContract").invokeContract;
+      const fn = call.functionName.toString();
+      // soroswap's router checks its deadline argument against the ledger timestamp
+      const deadlineAt = { remove_liquidity: 6, swap_exact_tokens_for_tokens: 4 }[fn];
+      if (deadlineAt !== undefined) {
+        expect(scValToNative(call.args[deadlineAt]!)).toBe(BigInt(LEDGER_CLOSE + 300));
+      }
+    });
   }
+
+  it("refuses to hydrate without a usable ledger close time", async () => {
+    const node = cases[0]!.node();
+    await expect(
+      hydratePlanTransactions(buildPlanTree([node]), USER, {
+        ...deps(cases[0]!.retval),
+        ledgerCloseTime: Number.NaN,
+      }),
+    ).rejects.toThrow(/ledgerCloseTime/);
+    await expect(
+      rebuildSorobanNodeTransaction(node, USER, { ...deps(cases[0]!.retval), ledgerCloseTime: 0 }),
+    ).rejects.toThrow(/ledgerCloseTime/);
+  });
 });
 
 // the blend builders read the source account's balances, subentries and
@@ -1280,6 +1320,9 @@ describe("hydration, the BLND trustline and the emissions claim behind it", () =
     const tx = (node.metadata as { transaction?: Transaction }).transaction!;
     expect(tx.sequence).toBe("701");
     expect(tx.operations.map((o) => o.type)).toEqual(["changeTrust"]);
+    // a classic submit: its time bound must come from the ledger, not the browser
+    expect(Number(tx.timeBounds?.minTime)).toBe(0);
+    expect(Number(tx.timeBounds?.maxTime)).toBe(LEDGER_CLOSE + 300);
   });
 
   // the change_trust runs ahead of the other steps; an account that can't hold

@@ -28,6 +28,9 @@ const TESTNET_ROUTER = getAllowlistForNetwork(TESTNET).find(
   (c) => c.protocol === "soroswap" && c.name === "SoroswapRouter",
 )!.id;
 
+// far from the test machine's clock, so a bound taken from Date.now() fails
+const LEDGER_CLOSE = 1_700_000_000;
+
 function sourceAccount(): Horizon.AccountResponse {
   return new Account(USER, "1") as unknown as Horizon.AccountResponse;
 }
@@ -68,8 +71,23 @@ describe("buildSwapToXLM", () => {
     amountOutMin: "950000",
     userAddress: USER,
     deadline: 1_800_000_000,
+    ledgerCloseTime: LEDGER_CLOSE,
     network: TESTNET,
   };
+
+  it("expires five minutes after the supplied ledger close time", async () => {
+    const { deps, captured } = captureDeps();
+    await buildSwapToXLM(baseArgs, deps);
+    expect(Number(captured().timeBounds?.minTime)).toBe(0);
+    expect(Number(captured().timeBounds?.maxTime)).toBe(LEDGER_CLOSE + 300);
+  });
+
+  it("refuses to build without a usable ledger close time", async () => {
+    const { deps } = captureDeps();
+    await expect(
+      buildSwapToXLM({ ...baseArgs, ledgerCloseTime: Number.NaN }, deps),
+    ).rejects.toThrow(/ledger close time/);
+  });
 
   it("builds a router swap_exact_tokens_for_tokens with a [tokenIn, XLM] path", async () => {
     const { deps, captured } = captureDeps();

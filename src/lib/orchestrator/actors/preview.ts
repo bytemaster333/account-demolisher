@@ -441,18 +441,18 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
   // failed with its real reason. a failure of the whole pass (the ledger read, a
   // bad dependency) fails the preview.
   const previewLedger = await rpcServer.getLatestLedger();
+  // one read of the network clock times the built soroban steps and trustlines,
+  // the simulated envelopes and the merge check below
+  const clock = await fetchLedgerClock(network);
   const { failures } = await hydratePlanTransactions(tree, audit.accountId, {
     rpc: rpcServer,
     horizon,
     network,
     currentLedger: previewLedger.sequence,
+    ledgerCloseTime: clock.closedAt,
     fetchSourceAccount: (pk) => horizon.loadAccount(pk),
   });
   const hydrationReason = new Map(failures.map((f) => [f.nodeId, f.reason]));
-
-  // one read of the network clock times the simulated envelopes and the merge
-  // check below
-  const clock = await fetchLedgerClock(network);
   await simulatePreviewTree(tree, hydrationReason, {
     server: rpcServer,
     network,

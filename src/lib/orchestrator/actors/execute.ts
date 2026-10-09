@@ -50,6 +50,7 @@ import {
 } from "@/lib/orchestrator/submit";
 import { withTimeout } from "@/lib/with-timeout";
 import { getHorizon } from "@/lib/stellar/horizon-client";
+import { fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 import { stroopsToTrimmedDecimal } from "@/lib/stellar/amount";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { balance as readTokenBalance } from "@/lib/soroban/sep41";
@@ -371,14 +372,17 @@ async function runClose(input: ExecuteInput, signal: AbortSignal): Promise<Execu
         horizon,
         submitClassic,
         submitSoroban: createSorobanSubmitter(rpc, input.network.passphrase),
-        // rebuild each soroban node from fresh state right before signing
+        // rebuild each soroban node from fresh state right before signing, timed
+        // from the latest ledger's close time rather than the browser's clock
         rebuildSorobanNode: async (node, pk) => {
           const fresh = await rpc.getLatestLedger();
+          const clock = await fetchLedgerClock(input.network);
           await rebuildSorobanNodeTransaction(node, pk, {
             rpc,
             horizon,
             network: input.network,
             currentLedger: fresh.sequence,
+            ledgerCloseTime: clock.closedAt,
             fetchSourceAccount: (p) => horizon.loadAccount(p),
           });
         },

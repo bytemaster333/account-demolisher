@@ -21,6 +21,7 @@ import { BLEND_MAINNET_POOL_IDS } from "@/lib/adapters/blend/pools";
 import { MAINNET } from "@/lib/config/networks";
 
 import { backstopBalance, findInContractData } from "./blend-mainnet-holders";
+import { fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 
 // read-only: the backstop emissions claim is built by the app's own builder and
 // simulated against live mainnet state. nothing is signed or submitted.
@@ -91,7 +92,9 @@ describe("integration: blend backstop emissions claim against mainnet (L-49)", (
       const { poolId, user, state } = await holderWithAccrual(backstop);
       const account = await new Horizon.Server(MAINNET.horizon).loadAccount(user);
 
-      const outcome = await buildBackstopClaimTx(MAINNET, { poolId }, user, account)
+      const outcome = await buildBackstopClaimTx(MAINNET, { poolId }, user, account, {
+        ledgerCloseTime: (await fetchLedgerClock(MAINNET)).closedAt,
+      })
         .then((built) => ({ built }))
         .catch((e: unknown) => ({ error: e }));
       if ("error" in outcome) {
@@ -116,7 +119,10 @@ describe("integration: blend backstop emissions claim against mainnet (L-49)", (
         { poolId, liabilities: new Map(), collateral: new Map(), supply: new Map() },
         user,
         account,
-        { backstopShares: state.shares },
+        {
+          backstopShares: state.shares,
+          ledgerCloseTime: (await fetchLedgerClock(MAINNET)).closedAt,
+        },
       );
       expect(steps.map((s) => s.kind)).toEqual(["backstop_queue_withdrawal"]);
       const queue = call(steps[0]!.transaction);

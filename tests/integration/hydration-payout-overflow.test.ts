@@ -6,6 +6,7 @@ import { buildPlanTree, type PlanNode } from "@/lib/plan/tree";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { balance } from "@/lib/soroban/sep41";
 import { getHorizon } from "@/lib/stellar/horizon-client";
+import { fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 
 // read-only mainnet check: this holder's share of the KALE/KALIEN soroswap pair
 // pays out more KALIEN than an i64 can hold, so the zero-floor probe traps in
@@ -38,6 +39,7 @@ describe("hydration on mainnet state, an exit paying more than a trustline holds
       horizon,
       network: MAINNET,
       currentLedger: latest.sequence,
+      ledgerCloseTime: (await fetchLedgerClock(MAINNET)).closedAt,
       fetchSourceAccount: (pk) => horizon.loadAccount(pk),
     });
     expect(failures).toHaveLength(1);

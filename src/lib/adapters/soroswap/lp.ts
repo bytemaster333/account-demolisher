@@ -15,6 +15,7 @@ import {
   validateIntegerAmount,
 } from "@/lib/adapters/soroswap/router";
 import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
+import { ledgerMaxTime } from "@/lib/stellar/ledger-clock";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { address as scvAddress, i128 as scvI128 } from "@/lib/soroban/scval";
 import { assembleSubmittable, SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
@@ -40,6 +41,9 @@ export interface RemoveLiquidityByContractIdsArgs {
   readonly userAddress: string;
   // unix seconds. soroswap compares against env.ledger().timestamp()
   readonly deadline: number;
+  // close time (unix seconds) of the latest ledger; the tx expires five minutes
+  // after it
+  readonly ledgerCloseTime: number;
   readonly network: NetworkConfig;
 }
 
@@ -59,6 +63,7 @@ export async function removeLiquidityByContractIds(
   validateIntegerAmount(CALLER, "amountAMin", args.amountAMin);
   validateIntegerAmount(CALLER, "amountBMin", args.amountBMin);
   validateDeadline(CALLER, args.deadline);
+  const maxTime = ledgerMaxTime(args.ledgerCloseTime, FIVE_MINUTES_SECONDS);
 
   const callArgs: xdr.ScVal[] = [
     scvAddress(args.tokenAAddress),
@@ -76,7 +81,7 @@ export async function removeLiquidityByContractIds(
     networkPassphrase: args.network.passphrase,
   })
     .addOperation(contract.call("remove_liquidity", ...callArgs))
-    .setTimeout(FIVE_MINUTES_SECONDS)
+    .setTimebounds(0, maxTime)
     .build();
 
   const assemble = deps.assemble ?? assembleSubmittable;

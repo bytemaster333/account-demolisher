@@ -17,6 +17,7 @@ import { assertSorobanFeeWithinCap } from "@/lib/soroban/fee-cap";
 import { assertSafeRevokeInvocation } from "@/lib/soroban/revoke-guard";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { pollSoroban, sendSoroban, SorobanNotQueuedError } from "@/lib/soroban/submit";
+import { fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 import type { Connector } from "@/lib/wallet/connector";
 
 // serialize revokes per source account so the next one only *builds* after the
@@ -113,6 +114,8 @@ async function submitRevokeImpl(
 
   const rpc = getRpc(network);
   const { sequence: currentLedger } = await rpc.getLatestLedger();
+  // the tx's time bound counts from the network's clock, not the browser's
+  const clock = await fetchLedgerClock(network);
 
   // read the sequence from the rpc that confirmed the previous revoke, not from
   // horizon, which ingests on its own schedule and can still report the old one
@@ -126,6 +129,7 @@ async function submitRevokeImpl(
     currentLedger,
     network,
     sourceAccount,
+    clock.closedAt,
   );
 
   // the contract id came from an attacker-influenceable event scan and the revoke

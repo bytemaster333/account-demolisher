@@ -16,6 +16,7 @@ import { hydratePlanTransactions } from "@/lib/plan/hydration";
 import { buildPlanTree, type PlanNode } from "@/lib/plan/tree";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { getHorizon } from "@/lib/stellar/horizon-client";
+import { fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 
 // live testnet check of the payout trustline a pool exit needs: a SAC transfer
 // into an account with no line traps with Error(Contract, #13), and once the
@@ -108,6 +109,7 @@ describe("integration: the trustline a pool exit pays into", () => {
       horizon,
       network: TESTNET,
       currentLedger: latest.sequence,
+      ledgerCloseTime: (await fetchLedgerClock(TESTNET)).closedAt,
       fetchSourceAccount: (pk) => horizon.loadAccount(pk),
     });
     expect(failures).toEqual([]);

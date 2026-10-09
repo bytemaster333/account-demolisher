@@ -30,6 +30,11 @@ vi.mock("@/lib/soroban/revoke-guard", () => ({
 vi.mock("@/lib/soroban/fee-cap", () => ({
   assertSorobanFeeWithinCap: vi.fn(),
 }));
+// the network clock read is a horizon call; buildRevoke is stubbed, so its
+// value only has to arrive
+vi.mock("@/lib/stellar/ledger-clock", () => ({
+  fetchLedgerClock: vi.fn(async () => ({ sequence: 1000, closedAt: 1_700_000_000 })),
+}));
 vi.mock("@stellar/stellar-sdk", () => ({
   TransactionBuilder: { fromXdr: () => ({}) },
 }));
@@ -55,7 +60,7 @@ beforeEach(() => {
 });
 
 // let a batch of queued microtasks settle (submitRevokeImpl awaits the ledger,
-// account load, build and signing before it ever calls sendTransaction).
+// the ledger clock, account load, build and signing before it ever calls sendTransaction).
 async function flush(): Promise<void> {
   for (let i = 0; i < 10; i++) await Promise.resolve();
 }

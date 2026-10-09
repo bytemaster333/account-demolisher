@@ -107,6 +107,7 @@ async function hydrated(
     horizon: {} as never,
     network: NETWORK,
     currentLedger: 100,
+    ledgerCloseTime: 1_700_000_000,
     fetchSourceAccount: async () => source(),
     adapters: {
       buildSwapToXLM: m.buildSwapToXLM,
@@ -229,6 +230,7 @@ describe("only a claim the network refuses in simulation is offered as a forfeit
       horizon: {} as never,
       network: NETWORK,
       currentLedger: 100,
+      ledgerCloseTime: 1_700_000_000,
       fetchSourceAccount: async () => source(),
       adapters: { buildBackstopClaimTx: async () => fail() },
     });
@@ -260,6 +262,7 @@ describe("only a claim the network refuses in simulation is offered as a forfeit
       horizon: {} as never,
       network: NETWORK,
       currentLedger: 100,
+      ledgerCloseTime: 1_700_000_000,
       fetchSourceAccount: async () => source(),
       adapters: {
         buildBackstopClaimTx: async () => {

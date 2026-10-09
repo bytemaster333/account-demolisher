@@ -17,10 +17,14 @@ import {
   readAquariusPoolRewardTokens,
   readAquariusRewardToken,
   type AquariusClientDeps,
+  withdraw,
 } from "@/lib/adapters/aquarius/client";
 import { MAINNET, TESTNET } from "@/lib/config/networks";
 
 const USER = "GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3";
+// the network's clock, far from the test machine's, so a bound taken from
+// Date.now() fails
+const LEDGER_CLOSE = 1_700_000_000;
 const TOKEN_A = StrKey.encodeContract(Buffer.alloc(32, 1));
 const TOKEN_B = StrKey.encodeContract(Buffer.alloc(32, 2));
 const POOL_INDEX = new Uint8Array(Buffer.alloc(32, 7));
@@ -68,6 +72,7 @@ describe("aquarius claim", () => {
         tokens: [TOKEN_A, TOKEN_B],
         poolIndex: POOL_INDEX,
         sourceAccount: sourceAccount(),
+        ledgerCloseTime: LEDGER_CLOSE,
         network: TESTNET,
       },
       deps,
@@ -86,6 +91,24 @@ describe("aquarius claim", () => {
     expect(Buffer.from(scValToNative(args[2]!) as Uint8Array)).toEqual(Buffer.from(POOL_INDEX));
   });
 
+  it("expires five minutes after the supplied ledger close time", async () => {
+    const { deps, captured } = captureDeps();
+    const args = {
+      user: USER,
+      tokens: [TOKEN_A, TOKEN_B],
+      poolIndex: POOL_INDEX,
+      sourceAccount: sourceAccount(),
+      ledgerCloseTime: LEDGER_CLOSE,
+      network: TESTNET,
+    };
+    await claim(args, deps);
+    expect(Number(captured().timeBounds?.minTime)).toBe(0);
+    expect(Number(captured().timeBounds?.maxTime)).toBe(LEDGER_CLOSE + 300);
+    await withdraw({ ...args, shareAmount: 10n, minAmounts: [0n, 0n] }, deps);
+    expect(Number(captured().timeBounds?.maxTime)).toBe(LEDGER_CLOSE + 300);
+    await expect(claim({ ...args, ledgerCloseTime: 0 }, deps)).rejects.toThrow(/ledger close time/);
+  });
+
   it("refuses to build a claim without the pool's token set", async () => {
     const { deps } = captureDeps();
     await expect(
@@ -95,6 +118,7 @@ describe("aquarius claim", () => {
           tokens: [],
           poolIndex: POOL_INDEX,
           sourceAccount: sourceAccount(),
+          ledgerCloseTime: LEDGER_CLOSE,
           network: MAINNET,
         },
         deps,

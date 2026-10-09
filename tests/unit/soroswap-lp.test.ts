@@ -41,6 +41,9 @@ const TESTNET_ROUTER = getAllowlistForNetwork(TESTNET).find(
 
 // TransactionBuilder only reads accountId()/sequenceNumber() off the source, so a
 // plain Account stands in for the Horizon.AccountResponse the signature wants.
+// far from the test machine's clock, so a bound taken from Date.now() fails
+const LEDGER_CLOSE = 1_700_000_000;
+
 function sourceAccount(): Horizon.AccountResponse {
   return new Account(USER, "1") as unknown as Horizon.AccountResponse;
 }
@@ -92,6 +95,7 @@ function baseArgs(
     amountBMin: "222",
     userAddress: USER,
     deadline: 1_800_000_000,
+    ledgerCloseTime: LEDGER_CLOSE,
     network: TESTNET,
     ...overrides,
   };
@@ -124,6 +128,22 @@ describe("removeLiquidityByContractIds encoding", () => {
     const { args } = invokeCall(captured());
     expect(fromScValI128(args[3]!)).toBe(0n);
     expect(fromScValI128(args[4]!)).toBe(0n);
+  });
+});
+
+describe("removeLiquidityByContractIds validity window", () => {
+  it("expires five minutes after the supplied ledger close time", async () => {
+    const { deps, captured } = captureDeps();
+    await removeLiquidityByContractIds(baseArgs(), deps);
+    expect(Number(captured().timeBounds?.minTime)).toBe(0);
+    expect(Number(captured().timeBounds?.maxTime)).toBe(LEDGER_CLOSE + 300);
+  });
+
+  it("refuses to build without a usable ledger close time", async () => {
+    const { deps } = captureDeps();
+    await expect(
+      removeLiquidityByContractIds(baseArgs({ ledgerCloseTime: 0 }), deps),
+    ).rejects.toThrow(/ledger close time/);
   });
 });
 

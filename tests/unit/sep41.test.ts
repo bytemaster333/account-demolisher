@@ -36,6 +36,8 @@ import { TESTNET } from "@/lib/config/networks";
 const USER = "GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3";
 const SPENDER = StrKey.encodeEd25519PublicKey(Buffer.alloc(32, 9));
 const TOKEN = StrKey.encodeContract(Buffer.alloc(32, 5));
+// far from the test machine's clock, so a bound taken from Date.now() fails
+const LEDGER_CLOSE = 1_700_000_000;
 
 function sourceAccount(): Horizon.AccountResponse {
   return new Account(USER, "1") as unknown as Horizon.AccountResponse;
@@ -145,6 +147,7 @@ describe("sep41 builders decode to the correct ABI", () => {
       900n,
       TESTNET,
       sourceAccount(),
+      LEDGER_CLOSE,
     );
     const { contract, fn, args } = invokeCall(tx);
     expect(contract).toBe(TOKEN);
@@ -167,6 +170,7 @@ describe("sep41 builders decode to the correct ABI", () => {
       12345,
       TESTNET,
       sourceAccount(),
+      LEDGER_CLOSE,
     );
     const { fn, args } = invokeCall(tx);
     expect(fn).toBe("approve");
@@ -174,5 +178,39 @@ describe("sep41 builders decode to the correct ABI", () => {
     expect(Address.fromScVal(args[1]!).toString()).toBe(SPENDER);
     expect(scValToNative(args[2]!)).toBe(0n); // revoke = approve(0)
     expect(scValToNative(args[3]!)).toBe(12345);
+  });
+
+  it("expires five minutes after the supplied ledger close time", async () => {
+    const transfer = await buildTransfer(
+      {} as rpc.Server,
+      TOKEN,
+      USER,
+      SPENDER,
+      900n,
+      TESTNET,
+      sourceAccount(),
+      LEDGER_CLOSE,
+    );
+    const approve = await buildApprove(
+      {} as rpc.Server,
+      TOKEN,
+      USER,
+      SPENDER,
+      0n,
+      12345,
+      TESTNET,
+      sourceAccount(),
+      LEDGER_CLOSE,
+    );
+    for (const tx of [transfer, approve]) {
+      expect(Number(tx.timeBounds?.minTime)).toBe(0);
+      expect(Number(tx.timeBounds?.maxTime)).toBe(LEDGER_CLOSE + 300);
+    }
+  });
+
+  it("refuses to build without a usable ledger close time", async () => {
+    await expect(
+      buildTransfer({} as rpc.Server, TOKEN, USER, SPENDER, 900n, TESTNET, sourceAccount(), 0),
+    ).rejects.toThrow(/ledger close time/);
   });
 });

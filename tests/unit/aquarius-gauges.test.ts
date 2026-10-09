@@ -20,6 +20,9 @@ import { getAquariusRouterId } from "@/lib/adapters/aquarius/client";
 import { MAINNET } from "@/lib/config/networks";
 
 const USER = "GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3";
+// the network's clock, far from the test machine's, so a bound taken from
+// Date.now() fails
+const LEDGER_CLOSE = 1_700_000_000;
 const TOKEN_A = StrKey.encodeContract(Buffer.alloc(32, 1));
 const TOKEN_B = StrKey.encodeContract(Buffer.alloc(32, 2));
 const XLM_SAC = "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA";
@@ -271,6 +274,7 @@ describe("claimGaugeRewards", () => {
         tokens: [TOKEN_A, TOKEN_B],
         poolIndex: INDEX,
         sourceAccount: sourceAccount(),
+        ledgerCloseTime: LEDGER_CLOSE,
         network: MAINNET,
       },
       {
@@ -291,6 +295,9 @@ describe("claimGaugeRewards", () => {
     // the pool the router listed, which the auth guard and the allow-list accept
     expect(built.routerPool).toBe(GAUGED);
     expect(built.transaction).toBe(seen);
+    // the time bound counts from the ledger read, not the browser's clock
+    expect(Number(seen!.timeBounds?.minTime)).toBe(0);
+    expect(Number(seen!.timeBounds?.maxTime)).toBe(LEDGER_CLOSE + 300);
   });
 
   // a pool contract is permissionless, so the address must come from the router
@@ -304,6 +311,7 @@ describe("claimGaugeRewards", () => {
           tokens: [TOKEN_A, TOKEN_B],
           poolIndex: INDEX,
           sourceAccount: sourceAccount(),
+          ledgerCloseTime: LEDGER_CLOSE,
           network: MAINNET,
         },
         { server: server({}, routerAnswer(OTHER)).server, assemble },

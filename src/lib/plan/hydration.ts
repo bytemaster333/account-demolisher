@@ -22,6 +22,7 @@ import {
   buildExitSequence,
   type BlendExitPosition,
   type BlendExitStep,
+  type BuildExitSequenceDeps,
 } from "@/lib/adapters/blend/exit";
 import { BASE_RESERVE_STROOPS, spendableFromAccount } from "@/lib/adapters/blend/spendable";
 import {
@@ -57,6 +58,10 @@ import {
 import type { PlanNode, PlanTree, SwapQuote } from "./tree";
 import { topologicalOrder } from "./tree";
 
+// how long a soroswap swap or LP withdraw stays executable, counted from the
+// latest ledger's close time; the same window as the tx's own time bound
+const SOROSWAP_DEADLINE_SECONDS = 300;
+
 export interface HydrationFailure {
   readonly nodeId: string;
   readonly reason: string;
@@ -87,6 +92,10 @@ export interface HydrationDeps {
   readonly horizon: Horizon.Server;
   readonly network: NetworkConfig;
   readonly currentLedger: number;
+  // close time (unix seconds) of the latest ledger, read from the network. every
+  // built tx expires a fixed window after it and the soroswap router deadline is
+  // counted from it, so a skewed browser clock can't make them stale on arrival
+  readonly ledgerCloseTime: number;
   readonly fetchSourceAccount: (publicKey: string) => Promise<Horizon.AccountResponse>;
   // adapter overrides for tests; prod leaves this undefined
   readonly adapters?: HydrationAdapterOverrides;
@@ -130,6 +139,7 @@ export async function hydratePlanTransactions(
   if (typeof deps.fetchSourceAccount !== "function") {
     throw new TypeError("hydratePlanTransactions: deps.fetchSourceAccount is required");
   }
+  assertLedgerCloseTime("hydratePlanTransactions", deps);
 
   const failures: HydrationFailure[] = [];
 
@@ -188,6 +198,7 @@ export async function rebuildSorobanNodeTransaction(
   deps: HydrationDeps,
 ): Promise<void> {
   if (!carriesTransaction(node)) return;
+  assertLedgerCloseTime("rebuildSorobanNodeTransaction", deps);
   clearTransaction(node);
   // a fresh read: the lines earlier steps opened already hold their reserves
   await hydrateNode(
@@ -199,6 +210,16 @@ export async function rebuildSorobanNodeTransaction(
     true,
   );
   delete node.deferred;
+}
+
+// a pass with no usable network clock can't time anything it builds, and the
+// browser's clock must not stand in for it
+function assertLedgerCloseTime(caller: string, deps: HydrationDeps): void {
+  if (!Number.isSafeInteger(deps.ledgerCloseTime) || deps.ledgerCloseTime <= 0) {
+    throw new TypeError(
+      `${caller}: deps.ledgerCloseTime must be the latest ledger's close time; got ${String(deps.ledgerCloseTime)}`,
+    );
+  }
 }
 
 // TransactionBuilder.build() increments the source account's sequence in place,
@@ -256,14 +277,14 @@ async function buildNode(
   const slippageBps = resolveConfiguredSlippageBps();
   const exitSteps = async (
     position: BlendExitPosition,
-    extra: Parameters<typeof buildExitSequence>[4] = {},
+    extra: Omit<BuildExitSequenceDeps, "server" | "ledgerCloseTime"> = {},
   ): Promise<readonly BlendExitStep[]> =>
     (a.buildExitSequence ?? buildExitSequence)(
       deps.network,
       position,
       userPublicKey,
       await getSourceAccount(),
-      { server: deps.rpc, ...extra },
+      { ...extra, server: deps.rpc, ledgerCloseTime: deps.ledgerCloseTime },
     );
 
   switch (node.kind) {
@@ -278,6 +299,7 @@ async function buildNode(
         deps.currentLedger,
         deps.network,
         sourceAccount,
+        deps.ledgerCloseTime,
       );
       setTransaction(node, tx);
       return;
@@ -337,7 +359,12 @@ async function buildNode(
       assertTrustlineReserve(node, account, deps.network, opened, "to claim the Blend emissions");
       setTransaction(
         node,
-        buildTrustlineTx(deps.network, account, new Asset(blnd.code, blnd.issuer)),
+        buildTrustlineTx(
+          deps.network,
+          account,
+          new Asset(blnd.code, blnd.issuer),
+          deps.ledgerCloseTime,
+        ),
       );
       opened.count += 1;
       return;
@@ -356,7 +383,7 @@ async function buildNode(
       await assertIssuerOpensAuthorized(deps.horizon, md.code, md.issuer);
       const account = await getSourceAccount();
       assertTrustlineReserve(node, account, deps.network, opened, "to exit the pool");
-      setTransaction(node, buildTrustlineTx(deps.network, account, asset));
+      setTransaction(node, buildTrustlineTx(deps.network, account, asset, deps.ledgerCloseTime));
       opened.count += 1;
       return;
     }
@@ -397,7 +424,7 @@ async function buildNode(
           { poolId: node.metadata.poolId },
           userPublicKey,
           await getSourceAccount(),
-          { server: deps.rpc },
+          { server: deps.rpc, ledgerCloseTime: deps.ledgerCloseTime },
         );
       } catch (err) {
         // only a claim the network refuses in simulation is a forfeit question;
@@ -423,7 +450,7 @@ async function buildNode(
         { poolId: node.metadata.poolId },
         userPublicKey,
         await getSourceAccount(),
-        { server: deps.rpc },
+        { server: deps.rpc, ledgerCloseTime: deps.ledgerCloseTime },
       );
       pinBackstop(node, built.backstop.id);
       // the shares and unlock date of the built tx, read on chain at build time
@@ -441,7 +468,7 @@ async function buildNode(
         { poolId: node.metadata.poolId },
         userPublicKey,
         await getSourceAccount(),
-        { server: deps.rpc },
+        { server: deps.rpc, ledgerCloseTime: deps.ledgerCloseTime },
       );
       pinBackstop(node, built.backstop.id);
       (node.metadata as { amount: bigint }).amount = built.shares;
@@ -469,6 +496,7 @@ async function buildNode(
           shareAmount: node.metadata.shareAmount,
           minAmounts: node.metadata.tokens.map(() => 0n),
           sourceAccount: await getSourceAccount(),
+          ledgerCloseTime: deps.ledgerCloseTime,
           network: deps.network,
         },
         { server: deps.rpc },
@@ -483,6 +511,7 @@ async function buildNode(
           shareAmount: node.metadata.shareAmount,
           minAmounts,
           sourceAccount: await getSourceAccount(),
+          ledgerCloseTime: deps.ledgerCloseTime,
           network: deps.network,
         },
         { server: deps.rpc },
@@ -516,6 +545,7 @@ async function buildNode(
           liquidity: md.liquidity,
           minAmounts,
           sourceAccount: await getSourceAccount(),
+          ledgerCloseTime: deps.ledgerCloseTime,
           network: deps.network,
         },
         { server: deps.rpc },
@@ -530,6 +560,7 @@ async function buildNode(
           user: userPublicKey,
           poolAddress: node.metadata.poolAddress,
           sourceAccount: await getSourceAccount(),
+          ledgerCloseTime: deps.ledgerCloseTime,
           network: deps.network,
         },
         { server: deps.rpc },
@@ -551,6 +582,7 @@ async function buildNode(
           tokens: node.metadata.tokens,
           poolIndex: node.metadata.poolIndex,
           sourceAccount: await getSourceAccount(),
+          ledgerCloseTime: deps.ledgerCloseTime,
           network: deps.network,
         },
         { server: deps.rpc },
@@ -568,6 +600,7 @@ async function buildNode(
           tokens: node.metadata.tokens,
           poolIndex: poolIndexHexToBytes(node.metadata.poolIndex),
           sourceAccount: await getSourceAccount(),
+          ledgerCloseTime: deps.ledgerCloseTime,
           network: deps.network,
         },
         { server: deps.rpc },
@@ -578,7 +611,9 @@ async function buildNode(
 
     case "WithdrawSoroswapLp": {
       const fn = a.removeLiquidityByContractIds ?? removeLiquidityByContractIds;
-      const deadline = Math.floor(Date.now() / 1000) + 300; // 5 min
+      // the router checks this against the ledger timestamp, so it is counted
+      // from the ledger's clock like the tx's own time bound
+      const deadline = deps.ledgerCloseTime + SOROSWAP_DEADLINE_SECONDS;
       // First build+simulate with zero floors to read remove_liquidity's expected
       // (amountA, amountB), then rebuild with slippage-bounded minimums so the
       // signed tx cannot silently accept near-zero output for either token.
@@ -592,6 +627,7 @@ async function buildNode(
           amountBMin: "0",
           userAddress: userPublicKey,
           deadline,
+          ledgerCloseTime: deps.ledgerCloseTime,
           network: deps.network,
         },
         { server: deps.rpc, sourceAccount: await getSourceAccount() },
@@ -606,6 +642,7 @@ async function buildNode(
           amountBMin: applySlippageMin(expected[1]!.toString(), slippageBps),
           userAddress: userPublicKey,
           deadline,
+          ledgerCloseTime: deps.ledgerCloseTime,
           network: deps.network,
         },
         { server: deps.rpc, sourceAccount: await getSourceAccount() },
@@ -631,6 +668,7 @@ async function buildNode(
         held,
         deps.network,
         await getSourceAccount(),
+        deps.ledgerCloseTime,
       );
       (node.metadata as { amount: bigint }).amount = held;
       setTransaction(node, tx);
@@ -661,7 +699,9 @@ async function hydrateConvert(
   const slippageBps = resolveConfiguredSlippageBps();
   const md = node.metadata;
   const contractId = resolveContractIdForAsset(md.asset, deps.network);
-  const deadline = Math.floor(Date.now() / 1000) + 300; // 5 min
+  // the router checks this against the ledger timestamp, so it is counted from
+  // the ledger's clock like the tx's own time bound
+  const deadline = deps.ledgerCloseTime + SOROSWAP_DEADLINE_SECONDS;
   const held = await liveTokenBalance(node, userPublicKey, deps);
   const route = await (a.quoteRouteToXLM ?? quoteRouteToXLM)(deps.rpc, {
     assetIn: md.asset,
@@ -680,6 +720,7 @@ async function hydrateConvert(
         amountOutMin: "0",
         userAddress: userPublicKey,
         deadline,
+        ledgerCloseTime: deps.ledgerCloseTime,
         network: deps.network,
         path,
       },
@@ -744,6 +785,7 @@ async function hydrateConvert(
       amountOutMin,
       userAddress: userPublicKey,
       deadline,
+      ledgerCloseTime: deps.ledgerCloseTime,
       network: deps.network,
       path,
     },

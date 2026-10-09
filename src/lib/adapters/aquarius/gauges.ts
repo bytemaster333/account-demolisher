@@ -27,6 +27,7 @@ import type { NetworkConfig } from "@/lib/config/networks";
 import { mapConcurrent } from "@/lib/soroban/concurrency";
 import { address as scvAddress, fromScValAddress, fromScValI128 } from "@/lib/soroban/scval";
 import { assembleSubmittable, simulateRead, SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
+import { ledgerMaxTime } from "@/lib/stellar/ledger-clock";
 
 export interface PendingGaugeReward {
   readonly poolAddress: string;
@@ -36,6 +37,7 @@ export interface PendingGaugeReward {
 }
 
 const GAUGE_READ_CONCURRENCY = 4;
+const GAUGE_CLAIM_TIMEOUT_SECONDS = 300;
 
 // what each pool's gauges owe the user right now, for every pool and token with
 // a non-zero reward. a pool with no gauges in its instance storage is not
@@ -159,6 +161,9 @@ export interface ClaimGaugeRewardsArgs {
   readonly tokens: readonly string[];
   readonly poolIndex: string;
   readonly sourceAccount: TransactionSource;
+  // close time (unix seconds) of the latest ledger; the tx expires five minutes
+  // after it
+  readonly ledgerCloseTime: number;
   readonly network: NetworkConfig;
 }
 
@@ -183,6 +188,7 @@ export async function claimGaugeRewards(
   args: ClaimGaugeRewardsArgs,
   deps: GaugeClaimDeps,
 ): Promise<BuiltGaugeClaim> {
+  const maxTime = ledgerMaxTime(args.ledgerCloseTime, GAUGE_CLAIM_TIMEOUT_SECONDS);
   const listed = await readAquariusPoolAddress(
     deps.server,
     args.network,
@@ -201,7 +207,7 @@ export async function claimGaugeRewards(
     networkPassphrase: args.network.passphrase,
   })
     .addOperation(new Contract(listed).call("gauges_claim", scvAddress(args.user)))
-    .setTimeout(300)
+    .setTimebounds(0, maxTime)
     .build();
   const prepared = await (deps.assemble ?? assembleSubmittable)(deps.server, tx);
   if ("innerTransaction" in prepared) {

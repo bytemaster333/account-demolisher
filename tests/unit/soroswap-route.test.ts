@@ -157,6 +157,7 @@ describe("buildSwapToXLM with a route", () => {
     amountOutMin: "891",
     userAddress: USER,
     deadline: 2_000_000_000,
+    ledgerCloseTime: 1_999_999_700,
     network: MAINNET,
   };
 

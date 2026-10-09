@@ -18,6 +18,8 @@ import {
   i128 as scvI128,
   u32 as scvU32,
 } from "./scval";
+import { ledgerMaxTime } from "@/lib/stellar/ledger-clock";
+
 import { assembleSubmittable, simulateRead, SOROBAN_INCLUSION_FEE } from "./simulate";
 
 const FIVE_MINUTES_SECONDS = 300;
@@ -166,7 +168,8 @@ export async function symbol(
   return fromScValString(retval);
 }
 
-// build a transfer(from, to, amount) tx, simulated + assembled
+// build a transfer(from, to, amount) tx, simulated + assembled. it expires five
+// minutes after ledgerCloseTime, the latest ledger's close time in unix seconds
 export async function buildTransfer(
   server: rpc.Server,
   contractId: string,
@@ -175,6 +178,7 @@ export async function buildTransfer(
   amount: bigint,
   network: NetworkConfig,
   sourceAccount: Horizon.AccountResponse | Account,
+  ledgerCloseTime: number,
 ): Promise<Transaction> {
   return buildInvoke(
     server,
@@ -183,10 +187,12 @@ export async function buildTransfer(
     [scvAddress(from), scvAddress(to), scvI128(amount)],
     network,
     sourceAccount,
+    ledgerCloseTime,
   );
 }
 
-// build an approve(from, spender, amount, expiration_ledger) tx
+// build an approve(from, spender, amount, expiration_ledger) tx, timed like
+// buildTransfer
 export async function buildApprove(
   server: rpc.Server,
   contractId: string,
@@ -196,6 +202,7 @@ export async function buildApprove(
   liveUntilLedger: number,
   network: NetworkConfig,
   sourceAccount: Horizon.AccountResponse | Account,
+  ledgerCloseTime: number,
 ): Promise<Transaction> {
   return buildInvoke(
     server,
@@ -204,6 +211,7 @@ export async function buildApprove(
     [scvAddress(from), scvAddress(spender), scvI128(amount), scvU32(liveUntilLedger)],
     network,
     sourceAccount,
+    ledgerCloseTime,
   );
 }
 
@@ -214,14 +222,16 @@ async function buildInvoke(
   args: xdr.ScVal[],
   network: NetworkConfig,
   sourceAccount: Horizon.AccountResponse | Account,
+  ledgerCloseTime: number,
 ): Promise<Transaction> {
+  const maxTime = ledgerMaxTime(ledgerCloseTime, FIVE_MINUTES_SECONDS);
   const contract = new Contract(contractId);
   const tx = new TransactionBuilder(sourceAccount, {
     fee: SOROBAN_INCLUSION_FEE,
     networkPassphrase: network.passphrase,
   })
     .addOperation(contract.call(fnName, ...args))
-    .setTimeout(FIVE_MINUTES_SECONDS)
+    .setTimebounds(0, maxTime)
     .build();
 
   const prepared = await assembleSubmittable(server, tx);

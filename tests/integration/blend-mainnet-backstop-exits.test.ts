@@ -17,6 +17,7 @@ import { MAINNET } from "@/lib/config/networks";
 import { SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
 
 import { backstopBalance, findInContractData } from "./blend-mainnet-holders";
+import { fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 
 // read-only checks against live mainnet state: the backstop steps are built by
 // the app's own builders and run through prepareTransaction (simulation).
@@ -84,7 +85,11 @@ describe("integration: blend backstop exits simulate against mainnet (M-25)", ()
       account,
       // the emissions claim is covered by blend-mainnet-backstop-claim; the
       // queue and the withdraw never wait on it
-      { backstopShares: state.shares, backstopWithdrawAmount: state.unlockedQ4W },
+      {
+        backstopShares: state.shares,
+        backstopWithdrawAmount: state.unlockedQ4W,
+        ledgerCloseTime: (await fetchLedgerClock(MAINNET)).closedAt,
+      },
     );
 
     expect(steps.map((s) => s.kind)).toEqual(["backstop_queue_withdrawal", "backstop_withdraw"]);

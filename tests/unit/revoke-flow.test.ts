@@ -70,6 +70,17 @@ const server = {
   pollTransaction,
 };
 vi.mock("@/lib/soroban/rpc-client", () => ({ getRpc: () => server }));
+// the network's clock, far from the test machine's, so a bound taken from
+// Date.now() fails
+const LEDGER_CLOSE = 1_700_000_000;
+const fetchLedgerClock = vi.fn(async (_network: unknown) => ({
+  sequence: 5000,
+  closedAt: LEDGER_CLOSE,
+}));
+vi.mock("@/lib/stellar/ledger-clock", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/stellar/ledger-clock")>()),
+  fetchLedgerClock: (network: unknown) => fetchLedgerClock(network),
+}));
 
 import { REVOKE_GATE_RELEASE_MS, submitRevoke } from "@/lib/soroban/revoke";
 import { SorobanFeeCapError } from "@/lib/soroban/fee-cap";
@@ -110,6 +121,21 @@ describe("submitRevoke on the real build path", () => {
     expect(signed[0]!.sequence).toBe("101");
     // fee = inclusion bid + the simulated resource fee, counted once
     expect(signed[0]!.fee).toBe((100_000n + 15_929n).toString());
+  });
+
+  it("times the revoke from the latest ledger's close time", async () => {
+    const { c, signed } = connector();
+    await submitRevoke(TESTNET, c, RECORD, USER);
+    expect(fetchLedgerClock).toHaveBeenCalledWith(TESTNET);
+    expect(Number(signed[0]!.timeBounds?.minTime)).toBe(0);
+    expect(Number(signed[0]!.timeBounds?.maxTime)).toBe(LEDGER_CLOSE + 300);
+  });
+
+  it("builds nothing when the ledger clock can't be read", async () => {
+    fetchLedgerClock.mockRejectedValueOnce(new Error("horizon down"));
+    const { c, sign } = connector();
+    await expect(submitRevoke(TESTNET, c, RECORD, USER)).rejects.toThrow(/horizon down/);
+    expect(sign).not.toHaveBeenCalled();
   });
 
   it("refuses to sign when the simulated resource fee is over the untrusted-token cap", async () => {

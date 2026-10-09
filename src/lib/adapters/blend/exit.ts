@@ -22,6 +22,7 @@ import { balance as sep41Balance } from "@/lib/soroban/sep41";
 import { assembleSubmittable, simulate, SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
 import { assertTransactionAllowed } from "@/lib/stellar/allowlist";
 import { stroopsToDecimal } from "@/lib/stellar/amount";
+import { ledgerMaxTime } from "@/lib/stellar/ledger-clock";
 
 import {
   defaultBackstopDepositLoader,
@@ -49,6 +50,9 @@ import { spendableFromAccount } from "./spendable";
 const AMOUNT_BUFFER_BPS = 10n;
 
 export interface BlendExitDeps {
+  // close time (unix seconds) of the latest ledger; every built tx expires
+  // MAX_TIMEOUT_SECONDS after it
+  readonly ledgerCloseTime: number;
   readonly server?: rpc.Server;
   readonly assemble?: typeof assembleSubmittable;
   readonly simulate?: typeof simulate;
@@ -108,7 +112,7 @@ export async function buildBlendRepayTx(
   target: { readonly poolId: string; readonly asset: string },
   userPublicKey: string,
   sourceAccount: Horizon.AccountResponse,
-  deps: BlendExitDeps = {},
+  deps: BlendExitDeps,
 ): Promise<BlendRepayBuild> {
   requireAllowedPool(network, target.poolId);
   const server = deps.server ?? getRpc(network);
@@ -185,7 +189,7 @@ export async function buildBlendWithdrawTx(
   },
   userPublicKey: string,
   sourceAccount: Horizon.AccountResponse,
-  deps: BlendExitDeps = {},
+  deps: BlendExitDeps,
 ): Promise<BlendWithdrawBuild> {
   requireAllowedPool(network, target.poolId);
   const server = deps.server ?? getRpc(network);
@@ -254,7 +258,7 @@ export async function buildBlendClaimTx(
   target: { readonly poolId: string; readonly reserveTokenIds?: readonly number[] },
   userPublicKey: string,
   sourceAccount: Horizon.AccountResponse,
-  deps: BlendExitDeps = {},
+  deps: BlendExitDeps,
 ): Promise<BlendClaimBuild> {
   requireAllowedPool(network, target.poolId);
   const server = deps.server ?? getRpc(network);
@@ -311,7 +315,7 @@ export async function buildBackstopQueueTx(
   target: { readonly poolId: string },
   userPublicKey: string,
   sourceAccount: Horizon.AccountResponse,
-  deps: BlendExitDeps = {},
+  deps: BlendExitDeps,
 ): Promise<BackstopQueueBuild> {
   const { backstop, state } = await readBackstop(network, target.poolId, userPublicKey, deps);
   if (state.shares <= 0n) {
@@ -346,7 +350,7 @@ export async function buildBackstopWithdrawTx(
   target: { readonly poolId: string },
   userPublicKey: string,
   sourceAccount: Horizon.AccountResponse,
-  deps: BlendExitDeps = {},
+  deps: BlendExitDeps,
 ): Promise<BackstopWithdrawBuild> {
   const { backstop, state } = await readBackstop(network, target.poolId, userPublicKey, deps);
   if (state.unlockedQ4W <= 0n) {
@@ -432,7 +436,7 @@ export async function buildBackstopClaimTx(
   target: { readonly poolId: string },
   userPublicKey: string,
   sourceAccount: Horizon.AccountResponse,
-  deps: BlendExitDeps = {},
+  deps: BlendExitDeps,
 ): Promise<BackstopClaimBuild> {
   const { backstop, state } = await readBackstop(network, target.poolId, userPublicKey, deps);
   if (state.accruedEmissions <= 0n) {
@@ -446,6 +450,7 @@ export async function buildBackstopClaimTx(
   const probe = buildUnpreparedCall(
     network,
     sourceAccount,
+    deps.ledgerCloseTime,
     backstop.id,
     "claim",
     backstop.version === "V1" ? v1Args : [from, pools, nativeToScVal(0n, { type: "i128" })],
@@ -577,7 +582,7 @@ export async function buildExitSequence(
   position: BlendExitPosition,
   userPublicKey: string,
   sourceAccount: Horizon.AccountResponse,
-  deps: BuildExitSequenceDeps = {},
+  deps: BuildExitSequenceDeps,
 ): Promise<readonly BlendExitStep[]> {
   requireAllowedPool(network, position.poolId);
   const steps: BlendExitStep[] = [];
@@ -774,17 +779,19 @@ async function buildSubmitTx(
 function buildUnpreparedCall(
   network: NetworkConfig,
   sourceAccount: Horizon.AccountResponse,
+  ledgerCloseTime: number,
   contractId: string,
   fn: string,
   args: xdr.ScVal[],
 ): Transaction {
+  const maxTime = ledgerMaxTime(ledgerCloseTime, MAX_TIMEOUT_SECONDS);
   const source = new Account(sourceAccount.accountId(), sourceAccount.sequenceNumber());
   return new TransactionBuilder(source, {
     fee: SOROBAN_INCLUSION_FEE,
     networkPassphrase: network.passphrase,
   })
     .addOperation(new Contract(contractId).call(fn, ...args))
-    .setTimeout(MAX_TIMEOUT_SECONDS)
+    .setTimebounds(0, maxTime)
     .build();
 }
 
@@ -797,7 +804,14 @@ async function buildCallTx(
   fn: string,
   args: xdr.ScVal[],
 ): Promise<Transaction> {
-  const tx = buildUnpreparedCall(network, sourceAccount, contractId, fn, args);
+  const tx = buildUnpreparedCall(
+    network,
+    sourceAccount,
+    deps.ledgerCloseTime,
+    contractId,
+    fn,
+    args,
+  );
   const prepared = await (deps.assemble ?? assembleSubmittable)(server, tx);
   if ("innerTransaction" in prepared) {
     throw new Error(`Blend ${fn}: prepareTransaction returned a FeeBumpTransaction unexpectedly`);
