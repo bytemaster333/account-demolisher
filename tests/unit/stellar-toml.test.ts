@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, it, expect } from "vitest";
 
@@ -18,10 +18,42 @@ const assignments = [...toml.matchAll(/^\s*([A-Za-z_]+)\s*=\s*(.+?)\s*$/gm)].map
 }));
 const keys = new Set(assignments.map((a) => a.key));
 
+// every docs line that names WEB_AUTH_ENDPOINT, with its file
+function docsLinesNaming(token: string): { file: string; line: string }[] {
+  const out: { file: string; line: string }[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".mdx")) {
+        for (const line of readFileSync(full, "utf8").split("\n")) {
+          if (line.includes(token)) out.push({ file: path.relative(ROOT, full), line });
+        }
+      }
+    }
+  };
+  walk(path.join(ROOT, "docs/content/docs"));
+  return out;
+}
+
+// a docs line names the endpoint only to say the toml declares none of it
+function claimsWebAuthEndpoint(line: string): boolean {
+  return !/\bno\b[^.]*WEB_AUTH_ENDPOINT/u.test(line);
+}
+
 describe("public/stellar.toml", () => {
   it("declares no SEP-10 WEB_AUTH_ENDPOINT without a SIGNING_KEY", () => {
     if (keys.has("WEB_AUTH_ENDPOINT")) expect(keys.has("SIGNING_KEY")).toBe(true);
     expect(keys.has("WEB_AUTH_ENDPOINT")).toBe(false);
+  });
+
+  it("is described in the docs as declaring no WEB_AUTH_ENDPOINT", () => {
+    // the toml has had no sep-10 endpoint since it lost its signing key; a page
+    // that says it uses one sends integrators looking for a server that is not there
+    const claims = docsLinesNaming("WEB_AUTH_ENDPOINT").filter((l) =>
+      claimsWebAuthEndpoint(l.line),
+    );
+    expect(claims).toEqual([]);
   });
 
   it("has no empty-string values", () => {
