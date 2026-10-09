@@ -2,7 +2,7 @@
 
 // table view of SEP-41 allowances. one row per AllowanceRecord
 
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 
 import {
   addressExplorerUrl,
@@ -197,7 +197,9 @@ interface AllowanceRowProps {
   readonly busy?: boolean;
 }
 
-function AllowanceRow({
+// memoized: every prop is stable across the list's own renders, so showing
+// another page mounts only the new rows instead of rendering every shown row again
+const AllowanceRow = memo(function AllowanceRow({
   record,
   userAddress,
   simulationSource,
@@ -456,7 +458,7 @@ function AllowanceRow({
       </div>
     </div>
   );
-}
+});
 
 // an "unlimited" approval sets the allowance to a type-max sentinel (i128/u128
 // max) far beyond any real token balance; no legitimate allowance reaches 1e30.
