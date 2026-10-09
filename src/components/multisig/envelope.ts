@@ -10,13 +10,22 @@
 // (partial-xdr), so the browser and the relay never disagree on what is kept.
 
 import {
+  Keypair,
   TransactionBuilder,
+  xdr,
   type FeeBumpTransaction,
   type Horizon,
   type Transaction,
 } from "@stellar/stellar-sdk";
 
-import { trimToThreshold, type TrimResult, type WeightedSigner } from "@/lib/multisig/partial-xdr";
+import {
+  MAX_ENVELOPE_SIGNATURES,
+  TooManySignaturesError,
+  matchSigner,
+  trimToThreshold,
+  type TrimResult,
+  type WeightedSigner,
+} from "@/lib/multisig/partial-xdr";
 import { thresholdForClose } from "@/lib/multisig/signing-request";
 
 export { trimToThreshold, type TrimResult, type WeightedSigner };
@@ -57,25 +66,41 @@ export function decodePinned(envelopeXdr: string, passphrase: string, planId: st
 
 // fold the signatures of a relay envelope into the one already held. the body
 // always stays the held one; the incoming envelope only adds signatures, and only
-// after it proves to be the same transaction. dedup is on the signature bytes, so
-// the same signature under a different hint is not added twice.
+// after it proves to be the same transaction. a signature is only added when it
+// verifies against one of the account's signer keys, and once per key, stored
+// under that key's own hint. the relay is not trusted, so a frame full of
+// signatures from other keys (or one signature under many hints) adds nothing.
+// past the 20 signatures an envelope can hold it throws instead of handing back
+// an envelope that can't be serialized. callers merge outside a state updater,
+// so the throw is shown as an error rather than breaking the render.
 export function mergeRelayEnvelope(
   held: string,
   incoming: string,
   passphrase: string,
   planId: string,
+  signerKeys: readonly string[],
 ): string {
   const next = decodePinned(incoming, passphrase, planId);
   const base = decodePinned(held, passphrase, planId);
-  const seen = new Set(
-    base.signatures.map((s) => Buffer.from(s.signature.toBytes()).toString("hex")),
-  );
+  const hash = base.hash();
+  const keypairs = [...new Set(signerKeys)].map((k) => Keypair.fromPublicKey(k));
+  const present = new Set<number>();
+  for (const sig of base.signatures) {
+    const i = matchSigner(sig, hash, keypairs);
+    if (i !== -1) present.add(i);
+  }
   let added = false;
   for (const sig of next.signatures) {
-    const k = Buffer.from(sig.signature.toBytes()).toString("hex");
-    if (seen.has(k)) continue;
-    seen.add(k);
-    base.signatures.push(sig);
+    const i = matchSigner(sig, hash, keypairs);
+    if (i === -1 || present.has(i)) continue;
+    if (base.signatures.length >= MAX_ENVELOPE_SIGNATURES) throw new TooManySignaturesError();
+    base.signatures.push(
+      new xdr.DecoratedSignature({
+        hint: keypairs[i]!.signatureHint(),
+        signature: sig.signature.toBytes(),
+      }),
+    );
+    present.add(i);
     added = true;
   }
   return added ? base.toXdr() : held;

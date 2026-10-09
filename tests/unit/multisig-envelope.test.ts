@@ -18,6 +18,7 @@ import {
   mergeRelayEnvelope,
   trimToThreshold,
 } from "@/components/multisig/envelope";
+import { TooManySignaturesError } from "@/lib/multisig/partial-xdr";
 
 const NET = Networks.TESTNET;
 const source = Keypair.random();
@@ -133,23 +134,60 @@ describe("decodePinned", () => {
 });
 
 describe("mergeRelayEnvelope", () => {
+  const signers = [source, a, b].map((k) => k.publicKey());
+
   it("only ever adds signatures", () => {
     const held = signed(source, b);
     const stale = signed(source, a);
-    const merged = mergeRelayEnvelope(held, stale, NET, id);
+    const merged = mergeRelayEnvelope(held, stale, NET, id, signers);
     expect(keysOf(merged)).toEqual([source.publicKey(), b.publicKey(), a.publicKey()]);
   });
 
   it("returns the held envelope unchanged when nothing is new", () => {
     const held = signed(source, a);
-    expect(mergeRelayEnvelope(held, signed(source), NET, id)).toBe(held);
+    expect(mergeRelayEnvelope(held, signed(source), NET, id, signers)).toBe(held);
   });
 
   it("refuses an envelope for a different transaction", () => {
     const other = build();
     other.sign(source, a);
-    expect(() => mergeRelayEnvelope(signed(source), other.toXdr(), NET, id)).toThrow(
+    expect(() => mergeRelayEnvelope(signed(source), other.toXdr(), NET, id, signers)).toThrow(
       EnvelopeMismatchError,
+    );
+  });
+
+  // a hostile relay can send correctly hashed frames full of signatures from
+  // keys that are not signers; two such frames used to push the held envelope
+  // past 20 signatures, and serializing it then threw during render (NP5-49)
+  it("adds only signatures from the account's signers", () => {
+    const junk = () => Array.from({ length: 11 }, () => Keypair.random());
+    let held = signed(source);
+    held = mergeRelayEnvelope(held, signed(source, a, ...junk()), NET, id, signers);
+    held = mergeRelayEnvelope(held, signed(source, ...junk()), NET, id, signers);
+    expect(keysOf(held)).toEqual([source.publicKey(), a.publicKey()]);
+  });
+
+  it("adds one signature per signer, however many hints it comes under", () => {
+    const t = TransactionBuilder.fromXdr(signed(source, a), NET) as Transaction;
+    const sig = t.signatures[1]!;
+    for (let i = 0; i < 5; i++) {
+      t.signatures.push(
+        new xdr.DecoratedSignature({
+          hint: Buffer.from([i, i, i, i]),
+          signature: sig.signature.toBytes(),
+        }),
+      );
+    }
+    const merged = mergeRelayEnvelope(signed(source), t.toXdr(), NET, id, signers);
+    expect(keysOf(merged)).toEqual([source.publicKey(), a.publicKey()]);
+  });
+
+  it("refuses to grow the envelope past 20 signatures", () => {
+    const many = Array.from({ length: 21 }, () => Keypair.random());
+    const keys = many.map((k) => k.publicKey());
+    const held = signed(...many.slice(0, 20));
+    expect(() => mergeRelayEnvelope(held, signed(many[20]!), NET, id, keys)).toThrow(
+      TooManySignaturesError,
     );
   });
 });

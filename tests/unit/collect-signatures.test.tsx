@@ -369,6 +369,19 @@ describe("CollectSignatures relay envelopes", () => {
     expect(signedBadges()).toBe(3);
   });
 
+  // two correctly hashed frames of 11 non-signer signatures each used to grow
+  // the held envelope past the 20 signature limit and crash the step (NP5-49)
+  it("ignores signatures from keys that are not signers", async () => {
+    const p = plan(T3, [initiator, a, b, c]);
+    await renderCollect(p);
+    const junk = () => Array.from({ length: 11 }, () => Keypair.random());
+    frame(p, signedBy(initiator, a, ...junk()));
+    frame(p, signedBy(initiator, ...junk()));
+    expect(signedBadges()).toBe(2);
+    expect(screen.queryByTestId("collect-envelope-error")).toBeNull();
+    expect(screen.getByTestId("collect-signers")).toBeTruthy();
+  });
+
   it("says in words who just signed (I-18)", async () => {
     const p = plan(T3, [initiator, a, b, c]);
     await renderCollect(p);

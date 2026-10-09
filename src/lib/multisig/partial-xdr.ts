@@ -325,7 +325,7 @@ function collectCandidateSigners(
 // are tried first and the rest only when none of them verifies (a wallet with an
 // unusual hint), so a normal envelope costs one ed25519 check per signature
 // instead of one per signer.
-function matchSigner(
+export function matchSigner(
   sig: xdr.DecoratedSignature,
   txHash: Uint8Array,
   keypairs: readonly Keypair[],

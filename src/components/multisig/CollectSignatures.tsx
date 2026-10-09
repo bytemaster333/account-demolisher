@@ -15,7 +15,7 @@
 // (onClose) to the shared Close step. it never auto-closes, and no secret leaves
 // this browser.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { TypedConfirmation } from "@/components/confirmations/TypedConfirmation";
 import {
@@ -49,6 +49,7 @@ import {
   subscribePlan,
   type RelayPlan,
 } from "@/lib/multisig/plan-client";
+import { TooManySignaturesError } from "@/lib/multisig/partial-xdr";
 import { inspectClose, signedSigners, thresholdForClose } from "@/lib/multisig/signing-request";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import type { AccountAudit } from "@/lib/types/account";
@@ -100,6 +101,9 @@ export function CollectSignatures({
   onRebuildRequest,
 }: CollectSignaturesProps): React.JSX.Element {
   const [xdr, setXdr] = useState(initialXdr);
+  // the held envelope as of the last merge, so a relay frame is merged outside a
+  // state updater and a merge that throws is shown instead of breaking the render
+  const heldRef = useRef(initialXdr);
   const [relayPlan, setRelayPlan] = useState<RelayPlan | null>(null);
   // the relay's request can't be used at all (another account)
   const [planError, setPlanError] = useState<string | null>(null);
@@ -189,7 +193,15 @@ export function CollectSignatures({
           "The relay's request is for a different account than the one being closed.",
         );
       }
-      setXdr((held) => mergeRelayEnvelope(held, plan.xdr, network.passphrase, planId));
+      const merged = mergeRelayEnvelope(
+        heldRef.current,
+        plan.xdr,
+        network.passphrase,
+        planId,
+        plan.signers.map((s) => s.key),
+      );
+      heldRef.current = merged;
+      setXdr(merged);
       setRelayPlan(plan);
     },
     [network.passphrase, planId, audit.accountId],
@@ -207,6 +219,11 @@ export function CollectSignatures({
       } catch (e: unknown) {
         if (e instanceof EnvelopeMismatchError) {
           setPlanError(e.message);
+          return false;
+        }
+        // the relay's envelope would not fit in a transaction; what is held stays
+        if (e instanceof TooManySignaturesError) {
+          setEnvelopeError(e.message);
           return false;
         }
         setRequestGone(e instanceof PlanNotFoundError);

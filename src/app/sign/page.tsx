@@ -114,6 +114,9 @@ export default function SignPage(): React.JSX.Element {
   const [planId, setPlanId] = useState<string | null>(null);
   const [load, setLoad] = useState<Load>({ kind: "loading" });
   const [xdr, setXdr] = useState<string | null>(null);
+  // the held envelope as of the last merge, so a relay frame is merged outside a
+  // state updater and a merge that throws is shown instead of breaking the render
+  const heldRef = useRef<string | null>(null);
   const [envelopeError, setEnvelopeError] = useState<string | null>(null);
 
   const [facts, setFacts] = useState<Facts>({ kind: "loading" });
@@ -166,6 +169,7 @@ export default function SignPage(): React.JSX.Element {
           });
           return;
         }
+        heldRef.current = fetched.xdr;
         setXdr(fetched.xdr);
         setSnapshot(snapshotOf(fetched));
         setLoad({ kind: "ready", network: net, plan: fetched });
@@ -188,11 +192,19 @@ export default function SignPage(): React.JSX.Element {
     (incoming: RelayPlan): void => {
       if (network === null || planId === null) return;
       decodePinned(incoming.xdr, network.passphrase, planId);
-      setXdr((held) =>
+      const held = heldRef.current;
+      const merged =
         held === null
           ? incoming.xdr
-          : mergeRelayEnvelope(held, incoming.xdr, network.passphrase, planId),
-      );
+          : mergeRelayEnvelope(
+              held,
+              incoming.xdr,
+              network.passphrase,
+              planId,
+              incoming.signers.map((s) => s.key),
+            );
+      heldRef.current = merged;
+      setXdr(merged);
       setSnapshot((held) => {
         const next = snapshotOf(incoming);
         return held !== null && sameSnapshot(held, next) ? held : next;

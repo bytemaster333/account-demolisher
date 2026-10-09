@@ -419,6 +419,18 @@ describe("/sign wallet signing", () => {
   });
 });
 
+describe("/sign with a hostile relay (NP5-49)", () => {
+  it("ignores signatures from keys that are not signers", async () => {
+    await openPage();
+    const junk = () => Array.from({ length: 11 }, () => Keypair.random());
+    frame(signedBy(owner, a, ...junk()));
+    frame(signedBy(owner, ...junk()));
+    await settle();
+    expect(signedBadges()).toBe(2);
+    expect(screen.getByTestId("sign-progress").textContent).toBe("2 of 3");
+  });
+});
+
 describe("/sign left mid-signing (L-106)", () => {
   it("ends the scoped wallet session when the page unmounts", async () => {
     wallet.keypair = a;
