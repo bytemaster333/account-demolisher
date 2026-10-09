@@ -574,6 +574,32 @@ describe("hydratePlanTransactions, held-token sweeps use the live balance", () =
     expect((node.metadata as { amount: bigint }).amount).toBe(900n);
   });
 
+  it("swaps the balance read at build time, not the discovered amount", async () => {
+    // discovery saw 1,000,000; the account holds 1,500,000 when the swap is built
+    const market = swapMarket((x) => x * 4n);
+    const quoteRouteToXLM = vi.fn(market.quoteRouteToXLM);
+    const deps = baseDeps({
+      rpc: market.rpc,
+      adapters: {
+        buildSwapToXLM: market.buildSwapToXLM,
+        quoteRouteToXLM,
+        readTokenBalance: async () => 1_500_000n,
+      },
+    });
+    const node = convertNode();
+
+    const { failures } = await hydratePlanTransactions(buildPlanTree([node]), USER, deps);
+
+    expect(failures).toEqual([]);
+    expect(quoteRouteToXLM.mock.calls[0]![1].amountIn).toBe(1_500_000n);
+    // the full-size probe, the 1/1000 reference probe, then the signed swap
+    expect(market.calls.map((c) => c.amountIn)).toEqual(["1500000", "1500", "1500000"]);
+    expect(market.calls[2]!.amountOutMin).toBe(applySlippageMin("6000000", DEFAULT_SLIPPAGE_BPS));
+    const md = node.metadata as { amount: bigint; quote?: { amountIn: bigint } };
+    expect(md.amount).toBe(1_500_000n);
+    expect(md.quote?.amountIn).toBe(1_500_000n);
+  });
+
   it("fails a sweep with nothing to move", async () => {
     const node = transferNode();
     const deps = baseDeps({
