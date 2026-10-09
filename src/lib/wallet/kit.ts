@@ -1,4 +1,4 @@
-// wrapper around @creit.tech/stellar-wallets-kit v2.7.0 (static-class API:
+// wrapper around @creit.tech/stellar-wallets-kit v2.7.1 (static-class API:
 // StellarWalletsKit.init/authModal/getAddress/signTransaction/disconnect/...)
 import "@/lib/wallet/buffer-polyfill"; // Ledger needs a browser Buffer global
 import {

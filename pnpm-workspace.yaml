@@ -20,3 +20,12 @@ enablePrePostScripts: true
 # blend-sdk depends on an sdk release that carries axios >=1.20.0.
 overrides:
   "@stellar/stellar-sdk@16>axios": 1.20.0
+
+  # jayson is reached only through the HOT wallet module of stellar-wallets-kit
+  # (@hot-wallet/sdk > @solana/web3.js), which kit.ts never imports. web3.js 1.x asks
+  # for jayson ^4.3.0, whose uuid 8 and stream-json 1 carry four moderate advisories.
+  # overriding uuid and stream-json alone does not work: stream-json 3 is esm with
+  # renamed files, so jayson 4's require('stream-json/streamers/StreamValues') throws.
+  # jayson 5.0.0 drops both packages, and web3.js only loads jayson/lib/client/browser,
+  # which in 5.0.0 differs from 4.3.0 only in generating ids with crypto.randomUUID.
+  "@solana/web3.js@1>jayson": 5.0.0
