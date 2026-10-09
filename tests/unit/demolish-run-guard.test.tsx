@@ -55,6 +55,7 @@ function machineWithStubs(discoverGate: Promise<void>) {
             result: { ok: false, errors: ["The close was stopped."] },
             tree: input.tree,
             notes: [],
+            leftBehind: [],
             landedPhases: [],
             failureKind: "interrupted",
           };

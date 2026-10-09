@@ -1,4 +1,5 @@
 import type { NetworkConfig } from "@/lib/config/networks";
+import type { LeftBehindToken } from "@/lib/orchestrator/executor";
 import type { PhaseReceipt } from "@/lib/orchestrator/journal";
 import type { FailureKind } from "@/lib/orchestrator/page-flow-machine";
 import type { PlanTree, PreparePlan } from "@/lib/plan/tree";
@@ -43,6 +44,8 @@ export interface StatusWidgetProps {
   readonly failureKind?: FailureKind | null;
   // best-effort steps that did not do what the plan asked
   readonly executionNotes?: readonly string[];
+  // held tokens the run could not send; a close with any is not a clean close
+  readonly leftBehind?: readonly LeftBehindToken[];
   // classic batches that landed in this run (unwind phases and close batches),
   // including those of a close that did not finish
   readonly landedPhases?: readonly PhaseReceipt[];
@@ -62,6 +65,7 @@ export interface StatusRun extends Omit<
   | "retryDisabledReason"
   | "failureKind"
   | "executionNotes"
+  | "leftBehind"
   | "landedPhases"
   | "discoveryDiagnostics"
   | "prepared"
@@ -70,6 +74,7 @@ export interface StatusRun extends Omit<
   readonly retryDisabledReason: string | null;
   readonly failureKind: FailureKind | null;
   readonly executionNotes: readonly string[];
+  readonly leftBehind: readonly LeftBehindToken[];
   readonly landedPhases: readonly PhaseReceipt[];
   readonly discoveryDiagnostics: readonly string[];
   readonly prepared: PreparePlan | null;

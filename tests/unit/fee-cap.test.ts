@@ -162,9 +162,46 @@ describe("soroban fee cap", () => {
     ).toThrow(/over the 3\.3 XLM cap/);
   });
 
+  // measured 2026-10-09 (fee-cap.ts has the rows): a held token sent as it is
+  // to a destination that holds none of it yet creates its balance entry
+  it("passes measured legitimate held-token transfers", () => {
+    // testnet, a fresh instance of the soroban token wasm 464c7cf3...
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(2_563_891n, 296, 2), "untrusted-transfer"),
+    ).not.toThrow();
+    // mainnet: a token's fresh-holder transfer, and the widest aquarius share
+    // token transfer
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(308_336n, 296, 2), "untrusted-transfer"),
+    ).not.toThrow();
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(2_478_533n, 9_092, 14), "untrusted-transfer"),
+    ).not.toThrow();
+    // a revoke creates no entry, so it keeps its own tighter cap
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(2_563_891n, 296, 2), "untrusted-token"),
+    ).toThrow(/over the 0\.2 XLM cap/);
+  });
+
+  it("bounds what a held-token transfer may cost and write", () => {
+    expect(() =>
+      assertSorobanFeeWithinCap(
+        prepared(SOROBAN_RESOURCE_FEE_CAPS["untrusted-transfer"] + 1n, 296, 2),
+        "untrusted-transfer",
+      ),
+    ).toThrow(/over the 0\.75 XLM cap/);
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(20_000n, 16_385, 2), "untrusted-transfer"),
+    ).toThrow(/write 16385 bytes, over the 16384-byte limit/);
+    expect(() =>
+      assertSorobanFeeWithinCap(prepared(20_000n, 296, 25), "untrusted-transfer"),
+    ).toThrow(/25 ledger entries, over the limit of 24/);
+  });
+
   it("keeps about a 2x margin over the largest measured legitimate fee per class", () => {
     const largest = {
       "untrusted-token": 936_287n,
+      "untrusted-transfer": 2_563_891n,
       "untrusted-convert": 6_923_446n,
       "pool-exit": 16_305_049n,
       "defi-exit": 11_763_314n,

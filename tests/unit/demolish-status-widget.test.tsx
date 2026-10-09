@@ -247,6 +247,49 @@ describe("success state amount and receipt (M-34, L-56)", () => {
     await waitFor(() => expect(screen.getByTestId("demolish-receipt-text")).toBeTruthy());
   });
 
+  // owner decision 2026-10-08: a held token the close could not send keeps the
+  // run from reading as a clean close
+  it("names the held tokens left on the closed account instead of a clean close", async () => {
+    vi.stubGlobal("navigator", { ...navigator, clipboard: undefined });
+    const token = "CDRGLNJXOIOJP5RXGDSITUB7GA3SC6Y347KVIZY7QW2P3JHAHJMQA5RC";
+    renderWidget(closedTree(), {
+      state: "succeeded",
+      delivered: { status: "ok", xlm: "1" },
+      error: null,
+      leftBehind: [
+        {
+          contractId: token,
+          amount: 500_000_000n,
+          reason: "this step would cost 0.9 XLM in fees",
+        },
+      ],
+    });
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("Account closed, tokens left behind");
+    const list = screen.getByTestId("left-behind-tokens");
+    expect(list.textContent).toContain(token);
+    expect(list.textContent).toContain("500000000 base units");
+    expect(list.textContent).toContain("this step would cost 0.9 XLM in fees");
+    fireEvent.click(screen.getByTestId("demolish-copy-receipt"));
+    const area = await screen.findByTestId("demolish-receipt-text");
+    const receipt = (area as HTMLTextAreaElement).value;
+    expect(receipt).toMatch(/^Account Demolisher, account closed with tokens left behind/);
+    expect(receipt).toContain(
+      `Left on the closed account: token ${token}, 500000000 base units (not sent: this step would cost 0.9 XLM in fees)`,
+    );
+  });
+
+  it("reads as a clean close when every held token was sent", () => {
+    renderWidget(closedTree(), {
+      state: "succeeded",
+      delivered: { status: "ok", xlm: "1" },
+      error: null,
+      leftBehind: [],
+    });
+    expect(document.body.textContent ?? "").not.toContain("tokens left behind");
+    expect(screen.queryByTestId("left-behind-tokens")).toBeNull();
+  });
+
   it("announces a successful copy in a live region (L-64)", async () => {
     vi.stubGlobal("navigator", {
       ...navigator,

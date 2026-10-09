@@ -112,6 +112,9 @@ describe("nodeMaxFeeStroops, the most execution may bid", () => {
     expect(nodeMaxFeeStroops(kindNode("RepayBlend"))).toBe(33_100_000);
     expect(nodeMaxFeeStroops(kindNode("WithdrawAquarius"))).toBe(33_100_000);
     expect(nodeMaxFeeStroops(kindNode("ConvertSorobanToXLM"))).toBe(14_100_000);
+    // a held token sent as it is may create the destination's balance entry:
+    // 0.01 XLM inclusion + 0.75 XLM cap
+    expect(nodeMaxFeeStroops(kindNode("TransferAsIs"))).toBe(7_600_000);
   });
 
   // a step built only at execute time has no simulated fee, but the executor

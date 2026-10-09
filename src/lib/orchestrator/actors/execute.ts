@@ -30,6 +30,7 @@ import {
   surgeFeeBase,
   type ConfirmationReceipt,
   type LandedMerge,
+  type LeftBehindToken,
   type MediatorFlowControl,
   type TxLookup,
 } from "@/lib/orchestrator/executor";
@@ -82,6 +83,9 @@ export interface ExecuteOutput {
   readonly tree: PlanTree;
   readonly failureKind?: FailureKind;
   readonly notes: readonly string[];
+  // held tokens the close was asked to send and could not; on a run that
+  // merged they are on the closed account for good
+  readonly leftBehind: readonly LeftBehindToken[];
   readonly landedPhases: readonly PhaseReceipt[];
   // set when the run only prepared the close: every step ran, nothing merged
   readonly prepared?: PreparePlan;
@@ -313,6 +317,7 @@ export const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ in
       tree: input.tree,
       failureKind: "close_running",
       notes: [],
+      leftBehind: [],
       landedPhases: landedClassicPhases(input.tree),
     };
   }
@@ -332,6 +337,7 @@ export const executeActor = fromPromise<ExecuteOutput, ExecuteInput>(async ({ in
         tree: input.tree,
         failureKind: "close_running",
         notes: [],
+        leftBehind: [],
         // nothing ran this time, but batches an earlier attempt landed are on
         // chain and the failure note must still show them
         landedPhases: landedClassicPhases(input.tree),
@@ -357,6 +363,7 @@ async function runClose(input: ExecuteInput, signal: AbortSignal): Promise<Execu
   }
 
   const notes: string[] = [];
+  const leftBehind: LeftBehindToken[] = [];
   input.onProgress({ kind: "submitting", message: "Executing demolition plan…" });
   try {
     await executePlanTreeOnChain(
@@ -365,6 +372,7 @@ async function runClose(input: ExecuteInput, signal: AbortSignal): Promise<Execu
         tree,
         onNodeUpdate: () => input.onNodeTick(),
         onNote: (text) => notes.push(text),
+        onLeftBehind: (token) => leftBehind.push(token),
       },
       {
         network: input.network,
@@ -411,6 +419,7 @@ async function runClose(input: ExecuteInput, signal: AbortSignal): Promise<Execu
       tree,
       failureKind: classifyFailure(err),
       notes,
+      leftBehind,
       landedPhases: landed(),
     };
   }
@@ -418,7 +427,7 @@ async function runClose(input: ExecuteInput, signal: AbortSignal): Promise<Execu
   // a plan that only prepares the close has no merge: it is done once every
   // step ran, and the account stays open until the backstop queue unlocks
   if (tree.prepareOnly !== undefined) {
-    return prepared(input, tree, tree.prepareOnly, notes, landed());
+    return prepared(input, tree, tree.prepareOnly, notes, leftBehind, landed());
   }
   if (finalNode === undefined) {
     const reason = "The plan has no merge step, so the account was not closed.";
@@ -428,6 +437,7 @@ async function runClose(input: ExecuteInput, signal: AbortSignal): Promise<Execu
       tree,
       failureKind: "unknown",
       notes,
+      leftBehind,
       landedPhases: landed(),
     };
   }
@@ -444,6 +454,7 @@ async function runClose(input: ExecuteInput, signal: AbortSignal): Promise<Execu
       tree,
       failureKind: "unknown",
       notes,
+      leftBehind,
       landedPhases: landed(),
     };
   }
@@ -461,13 +472,20 @@ async function runClose(input: ExecuteInput, signal: AbortSignal): Promise<Execu
       tree,
       failureKind: "forward_pending",
       notes,
+      leftBehind,
       landedPhases: landed(),
     };
   }
 
+  // the merge landed, but a held token the user asked to send did not go with
+  // it, so the run does not read as a clean close
   input.onProgress({
     kind: "complete",
-    message: "Demolition complete.",
+    message:
+      leftBehind.length === 0
+        ? "Demolition complete."
+        : `Account closed, but ${leftBehind.length} held token${leftBehind.length === 1 ? "" : "s"} ` +
+          `could not be sent and ${leftBehind.length === 1 ? "stays" : "stay"} on the closed account.`,
     ...(mergedTxHash ? { txHash: mergedTxHash } : {}),
   });
   return {
@@ -479,6 +497,7 @@ async function runClose(input: ExecuteInput, signal: AbortSignal): Promise<Execu
     },
     tree,
     notes,
+    leftBehind,
     landedPhases: landed(),
   };
 }
@@ -490,6 +509,7 @@ function prepared(
   tree: PlanTree,
   plan: PreparePlan,
   notes: readonly string[],
+  leftBehind: readonly LeftBehindToken[],
   landedPhases: readonly PhaseReceipt[],
 ): ExecuteOutput {
   const open = [...tree.allNodes.values()].filter(
@@ -511,6 +531,7 @@ function prepared(
       tree,
       failureKind: "unknown",
       notes,
+      leftBehind,
       landedPhases,
     };
   }
@@ -529,6 +550,7 @@ function prepared(
     tree,
     prepared: { ...plan, unlocksAt },
     notes,
+    leftBehind,
     landedPhases,
   };
 }
@@ -553,6 +575,7 @@ async function submitBundle(
       tree,
       failureKind,
       notes: [],
+      leftBehind: [],
       landedPhases: [],
     };
   };
@@ -580,6 +603,7 @@ async function submitBundle(
       result: { ok: true, errors: [], mergedTxHash: receipt.txHash },
       tree,
       notes: [],
+      leftBehind: [],
       landedPhases: [receipt],
     };
   };

@@ -26,6 +26,7 @@ import {
   type RefusedConversion,
 } from "@/lib/orchestrator/actors/preview";
 import { executeActor, type ExecuteInput } from "@/lib/orchestrator/actors/execute";
+import type { LeftBehindToken } from "@/lib/orchestrator/executor";
 import type { AccountAudit } from "@/lib/types/account";
 import type { ClassicMemo, DemolishProgressEvent, DemolishResult } from "@/lib/types/plan";
 import { EMPTY_POSITIONS, type ProtocolPositions } from "@/lib/adapters/positions/interface";
@@ -151,6 +152,10 @@ export interface PageFlowContext {
   readonly signedBundle: SignedBundle | null;
   // best-effort steps that did not do what the plan asked
   readonly executionNotes: readonly string[];
+  // held tokens the run was asked to send and could not. a close that merged
+  // with any of these left them on the closed account, so it is not reported
+  // as a clean close
+  readonly leftBehindTokens: readonly LeftBehindToken[];
   // classic phases that landed, including those of a close that did not finish
   readonly landedPhases: readonly PhaseReceipt[];
   // aborted by CANCEL while executing; the close stops at the next step boundary
@@ -218,6 +223,7 @@ const initialContext: PageFlowContext = {
   failureKind: null,
   signedBundle: null,
   executionNotes: [],
+  leftBehindTokens: [],
   landedPhases: [],
   executionAbort: null,
   preparedClose: null,
@@ -350,6 +356,7 @@ const clearedPlan = {
   progress: [],
   result: null,
   executionNotes: [],
+  leftBehindTokens: [],
   landedPhases: [],
   preparedClose: null,
 } as const;
@@ -601,6 +608,7 @@ export const pageFlowMachine = setup({
         result: null,
         error: null,
         executionNotes: [],
+        leftBehindTokens: [],
       }),
       invoke: {
         src: "execute",
@@ -637,6 +645,7 @@ export const pageFlowMachine = setup({
               error: null,
               failureKind: null,
               executionNotes: ({ event }) => event.output.notes,
+              leftBehindTokens: ({ event }) => event.output.leftBehind,
               landedPhases: ({ event }) => event.output.landedPhases,
               connector: null,
               executionAbort: null,
@@ -652,6 +661,7 @@ export const pageFlowMachine = setup({
               error: null,
               failureKind: null,
               executionNotes: ({ event }) => event.output.notes,
+              leftBehindTokens: ({ event }) => event.output.leftBehind,
               landedPhases: ({ event }) => event.output.landedPhases,
               connector: null,
               executionAbort: null,
@@ -666,6 +676,7 @@ export const pageFlowMachine = setup({
                 event.output.failureKind ?? classifyFailure(event.output.result.errors.join("; ")),
               tree: ({ event }) => ({ ...event.output.tree }),
               executionNotes: ({ event }) => event.output.notes,
+              leftBehindTokens: ({ event }) => event.output.leftBehind,
               landedPhases: ({ event }) => event.output.landedPhases,
               connector: null,
               executionAbort: null,

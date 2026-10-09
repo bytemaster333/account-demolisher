@@ -4,6 +4,7 @@ import Link from "next/link";
 
 import { useCopyToClipboard } from "@/components/ui";
 import type { NetworkConfig } from "@/lib/config/networks";
+import type { LeftBehindToken } from "@/lib/orchestrator/executor";
 import type { PreparePlan } from "@/lib/plan/tree";
 
 import { SR_ONLY } from "../../_lib/a11y";
@@ -50,6 +51,7 @@ export function ReceiptFooter({
   network,
   mergeHash,
   planGroups,
+  leftBehind = [],
   prepared,
   onPreparedDone,
 }: {
@@ -60,6 +62,7 @@ export function ReceiptFooter({
   readonly network: NetworkConfig;
   readonly mergeHash: string | null;
   readonly planGroups: readonly PlanGroup[];
+  readonly leftBehind?: readonly LeftBehindToken[];
   readonly prepared: PreparePlan | null;
   readonly onPreparedDone: (() => void) | undefined;
 }): React.JSX.Element {
@@ -70,6 +73,7 @@ export function ReceiptFooter({
     network,
     mergeHash,
     ordered: planGroups.flatMap((g) => g.nodes),
+    leftBehind,
     ...(kind === "prepared" && prepared !== null ? { preparedUntil: prepared.unlocksAt } : {}),
   });
   // a blocked copy (permissions, an in-app browser) shows the text instead

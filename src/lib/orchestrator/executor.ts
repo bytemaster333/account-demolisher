@@ -37,6 +37,7 @@ import { encodeMemoCommitment, forwardMemoToSdk } from "@/lib/mediator/forward-t
 import { applyRefreshedMediatorFlow, MEDIATOR_FORWARD_NODE_ID } from "@/lib/mediator/refresh";
 import {
   BackstopEmissionsClaimError,
+  NothingToSweepError,
   PriceImpactRefusedError,
   resolveContractIdForAsset,
 } from "@/lib/plan/hydration";
@@ -172,6 +173,18 @@ export interface ExecutionOutput {
   readonly tree: PlanTree;
 }
 
+// a held token the close was asked to send and could not: it stays on the
+// account, and once the account is merged nobody can move it again
+export interface LeftBehindToken {
+  readonly contractId: string;
+  // the amount the sweep meant to send, in the token's base units
+  readonly amount: bigint;
+  readonly reason: string;
+  // set when the transfer was submitted but its outcome is unknown: it may
+  // still have landed
+  readonly unconfirmedTxHash?: string;
+}
+
 // steps whose failure leaves something behind by design instead of stopping the
 // close (a token the user asked to sweep, an allowance revoke). a skipped one
 // still lets its dependents run.
@@ -226,16 +239,18 @@ const MAX_SOROBAN_ATTEMPTS = 3;
 
 // what a soroban step may cost before it is signed (soroban/fee-cap.ts has the
 // measurements). a step that runs a token nobody vetted gets a class that also
-// bounds the writes it declares: the airdrop-reachable transfer and revoke, the
-// held-token swap, a soroswap lp exit, whose pair can hold any token, and the
+// bounds the writes it declares: the airdrop-reachable revoke and transfer (the
+// transfer has its own class, since creating the destination's balance pays
+// rent a revoke never does), the held-token swap, a soroswap lp exit, whose pair can hold any token, and the
 // aquarius exits and gauge reward claims, whose router is pinned but whose pools
 // and gauges are permissionless, so a pool or reward token runs inside them too.
 // the blend steps run only pinned pools and backstops.
 function feeClassOf(node: PlanNode): SorobanFeeClass {
   switch (node.kind) {
     case "RevokeAllowance":
-    case "TransferAsIs":
       return "untrusted-token";
+    case "TransferAsIs":
+      return "untrusted-transfer";
     case "ConvertSorobanToXLM":
     case "WithdrawSoroswapLp":
       return "untrusted-convert";
@@ -452,6 +467,7 @@ interface Run {
   readonly receipts: Record<string, ConfirmationReceipt>;
   readonly notify: (node: PlanNode) => void;
   readonly note: (text: string) => void;
+  readonly leftBehind: (token: LeftBehindToken) => void;
 }
 
 export async function executePlanTreeOnChain(
@@ -462,6 +478,8 @@ export async function executePlanTreeOnChain(
     onNodeUpdate?: (node: PlanNode) => void;
     // a best-effort step did not do what the plan asked, in words for the user
     onNote?: (text: string) => void;
+    // a held token the sweep could not send, which stays on the account
+    onLeftBehind?: (token: LeftBehindToken) => void;
   },
   deps: ExecutorDeps,
 ): Promise<ExecutionOutput> {
@@ -479,6 +497,7 @@ export async function executePlanTreeOnChain(
       }
     },
     note: (text) => input.onNote?.(text),
+    leftBehind: (token) => input.onLeftBehind?.(token),
   };
 
   for (const node of topologicalOrder(input.tree)) {
@@ -634,7 +653,8 @@ function confirm(node: PlanNode, receipt: ConfirmationReceipt, run: Run): void {
 
 // the user's opted-in held-token sweep: exactly transfer(user, destination,
 // amount) and nothing else, since the token is airdrop-reachable. best-effort: a
-// token that can't be moved stays on the closed account and is reported.
+// token that can't be moved stays on the closed account, is reported, and keeps
+// the run from reading as a clean close.
 async function runBestEffortTransfer(node: TransferAsIsNode, run: Run): Promise<void> {
   try {
     const receipt = await signAndSubmitSorobanNode(node, run, {
@@ -644,9 +664,19 @@ async function runBestEffortTransfer(node: TransferAsIsNode, run: Run): Promise<
     confirm(node, receipt, run);
   } catch (err) {
     if (err instanceof CloseFailure && err.kind === "interrupted") throw err;
+    if (err instanceof NothingToSweepError) {
+      nothingToSweep(node, err, run);
+      return;
+    }
     node.status = "skipped";
     node.error = `Token drain skipped: ${errorMessage(err)}`;
     run.notify(node);
+    run.leftBehind({
+      contractId: resolveContractIdForAsset(node.metadata.asset, run.deps.network),
+      amount: node.metadata.amount,
+      reason: errorMessage(err),
+      ...(err instanceof AmbiguousSubmitError ? { unconfirmedTxHash: err.txHash } : {}),
+    });
     run.note(
       err instanceof AmbiguousSubmitError
         ? `The transfer of token ${tokenLabel(node.metadata.asset)} was submitted as ${err.txHash}, ` +
@@ -655,6 +685,17 @@ async function runBestEffortTransfer(node: TransferAsIsNode, run: Run): Promise<
         : `Token ${tokenLabel(node.metadata.asset)} was not moved (${errorMessage(err)}); it stays on the closed account.`,
     );
   }
+}
+
+// a sweep with nothing to send is done, not skipped over something left behind
+function nothingToSweep(
+  node: TransferAsIsNode | ConvertSorobanToXLMNode,
+  err: NothingToSweepError,
+  run: Run,
+): void {
+  node.status = "skipped";
+  node.error = `Nothing to send: the account holds none of token ${err.contractId}.`;
+  run.notify(node);
 }
 
 function transferGuard(node: TransferAsIsNode, run: Run): (tx: Transaction) => void {
@@ -680,6 +721,10 @@ async function runConvert(node: ConvertSorobanToXLMNode, run: Run): Promise<void
     return;
   } catch (err) {
     stopUnlessSettled(node, err, run);
+    if (err instanceof NothingToSweepError) {
+      nothingToSweep(node, err, run);
+      return;
+    }
     convertError = err;
   }
   const label = tokenLabel(node.metadata.asset);

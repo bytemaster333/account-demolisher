@@ -19,6 +19,9 @@
 //   approve(0) revoke, token instance archived     300,759     936,287
 //   SAC transfer to an existing balance             23,660      24,505
 //   SAC transfer creating a contract balance       569,817     454,754
+//   sep-41 token transfer to an existing balance    21,598         -
+//   sep-41 token transfer creating a balance     2,563,891     308,336
+//   aquarius share token transfer to a new holder      -     2,478,533
 //   soroswap convert, direct pair                   43,574      43,607
 //   soroswap convert, one hop, live pairs              -       111,002
 //   soroswap convert, one hop, idle pairs        1,347,990        -
@@ -35,8 +38,14 @@
 //   blend YieldBloxV2 withdraw_collateral, archived    -     1,060,719
 //   blend backstop queue_withdrawal, archived          -     2,524,898
 // the gauges_claim row is a holder owed XLM by the gauge of stable pool
-// CCNXGPE4... on 2026-10-08; the others come from sweeps on 2026-10-06 and
-// 2026-10-07: lp holders of every archived mainnet soroswap pair (16) and of
+// CCNXGPE4... on 2026-10-08. the sep-41 transfer rows were measured on
+// 2026-10-09: on testnet a fresh instance of the soroban token wasm 464c7cf3...
+// (the one the held-token close test deploys), whose new balance entry pays
+// about 0.25 XLM of rent there; on mainnet a token that answered a fresh-holder
+// transfer (CBIJBDNZ...) and five aquarius pool share tokens (wasm 72eb5d52...,
+// 1,700,217 to 2,478,533, 6,524 to 9,092 write bytes and 10 to 14 read-write
+// entries, since a share transfer checkpoints the pool's rewards). the others
+// come from sweeps on 2026-10-06 and 2026-10-07: lp holders of every archived mainnet soroswap pair (16) and of
 // 70 archived testnet pairs, every aquarius standard and stable pool (318) for
 // a holder whose share balance is archived, position holders of the 37 pinned
 // concentrated pools (none of the 1,017 User entries the sweep listed through
@@ -59,7 +68,10 @@
 // fee spelled out. no mainnet pair needed that in the sweep.
 //
 // the classes, each capped at two to three times its largest measured case:
-// untrusted-token (revoke, held-token transfer): the archived-instance revoke.
+// untrusted-token (an allowance revoke): the archived-instance revoke.
+// untrusted-transfer (a held token sent as it is): the testnet transfer that
+// creates the destination's balance. a revoke writes no new entry, so it keeps
+// the tighter cap.
 // untrusted-convert (a held token sold through the router, or a soroswap lp
 // exit; both run token code nobody vetted): the archived-pair remove_liquidity.
 // pool-exit (aquarius standard, stable and concentrated pools and their gauge
@@ -68,22 +80,26 @@
 // the archived router claim. defi-exit (blend steps against the pinned pools and
 // backstops): the archived blend withdraw, at 11,763,314 still the largest
 // blend row, so the cap stays where it was.
-// declared write bytes and read-write entries are bounded for the first three
+// declared write bytes and read-write entries are bounded for all but the last
 // (largest measured without a code restore: 3,128 bytes and 10 entries for the
-// archived one-hop convert; 15,984 bytes for a concentrated withdraw and 22
-// entries for another). within those bounds it is the resource-fee cap that
-// limits what a hostile pool token can add in rent: up to about 3.3 XLM for a
-// pool exit, where the worst legitimate one measured cost 1.6 XLM.
+// archived one-hop convert; 9,092 bytes and 14 entries for a share token
+// transfer; 15,984 bytes for a concentrated withdraw and 22 entries for
+// another). within those bounds it is the resource-fee cap that limits what a
+// hostile token can add in rent: up to 0.75 XLM for a held-token transfer the
+// user chose to send, and about 3.3 XLM for a pool exit, where the worst
+// legitimate one measured cost 1.6 XLM.
 
 import type { FeeBumpTransaction, Transaction } from "@stellar/stellar-sdk";
 
 import { SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
 import { stroopsToTrimmedDecimal } from "@/lib/stellar/amount";
 
-export type SorobanFeeClass = "untrusted-token" | "untrusted-convert" | "pool-exit" | "defi-exit";
+export type SorobanFeeClass =
+  "untrusted-token" | "untrusted-transfer" | "untrusted-convert" | "pool-exit" | "defi-exit";
 
 export const SOROBAN_RESOURCE_FEE_CAPS: Readonly<Record<SorobanFeeClass, bigint>> = {
   "untrusted-token": 2_000_000n,
+  "untrusted-transfer": 7_500_000n,
   "untrusted-convert": 14_000_000n,
   "pool-exit": 33_000_000n,
   "defi-exit": 33_000_000n,
@@ -98,6 +114,8 @@ export function sorobanFeeCeiling(feeClass: SorobanFeeClass): bigint {
 
 export const UNTRUSTED_TOKEN_MAX_WRITE_BYTES = 8_192;
 export const UNTRUSTED_TOKEN_MAX_READ_WRITE_ENTRIES = 16;
+export const UNTRUSTED_TRANSFER_MAX_WRITE_BYTES = 16_384;
+export const UNTRUSTED_TRANSFER_MAX_READ_WRITE_ENTRIES = 24;
 export const POOL_EXIT_MAX_WRITE_BYTES = 32_768;
 export const POOL_EXIT_MAX_READ_WRITE_ENTRIES = 40;
 
@@ -108,6 +126,10 @@ const WRITE_BOUNDS: Readonly<
   "untrusted-token": {
     bytes: UNTRUSTED_TOKEN_MAX_WRITE_BYTES,
     entries: UNTRUSTED_TOKEN_MAX_READ_WRITE_ENTRIES,
+  },
+  "untrusted-transfer": {
+    bytes: UNTRUSTED_TRANSFER_MAX_WRITE_BYTES,
+    entries: UNTRUSTED_TRANSFER_MAX_READ_WRITE_ENTRIES,
   },
   "untrusted-convert": {
     bytes: UNTRUSTED_TOKEN_MAX_WRITE_BYTES,

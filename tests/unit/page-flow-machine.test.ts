@@ -78,6 +78,7 @@ function failedOutput(tree: PlanTree, errors: string[], failureKind?: FailureKin
     tree,
     ...(failureKind ? { failureKind } : {}),
     notes: [],
+    leftBehind: [],
     landedPhases: [],
   };
 }

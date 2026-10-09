@@ -949,10 +949,20 @@ async function liveTokenBalance(
   const read = deps.adapters?.readTokenBalance ?? readTokenBalance;
   const contractId = resolveContractIdForAsset(node.metadata.asset, deps.network);
   const held = await read(deps.rpc, contractId, userPublicKey, userPublicKey, deps.network);
-  if (held <= 0n) {
-    throw new Error(`${node.kind}: the account holds none of token ${contractId} to move`);
-  }
+  if (held <= 0n) throw new NothingToSweepError(node.kind, contractId);
   return held;
+}
+
+// the account holds none of a token its sweep was planned for: an exit that paid
+// nothing, or a token moved out since review. there is nothing to send, so
+// nothing is left behind either.
+export class NothingToSweepError extends Error {
+  readonly contractId: string;
+  constructor(kind: string, contractId: string) {
+    super(`${kind}: the account holds none of token ${contractId} to move`);
+    this.name = "NothingToSweepError";
+    this.contractId = contractId;
+  }
 }
 
 export type ConversionRefusal = "price_impact" | "unpriced" | "requote_worse";

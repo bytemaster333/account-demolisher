@@ -69,6 +69,7 @@ export function RunStatusStage({
         }
         failureKind={ctx.failureKind}
         executionNotes={ctx.executionNotes}
+        leftBehind={ctx.leftBehindTokens}
         landedPhases={ctx.landedPhases}
         discoveryDiagnostics={ctx.discoveryDiagnostics}
         prepared={ctx.preparedClose}

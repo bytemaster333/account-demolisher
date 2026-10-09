@@ -361,6 +361,7 @@ describe("retry after a non-retryable failure (M-36)", () => {
       result: { ok: false, errors: ["WithdrawBlend failed on-chain: contract reverted"] },
       tree,
       notes: [],
+      leftBehind: [],
       landedPhases: [],
     });
     connect();
@@ -628,6 +629,7 @@ describe("a run keeps its own network after a navbar switch (M-35)", () => {
         result: { ok: true, errors: [], mergedTxHash: merge },
         tree,
         notes: [],
+        leftBehind: [],
         landedPhases: [],
       };
     };
@@ -864,6 +866,7 @@ describe("the collected bundle is submitted bound to the reviewed close (M-41, M
       result: { ok: true, errors: [], mergedTxHash: "aa" },
       tree,
       notes: [],
+      leftBehind: [],
       landedPhases: [],
     });
     const seen: Record<string, unknown>[] = [];
@@ -910,6 +913,7 @@ describe("a wallet that doesn't disconnect cleanly is said on the page", () => {
       result: { ok: false, errors: ["WithdrawBlend failed on-chain: contract reverted"] },
       tree,
       notes: [],
+      leftBehind: [],
       landedPhases: [],
     });
     setActiveConnector({
@@ -937,6 +941,7 @@ describe("a wallet that doesn't disconnect cleanly is said on the page", () => {
       result: { ok: false, errors: ["WithdrawBlend failed on-chain: contract reverted"] },
       tree,
       notes: [],
+      leftBehind: [],
       landedPhases: [],
     });
     ctl.kitDisconnectError = "the walletconnect relay did not answer";
@@ -1390,12 +1395,14 @@ describe("a retry signs with the wallet connected now (M-10)", () => {
             tree,
             failureKind: "network",
             notes: [],
+            leftBehind: [],
             landedPhases: [],
           }
         : {
             result: { ok: true, errors: [], mergedTxHash: "bb" },
             tree,
             notes: [],
+            leftBehind: [],
             landedPhases: [],
           };
     };
@@ -1417,6 +1424,7 @@ describe("a retry signs with the wallet connected now (M-10)", () => {
         result: { ok: true, errors: [], mergedTxHash: "cc" },
         tree,
         notes: [],
+        leftBehind: [],
         landedPhases: [],
       };
     };
@@ -1457,6 +1465,7 @@ describe("a run that only prepares the close (M-25)", () => {
       result: { ok: true, errors: [] },
       tree,
       notes: [],
+      leftBehind: [],
       landedPhases: [],
       prepared: preparedClose,
     });

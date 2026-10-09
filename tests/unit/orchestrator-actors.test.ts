@@ -1459,6 +1459,57 @@ describe("the preview leaves a step built after earlier ones pending", () => {
   });
 });
 
+// owner decision 2026-10-08: a held contract token the close can't send is never
+// a silent success
+describe("a close that merged without a held token it was asked to send is not a clean close", () => {
+  const drainPlan = (): PlanTree =>
+    tree(
+      {
+        id: "drain",
+        kind: "TransferAsIs",
+        dependencies: [],
+        description: "send held token",
+        status: "simulated",
+        metadata: {
+          kind: "TransferAsIs",
+          asset: { kind: "contract", contractId: HOSTILE_TOKEN },
+          amount: 5n,
+          destination: DEST,
+        },
+      } as PlanNode,
+      {
+        id: "final-classic-tx",
+        kind: "FinalClassicTx",
+        dependencies: ["drain"],
+        description: "close account",
+        status: "simulated",
+        metadata: { kind: "FinalClassicTx", batches: [], destination: DEST, useMediator: false },
+      } as PlanNode,
+    );
+
+  it("names the token left on the closed account and says so in the last progress line", async () => {
+    // the token's balance can't be read when the transfer is rebuilt, so it is
+    // never sent; the merge still runs
+    const actor = withPlan(drainPlan, input({ destination: DEST, useMediator: false }));
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    actor.send({ type: "CONFIRM", typed: DEST.slice(-4), expected: RUN });
+    await settle(actor, "succeeded");
+    const ctx = actor.getSnapshot().context;
+    expect(net.horizon.accounts.has(USER)).toBe(false);
+    expect(ctx.tree!.allNodes.get("drain")!.status).toBe("skipped");
+    expect(ctx.leftBehindTokens).toEqual([
+      expect.objectContaining({ contractId: HOSTILE_TOKEN, amount: 5n }),
+    ]);
+    const last = ctx.progress.at(-1);
+    expect(last?.kind).toBe("complete");
+    expect(last?.message).toBe(
+      "Account closed, but 1 held token could not be sent and stays on the closed account.",
+    );
+    expect(ctx.progress.map((p) => p.message).join(" ")).not.toMatch(/Demolition complete/);
+    actor.stop();
+  });
+});
+
 describe("a run that only prepares the close never reads as a closed account", () => {
   const unlocksAt = new Date("2026-10-28T00:00:00Z");
   // a plan with no merge: a backstop queue stays locked after this run. the

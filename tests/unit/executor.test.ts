@@ -12,7 +12,11 @@ import {
 import { AccountNotFoundError } from "@/lib/stellar/account-audit";
 import type { PlanNode, PlanTree } from "@/lib/plan/tree";
 import { soroswapPairFor } from "@/lib/soroban/defi-auth-guard";
-import { BackstopEmissionsClaimError, PriceImpactRefusedError } from "@/lib/plan/hydration";
+import {
+  BackstopEmissionsClaimError,
+  NothingToSweepError,
+  PriceImpactRefusedError,
+} from "@/lib/plan/hydration";
 import { NoSoroswapRouteError } from "@/lib/adapters/soroswap/swap";
 import { BackstopClaimUnavailableError } from "@/lib/adapters/blend/exit";
 import type { PathResultRef } from "@/lib/types/plan";
@@ -67,6 +71,7 @@ import {
   MAX_PER_OP_FEE,
   type ConfirmationReceipt,
   type ExecutorDeps,
+  type LeftBehindToken,
 } from "@/lib/orchestrator/executor";
 import {
   AmbiguousSubmitError,
@@ -135,8 +140,21 @@ function deps(
   } as never;
 }
 
-async function run(t: PlanTree, d: ExecutorDeps, notes: string[] = []) {
-  const p = executePlanTreeOnChain({ publicKey: USER, tree: t, onNote: (n) => notes.push(n) }, d);
+async function run(
+  t: PlanTree,
+  d: ExecutorDeps,
+  notes: string[] = [],
+  leftBehind: LeftBehindToken[] = [],
+) {
+  const p = executePlanTreeOnChain(
+    {
+      publicKey: USER,
+      tree: t,
+      onNote: (n) => notes.push(n),
+      onLeftBehind: (token) => leftBehind.push(token),
+    },
+    d,
+  );
   // the caller asserts on p; this only keeps a rejection from counting as
   // unhandled while the backoff timers are drained
   p.catch(() => {});
@@ -955,11 +973,46 @@ describe("best-effort held-token drain", () => {
     });
     d.submitSoroban.mockRejectedValue(new Error("transfer reverted"));
     const notes: string[] = [];
+    const leftBehind: LeftBehindToken[] = [];
     const t = drainTree();
-    await run(t, d, notes);
+    await run(t, d, notes, leftBehind);
     expect(t.allNodes.get("drain")!.status).toBe("skipped");
     expect(t.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
     expect(notes.join(" ")).toMatch(/stays on the closed account/);
+    // the run names the token, so the merge is not reported as a clean close
+    expect(leftBehind).toEqual([
+      { contractId: HOSTILE_TOKEN, amount: 500n, reason: "transfer reverted" },
+    ]);
+  });
+
+  it("names a token refused for its fee as left behind", async () => {
+    const d = deps({
+      rebuildSorobanNode: rebuildWith((a) => transferTx(a, HOSTILE_TOKEN, DEST, 500n, "50000000")),
+    });
+    const leftBehind: LeftBehindToken[] = [];
+    await run(drainTree(), d, [], leftBehind);
+    expect(leftBehind).toHaveLength(1);
+    expect(leftBehind[0]!.contractId).toBe(HOSTILE_TOKEN);
+    expect(leftBehind[0]!.reason).toMatch(/over the 0\.75 XLM cap/);
+  });
+
+  it("does not name a token the account no longer holds as left behind", async () => {
+    const d = deps({
+      rebuildSorobanNode: async () => {
+        throw new NothingToSweepError("TransferAsIs", HOSTILE_TOKEN);
+      },
+    });
+    const notes: string[] = [];
+    const leftBehind: LeftBehindToken[] = [];
+    const t = drainTree();
+    await run(t, d, notes, leftBehind);
+    expect(t.allNodes.get("drain")!.status).toBe("skipped");
+    expect(t.allNodes.get("drain")!.error).toBe(
+      `Nothing to send: the account holds none of token ${HOSTILE_TOKEN}.`,
+    );
+    expect(t.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
+    expect(leftBehind).toEqual([]);
+    expect(notes).toEqual([]);
   });
 
   it("never signs a drain whose auth tree smuggles another call, and still merges", async () => {
@@ -990,8 +1043,23 @@ describe("best-effort held-token drain", () => {
     const t = drainTree();
     await run(t, d);
     expect(t.allNodes.get("drain")!.status).toBe("skipped");
-    expect(t.allNodes.get("drain")!.error).toMatch(/over the 0\.2 XLM cap/);
+    expect(t.allNodes.get("drain")!.error).toMatch(/over the 0\.75 XLM cap/);
     expect(d.submitSoroban).not.toHaveBeenCalled();
+  });
+
+  // testnet 2026-10-09: the soroban token wasm 464c7cf3... sent to a
+  // destination with no balance yet simulated at 2,563,891 stroops of resource
+  // fee, which the old 0.2 XLM transfer cap refused
+  it("signs a drain that creates the destination's balance of the token", async () => {
+    const d = deps({
+      rebuildSorobanNode: rebuildWith((a) =>
+        transferTx(a, HOSTILE_TOKEN, DEST, 500n, String(100_000 + 2_563_891)),
+      ),
+    });
+    const t = drainTree();
+    await run(t, d);
+    expect(t.allNodes.get("drain")!.status).toBe("confirmed");
+    expect(d.submitSoroban).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -1303,9 +1371,14 @@ describe("a best-effort step with an unknown outcome is reported as unknown", ()
       new AmbiguousSubmitError("DRAINHASH", null, "still pending after polling"),
     );
     const notes: string[] = [];
-    await run(tree(drain, finalNode(["drain"])), d, notes);
+    const leftBehind: LeftBehindToken[] = [];
+    await run(tree(drain, finalNode(["drain"])), d, notes, leftBehind);
     expect(notes.join(" ")).toMatch(/submitted as DRAINHASH, but the network has not confirmed/);
     expect(notes.join(" ")).not.toMatch(/was not moved/);
+    // it may still be on the closed account, so the close is not a clean one
+    expect(leftBehind).toEqual([
+      expect.objectContaining({ contractId: HOSTILE_TOKEN, unconfirmedTxHash: "DRAINHASH" }),
+    ]);
   });
 });
 
@@ -1403,6 +1476,22 @@ describe("a held-token conversion that can't run falls back to sending the token
     // only the swap was ever signed; no transfer to a shared exchange address
     expect(d.connector.signed).toHaveLength(1);
     expect(d.submitClassic).not.toHaveBeenCalled();
+  });
+  // an exit that was to pay the token paid none: nothing to convert or send,
+  // and the merge goes ahead
+  it("merges when the account holds none of the token to convert", async () => {
+    const d = deps({
+      rebuildSorobanNode: async () => {
+        throw new NothingToSweepError("ConvertSorobanToXLM", HOSTILE_TOKEN);
+      },
+    });
+    const leftBehind: LeftBehindToken[] = [];
+    const t = convertTree();
+    await run(t, d, [], leftBehind);
+    expect(t.allNodes.get("convert")!.status).toBe("skipped");
+    expect(t.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
+    expect(d.connector.signed).toHaveLength(1);
+    expect(leftBehind).toEqual([]);
   });
 });
 

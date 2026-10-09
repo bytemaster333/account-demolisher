@@ -7,6 +7,7 @@ import type { Horizon } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
 import { explorerTxUrl } from "@/lib/explorer";
+import type { LeftBehindToken } from "@/lib/orchestrator/executor";
 import type { PlanNode } from "@/lib/plan/tree";
 
 import { stroopsToXlm, xlmToStroops } from "./fees";
@@ -62,6 +63,8 @@ export function buildReceiptText(args: {
   readonly network: NetworkConfig;
   readonly mergeHash: string | null;
   readonly ordered: readonly PlanNode[];
+  // held tokens the close could not send, which stay on the closed account
+  readonly leftBehind?: readonly LeftBehindToken[];
   // set when the run only prepared the close: the account is still open
   readonly preparedUntil?: Date;
 }): string {
@@ -76,13 +79,23 @@ export function buildReceiptText(args: {
       ...steps,
     ].join("\n");
   }
+  const left = (args.leftBehind ?? []).map(
+    (t) =>
+      `Left on the closed account: token ${t.contractId}, ${t.amount.toString()} base units` +
+      (t.unconfirmedTxHash !== undefined
+        ? ` (transfer ${t.unconfirmedTxHash} submitted, not confirmed)`
+        : ` (not sent: ${t.reason})`),
+  );
   const lines = [
-    "Account Demolisher, account closed",
+    left.length > 0
+      ? "Account Demolisher, account closed with tokens left behind"
+      : "Account Demolisher, account closed",
     `Closed account: ${args.closedAccount}`,
     args.deliveredXlm !== null
       ? `Delivered ${args.deliveredXlm} XLM to ${args.destination}`
       : `Your remaining balance was sent to ${args.destination}`,
     args.mergeHash ? `Merge tx: ${explorerTxUrl(args.network, args.mergeHash)}` : "",
+    ...left,
     ...steps,
   ];
   return lines.filter((l) => l.length > 0).join("\n");

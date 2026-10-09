@@ -2,7 +2,8 @@
 
 import { AddressActions } from "@/components/ui";
 import type { NetworkConfig } from "@/lib/config/networks";
-import { explorerAccountUrl, explorerTxUrl } from "@/lib/explorer";
+import { explorerAccountUrl, explorerContractUrl, explorerTxUrl } from "@/lib/explorer";
+import type { LeftBehindToken } from "@/lib/orchestrator/executor";
 import { shortAddress } from "@/lib/safe-display";
 
 import { ReceiptFooter } from "./ReceiptFooter";
@@ -10,12 +11,15 @@ import { RunNotes } from "./RunNotes";
 import { CheckIcon, DiscoveryDiagnostics } from "./StatusFrame";
 import type { DeliveredAmount, StatusRun, StatusView } from "./types";
 
+// the merge landed. a held token the user asked to send that did not go with it
+// stays on the closed account for good, so that close is not shown as a clean one
 export function succeededView(run: StatusRun): StatusView {
+  const leftBehind = run.leftBehind.length > 0;
   return {
-    accent: "var(--success)",
+    accent: leftBehind ? "var(--warning)" : "var(--success)",
     icon: <CheckIcon />,
     iconAnimation: "pop .35s ease-out",
-    title: "Account closed",
+    title: leftBehind ? "Account closed, tokens left behind" : "Account closed",
     subtitle: (
       <SucceededSubtitle
         delivered={run.delivered}
@@ -26,6 +30,7 @@ export function succeededView(run: StatusRun): StatusView {
     headerExtras: (
       <>
         {run.mergeHash ? <ProofLink network={run.network} mergeHash={run.mergeHash} /> : null}
+        {leftBehind ? <LeftBehindTokens tokens={run.leftBehind} network={run.network} /> : null}
         <RunNotes executionNotes={run.executionNotes} />
       </>
     ),
@@ -38,6 +43,7 @@ export function succeededView(run: StatusRun): StatusView {
         network={run.network}
         mergeHash={run.mergeHash}
         planGroups={run.planGroups}
+        leftBehind={run.leftBehind}
         prepared={run.prepared}
         onPreparedDone={run.onPreparedDone}
       />
@@ -85,6 +91,58 @@ function SucceededSubtitle({
         funds will appear there shortly.
       </span>
     </>
+  );
+}
+
+// the held tokens the close could not send, each by its full contract id. the
+// account is gone, so nothing can move them any more.
+function LeftBehindTokens({
+  tokens,
+  network,
+}: {
+  readonly tokens: readonly LeftBehindToken[];
+  readonly network: NetworkConfig;
+}): React.JSX.Element {
+  return (
+    <div
+      role="alert"
+      data-testid="left-behind-tokens"
+      style={{
+        marginTop: 14,
+        padding: "10px 12px",
+        borderRadius: 9,
+        background: "var(--warning-soft)",
+        border: "1px solid var(--warning)",
+        fontSize: 12.5,
+        lineHeight: 1.55,
+        color: "var(--fg-2)",
+      }}
+    >
+      <strong style={{ color: "var(--fg)", fontWeight: 600 }}>
+        {tokens.length === 1
+          ? "One held token you asked to send stays on the closed account:"
+          : `${tokens.length} held tokens you asked to send stay on the closed account:`}
+      </strong>
+      <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+        {tokens.map((t) => (
+          <li key={t.contractId}>
+            <span style={{ fontFamily: "'Geist Mono', monospace", wordBreak: "break-all" }}>
+              {t.contractId}
+            </span>{" "}
+            <AddressActions
+              value={t.contractId}
+              href={explorerContractUrl(network, t.contractId)}
+              label="token contract"
+            />{" "}
+            {t.amount.toString()} base units.{" "}
+            {t.unconfirmedTxHash !== undefined
+              ? `Its transfer ${shortAddress(t.unconfirmedTxHash, 8, 6)} was submitted, but the ` +
+                "network has not confirmed whether it landed."
+              : `It was not sent: ${t.reason}`}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

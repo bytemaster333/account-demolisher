@@ -26,7 +26,13 @@ import { horizon, rpc, submitSorobanAs } from "../helpers/testnet-seed";
 // sale stays under the price-impact cap and the pair keeps liquidity after it;
 // the close must quote the route, swap the whole balance through the
 // allow-listed router and merge the XLM it got. without it, the close must send
-// the token to the destination as it is.
+// the token to the destination as it is. sending it creates the destination's
+// balance entry, whose rent put the transfer at about 0.26 XLM of resource fee
+// on 2026-10-09, over the 0.2 XLM cap the transfer used to share with the
+// allowance revoke; the close refused it and left the token behind.
+//
+// a held "token" whose transfer can't even be built must not end as a clean
+// close either: the run names it as left on the closed account.
 //
 // the wasm is the one behind testnet token CCYPRFTJ...; if it is ever archived
 // or pruned the deploy fails and names the hash.
@@ -166,6 +172,7 @@ describe("integration: closing an account that holds a contract token (testnet)"
     expect(kinds).not.toContain("ConvertSorobanToXLM");
 
     expect(outcome.matches("succeeded"), outcomeSummary(outcome)).toBe(true);
+    expect(outcome.context.leftBehindTokens).toEqual([]);
     const transfer = [...outcome.context.tree!.allNodes.values()].find(
       (n) => n.kind === "TransferAsIs",
     );
@@ -182,5 +189,36 @@ describe("integration: closing an account that holds a contract token (testnet)"
     const received = (await nativeBalance(horizon, destination.publicKey())) - destBefore;
     expect(received).toBeGreaterThan(9_999_0000000n);
     expect(received).toBeLessThan(10_000_0000000n);
+  });
+
+  it("names a held token it could not send instead of reporting a clean close", async () => {
+    // the soroswap router answers no balance(), so no transfer of it can be
+    // built: the stand-in for a broken or hostile token the user selected
+    const notAToken = getSoroswapRouterId(TESTNET);
+    const kp = Keypair.random();
+    const user = kp.publicKey();
+    const destination = Keypair.random();
+    await friendbotFund(TESTNET, user);
+    await friendbotFund(TESTNET, destination.publicKey());
+
+    const { outcome } = await closeHeadless({
+      publicKey: user,
+      network: TESTNET,
+      connector: new SecretKeyConnector(kp.secret()),
+      destination: destination.publicKey(),
+      useMediator: false,
+      selectedHeldTokens: [{ contractId: notAToken, balance: 5n }],
+    });
+
+    // the merge landed, so the account is gone; the run says what it left
+    expect(outcome.matches("succeeded"), outcomeSummary(outcome)).toBe(true);
+    expect(await accountExists(horizon, user)).toBe(false);
+    expect(outcome.context.leftBehindTokens).toEqual([
+      expect.objectContaining({ contractId: notAToken, amount: 5n }),
+    ]);
+    const last = outcome.context.progress.at(-1);
+    expect(last?.message).toBe(
+      "Account closed, but 1 held token could not be sent and stays on the closed account.",
+    );
   });
 });
