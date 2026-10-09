@@ -120,7 +120,7 @@ jobs:
         # deployment's public values (testnet default, mainnet reachable via the
         # in-app switch behind the unaudited-audit notice). The WalletConnect
         # projectId is a public client identifier, not a secret. Set the prod
-        # domain and any secret env (MEDIATOR_SECRET, SOROSWAP_API_KEY, ...) on the
+        # domain and any secret env (MEDIATOR_SECRET, METRICS_ADMIN_TOKEN, ...) on the
         # deployment host at runtime, not here.
         env:
           NEXT_PUBLIC_STELLAR_NETWORK: ${{ vars.NEXT_PUBLIC_STELLAR_NETWORK || 'testnet' }}

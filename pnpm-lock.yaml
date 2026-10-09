@@ -175,9 +175,6 @@ importers:
       '@creit.tech/stellar-wallets-kit':
         specifier: 2.7.0
         version: 2.7.0(@types/react@19.3.0)(@typescript/typescript6@6.0.2)(bufferutil@4.1.0)(debug@4.4.3(supports-color@7.2.0))(near-api-js@5.1.1)(react@19.3.0)(supports-color@7.2.0)(tslib@2.8.1)(use-sync-external-store@1.7.0(react@19.3.0))(utf-8-validate@6.0.6)(zod@4.6.5)
-      '@soroswap/sdk':
-        specifier: 0.5.0
-        version: 0.5.0(debug@4.4.3(supports-color@7.2.0))(supports-color@7.2.0)
       '@stellar/stellar-sdk':
         specifier: 17.2.1
         version: 17.2.1(debug@4.4.3(supports-color@7.2.0))(supports-color@7.2.0)
@@ -199,9 +196,6 @@ importers:
       server-only:
         specifier: 0.0.1
         version: 0.0.1
-      undici:
-        specifier: ^8.11.2
-        version: 8.11.2
       xstate:
         specifier: 5.33.2
         version: 5.33.2
@@ -1431,10 +1425,6 @@ packages:
 
   '@solana/web3.js@1.99.0':
     resolution: {integrity: sha512-QZYQ2T1z6xWisoyALPq25i/QZTsRlM02BABtAsfaQ1p8wX4SdTfxrKTRue/ZZqrhNVh5oL7T/DUFiTS9DRgxow==}
-
-  '@soroswap/sdk@0.5.0':
-    resolution: {integrity: sha512-BgWqs3TgVFq/25Go533A2IUR7g5NnWPHHJUM8f/iT1j0d0VwA464wH9JReUGxXNZmsAOP4Zggdeof2AUOHsuOw==}
-    engines: {node: '>=22.0.0'}
 
   '@stellar/freighter-api@6.0.0':
     resolution: {integrity: sha512-8CTQcKQmTq/wL715ZUzn1x1POpR0eYhYPKEiaeA7AT0WYBOauOGTxfWPFtSidX3ohAlJZP5HFXy1kG29cVjqxw==}
@@ -4280,10 +4270,6 @@ packages:
   undici-types@7.30.0:
     resolution: {integrity: sha512-7QjA5O+GhM27do7Id6hQZpnYEd7WzHbs7/XIS9A1k+Gat/ZVF7Jmpzt68zL/205f65FYwDNLSjQemHPS8ReM/A==}
 
-  undici@8.11.2:
-    resolution: {integrity: sha512-u4UB2/IrKdU6lFxumHmmo1a3fCQO5tzQllRorfoRS63txhrB7xTpSn1PftwC4qEHkOaqP95fCWW4lJzwErwzhQ==}
-    engines: {node: '>=22.19.0'}
-
   unrs-resolver@1.12.2:
     resolution: {integrity: sha512-dmlRxBJJayXjqTwC+JtF1HhJmgf3ftQ3YejFcZrf4+KKtJv0qDsK1pjqaaVjG7wJ5NJ6UVP1OqRMQ71Z4C3rxQ==}
 
@@ -6316,13 +6302,6 @@ snapshots:
       - encoding
       - typescript
       - utf-8-validate
-
-  '@soroswap/sdk@0.5.0(debug@4.4.3(supports-color@7.2.0))(supports-color@7.2.0)':
-    dependencies:
-      axios: 1.20.0(debug@4.4.3(supports-color@7.2.0))(supports-color@7.2.0)
-    transitivePeerDependencies:
-      - debug
-      - supports-color
 
   '@stellar/freighter-api@6.0.0':
     dependencies:
@@ -9881,8 +9860,6 @@ snapshots:
 
   undici-types@7.30.0:
     optional: true
-
-  undici@8.11.2: {}
 
   unrs-resolver@1.12.2:
     dependencies:

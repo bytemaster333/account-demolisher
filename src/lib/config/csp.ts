@@ -29,7 +29,6 @@ export function networkEndpoints(): readonly string[] {
 const AMM_CONNECT_SRC = [
   "https://amm-api.aqua.network",
   "https://amm-api-testnet.aqua.network",
-  "https://api.soroswap.finance",
 ] as const;
 
 // WalletConnect / Reown AppKit hosts. reached only when a user picks the

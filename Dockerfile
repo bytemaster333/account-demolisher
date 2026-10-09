@@ -4,8 +4,8 @@
 #     --build-arg NEXT_PUBLIC_SITE_URL=https://close.example.com .
 # the app is supported only behind a reverse proxy that sets X-Forwarded-For
 # (docker-compose.yml ships one). server-only settings (MEDIATOR_SECRET,
-# SOROSWAP_API_KEY, TRUSTED_PROXY_HOPS, METRICS_ADMIN_TOKEN, ...) are supplied at
-# runtime; NEXT_PUBLIC_* settings are build args because next build inlines them.
+# TRUSTED_PROXY_HOPS, METRICS_ADMIN_TOKEN, ...) are supplied at runtime;
+# NEXT_PUBLIC_* settings are build args because next build inlines them.
 
 # base image pinned by digest (multi-arch index for node:24-slim, node 24.21.0,
 # resolved 2026-10-02) so the build is reproducible and the base can't drift under

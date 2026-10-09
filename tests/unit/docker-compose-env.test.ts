@@ -84,6 +84,15 @@ describe("docker-compose forwards every variable the server reads", () => {
     expect(listed, `${name} is read by the server but not listed in docker-compose.yml`).toBe(true);
   });
 
+  // the other direction: a variable compose still forwards after the code that
+  // read it is gone tells an operator to configure something that does nothing
+  it.each([...environment].sort())("%s is read by the server", (name) => {
+    expect(
+      envReads(["src"]).has(name),
+      `${name} is forwarded by docker-compose.yml but nothing in src reads it`,
+    ).toBe(true);
+  });
+
   it.each([...envReads(["src"])].filter((n) => n.startsWith("NEXT_PUBLIC_")).sort())(
     "%s is a build arg",
     (name) => {

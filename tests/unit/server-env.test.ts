@@ -3,13 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-import {
-  __resetServerEnvForTests,
-  getMediatorSecret,
-  getServerEnv,
-  getSoroswapConfig,
-  requireServerEnv,
-} from "@/server/server-env";
+import { __resetServerEnvForTests, getMediatorSecret } from "@/server/server-env";
 
 const SEED = Keypair.random().secret();
 
@@ -20,21 +14,13 @@ afterEach(() => {
 });
 
 describe("server env", () => {
-  it("a malformed SOROSWAP_API_URL does not take the mediator secret down with it", () => {
+  it("returns a well-formed mediator secret", () => {
     vi.stubEnv("MEDIATOR_SECRET", SEED);
-    vi.stubEnv("SOROSWAP_API_URL", "api.soroswap.finance");
     expect(getMediatorSecret()).toBe(SEED);
-    expect(getServerEnv().MEDIATOR_SECRET).toBe(SEED);
-    expect(() => getSoroswapConfig()).toThrow(/SOROSWAP_API_URL/);
   });
 
-  it("a malformed MEDIATOR_SECRET does not take Soroswap down with it", () => {
+  it("throws on a malformed mediator secret", () => {
     vi.stubEnv("MEDIATOR_SECRET", "not-a-seed");
-    vi.stubEnv("SOROSWAP_API_URL", "https://api.soroswap.finance");
-    vi.stubEnv("SOROSWAP_API_KEY", "key");
-    expect(getSoroswapConfig()).toEqual({ apiUrl: "https://api.soroswap.finance", apiKey: "key" });
-    expect(getServerEnv().SOROSWAP_API_URL).toBe("https://api.soroswap.finance");
-    expect(requireServerEnv("SOROSWAP_API_KEY")).toBe("key");
     expect(() => getMediatorSecret()).toThrow(/MEDIATOR_SECRET/);
   });
 
@@ -50,15 +36,8 @@ describe("server env", () => {
     }
   });
 
-  it("treats empty values as unset and defaults the Soroswap URL", () => {
+  it("treats an empty value as unset", () => {
     vi.stubEnv("MEDIATOR_SECRET", "");
-    vi.stubEnv("SOROSWAP_API_URL", "");
-    vi.stubEnv("SOROSWAP_API_KEY", "");
     expect(getMediatorSecret()).toBeUndefined();
-    expect(getSoroswapConfig()).toEqual({
-      apiUrl: "https://api.soroswap.finance",
-      apiKey: undefined,
-    });
-    expect(() => requireServerEnv("SOROSWAP_API_KEY")).toThrow(/SOROSWAP_API_KEY/);
   });
 });
