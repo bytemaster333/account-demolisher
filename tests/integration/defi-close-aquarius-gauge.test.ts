@@ -38,6 +38,13 @@ import { horizon, rpc, submitClassicAs, submitSorobanAs } from "../helpers/testn
 // pool_gauge_schedule_reward, paying AQUA on the XLM/AQUA constant-product
 // pool for the router's minimum duration and above its minimum daily amount.
 // when an earlier run's schedule is still paying, that one is used instead.
+//
+// the pool keeps two more gauges, paying DAI (a classic asset's SAC) and Time
+// Rebased Token, with nothing scheduled. gauges_claim runs every gauge and each
+// transfers what it owes, zero included, and a zero SAC transfer to an account
+// without a DAI line traps (Error(Contract, #13), "trustline entry is
+// missing"). the close has to deal with that for an account that holds no DAI
+// line, which is what this account is.
 
 const AQUA_ISSUER = "GAHPYWLK6YRN7CVYZOO4H3VDRZ7PVF5UJGLZCSPAEIKJE2XSWF5LAGER";
 const AQUA = new Asset("AQUA", AQUA_ISSUER);

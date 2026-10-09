@@ -24,6 +24,10 @@ import { horizon, submitClassicAs, submitSorobanAs } from "../helpers/testnet-se
 // router (claiming whatever the pool's rewards owe first), dispose of the AQUA
 // it gets back and merge.
 //
+// while a reward gauge pays on this pool (defi-close-aquarius-gauge.test.ts
+// schedules one for a day), the share is owed gauge rewards too and the close
+// claims them before the withdraw, so this test then covers that claim as well.
+//
 // the pool belongs to Aquarius's testnet deployment, listed by
 // amm-api-testnet.aqua.network/api/external/v1/pools; if Aquarius drains or
 // removes it the setup swap fails and names the pool.
