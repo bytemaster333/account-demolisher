@@ -37,6 +37,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # covers the app and unit/integration tests (tsconfig.json) and the
+      # playwright specs (tsconfig.e2e.json)
       - name: Typecheck
         run: pnpm typecheck
 
@@ -110,10 +112,12 @@ jobs:
       - name: Integration tests
         run: pnpm test:integration --exclude tests/integration/mainnet-discovery-timing.test.ts --exclude tests/integration/cex-registry-live.test.ts
 
-  # end-to-end and accessibility sweep against the built app. smoke and
-  # accessibility use no wallet; secret-key-close and walletconnect-close drive
-  # real testnet closes (a pasted key and a headless walletconnect wallet). its
-  # own job because it installs a browser.
+  # end-to-end and accessibility sweep against the built app. smoke,
+  # accessibility and wallet-picker use no wallet. the other specs sign real
+  # testnet transactions with throwaway keys: closes from a pasted key and from a
+  # headless walletconnect wallet, a close to an exchange through the mediator,
+  # a multisig close through the signing relay, a retry after a failed close, and
+  # an allowance revoke. its own job because it installs a browser.
   e2e:
     name: e2e · accessibility
     runs-on: ubuntu-latest
