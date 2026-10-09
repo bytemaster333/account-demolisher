@@ -994,6 +994,28 @@ describe("a memo-required destination is found before the close starts (H-15, L-
     expect(ctl.previewInputs[0]!["memo"]).toEqual({ type: "text", value: "deposit-42" });
   });
 
+  it("tells an unlisted SEP-29 destination its memo rides the helper account payment", async () => {
+    ctl.destinationData = { "config.memo_required": "MQ==" };
+    connect();
+    render(<DemolishFlow />);
+    const input = await screen.findByTestId("destination-input");
+    fireEvent.change(input, { target: { value: DEST } });
+    const notice = await screen.findByTestId("memo-required-warning", {}, { timeout: 3000 });
+    expect(notice.textContent).toMatch(/helper account/);
+
+    fireEvent.click(screen.getByRole("button", { name: "Memo type" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Text" }));
+    fireEvent.change(screen.getByTestId("memo-value-input"), { target: { value: "deposit-42" } });
+    await waitFor(() =>
+      expect(document.body.textContent ?? "").toMatch(
+        /helper account as a normal payment carrying your memo/,
+      ),
+    );
+    expect(document.body.textContent ?? "").not.toMatch(
+      /attached to the transaction that closes the account/,
+    );
+  });
+
   it("refuses an exchange's internal wallet as the destination", async () => {
     connect();
     render(<DemolishFlow />);

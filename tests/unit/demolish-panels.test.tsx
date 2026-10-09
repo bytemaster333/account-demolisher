@@ -46,6 +46,7 @@ function ConfigureHarness(over: Partial<ConfigureProps>) {
         form={form}
         setForm={setForm}
         cex={null}
+        viaMediator={false}
         hasMemo={false}
         formError={null}
         canStart={false}
@@ -106,6 +107,7 @@ describe("ConfigurePanel", () => {
     render(
       <ConfigureHarness
         hasMemo
+        viaMediator
         cex={{ name: "Ex", requiresMemo: true, memoType: "text" } as ConfigureProps["cex"]}
       />,
     );
@@ -114,10 +116,35 @@ describe("ConfigurePanel", () => {
     expect(text).toMatch(/Exchanges don't credit an account merge/);
   });
 
+  // an unlisted SEP-29 destination is closed through the helper account too, so
+  // its memo rides the forward payment, not the transaction that deletes the account
+  it("says the memo rides a helper account payment for a non-exchange mediated close (L-59, H-15)", () => {
+    render(<ConfigureHarness hasMemo cex={null} viaMediator />);
+    const text = document.body.textContent ?? "";
+    expect(text).not.toMatch(/attached to the transaction that closes the account/);
+    expect(text).toMatch(/helper account as a normal payment carrying your memo/);
+  });
+
+  it("explains the helper account route for an unlisted memo-required destination (H-15)", () => {
+    render(<ConfigureHarness cex={null} viaMediator />);
+    const notice = screen.getByTestId("memo-required-warning").textContent ?? "";
+    expect(notice).toMatch(/asks for a memo/);
+    expect(notice).toMatch(/helper account/);
+    expect(screen.queryByTestId("cex-warning")).toBeNull();
+    expect(document.body.textContent ?? "").toMatch(/required by this destination/);
+  });
+
+  it("keeps the closing transaction wording for a direct close (L-59)", () => {
+    render(<ConfigureHarness hasMemo cex={null} viaMediator={false} />);
+    const text = document.body.textContent ?? "";
+    expect(text).toMatch(/attached to the transaction that closes the account/);
+    expect(screen.queryByTestId("memo-required-warning")).toBeNull();
+  });
+
   it("names every memo type an exchange accepts (L-24)", () => {
     const cex = lookupCex("GCZLCMUM4Q4H324CTT3753P6656CYR4KPLHYFPGYPGE6JVHONGLNRDI5");
     expect(cex?.name).toBe("Upbit Deposits");
-    render(<ConfigureHarness cex={cex} />);
+    render(<ConfigureHarness cex={cex} viaMediator />);
     expect(screen.getByTestId("cex-warning").textContent).toMatch(/memo\/tag \(ID or Text\)/);
   });
 

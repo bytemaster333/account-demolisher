@@ -14,6 +14,36 @@ const MEMO_TYPE_NAME: Record<CexMemoType, string> = {
   return: "Return",
 };
 
+const WARNING_BOX: React.CSSProperties = {
+  display: "flex",
+  alignItems: "flex-start",
+  gap: 9,
+  marginTop: 13,
+  padding: "11px 13px",
+  borderRadius: 11,
+  background: "var(--surface-2)",
+  border: "1px solid color-mix(in srgb, var(--warning) 30%, transparent)",
+};
+
+function WarningIcon(): React.JSX.Element {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="var(--warning)"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ flexShrink: 0, marginTop: 1 }}
+    >
+      <path d="M12 9v4M12 17h.01" />
+      <circle cx="12" cy="12" r="9" />
+    </svg>
+  );
+}
+
 const DEMO_DESTINATION_ADDRESS = "GCAWLISZMTHWMMHJE7BRYYNNKR4OL2PR4COXKH2MKGVDOH4BP6DMAHPE";
 
 // the read-only account check that tells Configure whether this is a shared
@@ -28,6 +58,7 @@ export function ConfigurePanel({
   form,
   setForm,
   cex,
+  viaMediator,
   hasMemo,
   formError,
   canStart,
@@ -41,6 +72,9 @@ export function ConfigurePanel({
   readonly form: FormState;
   readonly setForm: React.Dispatch<React.SetStateAction<FormState>>;
   readonly cex: CexInfo | null;
+  // the close goes through the helper account: a registry exchange, or a
+  // destination that flags itself memo-required under SEP-29
+  readonly viaMediator: boolean;
   readonly hasMemo: boolean;
   readonly formError: string | null;
   readonly canStart: boolean;
@@ -181,34 +215,8 @@ export function ConfigurePanel({
         </p>
 
         {cex ? (
-          <div
-            data-testid="cex-warning"
-            role="status"
-            style={{
-              display: "flex",
-              alignItems: "flex-start",
-              gap: 9,
-              marginTop: 13,
-              padding: "11px 13px",
-              borderRadius: 11,
-              background: "var(--surface-2)",
-              border: "1px solid color-mix(in srgb, var(--warning) 30%, transparent)",
-            }}
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="var(--warning)"
-              strokeWidth={2}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              style={{ flexShrink: 0, marginTop: 1 }}
-            >
-              <path d="M12 9v4M12 17h.01" />
-              <circle cx="12" cy="12" r="9" />
-            </svg>
+          <div data-testid="cex-warning" role="status" style={WARNING_BOX}>
+            <WarningIcon />
             <span style={{ fontSize: 12.5, color: "var(--fg-2)", lineHeight: 1.45 }}>
               <strong style={{ color: "var(--fg)" }}>Exchange detected: {cex.name}.</strong>{" "}
               We&apos;ll route the transfer so your deposit memo reaches {cex.name} correctly.{" "}
@@ -217,6 +225,16 @@ export function ConfigurePanel({
                     .map((t) => MEMO_TYPE_NAME[t])
                     .join(" or ")}), paste yours below, or your deposit could be lost.`
                 : ""}
+            </span>
+          </div>
+        ) : viaMediator ? (
+          <div data-testid="memo-required-warning" role="status" style={WARNING_BOX}>
+            <WarningIcon />
+            <span style={{ fontSize: 12.5, color: "var(--fg-2)", lineHeight: 1.45 }}>
+              <strong style={{ color: "var(--fg)" }}>This destination asks for a memo.</strong> It
+              flags itself as memo-required (SEP-29), so we deliver through a helper account as a
+              normal payment that carries your memo. Paste the memo below, or your deposit could be
+              lost.
             </span>
           </div>
         ) : null}
@@ -239,7 +257,11 @@ export function ConfigurePanel({
             Memo
           </InfoTip>{" "}
           <span style={{ color: "var(--fg-3)", fontWeight: 400 }}>
-            {cex?.requiresMemo ? "· required by your exchange" : "· required by most exchanges"}
+            {cex?.requiresMemo
+              ? "· required by your exchange"
+              : cex === null && viaMediator
+                ? "· required by this destination"
+                : "· required by most exchanges"}
           </span>
         </div>
         <p style={{ margin: "0 0 8px", fontSize: 12, color: "var(--fg-3)", lineHeight: 1.5 }}>
@@ -274,9 +296,11 @@ export function ConfigurePanel({
             placeholder={
               cex?.requiresMemo
                 ? "Required, your exchange deposit memo"
-                : form.memoType === "id"
-                  ? "12345"
-                  : "Your exchange deposit memo or tag"
+                : cex === null && viaMediator
+                  ? "Required, the memo this destination asked for"
+                  : form.memoType === "id"
+                    ? "12345"
+                    : "Your exchange deposit memo or tag"
             }
             spellCheck={false}
             autoComplete="off"
@@ -324,9 +348,13 @@ export function ConfigurePanel({
             </svg>
             <span style={{ fontSize: 12.5, color: "var(--fg-2)", lineHeight: 1.45 }}>
               <strong style={{ color: "var(--fg)" }}>Memo added.</strong>{" "}
-              {cex
-                ? "Exchanges don't credit an account merge, so we deliver through a helper account as a normal payment carrying your memo. Nothing extra for you to do."
-                : "It's attached to the transaction that closes the account, so your destination receives it alongside the funds. Nothing extra for you to do."}
+              {/* the memo only rides the closing transaction on a direct close;
+                  a mediated close carries it on the helper account's payment */}
+              {!viaMediator
+                ? "It's attached to the transaction that closes the account, so your destination receives it alongside the funds. Nothing extra for you to do."
+                : cex
+                  ? "Exchanges don't credit an account merge, so we deliver through a helper account as a normal payment carrying your memo. Nothing extra for you to do."
+                  : "This destination is memo-required, so instead of merging into it we deliver through a helper account as a normal payment carrying your memo. Nothing extra for you to do."}
             </span>
           </div>
         ) : null}

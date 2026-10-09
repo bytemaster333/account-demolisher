@@ -1056,6 +1056,7 @@ export function DemolishFlow(): React.JSX.Element {
     form,
     setForm,
     cex,
+    viaMediator: useMediator,
     hasMemo,
     formError,
     onGeneratePlan: onStart,
