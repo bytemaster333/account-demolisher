@@ -56,7 +56,7 @@ purpose, not because of its own dependency. `MediatorForward` runs only after a 
 | Kind                                                                       | Waits on                                                                                      |
 | -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | `AddBlndTrustline`, `AddExitTrustline`, `RevokeAllowance`, `ClassicUnwind` | Nothing                                                                                       |
-| `ClaimAquariusGaugeRewards`                                                | The trustlines its reward tokens need                                                         |
+| `ClaimAquariusGaugeRewards`                                                | The trustline of every token the pool keeps a gauge for, including gauges that owe nothing    |
 | `WithdrawAquarius`                                                         | The pool's gauge claim and the trustlines its tokens need                                     |
 | `ClaimAquariusRewards`                                                     | The pool's withdraw (standard) and the reward token's trustline                               |
 | `ClaimAquariusConcentratedFees`                                            | The trustlines its tokens need                                                                |
@@ -116,7 +116,7 @@ deterministic. A short result means a cycle and throws
 ## The tree shape
 
 `PlanTree` holds `rootNodes` (no dependencies), `allNodes` (the id-to-node index), and optionally
-`prepareOnly` and `forfeitedBackstopEmissions` (pools whose backstop BLND the user agreed to leave
+`prepareOnly` and `forfeitedBackstopEmissions` (pools whose backstop BLND the account owner agreed to leave
 unclaimed).
 
 ## Metadata worth knowing
@@ -124,7 +124,7 @@ unclaimed).
 - `FinalClassicTxMetadata` records the reviewed claimable-balance list, the disposal choices, the
   accepted price-impact keys, the reviewed reference and full-size quotes, the deposit memo and
   whether the batches carry the close marker. The executor re-batches from a fresh audit with
-  exactly these, so it can never claim a balance the user did not review or sell below the
+  exactly these, so it can never claim a balance the account owner did not review or sell below the
   reviewed price beyond the slippage tolerance.
 - `MediatorForwardMetadata.memo` is carried verbatim, because the forward is the only hop that
   reaches the exchange.

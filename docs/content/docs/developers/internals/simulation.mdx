@@ -22,7 +22,7 @@ A step with no dependencies that cannot be built is marked failed with its reaso
 after other steps (a collateral withdraw behind its repay, a sweep behind the exits that pay it) is
 built here against state those steps have not changed yet, so a failure only defers it: it stays
 `pending` with `deferred` set and is built at execute time once they land. A refused conversion and
-a backstop emissions claim that cannot run fail either way, because they need the user's answer.
+a backstop emissions claim that cannot run fail either way, because they need the account owner's answer.
 
 ## Soroban steps
 
@@ -78,8 +78,8 @@ strict-send path search to XLM, keeping the best path of at most five hops. Alon
 search quotes a reference trade of one thousandth of the amount. The price impact is how far the
 full-size rate sits below the reference rate, in basis points, rounded up.
 
-- An impact over 200 basis points (2%) is refused unless the user accepted it for that asset.
-- A balance with no reference quote is unpriced and refused unless the user accepted it.
+- An impact over 200 basis points (2%) is refused unless the account owner accepted it for that asset.
+- A balance with no reference quote is unpriced and refused unless the account owner accepted it.
 - A path whose output after slippage nets at or below `NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS` is
   dropped, so the asset falls through to the issuer or destination choice.
 - At execute time, a fresh reference or full-size rate worse than the reviewed one by more than the

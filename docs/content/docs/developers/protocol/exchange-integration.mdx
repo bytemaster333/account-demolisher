@@ -27,9 +27,12 @@ The close routes through an ephemeral mediator account created for that one clos
    address.
 3. The mediator account is removed by that same transaction.
 
-**From your side this is a native XLM payment with a memo, followed by a merge of about 1 XLM with
-no memo.** The payment carries everything above the mediator's minimum balance and the forward's
-fee. You do not need to run a SEP server, expose an API, or change how your deposit addresses work.
+**From your side this is a native XLM payment with a memo, followed in the same transaction by an
+`ACCOUNT_MERGE` of about 1 XLM.** The payment carries everything above the mediator's minimum
+balance and the forward's fee. The merge carries the rest: the mediator's minimum balance, two base
+reserves (1 XLM at the current 0.5 XLM base reserve), plus whatever part of the fee the network did
+not charge. An exchange that credits only payments does not credit that remainder. You do not need
+to run a SEP server, expose an API, or change how your deposit addresses work.
 
 Only XLM reaches a memo-required destination. The close sells every other balance for XLM first,
 or returns it to its issuer when it has no market, and it never sends a Soroban token or a classic
@@ -139,14 +142,16 @@ memo, and the mediator binds it into the flow token so the forward carries exact
 
 ## Closes to an address with no memo requirement
 
-They run as a direct `ACCOUNT_MERGE` to the address, and a memo the user enters rides on the merge
-transaction. An exchange that credits only payments does not credit that, and the user docs tell
-people to withdraw to a wallet they control and send a normal payment instead.
+They run as a direct `ACCOUNT_MERGE` to the address, and a memo the person closing the account
+enters rides on the merge transaction. An exchange that credits only payments does not credit that,
+and [Send the funds to an exchange](/docs/users/send-to-an-exchange#an-exchange-that-is-not-listed)
+tells people to withdraw to a wallet they control and send a normal payment instead.
 
 ## Limits
 
 **Standalone Soroban tokens are not delivered.** A memo-required close forwards XLM only, so the
-app tells the user to move standalone tokens they want to keep to a personal wallet first.
+app tells the person closing the account to move standalone tokens they want to keep to a personal
+wallet first.
 
 **A shared account cannot close to a memo-required destination.** The mediator route is several
 transactions, and a multisig signing request collects signatures on exactly one.

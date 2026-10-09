@@ -48,12 +48,12 @@ does not require authorization; a full one is raised to the maximum limit.
 
 For each credit balance, in this precedence:
 
-| Order | Disposal                          | When                                                                                                                                                         |
-| ----- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1     | Payment to the destination        | The user chose it                                                                                                                                            |
-| 2     | Payment back to the issuer        | The user chose it                                                                                                                                            |
-| 3     | `path_payment_strict_send` to XLM | A path exists, its price impact is within 2% (or the user accepted it), and the fresh quote is not worse than the reviewed one beyond the slippage tolerance |
-| 4     | Nothing                           | Anything else; the balance and its trustline stay, which blocks the merge                                                                                    |
+| Order | Disposal                          | When                                                                                                                                                                  |
+| ----- | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1     | Payment to the destination        | The account owner chose it                                                                                                                                            |
+| 2     | Payment back to the issuer        | The account owner chose it                                                                                                                                            |
+| 3     | `path_payment_strict_send` to XLM | A path exists, its price impact is within 2% (or the account owner accepted it), and the fresh quote is not worse than the reviewed one beyond the slippage tolerance |
+| 4     | Nothing                           | Anything else; the balance and its trustline stay, which blocks the merge                                                                                             |
 
 An explicit choice wins over a market path found later. The path payment sends to the account
 itself, converting in place, and its `destMin` is the quoted output less the slippage tolerance.

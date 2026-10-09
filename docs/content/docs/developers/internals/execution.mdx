@@ -26,7 +26,7 @@ For each node in order:
 2. A `failed` or `skipped` node is left alone.
 3. Unless the node is the forward, a stop request ends the run here, before anything else is
    signed. The forward runs regardless, because it moves the balance out of the forwarding account
-   and asks the user to sign nothing.
+   and asks the account owner to sign nothing.
 4. A dependency that is not `confirmed` (a best-effort step skipped on purpose excepted) skips the
    node with `Skipped: dependency "<id>" did not complete`. The forward requires a confirmed merge.
 5. The node runs by kind:
@@ -35,7 +35,7 @@ For each node in order:
 | ------------------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Required Soroban steps and trustlines | Rebuilt from fresh state, allow-list, authorization tree and fee cap checked, signed, submitted | Fails the node and stops the close                                                                                                                                           |
 | `RevokeAllowance`                     | Rebuilt, held to exactly `approve(user, spender, 0, ledger)`, signed, submitted                 | Skipped with a note: the allowance stays on the token                                                                                                                        |
-| `TransferAsIs`                        | Rebuilt for the live balance, held to exactly `transfer(user, destination, amount)`             | Skipped with a note: the token stays on the closed account                                                                                                                   |
+| `TransferAsIs`                        | Rebuilt for the live balance, held to exactly `transfer(user, destination, amount)`             | Skipped with a note, and the token is reported as left behind. A token the account no longer holds is skipped as nothing to send                                             |
 | `ConvertSorobanToXLM`                 | Like a required step                                                                            | A price refusal or missing route stops the close with `conversion_refused`; any other failure sends the token as-is on a direct close, and stops the close if that fails too |
 | `ClassicUnwind`                       | Classic batches planned from a fresh audit, touching only the reviewed offers and pools         | Fails the node and stops the close                                                                                                                                           |
 | `FinalClassicTx`                      | The close loop below                                                                            | Fails the node and stops the close                                                                                                                                           |
@@ -53,16 +53,26 @@ with `ambiguous` until it settles. Nothing is signed again while an earlier subm
 step can still land.
 
 Soroban submissions go through `sendSoroban` and `pollSoroban` in `src/lib/soroban/submit.ts`. Only
-`PENDING` and `DUPLICATE` count as queued; a full RPC queue is resent up to five times, and a result
-is polled for about a minute.
+`PENDING` and `DUPLICATE` count as queued. A `TRY_AGAIN_LATER` answer (a full RPC queue) is resent
+as the identical envelope up to five times, after 1, 2, 4, 8 and 16 seconds; when the RPC still
+answers `TRY_AGAIN_LATER`, nothing landed and the step fails as a retryable `network` failure. A
+result is polled for about a minute.
 
 ## Soroban retries
 
 A Soroban step is attempted up to three times. Before each attempt it is rebuilt (fresh sequence,
 fresh simulation, fresh time bound) and checked again. A failure is retried only when a rebuild can
-clear it: a bad sequence number, a changed or archived footprint (including a write the simulation
-did not see), or a stale resource fee. A refused step is never retried, because an unsafe tree does
-not become safe on a rebuild.
+clear it:
+
+| Failure                                                                                                      | Why a rebuild clears it                    |
+| ------------------------------------------------------------------------------------------------------------ | ------------------------------------------ |
+| `txBadSeq`                                                                                                   | The rebuild reads a fresh sequence         |
+| `txInsufficientFee`, `txSorobanInvalid`                                                                      | Re-simulation prices the resource fee      |
+| A changed, archived or expired footprint entry, or an exceeded limit from a write the simulation did not see | Re-simulation declares the footprint again |
+
+Any other failure stops the close, and [Failure reference](/docs/developers/reference/failures)
+lists the kind it gets. A refused step is never retried, because an unsafe tree does not become
+safe on a rebuild.
 
 ## The close loop
 
@@ -77,7 +87,8 @@ after each lands. For each phase it:
 DeFi position(s) still open`) or a protocol could not be read (`network`).
 4. Refuses when a balance can no longer be disposed of as reviewed: `conversion_refused` for a
    price refusal, `not_mergeable` for a balance with no path.
-5. Checks that a balance the user chose to send to the destination is still receivable there.
+5. Checks that a balance the account owner chose to send to the destination is still receivable
+   there.
 6. Reads the ledger clock, leaves out claims that would not stay claimable for the signing window,
    and quotes again when that changed the claims.
 7. On an exchange close, probes the forwarding account (see below).
@@ -93,16 +104,21 @@ The receipt of `FinalClassicTx` is set only when the batch carrying the merge la
 
 ### Classic rejections
 
-The whole close loop is attempted up to three times. A rejection the next attempt can clear is
-retried:
+The whole close loop is attempted up to three times. `classicRejectionKind` sorts a rejection
+Horizon answers, and a rejection the next attempt can clear is retried:
 
-| Rejection                                                               | What changes                                      |
-| ----------------------------------------------------------------------- | ------------------------------------------------- |
-| `tx_insufficient_fee`                                                   | The per-op bid triples, up to 1,000,000 stroops   |
-| `tx_insufficient_balance`                                               | The bid drops to the 100-stroop minimum           |
-| `tx_bad_seq`, `tx_too_late`                                             | A fresh audit and build                           |
-| `op_under_dest_min`, `op_too_few_offers`, `op_over_source_max`          | Fresh quotes; the same quotes failing twice stops |
-| Ledger drift (`op_underfunded`, `op_already_exists`, and similar codes) | A fresh audit and build                           |
+| Rejection                                                                                                                                                                                                              | What the next attempt changes                                                     |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `tx_insufficient_fee`                                                                                                                                                                                                  | The per-op bid triples, up to 1,000,000 stroops                                   |
+| `tx_insufficient_balance`                                                                                                                                                                                              | The bid drops to the 100-stroop minimum; a rejection already at the minimum stops |
+| `tx_bad_seq`                                                                                                                                                                                                           | A fresh audit and build                                                           |
+| `tx_too_late`                                                                                                                                                                                                          | A fresh audit and build with a new time bound                                     |
+| `op_under_dest_min`, `op_too_few_offers`, `op_over_source_max`                                                                                                                                                         | Fresh quotes; the same quotes failing again stops the close                       |
+| Ledger drift: `op_invalid_limit`, `op_underfunded`, `op_has_sub_entries`, `op_src_no_trust`, `op_offer_not_found`, `op_does_not_exist`, `op_cannot_claim`, `op_cannot_delete`, `op_under_minimum`, `op_already_exists` | A fresh audit and build, so every amount is recomputed from current state         |
+
+Any other rejection, and any rejection on the third attempt, stops the close. The classic unwind
+ahead of the repays sorts its rejections the same way: it raises or lowers the bid as above, plans
+again from a fresh audit for the rest, and stops at the third rejection.
 
 ### The starting bid
 
@@ -113,9 +129,10 @@ minimum, which never lands while fees surge.
 
 ## Horizon reads
 
-Reads that prepare a phase (the account, the latest ledger, fee stats, the audit) are retried up to
+Reads that prepare a phase (the account, the latest ledger, fee stats, the audit) are tried up to
 three times on a server error, a rate limit or no response, with a delay that doubles from 300 ms.
-A 404 or another 4xx is an answer and is not retried.
+A 429 backs off on that same schedule: the SDK drops the response headers, so `retry-after` is not
+read. A 404 or another 4xx is an answer and is not retried.
 
 ## The forwarding account on an exchange close
 
@@ -124,13 +141,19 @@ executor tracks when the token on the plan was issued:
 
 - **Probe.** When the forwarding account on the plan exists, or the account's last recorded flow on
   this network names one that exists, that account already holds funds and is adopted, never
-  replaced. A recorded flow for a different destination or memo is refused, and the user resumes
-  that forward first. When fewer than eight minutes (the merge's 300-second validity plus the
-  forward's 180) remain on the token, it is renewed through `/api/mediator/reissue`; when it still
-  cannot cover that, the merge is refused with `mediator_expired`.
+  replaced. Only a 404 from Horizon counts as "not funded". Any other failure to load the account,
+  after three tries with a 429 or a 5xx retried, stops the close before anything is signed, as a
+  retryable `network` failure that names the account. A recorded flow for a different destination
+  or memo is refused, and the account owner resumes that forward first. When fewer than eight
+  minutes (the merge's 300-second validity plus the forward's 180) remain on the token, it is
+  renewed through `/api/mediator/reissue`; when it still cannot cover that, the merge is refused
+  with `mediator_expired`.
 - **Funding.** A new flow is minted only right before the batch that funds the forwarding account,
   and its recovery record is written to browser storage before that batch is signed. A close whose
-  record cannot be stored does not start.
+  record cannot be stored does not start. A later phase of the same close leaves the funding
+  operation out. When the funding `create_account` is refused with `op_already_exists` anyway, the
+  rejection counts as ledger drift: the close audits again, the probe finds and adopts the funded
+  account, and the rebuilt batch carries no funding operation.
 - **Forward.** When the forwarding account is gone after the merge, a forward already landed:
   `findForward` reads it, and an emptying into any other address is reported as such. Otherwise
   the token is renewed when fewer than 180 seconds remain, and `submitMediatorForward` runs. A
@@ -144,6 +167,11 @@ executor tracks when the token on the plan was issued:
 - An exchange close whose forward did not land: `forward_pending`, with the merge hash.
 - A prepare-only run where a required step did not complete: `The close was not prepared`.
 - A step without its own receipt.
+
+A close whose merge landed while a held token the account owner chose to send stayed behind is
+reported as closed, not as a clean close: the heading reads **Account closed, tokens left behind**,
+and each token is listed with its contract id, the amount and why it was not sent, or the hash of a
+transfer whose outcome the network has not confirmed.
 
 A run that only prepares the close ends in the `prepared` state with the unlock date, read from the
 queue transaction that was signed.

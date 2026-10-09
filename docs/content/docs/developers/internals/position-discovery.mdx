@@ -16,7 +16,7 @@ deposited or queued are reported for information only.
 ## Blend
 
 **Discovery** (`src/lib/adapters/blend/client.ts`) loads each pinned pool through the Blend SDK,
-trying the v2 layout first and then v1, and reads the user's liabilities, collateral and supply in
+trying the v2 layout first and then v1, and reads the account's liabilities, collateral and supply in
 underlying units plus the reserve indexes with accrued emissions. Mainnet pins seven pools (the
 blend-utils registry plus the pools in the v1 backstop's reward zone), testnet one. An unmapped
 reserve index is a load failure, never an empty position. The SDK's reads fail over to the next RPC
@@ -72,6 +72,14 @@ instead of leaving the position behind.
 what each pool's gauges owe for every pool the account still holds a share or a position in.
 Rewards owed in a pool the account already left are not found: no RPC data source lists them.
 
+`gauges_claim` runs every gauge the pool keeps in its `RewardGaugesMap`, and each one transfers what
+it owes, zero included. A transfer of a classic asset into an account without a trustline for it
+traps the whole claim (`Error(Contract, #13)`). So the plan opens a payout trustline for every
+gauge token of the pool before the claim, whether that gauge owes anything or not. When one of those
+lines cannot be opened (the issuer authorizes every new line, the issuer account is gone, or the
+existing line is not authorized), the claim is left out, and the Warnings step names the pool and
+the rewards that closing the account forfeits. A gauge never blocks the close.
+
 **Exits** (`src/lib/adapters/aquarius/`):
 
 - Standard pool: `gauges_claim` on the pool, then the router's `withdraw` with per-token minimums,
@@ -84,7 +92,7 @@ Rewards owed in a pool the account already left are not found: no RPC data sourc
 
 ## Soroswap
 
-**Discovery** is on chain. The factory's pair list and each pair's balance of the user are read
+**Discovery** is on chain. The factory's pair list and each pair's balance of the account are read
 with batched `getLedgerEntries`, and anything the bulk read cannot resolve goes to a `balance()`
 simulation.
 
@@ -106,7 +114,7 @@ at `/api/soroswap`, which no code in the app calls.
 `transfer` and `mint` events crediting the account, then reads `balance()` on each emitting contract
 and keeps the positive ones. Stellar asset contract events carry an extra topic and never match, on
 purpose: those balances are classic trustlines the classic close handles. The window is the RPC's
-retention, about seven days, and the user can add an older token by contract address.
+retention, about seven days, and the account owner can add an older token by contract address.
 
 ## Common properties of the exit builders
 

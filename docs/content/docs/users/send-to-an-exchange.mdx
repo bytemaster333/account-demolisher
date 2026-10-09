@@ -19,6 +19,11 @@ account created for this one close. Your account merges into it, and the forward
 pays the exchange in XLM with your memo and merges itself into the same address. From the
 exchange's side the payment is an ordinary memo-bearing deposit.
 
+The payment carries everything except the forwarding account's own minimum balance and the network
+fee. That remainder, about 1 XLM (two base reserves of 0.5 XLM, plus any part of the fee the
+network did not charge), reaches the exchange in the merge. An exchange credits the payment, not
+the merge, so expect it to credit about 1 XLM less than the account held, after fees.
+
 The app takes this route when the destination is one of the exchange addresses it knows, or when
 the destination account declares that it requires a memo (the `config.memo_required` data entry
 from SEP-29).
@@ -70,7 +75,7 @@ needs no signature from you.
 The close funds the forwarding account with 2 XLM in the same transaction that merges your account
 into it. The forward then pays the exchange everything above the forwarding account's own minimum
 balance and the forward's fee, with your memo, and merges the forwarding account into the exchange
-address. The merge carries the rest, about 1 XLM, with no payment and no memo, so count on the
+address. The merge carries the rest, about 1 XLM. A merge is not a payment, so count on the
 exchange crediting the payment only.
 
 Only XLM reaches an exchange. Every other balance is sold for XLM first, or, where it has no

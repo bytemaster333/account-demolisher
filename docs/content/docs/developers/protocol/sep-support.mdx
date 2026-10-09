@@ -19,7 +19,7 @@ both `/stellar.toml` and the well-known path resolve.
 
 The file declares **no `SIGNING_KEY`, no `SIGNERS` and no `WEB_AUTH_ENDPOINT`**. The mediator
 co-signs with a key derived for each close from a server-held master, so there is no long-lived
-account a signing entry could name, and no SEP-10 server runs. Users sign in their own wallet or
+account a signing entry could name, and no SEP-10 server runs. The account owner signs in their own wallet or
 with a key pasted into the page, and that key never reaches the server.
 
 There are no `[[CURRENCIES]]` entries, because the app issues no assets, and no `[[VALIDATORS]]`,
@@ -75,9 +75,8 @@ If you are integrating an anchor, none of those endpoints exist here to call.
 
 ## The complete server surface
 
-| Route                                                                         | Documented in                                                        |
-| ----------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `GET`, `POST /api/mediator/sign`, `POST /api/mediator/reissue`                | [Mediator forward protocol](/docs/developers/protocol/mediator)      |
-| `/api/plan`, `/api/plan/[id]`, `/api/plan/[id]/sign`, `/api/plan/[id]/events` | [Signing relay API](/docs/developers/protocol/signing-relay)         |
-| `POST`, `GET /api/metrics`                                                    | [Security model](/docs/developers/security/model#usage-metrics)      |
-| `POST /api/soroswap`                                                          | [Security model](/docs/developers/security/model#the-soroswap-proxy) |
+| Route                                                                         | Documented in                                                   |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `GET`, `POST /api/mediator/sign`, `POST /api/mediator/reissue`                | [Mediator forward protocol](/docs/developers/protocol/mediator) |
+| `/api/plan`, `/api/plan/[id]`, `/api/plan/[id]/sign`, `/api/plan/[id]/events` | [Signing relay API](/docs/developers/protocol/signing-relay)    |
+| `POST`, `GET /api/metrics`                                                    | [Security model](/docs/developers/security/model#usage-metrics) |

@@ -135,7 +135,10 @@ A separate scan in `src/lib/soroban/held-tokens.ts` finds standalone SEP-41 bala
 `transfer` and `mint` events crediting the account in the same seven-day window, then probes
 `balance(address)` on each emitting contract. The close moves those balances with `TransferAsIs`,
 or sells them with `ConvertSorobanToXLM`. `assertSafeTransferInvocation` holds a transfer to exactly
-`transfer(user, destination, amount)` the same way the revoke guard holds an approve.
+`transfer(user, destination, amount)` the same way the revoke guard holds an approve, under the
+`untrusted-transfer` fee class: a resource fee of at most 7,500,000 stroops, at most 16,384 declared
+write bytes, and at most 24 read-write entries. A transfer that cannot be sent is skipped, and the
+close result names the token as left behind on the closed account.
 
 ## Related
 

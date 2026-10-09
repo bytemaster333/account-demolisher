@@ -76,6 +76,12 @@ The plan claims what an Aquarius pool's reward gauges owe you before it withdraw
 that pool. It does this for every pool you still hold a share or a position in. Gauge rewards owed
 in a pool you already left are not found, so claim those in Aquarius before you close.
 
+The claim pays out every gauge of the pool, so the plan first opens a trustline for each gauge's
+token, including a gauge that owes you nothing. When the account cannot hold one of those tokens
+(its issuer has to approve every new trustline, the issuer no longer exists, or your trustline is
+not authorized), the claim is left out and the Warnings step tells you which rewards closing the
+account forfeits. The close goes ahead either way.
+
 ## Leftover balances
 
 Unwinding a position leaves tokens in the account. The final transaction sells every classic
@@ -89,6 +95,10 @@ A SEP-41 token someone sent you lives inside its own contract, not as a trustlin
 does not block the close and stays on the deleted account unless you move it. The **Standalone
 tokens** card in the Warnings step lists the ones the scan found. Nothing is swept unless you tick
 it, and you can convert the ticked ones to XLM through Soroswap instead of sending them as-is.
+
+When a token you ticked cannot be sent, the account still closes, and the result reads **Account
+closed, tokens left behind**. It lists each token by its contract id with the amount and the
+reason. Those tokens stay on the closed account, and nobody can move them afterwards.
 
 The scan looks back about seven days. Add an older token by its contract address.
 

@@ -15,25 +15,25 @@ A Retry without a connected wallet also rebuilds.
 
 ## Failure kinds
 
-| Kind                 | Raised when                                                                                                                                                                                                                            | Retryable |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
-| `bad_seq`            | The account's sequence moved under a step (`tx_bad_seq`)                                                                                                                                                                               | Yes       |
-| `changed_footprint`  | The ledger entries a Soroban step declared changed or were archived before it landed                                                                                                                                                   | Yes       |
-| `network`            | Horizon, RPC or the mediator did not answer usefully: a timeout, a rate limit, a 5xx, an unreadable error page, `tx_too_late`, `tx_insufficient_fee`, unreadable fee stats, or a DeFi protocol that could not be read before the merge | Yes       |
-| `signing`            | The wallet did not sign                                                                                                                                                                                                                | Yes       |
-| `ambiguous`          | A submission's outcome is unknown; Retry checks it on chain before signing anything again                                                                                                                                              | Yes       |
-| `forward_pending`    | The merge into the forwarding account landed but the forward did not; Retry runs the forward                                                                                                                                           | Yes       |
-| `interrupted`        | You stopped the close at a step boundary                                                                                                                                                                                               | Yes       |
-| `close_running`      | Another run of the close for this account is still going, in this tab or another                                                                                                                                                       | Yes       |
-| `not_mergeable`      | The account can no longer be merged as planned (`account_merge blocked: ...`), or Horizon refused a transaction with a code a replay cannot fix                                                                                        | No        |
-| `position_open`      | A DeFi position is still open at the merge, or a token could be neither converted nor sent as-is                                                                                                                                       | No        |
-| `reverted`           | A Soroban step failed on chain                                                                                                                                                                                                         | No        |
-| `unsafe`             | A step's transaction asked for more than the step needs (allow-list, authorization tree, exact shape or fee cap) and was not signed                                                                                                    | No        |
-| `bundle_stale`       | A collected shared-account bundle can no longer land, or Horizon refused it; signatures are collected again                                                                                                                            | No        |
-| `mediator_expired`   | The forwarding authorization ran too low to sign the merge safely                                                                                                                                                                      | No        |
-| `conversion_refused` | A conversion would now sell over the price-impact cap or below the reviewed quote, or has no route; the rebuilt plan asks you per token                                                                                                | No        |
-| `claim_unavailable`  | A Blend backstop emissions claim that simulated at review can no longer run; the rebuilt plan asks you to forfeit the BLND                                                                                                             | No        |
-| `unknown`            | Anything unclassified                                                                                                                                                                                                                  | No        |
+| Kind                 | Raised when                                                                                                                                                                                                                                                                                 | Retryable |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| `bad_seq`            | The account's sequence moved under a step (`tx_bad_seq`)                                                                                                                                                                                                                                    | Yes       |
+| `changed_footprint`  | The ledger entries a Soroban step declared changed or were archived before it landed                                                                                                                                                                                                        | Yes       |
+| `network`            | Horizon, RPC or the mediator did not answer usefully: a timeout, a rate limit, a 5xx, an unreadable error page, `tx_too_late`, `tx_insufficient_fee`, unreadable fee stats, a Soroban RPC that kept answering `TRY_AGAIN_LATER`, or a DeFi protocol that could not be read before the merge | Yes       |
+| `signing`            | The wallet did not sign                                                                                                                                                                                                                                                                     | Yes       |
+| `ambiguous`          | A submission's outcome is unknown; Retry checks it on chain before signing anything again                                                                                                                                                                                                   | Yes       |
+| `forward_pending`    | The merge into the forwarding account landed but the forward did not; Retry runs the forward                                                                                                                                                                                                | Yes       |
+| `interrupted`        | You stopped the close at a step boundary                                                                                                                                                                                                                                                    | Yes       |
+| `close_running`      | Another run of the close for this account is still going, in this tab or another                                                                                                                                                                                                            | Yes       |
+| `not_mergeable`      | The account can no longer be merged as planned (`account_merge blocked: ...`), or Horizon refused a transaction with a code a replay cannot fix                                                                                                                                             | No        |
+| `position_open`      | A DeFi position is still open at the merge, or a token could be neither converted nor sent as-is                                                                                                                                                                                            | No        |
+| `reverted`           | A Soroban step failed on chain                                                                                                                                                                                                                                                              | No        |
+| `unsafe`             | A step's transaction asked for more than the step needs (allow-list, authorization tree, exact shape or fee cap) and was not signed                                                                                                                                                         | No        |
+| `bundle_stale`       | A collected shared-account bundle can no longer land, or Horizon refused it; signatures are collected again                                                                                                                                                                                 | No        |
+| `mediator_expired`   | The forwarding authorization ran too low to sign the merge safely                                                                                                                                                                                                                           | No        |
+| `conversion_refused` | A conversion would now sell over the price-impact cap or below the reviewed quote, or has no route; the rebuilt plan asks you per token                                                                                                                                                     | No        |
+| `claim_unavailable`  | A Blend backstop emissions claim that simulated at review can no longer run; the rebuilt plan asks you to forfeit the BLND                                                                                                                                                                  | No        |
+| `unknown`            | Anything unclassified                                                                                                                                                                                                                                                                       | No        |
 
 ## How an error gets its kind
 
@@ -62,23 +62,17 @@ whose detail mentions an archived entry is never retried as a footprint race.
 ## Merge refusals
 
 The close loop refuses the merge with messages that start `account_merge blocked:`. Each is
-`not_mergeable`, except the two below:
+`not_mergeable`, except the ones below:
 
-```
-account_merge blocked: N Soroban DeFi position(s) still open (blend=…, backstop=…, aquarius=…,
-aquarius concentrated=…, soroswap=…). Close them before merging, or the funds will be stranded on
-the deleted account.
-```
+| Message after `account_merge blocked:`                                       | Kind            | What Retry does                                         |
+| ---------------------------------------------------------------------------- | --------------- | ------------------------------------------------------- |
+| `N Soroban DeFi position(s) still open (blend=…, backstop=…, aquarius=…, …)` | `position_open` | Rebuilds the plan, so the open positions are unwound    |
+| `could not confirm your DeFi positions are all closed (…)`                   | `network`       | Runs the same plan once the protocol can be read        |
+| `could not re-check DeFi positions before the merge (…)`                     | `network`       | Runs the same plan once discovery answers               |
+| `could not read the balance of token … paid out by your DeFi exits (…)`      | `network`       | Runs the same plan once the token's balance can be read |
 
-This one is `position_open`.
-
-```
-account_merge blocked: could not confirm your DeFi positions are all closed (…). This is a safety
-stop so an unreadable position isn't merged around and stranded. Retry once the network is
-responsive.
-```
-
-This one is `network`, so Retry runs the same plan once the protocol can be read.
+The three `network` refusals are safety stops: a position or payout the close cannot read is never
+merged around and stranded.
 
 ## Typed errors
 
@@ -106,7 +100,6 @@ This one is `network`, so Retry runs the same plan once the protocol can be read
 | `SlippageConfigError`                                        | A set but invalid `NEXT_PUBLIC_SLIPPAGE_BPS` or `NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS` | A message; the build fails                                                          |
 | `ClientIpUnavailableError`                                   | A `TRUSTED_PROXY_HOPS` or proxy setup that cannot identify the client                | A message; the server refuses to start, or the route answers 500                    |
 | `BodyTooLargeError`                                          | A request body over its route's cap                                                  | `limit`                                                                             |
-| `SoroswapProxyError`                                         | The Soroswap proxy client                                                            | `code`, `status`, `op`                                                              |
 
 ## Reading an unknown error
 
