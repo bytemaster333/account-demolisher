@@ -41,6 +41,23 @@ describe("review step numbering follows execution order (L-61)", () => {
   });
 });
 
+describe("skipped steps get no step number (NP5-47)", () => {
+  it("numbers only the steps that run, so the last number is the run count", () => {
+    const tree = treeWithBlendAquariusAndToken();
+    const ordered = topologicalOrder(tree);
+    const skippedNode = ordered[1]!;
+    const marked = ordered.map((n) =>
+      n.id === skippedNode.id ? ({ ...n, status: "skipped" } as PlanNode) : n,
+    );
+    const groups = groupPlanNodes(marked);
+    const numbers = planStepNumbers(groups);
+    const { runnable } = runnableSteps(marked);
+    expect(numbers.has(skippedNode.id)).toBe(false);
+    expect(Math.max(...numbers.values())).toBe(runnable);
+    expect([...numbers.values()]).toEqual(Array.from({ length: runnable }, (_, i) => i + 1));
+  });
+});
+
 describe("plan explainers say what actually happens (L-59)", () => {
   function finalNode(useMediator: boolean): PlanNode {
     const tree = makeTree(

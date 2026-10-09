@@ -25,6 +25,7 @@ export function PlanRow({
   // "plan" = pre-execution review (numbered, shows the XLM fee, no status);
   // "live" = during/after execution (status indicator, tx link, no fee)
   readonly mode?: "plan" | "live";
+  // the step number in the review; a skipped step has none
   readonly index?: number;
   // shared-account plan: nothing is sold on the market (changes the explainer)
   readonly deterministic?: boolean;
@@ -104,7 +105,7 @@ export function PlanRow({
           ) : (
             // the plan view shows status only as color and a badge, so say it
             <span style={SR_ONLY}>
-              {`Step ${index ?? ""}, `}
+              {index === undefined ? "" : `Step ${index}, `}
               {isSimulated
                 ? `${simulatedBadgeLabel(node)}: `
                 : isFailed

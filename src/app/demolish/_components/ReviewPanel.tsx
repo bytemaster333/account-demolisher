@@ -286,7 +286,8 @@ export function ReviewPanel({
                     node={n}
                     network={network}
                     mode="plan"
-                    index={numbers.get(n.id) ?? 0}
+                    // a skipped step has no number: it won't run
+                    {...(numbers.has(n.id) ? { index: numbers.get(n.id)! } : {})}
                     deterministic={deterministic}
                     {...(n.deferred
                       ? {

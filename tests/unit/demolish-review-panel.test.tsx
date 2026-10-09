@@ -102,6 +102,19 @@ describe("step counts and skipped steps (L-60)", () => {
     expect(text).toContain(`${ordered.length - 1} steps run in order`);
     expect(screen.getByTestId("review-skipped").textContent).toMatch(/Could not build/);
   });
+
+  it("numbers only the steps that run (NP5-47)", () => {
+    const tree = makeTree({ positions: blendPositions() });
+    const ordered = topologicalOrder(tree);
+    const withdraw = ordered.find((n) => n.kind === "WithdrawBlend")!;
+    withdraw.status = "skipped";
+    renderPanel(tree);
+    const numbers = [...(document.body.textContent ?? "").matchAll(/Step (\d+), /g)].map((m) =>
+      Number(m[1]),
+    );
+    expect(numbers).toEqual(Array.from({ length: ordered.length - 1 }, (_, i) => i + 1));
+    expect(document.body.textContent ?? "").not.toMatch(/Step , /);
+  });
 });
 
 describe("shared account without a bundleable close (C-08)", () => {

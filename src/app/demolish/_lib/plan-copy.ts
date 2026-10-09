@@ -4,11 +4,6 @@ import type { PlanNode } from "@/lib/plan/tree";
 import { shortAddress } from "@/lib/safe-display";
 import type { AccountAudit } from "@/lib/types/account";
 
-export function sumNativeBalance(audit: AccountAudit): string {
-  const native = audit.balances.find((b) => b.asset.kind === "native");
-  return native?.amount ?? "0";
-}
-
 export function countTrustlines(audit: AccountAudit): number {
   return audit.balances.filter((b) => b.asset.kind === "credit").length;
 }
@@ -33,9 +28,12 @@ export function groupPlanNodes(nodes: readonly PlanNode[]): readonly PlanGroup[]
   return groups;
 }
 
-// 1-based step numbers in display order, which is the execution order
+// 1-based step numbers in display order, which is the execution order. a
+// skipped step won't run, so it gets no number and the last number matches the
+// "N steps run" count in the review header.
 export function planStepNumbers(groups: readonly PlanGroup[]): ReadonlyMap<string, number> {
-  return new Map(groups.flatMap((g) => g.nodes).map((n, i) => [n.id, i + 1]));
+  const runs = groups.flatMap((g) => g.nodes).filter((n) => n.status !== "skipped");
+  return new Map(runs.map((n, i) => [n.id, i + 1]));
 }
 
 // how many steps will actually run; a skipped step (e.g. one whose transaction
