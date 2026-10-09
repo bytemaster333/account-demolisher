@@ -251,24 +251,54 @@ describe("AllowanceList revoke on inactive rows", () => {
 
 describe("AllowanceList row count", () => {
   // every row is an approve event some contract emitted naming this address, so
-  // a flood of cheap contracts must not turn into an unbounded table
-  it("renders one page of rows and shows the rest on request", () => {
-    const many = Array.from({ length: ALLOWANCE_ROWS_PER_PAGE * 2 + 5 }, (_, i) =>
-      rec(`GSPEND${i}`),
+  // a flood of cheap contracts must not turn into an unbounded table. a full row
+  // costs a few milliseconds to mount in happy-dom, so the paging steps run at a
+  // small page size and the default size is checked with one row over a page.
+  function renderPaged(records: readonly AllowanceRecord[], pageSize?: number) {
+    render(
+      <AllowanceList
+        records={records}
+        userAddress={C_OWNER}
+        simulationSource={null}
+        network={network}
+        currentLedger={10}
+        connectorRef={null}
+        showExpired={false}
+        {...(pageSize === undefined ? {} : { pageSize })}
+      />,
     );
-    renderList(many, null);
-    expect(screen.getAllByTestId("allowance-row")).toHaveLength(ALLOWANCE_ROWS_PER_PAGE);
+  }
+  const rows = () => screen.getAllByTestId("allowance-row");
+  const more = () => screen.getByTestId("allowance-list-more-button");
+
+  it("renders one page of rows and shows the rest a page at a time", () => {
+    const many = Array.from({ length: 8 }, (_, i) => rec(`GSPEND${i}`));
+    renderPaged(many, 3);
+    expect(rows()).toHaveLength(3);
+    expect(screen.getByTestId("allowance-list-more").textContent).toMatch(/Showing 3 of 8/);
+    expect(more().textContent).toBe("Show 3 more");
+    act(() => more().click());
+    expect(rows()).toHaveLength(6);
+    expect(more().textContent).toBe("Show 2 more");
+    act(() => more().click());
+    expect(rows()).toHaveLength(8);
+    expect(screen.queryByTestId("allowance-list-more")).toBeNull();
+    // the rows keep their order across pages
+    expect(
+      screen.getAllByTestId("allowance-row").map((r) => within(r).getByTitle(/^Spender: /).title),
+    ).toEqual(many.map((r) => `Spender: ${r.spender}`));
+  });
+
+  it(`pages at ${ALLOWANCE_ROWS_PER_PAGE} rows when the page sets no size`, () => {
+    const many = Array.from({ length: ALLOWANCE_ROWS_PER_PAGE + 1 }, (_, i) => rec(`GSPEND${i}`));
+    renderPaged(many);
+    expect(rows()).toHaveLength(ALLOWANCE_ROWS_PER_PAGE);
     expect(screen.getByTestId("allowance-list-more").textContent).toMatch(
-      new RegExp(`${ALLOWANCE_ROWS_PER_PAGE} of ${many.length}`),
+      new RegExp(`Showing ${ALLOWANCE_ROWS_PER_PAGE} of ${many.length}`),
     );
-    act(() => {
-      screen.getByTestId("allowance-list-more-button").click();
-    });
-    expect(screen.getAllByTestId("allowance-row")).toHaveLength(ALLOWANCE_ROWS_PER_PAGE * 2);
-    act(() => {
-      screen.getByTestId("allowance-list-more-button").click();
-    });
-    expect(screen.getAllByTestId("allowance-row")).toHaveLength(many.length);
+    expect(more().textContent).toBe("Show 1 more");
+    act(() => more().click());
+    expect(rows()).toHaveLength(many.length);
     expect(screen.queryByTestId("allowance-list-more")).toBeNull();
   });
 });

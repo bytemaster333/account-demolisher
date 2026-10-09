@@ -50,6 +50,8 @@ export interface AllowanceListProps {
   readonly onRevoked?: ((record: AllowanceRecord, txHash: string) => void) | undefined;
   // a bulk sweep is running: disable the per-row revoke buttons
   readonly busy?: boolean;
+  // rows per page; the page passes none and gets ALLOWANCE_ROWS_PER_PAGE
+  readonly pageSize?: number;
 }
 
 const HEADER_CELL: React.CSSProperties = {
@@ -68,13 +70,14 @@ export function AllowanceList({
   showExpired,
   onRevoked,
   busy,
+  pageSize = ALLOWANCE_ROWS_PER_PAGE,
 }: AllowanceListProps): React.JSX.Element {
   const visible = useMemo(
     () => (showExpired ? records : records.filter(isActive)),
     [records, showExpired],
   );
   const activeCount = useMemo(() => records.filter(isActive).length, [records]);
-  const [shownCount, setShownCount] = useState(ALLOWANCE_ROWS_PER_PAGE);
+  const [shownCount, setShownCount] = useState(pageSize);
   const shown = visible.slice(0, shownCount);
 
   return (
@@ -175,10 +178,10 @@ export function AllowanceList({
           <Button
             variant="secondary"
             size="sm"
-            onClick={() => setShownCount((n) => n + ALLOWANCE_ROWS_PER_PAGE)}
+            onClick={() => setShownCount((n) => n + pageSize)}
             data-testid="allowance-list-more-button"
           >
-            Show {Math.min(ALLOWANCE_ROWS_PER_PAGE, visible.length - shown.length)} more
+            Show {Math.min(pageSize, visible.length - shown.length)} more
           </Button>
         </div>
       ) : null}
