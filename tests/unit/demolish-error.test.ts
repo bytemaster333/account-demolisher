@@ -27,6 +27,19 @@ describe("parseDemolishError (I-10)", () => {
     expect(parseDemolishError(raw).ops).toEqual(["op_malformed"]);
   });
 
+  // these codes describe operations inside one transaction, not plan steps
+  it("says operation, not step, for transaction and operation codes (NP5-48)", () => {
+    const tx = parseDemolishError('submitClassic rejected: {"transaction":"tx_failed"}');
+    expect(tx.summary).toMatch(/^The transaction couldn't complete: /);
+    expect(tx.summary).not.toMatch(/step/i);
+    for (const code of ["op_malformed", "op_src_no_trust"]) {
+      const op = parseDemolishError(
+        `submitClassic rejected: {"transaction":"tx_failed","operations":["${code}"]}`,
+      );
+      expect(op.summary).not.toMatch(/step/i);
+    }
+  });
+
   it("does not promise the funds are safe when there is no detail (H-30)", () => {
     const parsed = parseDemolishError(null);
     expect(parsed.summary).not.toMatch(/funds are safe/i);

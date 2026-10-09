@@ -19,7 +19,7 @@ function plainResultCode(code: string): string {
     // tx_too_late: the ledger close time was after the transaction's maxTime
     tx_too_late: "the time window to submit it passed",
     // tx_failed: one of the operations failed and none were applied
-    tx_failed: "one of the steps was rejected, so nothing was applied",
+    tx_failed: "one of its operations was rejected, so none of them were applied",
     // op_underfunded: not enough balance to send while keeping the min reserve
     op_underfunded: "there wasn't enough balance to cover it",
     // op_low_reserve: the result would drop below the minimum reserve
@@ -27,7 +27,7 @@ function plainResultCode(code: string): string {
     // op_no_trust: destination has no trustline for the asset
     op_no_trust: "the destination can't hold that asset (no trustline)",
     // op_src_no_trust: source no longer holds that asset
-    op_src_no_trust: "the account no longer holds the asset this step tried to send",
+    op_src_no_trust: "the account no longer holds the asset this operation tried to send",
     // op_line_full: destination is at its limit for the asset
     op_line_full: "the destination can't hold any more of that asset",
     // op_no_destination: destination account does not exist
@@ -35,7 +35,7 @@ function plainResultCode(code: string): string {
     // path_payment_strict_send_under_dest_min: swap would fall short of destMin
     op_under_dest_min: "the swap would have returned less than allowed, the price moved",
     // op_malformed: the operation's input was invalid
-    op_malformed: "the step was built incorrectly",
+    op_malformed: "the operation was built incorrectly",
     // payment_no_issuer: the asset's issuer does not exist
     op_no_issuer: "the token's issuer no longer exists",
   };
