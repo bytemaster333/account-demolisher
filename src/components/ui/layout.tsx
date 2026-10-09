@@ -1,9 +1,8 @@
 import type { CSSProperties, ReactNode } from "react";
 import { RADIUS } from "./tokens";
 
-// One consistent page frame for the app pages. All pages share this width so
-// /demolish, /allowances and /plan line up instead of each using a different
-// container.
+// one page frame for /allowances, /sign and the error page, at the same width
+// /demolish uses, so the pages line up instead of each using its own container.
 export const PAGE_CONTENT_WIDTH = 1080;
 
 export function PageContainer({
@@ -22,9 +21,9 @@ export function PageContainer({
   );
 }
 
-// Kicker pill: a rounded, bordered chip with an accent dot and an uppercase
-// label. Mirrors the /demolish hero's "STEP 1 · CONNECT" pill so every app page
-// leads with the same signature element instead of a plain line of small caps.
+// kicker pill: a rounded, bordered chip with an accent dot and an uppercase
+// label, the same pill as the /demolish hero's "STEP 1 · CONNECT", so every app
+// page opens the same way.
 export function Kicker({ children }: { readonly children: ReactNode }): React.JSX.Element {
   return (
     <div style={{ marginBottom: 16 }}>

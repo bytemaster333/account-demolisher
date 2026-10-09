@@ -135,9 +135,6 @@ export default function SignPage(): React.JSX.Element {
   const [liveReloadKey, setLiveReloadKey] = useState(0);
   const [refreshError, setRefreshError] = useState<string | null>(null);
 
-  // drop any pasted-but-unsubmitted secret key when this page unmounts
-  useEffect(() => () => setSecret(""), []);
-
   useEffect(() => {
     trackVisit("sign");
   }, []);

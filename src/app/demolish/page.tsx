@@ -1,7 +1,7 @@
 "use client";
 
-// orchestrator-driven demolition UI. The flow itself lives in
-// _components/DemolishFlow; this file is only the route entry.
+// route entry for the demolish page. the flow itself lives in
+// _components/DemolishFlow.
 
 import { AppShell } from "@/components/layout/AppShell";
 

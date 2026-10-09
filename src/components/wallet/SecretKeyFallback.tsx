@@ -2,7 +2,7 @@
 
 // legacy seed-paste path
 
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useState, type FormEvent } from "react";
 
 import { SEED_INPUT_ATTRS } from "@/components/wallet/seed-input";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
@@ -20,12 +20,6 @@ export function SecretKeyFallback({ onConnector }: SecretKeyFallbackProps): Reac
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
-  useEffect(() => {
-    return () => {
-      setSeed("");
-    };
-  }, []);
-
   const onSubmit = useCallback(
     async (e: FormEvent<HTMLFormElement>) => {
       e.preventDefault();
@@ -42,7 +36,7 @@ export function SecretKeyFallback({ onConnector }: SecretKeyFallbackProps): Reac
         const connector = new SecretKeyConnector(current);
         const publicKey = await connector.getPublicKey();
         // share the live connector app-wide so other pages (e.g. /allowances)
-        // can sign with it after a client-side navigation. The seed stays inside
+        // can sign with it after a client-side navigation. the seed stays inside
         // the connector; nothing serializable leaves this module.
         setActiveConnector(connector);
         setConnected(publicKey, "secret");

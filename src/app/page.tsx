@@ -1,7 +1,7 @@
 "use client";
 
-// landing page: ported from design/extracted/account demolisher.dc.html (lines 112-491).
-// each section lives in src/components/landing; their copy is in landing-data.ts
+// landing page. each section lives in src/components/landing; their copy is in
+// landing-data.ts
 
 import { useEffect } from "react";
 

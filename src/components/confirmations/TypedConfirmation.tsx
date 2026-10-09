@@ -1,9 +1,9 @@
 "use client";
 
 // destructive-action confirmation dialog: the final gate before a demolition.
-// Opened from the Review step's "Demolish account" button. Requires an unlock
-// delay to elapse AND the last 4 characters of the destination to be re-typed,
-// so the merge is never one careless click away.
+// opened from the review step's "Continue to final confirmation" button. it
+// needs an unlock delay to pass and the last 4 characters of the destination
+// typed again, so the merge is never one careless click away.
 
 import { useEffect, useId, useRef, useState } from "react";
 
@@ -129,9 +129,9 @@ export function TypedConfirmation({
   const matches = typed === required && required.length > 0;
   const canConfirm = matches && delayElapsed && !submitted;
 
-  // single-fire guard: this confirms an IRREVERSIBLE merge, so a fast double-click
-  // or a held Enter must never dispatch onConfirm twice. The ref is checked/set
-  // synchronously (a state update wouldn't have re-rendered yet within one tick).
+  // single-fire guard: this confirms an irreversible merge, so a fast double-click
+  // or a held enter must never dispatch onConfirm twice. the ref is checked and
+  // set synchronously, since a state update wouldn't have re-rendered yet.
   const confirm = (): void => {
     if (submittedRef.current || !matches || !delayElapsed) return;
     submittedRef.current = true;

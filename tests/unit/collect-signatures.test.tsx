@@ -369,6 +369,19 @@ describe("CollectSignatures relay envelopes", () => {
     expect(signedBadges()).toBe(3);
   });
 
+  it("says in words who just signed (I-18)", async () => {
+    const p = plan(T3, [initiator, a, b, c]);
+    await renderCollect(p);
+    relay.submitSignature.mockResolvedValue({ ...p, xdr: signedBy(initiator, a) });
+    fireEvent.change(screen.getByTestId("collect-secret"), { target: { value: a.secret() } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("collect-sign-local"));
+    });
+    await flush();
+    const status = screen.getByText(/^Signed as /);
+    expect(status.textContent).not.toMatch(/\u2713/);
+  });
+
   it("ignores a sign response for a different transaction", async () => {
     const p = plan(T3, [initiator, a, b, c]);
     await renderCollect(p);

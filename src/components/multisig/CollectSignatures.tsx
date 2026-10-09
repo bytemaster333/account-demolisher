@@ -342,10 +342,6 @@ export function CollectSignatures({
       ? freshness.result
       : null;
 
-  // drop any pasted-but-unsubmitted secret key from state when this surface goes
-  // away, so a seed never lingers in memory after the step unmounts
-  useEffect(() => () => setSecret(""), []);
-
   const { copy } = linkCopy;
   const onCopy = useCallback(() => copy(link), [copy, link]);
 
@@ -684,7 +680,7 @@ export function CollectSignatures({
               role="status"
               style={{ margin: 0, fontSize: 12, color: "var(--success)", fontWeight: 600 }}
             >
-              ✓ Signed as {shortAddress(lastAdded, 8, 6)}. Paste the next key to add another signer.
+              Signed as {shortAddress(lastAdded, 8, 6)}. Paste the next key to add another signer.
             </p>
           ) : null}
           <p style={{ margin: 0, fontSize: 11.5, color: "var(--fg-3)", lineHeight: 1.5 }}>

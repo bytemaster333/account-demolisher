@@ -296,10 +296,10 @@ function Navbar() {
               lockReason={lock}
             />
           ) : (
-            // Connect in place from the header on every page (landing, demolish,
-            // allowances, sign). The top-right wallet slot is ALWAYS present so
-            // its state is predictable: "Connect wallet" when disconnected, the
-            // address chip (with Disconnect) when connected. Never a dead-zone.
+            // connect in place from the header on every page (landing, demolish,
+            // allowances, sign). the top-right wallet slot is always there, so it
+            // reads "Connect wallet" when disconnected and shows the address chip
+            // (with disconnect) when connected.
             <div style={{ position: "relative", display: "flex" }}>
               <button
                 type="button"
@@ -442,9 +442,9 @@ function NavLink({
   );
 }
 
-// Connected-wallet control: the address chip opens a menu (the chevron finally
-// means something) with copy, explorer, and an explicit Disconnect. Disconnect
-// routes through disconnectSession so the kit, connector, and store all clear.
+// connected-wallet control: the address chip opens a menu with copy, explorer
+// and an explicit disconnect, which goes through disconnectSession so the kit,
+// the connector and the store all clear.
 function WalletMenu({
   publicKey,
   network,
