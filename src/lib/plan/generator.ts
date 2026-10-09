@@ -37,7 +37,12 @@ import {
   planClassicUnwind,
   type ClassicUnwindTargets,
 } from "@/lib/plan/classic-batcher";
-import { gaugeRewardTokens, type PoolGaugeRewards } from "@/lib/adapters/aquarius/gauges";
+import {
+  gaugeLineTokens,
+  gaugeRewardLabel,
+  gaugeRewardTokens,
+  type PoolGaugeRewards,
+} from "@/lib/adapters/aquarius/gauges";
 import { BACKSTOP_QUEUE_DURATION_SECONDS } from "@/lib/adapters/blend/constants";
 import { blndTrustlineRequirement } from "@/lib/adapters/blend/emissions-check";
 import {
@@ -230,14 +235,15 @@ export function generatePlan(
   const fundingExitIds: string[] = [];
 
   // what an aquarius pool's reward gauges owe is claimed ahead of the pool's
-  // withdraw, one claim per pool, after the lines its reward tokens pay into
+  // withdraw, one claim per pool, after the lines of every token its gauges pay:
+  // a gauge that owes nothing still transfers 0, which traps without the line
   const gaugeClaimIds = new Map<string, string>();
   for (const pool of gauges) {
     const id = makeId("aquarius-gauge-claim", pool.poolAddress);
     nodes.push({
       id,
       kind: "ClaimAquariusGaugeRewards",
-      dependencies: linesFor(pool.rewards.map((r) => r.token)),
+      dependencies: linesFor(gaugeLineTokens([pool])),
       status: "pending",
       description:
         `Claim the Aquarius gauge rewards of pool ${shortAddress(pool.poolAddress)}: ` +
@@ -959,7 +965,7 @@ function concentratedNodes(
 // the payout trustlines the plan opens, one per asset, and which of them the
 // exits need. a gap counts only for a token a planned step pays: a withdraw or
 // fee claim's pool token, the reward token when a reward claim is planned, or a
-// token a planned gauge claim pays. any other gap (say a pool token of a
+// token a planned gauge claim pays, owed or not. any other gap (say a pool token of a
 // position kept only for its reward) needs no line and blocks nothing.
 function exitTrustlineNodes(
   positions: ProtocolPositions,
@@ -979,7 +985,7 @@ function exitTrustlineNodes(
   const nodes: PlanNode[] = [];
   if (gaps.length === 0 || network === undefined) return { nodes, byToken, reward };
   const paidByExit = new Set(exitPayoutTokens(positions));
-  const paidByGauge = new Set(gaugeRewardTokens(gauges));
+  const paidByGauge = new Set(gaugeLineTokens(gauges));
   const rewardClaims = plansRewardClaim(positions);
   for (const gap of gaps) {
     // the line must be the asset the token wraps, or the exit still traps and
@@ -1000,7 +1006,7 @@ function exitTrustlineNodes(
         ...(byExit ? exitsPaying(positions, gap.contractId) : []),
         ...(byReward ? ["the Aquarius reward claims"] : []),
         ...gauges
-          .filter((g) => g.rewards.some((r) => r.token === gap.contractId))
+          .filter((g) => gaugeLineTokens([g]).includes(gap.contractId))
           .map((g) => `the Aquarius gauge rewards of pool ${shortAddress(g.poolAddress)}`),
       ];
       const { cause, fix } = describeUnfixableGap(gap);
@@ -1078,16 +1084,15 @@ function gaugeKey(tokens: readonly string[], poolIndex: string): string {
   return `${tokens.join(",")}|${poolIndex.toLowerCase()}`;
 }
 
-// what a gauge owes, for the step's description. XLM has 7 decimals; any other
-// token's decimals are not read, so its amount is given in base units.
+// what a gauge owes, for the step's description
 function owedLabel(
   reward: { readonly token: string; readonly amount: bigint },
   passphrase: string | undefined,
 ): string {
-  if (passphrase !== undefined && reward.token === Asset.native().contractId(passphrase)) {
-    return `${stroopsToTrimmedDecimal(reward.amount)} XLM`;
-  }
-  return `${reward.amount.toString()} base units of token ${shortAddress(reward.token)}`;
+  return gaugeRewardLabel(
+    reward,
+    passphrase !== undefined ? Asset.native().contractId(passphrase) : undefined,
+  );
 }
 
 // a token amount for a step's description. a stellar asset contract always has 7

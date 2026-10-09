@@ -1632,12 +1632,14 @@ describe("aquarius gauge rewards are claimed before the pool is left", () => {
     tokens: standard.tokens,
     poolIndex: standard.poolIndex,
     rewards: [{ token: XLM, amount: 1_126_439_834n }],
+    gaugeTokens: [XLM],
   };
   const clGauge = {
     poolAddress: CL_POOL,
     tokens: concentrated.tokens,
     poolIndex: concentrated.poolIndex,
     rewards: [{ token: GAUGE_TOKEN, amount: 40n }],
+    gaugeTokens: [GAUGE_TOKEN],
   };
   const positions = emptyPositions({ aquarius: [standard], aquariusConcentrated: [concentrated] });
   const gaugeId = (pool: string) => id("aquarius-gauge-claim", pool);
@@ -1689,7 +1691,9 @@ describe("aquarius gauge rewards are claimed before the pool is left", () => {
     const tree = generatePlan(makeAudit(), emptyPositions({ aquarius: [standard] }), [], DEST, {
       network: TESTNET,
       exitTrustlineGaps: [{ contractId: AQUA, code: "AQUA", issuer: ISSUER, reason: "missing" }],
-      aquariusGaugeRewards: [{ ...standardGauge, rewards: [{ token: AQUA, amount: 5n }] }],
+      aquariusGaugeRewards: [
+        { ...standardGauge, rewards: [{ token: AQUA, amount: 5n }], gaugeTokens: [AQUA] },
+      ],
     });
     const line = id("exit-trustline", AQUA);
     expect(tree.allNodes.get(line)?.kind).toBe("AddExitTrustline");
@@ -1708,10 +1712,44 @@ describe("aquarius gauge rewards are claimed before the pool is left", () => {
           tokens: pool.tokens,
           poolIndex: pool.poolIndex,
           rewards: [{ token: AQUA, amount: 5n }],
+          gaugeTokens: [AQUA],
         },
       ],
     });
     expect(dependsOn(tree, gaugeId(STANDARD_POOL), id("exit-trustline", AQUA))).toBe(true);
+  });
+
+  // testnet pool CCSXYUVL... on 2026-10-09: its DAI gauge owed 0, and the
+  // claim's zero DAI transfer trapped (Error(Contract, #13)) for an account
+  // without a DAI line
+  it("opens the line of a gauge token that owes nothing ahead of the claim", () => {
+    const DAI = new Asset("DAI", ISSUER).contractId(TESTNET.passphrase);
+    const tree = generatePlan(makeAudit({ balances: [aquaLine] }), positions, [], DEST, {
+      network: TESTNET,
+      exitTrustlineGaps: [{ contractId: DAI, code: "DAI", issuer: ISSUER, reason: "missing" }],
+      aquariusGaugeRewards: [{ ...standardGauge, gaugeTokens: [XLM, DAI, GAUGE_TOKEN] }],
+    });
+    const line = id("exit-trustline", DAI);
+    expect(tree.allNodes.get(line)?.kind).toBe("AddExitTrustline");
+    expect(tree.allNodes.get(gaugeId(STANDARD_POOL))?.dependencies).toEqual([line]);
+    // nothing is owed in DAI or the contract token, so neither is a payout to
+    // sweep or to guard at the merge
+    expect(planExitPayoutTokens(tree)).not.toContain(DAI);
+    expect(planExitPayoutTokens(tree)).not.toContain(GAUGE_TOKEN);
+    expect(tree.allNodes.has(id("drain-token", GAUGE_TOKEN))).toBe(false);
+  });
+
+  it("refuses a gauge whose zero-owed token pays into a line the issuer has not authorized", () => {
+    const DAI = new Asset("DAI", ISSUER).contractId(TESTNET.passphrase);
+    expect(() =>
+      generatePlan(makeAudit({ balances: [aquaLine] }), positions, [], DEST, {
+        network: TESTNET,
+        exitTrustlineGaps: [
+          { contractId: DAI, code: "DAI", issuer: ISSUER, reason: "unauthorized" },
+        ],
+        aquariusGaugeRewards: [{ ...standardGauge, gaugeTokens: [XLM, DAI] }],
+      }),
+    ).toThrow(/the Aquarius gauge rewards of pool/);
   });
 
   it("refuses a gauge reward into a line the issuer has not authorized", () => {
@@ -1721,7 +1759,9 @@ describe("aquarius gauge rewards are claimed before the pool is left", () => {
         exitTrustlineGaps: [
           { contractId: AQUA, code: "AQUA", issuer: ISSUER, reason: "unauthorized" },
         ],
-        aquariusGaugeRewards: [{ ...standardGauge, rewards: [{ token: AQUA, amount: 5n }] }],
+        aquariusGaugeRewards: [
+          { ...standardGauge, rewards: [{ token: AQUA, amount: 5n }], gaugeTokens: [AQUA] },
+        ],
       }),
     ).toThrow(/the Aquarius gauge rewards of pool/);
   });

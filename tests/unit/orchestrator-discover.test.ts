@@ -341,6 +341,7 @@ describe("discovery reads the aquarius gauge rewards the close claims", () => {
     tokens: [XLM_SAC, USDC_SAC],
     poolIndex: "ab".repeat(32),
     rewards: [{ token: XLM_SAC, amount: 1_126_439_834n }],
+    gaugeTokens: [XLM_SAC],
   };
 
   it("hands the plan the pools whose gauges owe this account", async () => {
@@ -364,7 +365,7 @@ describe("discovery reads the aquarius gauge rewards the close claims", () => {
     auditAccount.mockResolvedValue(makeAudit({ balances: [...makeAudit().balances, usdcLine] }));
     getPositions.mockResolvedValue(aquariusPosition);
     readPositionGaugeRewards.mockResolvedValue([
-      { ...owed, rewards: [{ token: AQUA_SAC, amount: 5n }] },
+      { ...owed, rewards: [{ token: AQUA_SAC, amount: 5n }], gaugeTokens: [AQUA_SAC] },
     ]);
     const out = await discover();
     expect(readWrappedAssets).toHaveBeenCalledWith(
@@ -375,6 +376,85 @@ describe("discovery reads the aquarius gauge rewards the close claims", () => {
     );
     expect(out.exitTrustlineGaps).toEqual([
       { contractId: AQUA_SAC, code: "AQUA", issuer: AQUA_ISSUER, reason: "missing" },
+    ]);
+  });
+
+  // testnet pool CCSXYUVL... on 2026-10-09: the AQUA gauge owed the user, the
+  // DAI gauge owed 0, and the claim's zero DAI transfer trapped with
+  // Error(Contract, #13) because the account had no DAI line
+  const DAI_ISSUER = "GAHPYWLK6YRN7CVYZOO4H3VDRZ7PVF5UJGLZCSPAEIKJE2XSWF5LAGER";
+  const DAI_SAC = new Asset("DAI", DAI_ISSUER).contractId(NETWORK.passphrase);
+  const daiIssuer = (issuerAuthRequired: boolean | null) =>
+    readWrappedAssets.mockResolvedValue(
+      new Map([
+        [
+          USDC_SAC,
+          { kind: "credit", code: "USDC", issuer: USDC_ISSUER, issuerAuthRequired: false },
+        ],
+        [XLM_SAC, { kind: "native" }],
+        [DAI_SAC, { kind: "credit", code: "DAI", issuer: DAI_ISSUER, issuerAuthRequired }],
+      ]),
+    );
+
+  it("checks the line of a gauge token that owes nothing, since the claim pays it 0", async () => {
+    auditAccount.mockResolvedValue(makeAudit({ balances: [...makeAudit().balances, usdcLine] }));
+    getPositions.mockResolvedValue(aquariusPosition);
+    const pool = { ...owed, gaugeTokens: [XLM_SAC, DAI_SAC] };
+    readPositionGaugeRewards.mockResolvedValue([pool]);
+    daiIssuer(false);
+    const out = await discover();
+    expect(readWrappedAssets).toHaveBeenCalledWith(
+      expect.anything(),
+      NETWORK,
+      [XLM_SAC, USDC_SAC, DAI_SAC],
+      USER,
+    );
+    expect(out.exitTrustlineGaps).toEqual([
+      { contractId: DAI_SAC, code: "DAI", issuer: DAI_ISSUER, reason: "missing" },
+    ]);
+    expect(out.aquariusGaugeRewards).toEqual([pool]);
+    expect(out.discoveryWarnings.join(" ")).not.toMatch(/gauge/i);
+  });
+
+  it("leaves out a gauge claim that pays into a line the account can't hold, and says so", async () => {
+    auditAccount.mockResolvedValue(makeAudit({ balances: [...makeAudit().balances, usdcLine] }));
+    getPositions.mockResolvedValue(aquariusPosition);
+    readPositionGaugeRewards.mockResolvedValue([{ ...owed, gaugeTokens: [XLM_SAC, DAI_SAC] }]);
+    for (const authRequired of [true, null]) {
+      daiIssuer(authRequired);
+      const out = await discover();
+      // nothing blocks the close: no claim, no line for it, no unopenable line
+      expect(out.aquariusGaugeRewards).toEqual([]);
+      expect(out.exitTrustlineGaps).toEqual([]);
+      expect(out.unopenableExitLines).toEqual([]);
+      const notice = out.discoveryWarnings.find((w) => w.includes("reward gauges"));
+      expect(notice).toContain(`Aquarius pool ${AQUARIUS_POOL.slice(0, 6)}`);
+      expect(notice).toContain("112.6439834 XLM");
+      expect(notice).toContain(`DAI:${DAI_ISSUER}`);
+      expect(notice).toContain("forfeits these rewards");
+    }
+  });
+
+  it("keeps blocking on a line a pool exit itself pays into", async () => {
+    // the pool pays DAI out on withdraw too, so its line still blocks the review
+    auditAccount.mockResolvedValue(makeAudit({ balances: [...makeAudit().balances, usdcLine] }));
+    getPositions.mockResolvedValue({
+      ...EMPTY_POSITIONS,
+      aquarius: [{ poolIndex: "ab".repeat(32), shareBalance: 5n, tokens: [XLM_SAC, DAI_SAC] }],
+    });
+    readPositionGaugeRewards.mockResolvedValue([
+      { ...owed, tokens: [XLM_SAC, DAI_SAC], gaugeTokens: [XLM_SAC, DAI_SAC] },
+    ]);
+    daiIssuer(true);
+    const out = await discover();
+    expect(out.aquariusGaugeRewards).toEqual([]);
+    expect(out.unopenableExitLines).toEqual([
+      {
+        contractId: DAI_SAC,
+        code: "DAI",
+        issuer: DAI_ISSUER,
+        reason: "issuer_requires_authorization",
+      },
     ]);
   });
 

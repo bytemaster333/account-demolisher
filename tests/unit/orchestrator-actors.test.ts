@@ -2002,6 +2002,7 @@ describe("the review plans the claim of what aquarius reward gauges owe", () => 
       tokens: pool.tokens,
       poolIndex: pool.poolIndex,
       rewards: [{ token: XLM_SAC, amount: 1_126_439_834n }],
+      gaugeTokens: [XLM_SAC],
     },
   ];
 

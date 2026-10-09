@@ -650,6 +650,7 @@ describe("what the preview found blocks the close until it is resolved", () => {
         tokens: ["CA", "CB"],
         poolIndex: "ab".repeat(32),
         rewards: [{ token: "CXLM", amount: 5n }],
+        gaugeTokens: ["CXLM"],
       },
     ];
     const machine = pageFlowMachine.provide({

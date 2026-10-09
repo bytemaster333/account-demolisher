@@ -1,6 +1,7 @@
 // discovery: the account audit plus the best-effort scans (allowances, defi
 // positions, held tokens) the plan is generated from
 
+import { Asset } from "@stellar/stellar-sdk";
 import { fromPromise } from "xstate";
 
 import type { NetworkConfig } from "@/lib/config/networks";
@@ -35,8 +36,10 @@ import {
 } from "@/lib/soroban/stellar-asset";
 import { readAquariusRewardToken } from "@/lib/adapters/aquarius/client";
 import {
-  gaugeRewardTokens,
+  gaugeForfeitNotice,
+  gaugeLineTokens,
   readPositionGaugeRewards,
+  settleGaugeClaims,
   type PoolGaugeRewards,
 } from "@/lib/adapters/aquarius/gauges";
 import { ALL_PROTOCOLS, discoveryWarningFor } from "@/lib/orchestrator/warnings";
@@ -268,14 +271,23 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
 
   // a pool exit pays each pool token to the account, and a stellar asset
   // contract writes a classic asset into its trustline: without one the whole
-  // exit traps (contract error #13). the gauge claims pay their reward tokens
-  // the same way. a token that can't be read stops discovery, since "unread"
-  // must never pass as "no trustline needed".
-  const gauges = await gaugeRewards(input, positions);
-  const exits = await exitGaps(input, audit, positions, gaugeRewardTokens(gauges));
+  // exit traps (contract error #13). a gauge claim pays every gauge token of
+  // its pool the same way, a gauge that owes nothing included. a token that
+  // can't be read stops discovery, since "unread" must never pass as "no
+  // trustline needed".
+  const owing = await gaugeRewards(input, positions);
+  const exits = await exitGaps(input, audit, positions, gaugeLineTokens(owing));
+  // a claim that would pay into a line the account can't hold is left out and
+  // its rewards are named as forfeited, so a gauge never blocks the close. the
+  // gaps only that claim needed go with it.
+  const gauges = settleGaugeClaims(owing, exits.all);
+  const claimedGaugeTokens = new Set(gaugeLineTokens(gauges.claimable));
+  const gaps = exits.all.filter(
+    (g) => exits.exitTokens.includes(g.contractId) || claimedGaugeTokens.has(g.contractId),
+  );
 
   // warnings in a stable order (scan warnings, per-protocol errors, blend repay
-  // shortfall) so copy doesn't reshuffle between runs
+  // shortfall, forfeited gauge rewards) so copy doesn't reshuffle between runs
   if (allowanceResult.warning) discoveryWarnings.push(allowanceResult.warning);
   if (heldResult.warning) discoveryWarnings.push(heldResult.warning);
   for (const r of [allowanceResult, positionResult, heldResult]) {
@@ -289,6 +301,12 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
   // blend repay needs the borrowed token on hand (no auto-swap); a shortfall
   // would stop the close mid-way, so say it now
   discoveryWarnings.push(...blendRepayShortfallWarnings(audit, positions.blend, input.network));
+
+  // gauge rewards the close can't claim, named so leaving them is a choice
+  const xlmSac = Asset.native().contractId(input.network.passphrase);
+  for (const forfeit of gauges.forfeited) {
+    discoveryWarnings.push(gaugeForfeitNotice(forfeit, xlmSac));
+  }
 
   // held tokens from unrecognized contracts are the visible trace of a position
   // in an unsupported app we can't unwind; ask the user to close those first
@@ -307,12 +325,12 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
     heldTokenScanFailed: heldResult.failed,
     discoveryWarnings,
     discoveryDiagnostics,
-    exitTrustlineGaps: exits.gaps,
-    unopenableExitLines: exits.unopenable,
+    exitTrustlineGaps: gaps.filter((g) => !isUnopenable(g)),
+    unopenableExitLines: gaps.filter(isUnopenable),
     ...(exits.aquariusRewardToken !== undefined
       ? { aquariusRewardToken: exits.aquariusRewardToken }
       : {}),
-    aquariusGaugeRewards: gauges,
+    aquariusGaugeRewards: gauges.claimable,
   };
 });
 
@@ -345,15 +363,16 @@ async function gaugeRewards(
 // pay some, so its token is kept for the plan: a missing line for it is opened
 // ahead of the reward claims. the tokens the gauge claims pay are checked with
 // them. a reward claim the plan can't link to that token is the pool's own
-// state, so it is not passed off as a network failure.
+// state, so it is not passed off as a network failure. every gap is returned,
+// with the tokens the exits and reward claims pay apart from the gauge tokens.
 async function exitGaps(
   input: DiscoverInput,
   audit: AccountAudit,
   positions: ProtocolPositions,
   gaugeTokens: readonly string[],
 ): Promise<{
-  readonly gaps: readonly ExitTrustlineGap[];
-  readonly unopenable: readonly UnopenableExitLine[];
+  readonly all: readonly ExitTrustlineGap[];
+  readonly exitTokens: readonly string[];
   readonly aquariusRewardToken?: string;
 }> {
   const rpc = getRpc(input.network);
@@ -370,16 +389,15 @@ async function exitGaps(
       DISCOVERY_TIMEOUT_MS,
     );
     const paid = [...tokens, ...gaugeTokens.filter((t) => !tokens.includes(t))];
-    if (paid.length === 0) return { gaps: [], unopenable: [] };
+    if (paid.length === 0) return { all: [], exitTokens: tokens };
     const wrapped = await withTimeout(
       "readWrappedAssets",
       readWrappedAssets(rpc, input.network, paid, input.publicKey),
       DISCOVERY_TIMEOUT_MS,
     );
-    const all = exitTrustlineGaps(audit.accountId, audit.balances, paid, wrapped);
     return {
-      gaps: all.filter((g) => !isUnopenable(g)),
-      unopenable: all.filter(isUnopenable),
+      all: exitTrustlineGaps(audit.accountId, audit.balances, paid, wrapped),
+      exitTokens: tokens,
       ...(rewardToken !== undefined ? { aquariusRewardToken: rewardToken } : {}),
     };
   } catch (e) {

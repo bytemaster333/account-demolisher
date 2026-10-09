@@ -461,6 +461,7 @@ describe("an exchange close checks the market of what its exits pay into empty l
             tokens: [XLM_SAC, USDC_SAC],
             poolIndex: "ab".repeat(32),
             rewards: [{ token: USDC_SAC, amount: 5n }],
+            gaugeTokens: [USDC_SAC],
           },
         ],
       },

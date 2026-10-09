@@ -13,10 +13,15 @@ import {
 
 import {
   claimGaugeRewards,
+  gaugeForfeitNotice,
+  gaugeLineTokens,
   readGaugeRewards,
   readPositionGaugeRewards,
+  settleGaugeClaims,
+  type PoolGaugeRewards,
 } from "@/lib/adapters/aquarius/gauges";
 import { getAquariusRouterId } from "@/lib/adapters/aquarius/client";
+import type { ExitTrustlineGap } from "@/lib/soroban/stellar-asset";
 import { MAINNET } from "@/lib/config/networks";
 
 const USER = "GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3";
@@ -232,6 +237,7 @@ describe("readPositionGaugeRewards", () => {
         tokens: [TOKEN_A, TOKEN_B],
         poolIndex: INDEX,
         rewards: [{ token: XLM_SAC, amount: 77n }],
+        gaugeTokens: [XLM_SAC],
       },
     ]);
     expect(calls.filter((c) => c.fn === "get_pools")).toHaveLength(2);
@@ -239,6 +245,118 @@ describe("readPositionGaugeRewards", () => {
       GAUGED,
       CONCENTRATED,
     ]);
+  });
+});
+
+// testnet pool CCSXYUVL... on 2026-10-09 kept gauges for AQUA (owed), DAI and a
+// contract token (both owed 0), and gauges_claim trapped on the zero DAI
+// transfer into an account with no DAI line
+describe("a gauge that owes nothing still needs its line", () => {
+  const DAI_SAC = StrKey.encodeContract(Buffer.alloc(32, 45));
+  const CUSTOM = StrKey.encodeContract(Buffer.alloc(32, 46));
+
+  it("lists every gauge token of a pool that owes something, owed or not", async () => {
+    const { server: s } = server(
+      { [GAUGED]: [gauges({ [CUSTOM]: OTHER, [XLM_SAC]: OTHER, [DAI_SAC]: OTHER })] },
+      (_contract, fn) => {
+        if (fn === "get_pools") {
+          return xdr.ScVal.scvMap([
+            new xdr.ScMapEntry({
+              key: xdr.ScVal.scvBytes(Buffer.from(INDEX, "hex")),
+              val: new Address(GAUGED).toScVal(),
+            }),
+          ]);
+        }
+        return rewardInfo({ [CUSTOM]: 0n, [XLM_SAC]: 9n, [DAI_SAC]: 0n });
+      },
+    );
+    const got = await readPositionGaugeRewards(s, MAINNET, USER, {
+      aquarius: [{ poolIndex: INDEX, shareBalance: 5n, tokens: [TOKEN_A, TOKEN_B] }],
+      aquariusConcentrated: [],
+    });
+    expect(got).toEqual([
+      {
+        poolAddress: GAUGED,
+        tokens: [TOKEN_A, TOKEN_B],
+        poolIndex: INDEX,
+        rewards: [{ token: XLM_SAC, amount: 9n }],
+        gaugeTokens: [CUSTOM, XLM_SAC, DAI_SAC],
+      },
+    ]);
+    expect(gaugeLineTokens(got)).toEqual([CUSTOM, XLM_SAC, DAI_SAC]);
+  });
+
+  it("refuses reward info for a token the pool keeps no gauge for", async () => {
+    const { server: s } = server({ [GAUGED]: [gauges({ [XLM_SAC]: OTHER })] }, () =>
+      rewardInfo({ [XLM_SAC]: 9n, [DAI_SAC]: 0n }),
+    );
+    await expect(readGaugeRewards(s, MAINNET, USER, [GAUGED])).rejects.toThrow(
+      `Aquarius pool ${GAUGED}: gauges_get_reward_info names ${DAI_SAC}, which the pool keeps no gauge for`,
+    );
+  });
+
+  it("refuses a gauge map that is not a map", async () => {
+    const { server: s } = server(
+      { [GAUGED]: [storageItem("RewardGaugesMap", xdr.ScVal.scvU32(1))] },
+      () => rewardInfo({}),
+    );
+    await expect(readGaugeRewards(s, MAINNET, USER, [GAUGED])).rejects.toThrow(
+      `Aquarius pool ${GAUGED}: RewardGaugesMap is a scvU32, not a map`,
+    );
+  });
+
+  const pool = (gaugeTokens: string[]): PoolGaugeRewards => ({
+    poolAddress: GAUGED,
+    tokens: [TOKEN_A, TOKEN_B],
+    poolIndex: INDEX,
+    rewards: [{ token: XLM_SAC, amount: 1_126_439_834n }],
+    gaugeTokens,
+  });
+  const ISSUER = "GAHPYWLK6YRN7CVYZOO4H3VDRZ7PVF5UJGLZCSPAEIKJE2XSWF5LAGER";
+  const dai = <R extends ExitTrustlineGap["reason"]>(reason: R) => ({
+    contractId: DAI_SAC,
+    code: "DAI",
+    issuer: ISSUER,
+    reason,
+  });
+
+  it("claims a pool whose zero-owed gauge token only lacks a line the plan opens", () => {
+    const p = pool([XLM_SAC, DAI_SAC]);
+    expect(settleGaugeClaims([p], [dai("missing")])).toEqual({ claimable: [p], forfeited: [] });
+  });
+
+  it("leaves out the claim of a pool with a gauge token the account can't receive", () => {
+    for (const reason of [
+      "unauthorized",
+      "issuer_requires_authorization",
+      "issuer_missing",
+    ] as const) {
+      const p = pool([XLM_SAC, DAI_SAC]);
+      expect(settleGaugeClaims([p], [dai(reason)])).toEqual({
+        claimable: [],
+        forfeited: [{ pool: p, blockedBy: [dai(reason)] }],
+      });
+    }
+    // a gap of a token the pool has no gauge for leaves its claim alone
+    const other = pool([XLM_SAC]);
+    expect(settleGaugeClaims([other], [dai("issuer_missing")])).toEqual({
+      claimable: [other],
+      forfeited: [],
+    });
+  });
+
+  it("names the pool, what is forfeited and why in the review note", () => {
+    const p = pool([XLM_SAC, DAI_SAC]);
+    expect(
+      gaugeForfeitNotice({ pool: p, blockedBy: [dai("issuer_requires_authorization")] }, XLM_SAC),
+    ).toBe(
+      `The reward gauges of Aquarius pool ${GAUGED.slice(0, 6)}…${GAUGED.slice(-4)} owe this ` +
+        "account 112.6439834 XLM. Their claim pays every gauge of the pool, and one of them pays " +
+        "an asset this account can't receive. This account has no DAI:" +
+        `${ISSUER} trustline, and its issuer requires authorization, so a line opened now ` +
+        "could not receive anything until the issuer authorizes it. The close leaves that claim " +
+        "out, so closing the account forfeits these rewards.",
+    );
   });
 });
 

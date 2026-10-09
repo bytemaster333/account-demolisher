@@ -44,12 +44,15 @@ import { horizon, rpc, submitClassicAs, submitSorobanAs } from "../helpers/testn
 // transfers what it owes, zero included, and a zero SAC transfer to an account
 // without a DAI line traps (Error(Contract, #13), "trustline entry is
 // missing"). the close has to deal with that for an account that holds no DAI
-// line, which is what this account is.
+// line, which is what this account is: it opens the DAI line ahead of the claim,
+// and the classic close removes it again with the account.
 
 const AQUA_ISSUER = "GAHPYWLK6YRN7CVYZOO4H3VDRZ7PVF5UJGLZCSPAEIKJE2XSWF5LAGER";
 const AQUA = new Asset("AQUA", AQUA_ISSUER);
 const XLM_SAC = Asset.native().contractId(TESTNET.passphrase);
 const AQUA_SAC = AQUA.contractId(TESTNET.passphrase);
+// the pool's DAI gauge token, a SAC of DAI from the AQUA issuer
+const DAI_SAC = new Asset("DAI", AQUA_ISSUER).contractId(TESTNET.passphrase);
 const POOL_INDEX = "9ac7a9cde23ac2ada11105eeaa42e43c2ea8332ca0aa8f41f58d7160274d718e";
 const POOL_ADDRESS = "CCSXYUVLYALKJGIIYMGYLZI447VS6TDWFTVDL43B4IKK2WERHLWUVCRC";
 
@@ -221,6 +224,15 @@ describe("integration: closing an account owed Aquarius gauge rewards (testnet)"
     const kinds = [...review.context.tree!.allNodes.values()].map((n) => n.kind);
     expect(kinds).toEqual(
       expect.arrayContaining(["ClaimAquariusGaugeRewards", "WithdrawAquarius", "FinalClassicTx"]),
+    );
+    // the DAI gauge owes nothing, yet its line is opened ahead of the claim
+    const reviewed = [...review.context.tree!.allNodes.values()];
+    const daiLine = reviewed.find(
+      (n) => n.kind === "AddExitTrustline" && n.metadata.contractId === DAI_SAC,
+    );
+    expect(daiLine, "no DAI line planned for the zero-owed DAI gauge").toBeDefined();
+    expect(reviewed.find((n) => n.kind === "ClaimAquariusGaugeRewards")?.dependencies).toContain(
+      daiLine!.id,
     );
 
     expect(outcome.matches("succeeded"), outcomeSummary(outcome)).toBe(true);

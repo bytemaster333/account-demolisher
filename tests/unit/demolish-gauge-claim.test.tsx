@@ -44,6 +44,7 @@ function gaugeTree() {
             { token: XLM, amount: 1_126_439_834n },
             { token: TOKEN, amount: 40n },
           ],
+          gaugeTokens: [XLM, TOKEN],
         },
       ],
     },
