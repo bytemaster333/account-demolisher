@@ -8,7 +8,7 @@ Account Demolisher is a Next.js application that closes Stellar accounts. The cl
 browser: the account audit, DeFi discovery, plan generation, simulation, the sign-time checks, and
 signing all happen client-side, and the browser submits every transaction itself.
 
-The server has four narrow jobs, and none of them involves the account owner's key.
+The server has three narrow jobs, and none of them involves the account owner's key.
 
 ## What runs where
 
@@ -17,7 +17,7 @@ The server has four narrow jobs, and none of them involves the account owner's k
 | Reading the account from Horizon              | Minting, renewing and co-signing exchange forwards (the mediator) |
 | Discovering DeFi positions on chain           | Holding multisig signing requests in memory (the signing relay)   |
 | Generating the plan and simulating every step | Recording first-party usage metrics and verified closes           |
-| Checking every step before it is signed       | Proxying the Soroswap aggregator API, which the app does not call |
+| Checking every step before it is signed       |                                                                   |
 | Signing through the wallet and submitting     |                                                                   |
 
 Position discovery needs no server and no API key. Blend, Soroswap and Aquarius concentrated pools

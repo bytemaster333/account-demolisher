@@ -43,7 +43,7 @@ signed envelope has to be the transaction the app built. See the
 ## Requirements
 
 - Node.js 24 (`.nvmrc` pins 24.21.0)
-- pnpm 12 (`packageManager` pins 12.8.1)
+- pnpm 12 (`packageManager` pins 12.10.1)
 
 ## Local development
 
@@ -90,8 +90,6 @@ Server-only:
   characters).
 - `METRICS_DB_DIR`: the writable directory for the metrics store. Defaults to `data/` under the
   working directory; the Docker image uses `/app/data`.
-- `SOROSWAP_API_URL` / `SOROSWAP_API_KEY`: the Soroswap aggregator behind the `/api/soroswap`
-  proxy. No code in the app calls that proxy: closes convert through the Soroswap router on chain.
 
 Public (inlined at build time):
 
@@ -124,7 +122,6 @@ API:
   the shared-account signing relay, with live updates over Server-Sent Events.
 - `POST /api/metrics`, `GET /api/metrics`: first-party usage events and the aggregate behind a
   bearer token.
-- `POST /api/soroswap`: a same-origin proxy to the Soroswap aggregator.
 
 ## Testing
 

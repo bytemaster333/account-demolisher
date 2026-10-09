@@ -48,8 +48,6 @@ Never expose these to the client.
 | `TRUSTED_PROXY_HOPS`      | `1`                                 | How many reverse proxies in front of the app append to `X-Forwarded-For`. The rate limiter keys on the entry that many places from the right. A whole number, at least 1                                     |
 | `METRICS_ADMIN_TOKEN`     | unset                               | The bearer token for `GET /api/metrics`. Unset, or shorter than 16 characters, makes that read answer 503. Recording metrics does not need it                                                                |
 | `METRICS_DB_DIR`          | `data/` under the working directory | Where the metrics store keeps `closes.jsonl` and `counters.json`. Must be writable. The Docker image sets `/app/data`                                                                                        |
-| `SOROSWAP_API_URL`        | `https://api.soroswap.finance`      | The Soroswap aggregator base URL for the `/api/soroswap` proxy                                                                                                                                               |
-| `SOROSWAP_API_KEY`        | unset                               | The aggregator API key the proxy adds. No code in the app calls the proxy: closes convert through the pinned Soroswap router on chain                                                                        |
 
 ### Validation
 
@@ -62,10 +60,10 @@ build error. An empty string counts as unset.
 - **`MEDIATOR_SECRET`** must start with `S` and be 56 characters, or be unset. The full ed25519
   seed check runs at first use. A bad value disables only the mediator routes, which answer
   `MEDIATOR_NOT_CONFIGURED` and log the reason with any seed redacted.
-- **`SOROSWAP_API_URL`** must be a URL. A bad value disables only the Soroswap proxy, which answers
-  `SOROSWAP_NOT_CONFIGURED`.
+- **`METRICS_ADMIN_TOKEN`** shorter than 16 characters disables only the metrics read, which
+  answers 503.
 
-Each feature validates only its own variables, so a bad value for one never disables another.
+A bad value for one of these never disables another feature.
 
 ## Build and runtime switches
 
@@ -84,13 +82,9 @@ that file is how you point the app at other providers, and the CSP follows it. S
 
 ## Outbound connections from the server
 
-The server itself contacts:
-
-- Horizon, from `/api/plan` (the account's signers and sequence), `/api/mediator/reissue` (whether
-  the mediator exists) and `/api/metrics` (close verification).
-- The Soroswap aggregator, only when something calls `/api/soroswap`. The proxy resolves that host
-  through the public resolvers 1.1.1.1 and 8.8.8.8, to avoid category-based DNS blocking. Allow
-  that if your egress is locked down.
+The server itself contacts only Horizon, from `/api/plan` (the account's signers and sequence),
+`/api/mediator/reissue` (whether the mediator exists) and `/api/metrics` (close verification). It
+calls no other third-party API.
 
 ## Related
 

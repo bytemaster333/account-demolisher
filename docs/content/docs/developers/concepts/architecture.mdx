@@ -61,10 +61,9 @@ prepares the close, because a Blend backstop withdrawal stays locked after it.
 | `/api/plan`, `/api/plan/[id]`, `/api/plan/[id]/sign`, `/api/plan/[id]/events` | The multisig signing relay                                               |
 | `POST /api/metrics`                                                           | Records a visit, a funnel step, or a close it verifies on Horizon        |
 | `GET /api/metrics`                                                            | The aggregate metrics, behind a bearer token                             |
-| `POST /api/soroswap`                                                          | A proxy to the Soroswap aggregator's quote and build endpoints           |
 
-No code in the app calls `/api/soroswap`: held-token conversions go through the pinned Soroswap
-router on chain. The route stays in place as a documented proxy.
+Held-token conversions go through the pinned Soroswap router on chain, so the server calls no
+swap or quote API.
 
 Two pieces run outside the routes. `src/proxy.ts` sets the Content-Security-Policy on every
 document response, and `src/instrumentation.ts` refuses to start the server when

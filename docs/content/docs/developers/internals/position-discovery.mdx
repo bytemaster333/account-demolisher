@@ -105,8 +105,8 @@ through a token paired with both sides, quotes each with `router_get_amounts_out
 best. A token with no route raises `NoSoroswapRouteError`. The swap is held to the 2% price-impact
 cap against a quote for one thousandth of the amount.
 
-The Soroswap aggregator API is not part of discovery or the close. The server keeps a proxy to it
-at `/api/soroswap`, which no code in the app calls.
+Discovery, the exit and the conversion all call the Soroswap contracts directly. No Soroswap API
+and no aggregator take part in a close.
 
 ## Standalone tokens
 

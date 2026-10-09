@@ -7,7 +7,7 @@ The app never sees a wallet's secret key. It builds an unsigned transaction, han
 connected wallet, checks the signed envelope that comes back, and only then submits it.
 
 That handoff goes through [Stellar Wallets Kit](https://github.com/Creit-Tech/Stellar-Wallets-Kit)
-(`@creit.tech/stellar-wallets-kit`, pinned at 2.7.0), wired in `src/lib/wallet/kit.ts`.
+(`@creit.tech/stellar-wallets-kit`, pinned at 2.7.1), wired in `src/lib/wallet/kit.ts`.
 
 ## What the app calls
 
@@ -52,7 +52,7 @@ const modules = [...defaultModules(), new LedgerModule()];
 // plus WalletConnect when NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID is set
 ```
 
-`defaultModules()` in kit 2.7.0 returns fifteen wallets, in this order:
+`defaultModules()` in kit 2.7.1 returns fifteen wallets, in this order:
 
 | #   | Wallet        | Product id     |
 | --- | ------------- | -------------- |

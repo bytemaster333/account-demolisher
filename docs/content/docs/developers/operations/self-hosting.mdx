@@ -9,7 +9,7 @@ proxy: the repository's Docker Compose file ships one.
 ## Requirements
 
 - **Node.js 24** (`.nvmrc` pins 24.21.0, and `engines` requires `>=24`)
-- **pnpm 12** (`packageManager` pins `pnpm@12.8.1`, and `engines` requires `>=12`)
+- **pnpm 12** (`packageManager` pins `pnpm@12.10.1`, and `engines` requires `>=12`)
 - For the container route, Docker with Compose
 
 ## Local development
@@ -44,7 +44,7 @@ No other variable reaches the containers.
 | Where it goes  | Variables                                                                                                                                                                                                                                  |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | App build args | `NEXT_PUBLIC_STELLAR_NETWORK` (default `testnet`), `NEXT_PUBLIC_DEPLOYMENT_MODE` (default `self-hosted`), `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID`, `NEXT_PUBLIC_SITE_URL`, `NEXT_PUBLIC_SLIPPAGE_BPS`, `NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS` |
-| App runtime    | `MEDIATOR_SECRET`, `MEDIATOR_ALLOWED_ORIGIN`, `SOROSWAP_API_URL`, `SOROSWAP_API_KEY`, `METRICS_ADMIN_TOKEN`, `TRUSTED_PROXY_HOPS` (default `1`), and `METRICS_DB_DIR`, fixed to `/app/data`                                                |
+| App runtime    | `MEDIATOR_SECRET`, `MEDIATOR_ALLOWED_ORIGIN`, `METRICS_ADMIN_TOKEN`, `TRUSTED_PROXY_HOPS` (default `1`), and `METRICS_DB_DIR`, fixed to `/app/data`                                                                                        |
 | Proxy runtime  | `SITE_ADDRESS`: your domain, for which Caddy obtains and renews a TLS certificate automatically. The default `:80` serves plain HTTP on any host name                                                                                      |
 
 The public variables are build arguments because `next build` inlines them. After changing one,
