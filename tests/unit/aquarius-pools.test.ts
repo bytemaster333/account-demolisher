@@ -187,12 +187,41 @@ describe("Aquarius REST provider", () => {
 });
 
 describe("Aquarius event scan", () => {
-  function scanServer(onGetEvents: (req: rpc.Api.GetEventsRequest) => rpc.Api.GetEventsResponse) {
+  function scanServer(
+    onGetEvents: (req: rpc.Api.GetEventsRequest) => rpc.Api.GetEventsResponse,
+    oldestLedger = 879_000,
+  ) {
     return {
       getLatestLedger: async () => ({ id: "x", sequence: 1_000_000, protocolVersion: 23 }),
+      getHealth: async () => ({
+        status: "healthy",
+        latestLedger: 1_000_000,
+        oldestLedger,
+        ledgerRetentionWindow: 1_000_000 - oldestLedger,
+      }),
       getEvents: async (req: rpc.Api.GetEventsRequest) => onGetEvents(req),
     } as unknown as rpc.Server;
   }
+
+  it("starts above the rpc's reported retention floor instead of at the stock window", async () => {
+    // a host that keeps exactly the stock window: latest - 120_960 is its floor,
+    // which moves on before the request lands, so the scan must start a margin above it
+    const requests: rpc.Api.GetEventsRequest[] = [];
+    const server = scanServer((req) => {
+      requests.push(req);
+      if (req.startLedger !== undefined && req.startLedger <= 1_000_000 - 120_960) {
+        throw new Error(`ledger range: ${1_000_000 - 120_960 + 1} - 1000000`);
+      }
+      return {
+        events: [],
+        cursor: "",
+        latestLedger: 1_000_000,
+      } as unknown as rpc.Api.GetEventsResponse;
+    }, 1_000_000 - 120_960);
+    await new AquariusEventScanPoolProvider({ server, network: MAINNET }).getUserPools(USER);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.startLedger).toBe(1_000_000 - 120_960 + 60);
+  });
 
   it("asks the rpc only for this user's router deposit and withdraw events", async () => {
     const requests: rpc.Api.GetEventsRequest[] = [];

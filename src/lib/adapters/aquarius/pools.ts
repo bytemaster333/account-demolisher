@@ -388,7 +388,8 @@ function assertUserPoolsApiResponse(parsed: unknown, url: string): AquariusUserP
 export interface AquariusEventScanPoolProviderOptions {
   readonly server: rpc.Server;
   readonly network: NetworkConfig;
-  // defaults to the rpc's stock retention window (EVENT_RETENTION_WINDOW_LEDGERS)
+  // defaults to the rpc's stock retention window (EVENT_RETENTION_WINDOW_LEDGERS);
+  // the start is never below the host's reported floor plus a margin
   readonly lookbackLedgers?: number;
   readonly maxPages?: number;
 }
@@ -420,7 +421,18 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
 
   async getUserPools(userPublicKey: string): Promise<AquariusPool[]> {
     const latest = await this.server.getLatestLedger();
-    let startLedger = Math.max(1, latest.sequence - this.lookbackLedgers);
+    // start a margin above the host's reported floor, as event-scan.ts does: a
+    // start at exactly latest - retention is already below the floor by the time
+    // the request lands, and every scan would pay a failed request and a retry
+    const health = await this.server.getHealth();
+    let startLedger = Math.min(
+      latest.sequence,
+      Math.max(
+        1,
+        latest.sequence - this.lookbackLedgers,
+        health.oldestLedger + RETENTION_RETRY_MARGIN_LEDGERS,
+      ),
+    );
 
     // the router emits deposit/withdraw with topics [symbol, Vec<Address> tokens,
     // Address user] (observed on mainnet). filtering on the user server-side

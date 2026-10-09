@@ -529,7 +529,7 @@ export function DemolishStatusWidget({
                     borderRadius: 6,
                     font: "600 10.5px/1 'Geist Mono', monospace",
                     color: isFail ? "var(--danger)" : "var(--success)",
-                    background: isFail ? "var(--surface-2)" : "var(--surface-2)",
+                    background: "var(--surface-2)",
                     border: `1px solid color-mix(in srgb, var(${isFail ? "--danger" : "--success"}) 25%, transparent)`,
                   }}
                 >
