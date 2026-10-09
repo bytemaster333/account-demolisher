@@ -3,11 +3,18 @@
 // itself runs through the app's own state machine (see headless-close.ts).
 
 import { expect } from "vitest";
-import { Asset, Keypair, type FeeBumpTransaction, type Transaction } from "@stellar/stellar-sdk";
+import {
+  Asset,
+  Contract,
+  Keypair,
+  nativeToScVal,
+  type FeeBumpTransaction,
+  type Transaction,
+} from "@stellar/stellar-sdk";
 import { waitFor } from "xstate";
 
 import { TESTNET } from "@/lib/config/networks";
-import { buildApprove } from "@/lib/soroban/sep41";
+import { address as addr, i128 } from "@/lib/soroban/scval";
 import type { Connector } from "@/lib/wallet/connector";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
 
@@ -23,7 +30,7 @@ import {
   type FlowActor,
   type FlowSnapshot,
 } from "./headless-close";
-import { horizon, rpc } from "./testnet-seed";
+import { horizon, rpc, submitSorobanAs } from "./testnet-seed";
 
 const XLM_SAC = Asset.native().contractId(TESTNET.passphrase);
 
@@ -70,21 +77,16 @@ export async function fundedPair(): Promise<Fixture> {
 // merge and a failure can fall between two steps
 export async function withAllowance(f: Fixture): Promise<void> {
   const latest = await rpc.getLatestLedger();
-  const approve = await buildApprove(
-    rpc,
-    XLM_SAC,
-    f.kp.publicKey(),
-    Keypair.random().publicKey(),
-    5_0000000n,
-    latest.sequence + 100_000,
-    TESTNET,
-    await horizon.loadAccount(f.kp.publicKey()),
+  await submitSorobanAs(
+    f.kp,
+    new Contract(XLM_SAC).call(
+      "approve",
+      addr(f.kp.publicKey()),
+      addr(Keypair.random().publicKey()),
+      i128(5_0000000n),
+      nativeToScVal(latest.sequence + 100_000, { type: "u32" }),
+    ),
   );
-  approve.sign(f.kp);
-  const sent = await rpc.sendTransaction(approve);
-  if (sent.status !== "PENDING") throw new Error(`approve not queued: ${sent.status}`);
-  const res = await rpc.pollTransaction(sent.hash, { attempts: 60 });
-  if (res.status !== "SUCCESS") throw new Error(`approve ${sent.hash}: ${res.status}`);
 }
 
 export async function reviewed(
