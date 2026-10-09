@@ -26,8 +26,8 @@ import { horizon, rpc, submitClassicAs, submitSorobanAs } from "../helpers/testn
 // then opens a tick range around the current price in that pool by calling it
 // directly, as the Aquarius app does. the close must withdraw the range from the
 // pool (a concentrated pool has no share token, so this is a different exit from
-// the router withdraw), collect what the position is owed, dispose of the USDT
-// and merge.
+// the router withdraw), collect the swap fees a trade through the range paid it,
+// dispose of the USDT and merge.
 //
 // the pool belongs to Aquarius's testnet deployment and is on the app's pinned
 // list. it runs no reward program. the pinned XLM/AQUA concentrated pool
@@ -82,25 +82,29 @@ describe("integration: closing an account with a live Aquarius concentrated posi
     await friendbotFund(TESTNET, destination.publicKey());
 
     await submitClassicAs(kp, (b) => b.addOperation(Operation.changeTrust({ asset: USDT })));
-    try {
-      await submitSorobanAs(
-        kp,
-        new Contract(getAquariusRouterId(TESTNET)).call(
-          "swap",
-          addr(user),
-          xdr.ScVal.scvVec(pool.tokens.map(addr)),
-          addr(XLM_SAC),
-          addr(USDT_SAC),
-          xdr.ScVal.scvBytes(Buffer.from(pool.poolIndex, "hex")),
-          u128(100_0000000n),
-          u128(1n),
-        ),
-      );
-    } catch (err) {
-      throw new Error(
-        `buying USDT in ${CONCENTRATED_POOL} through the router failed: ${String(err)}`,
-      );
-    }
+    // XLM for USDT through the router in the same pool
+    const swapXlmForUsdt = async (amount: bigint): Promise<void> => {
+      try {
+        await submitSorobanAs(
+          kp,
+          new Contract(getAquariusRouterId(TESTNET)).call(
+            "swap",
+            addr(user),
+            xdr.ScVal.scvVec(pool.tokens.map(addr)),
+            addr(XLM_SAC),
+            addr(USDT_SAC),
+            xdr.ScVal.scvBytes(Buffer.from(pool.poolIndex, "hex")),
+            u128(amount),
+            u128(1n),
+          ),
+        );
+      } catch (err) {
+        throw new Error(
+          `buying USDT in ${CONCENTRATED_POOL} through the router failed: ${String(err)}`,
+        );
+      }
+    };
+    await swapXlmForUsdt(100_0000000n);
 
     // a range of 20 spacings on each side of the current tick, so the
     // position holds both tokens
@@ -146,6 +150,12 @@ describe("integration: closing an account with a live Aquarius concentrated posi
     ]);
     expect(opened[0]!.ranges[0]!.liquidity).toBeGreaterThan(0n);
 
+    // a trade through the range pays it a share of the swap fee, so the close
+    // also has fees to collect
+    await swapXlmForUsdt(20_0000000n);
+    const earning = await concentratedPositions(user);
+    expect(earning[0]!.pendingFees.some((fee) => fee > 0n)).toBe(true);
+
     const destBefore = await nativeBalance(horizon, destination.publicKey());
 
     const { review, outcome } = await closeHeadless({
@@ -159,7 +169,11 @@ describe("integration: closing an account with a live Aquarius concentrated posi
 
     const kinds = [...review.context.tree!.allNodes.values()].map((n) => n.kind);
     expect(kinds).toEqual(
-      expect.arrayContaining(["WithdrawAquariusConcentrated", "FinalClassicTx"]),
+      expect.arrayContaining([
+        "ClaimAquariusConcentratedFees",
+        "WithdrawAquariusConcentrated",
+        "FinalClassicTx",
+      ]),
     );
 
     expect(outcome.matches("succeeded"), outcomeSummary(outcome)).toBe(true);
@@ -182,10 +196,12 @@ describe("integration: closing an account with a live Aquarius concentrated posi
     expect(ranges.type).toBe("scvVec");
     expect(ranges.type === "scvVec" ? ranges.vec : null).toEqual([]);
 
-    // the 100 XLM that bought USDT went back to the issuer as USDT, and the
-    // range paid its XLM side back out, so the destination gets about 9,900 XLM
+    // the 120 XLM that bought USDT went back to the issuer as USDT, and the
+    // range paid its XLM side back out, so the destination gets about 9,880 XLM
+    // less fees and what the second trade moved across the range (about 1.8 XLM
+    // on 2026-10-09)
     const received = (await nativeBalance(horizon, destination.publicKey())) - destBefore;
-    expect(received).toBeGreaterThan(9_880_0000000n);
+    expect(received).toBeGreaterThan(9_860_0000000n);
     expect(received).toBeLessThan(10_000_0000000n);
   });
 });
