@@ -3,8 +3,8 @@
 Account Demolisher closes a Stellar account: it unwinds classic entries and Soroban DeFi
 positions, disposes of every balance, and merges the account into a destination, directly or, for
 a destination that needs a memo, through a temporary forwarding account (the mediator). The browser
-builds, checks and submits every transaction; the user's wallet or pasted key signs it. The server
-holds no user key.
+builds, checks and submits every transaction; the account owner's wallet or pasted key signs it.
+The server never holds the account owner's key.
 
 The full developer documentation lives in `docs/` and at <https://docs.demolisher.app>. This file
 is a map of the code.
@@ -67,7 +67,6 @@ close, because a Blend backstop withdrawal stays locked after it.
 | `POST /api/mediator/reissue`                                                  | Renews a flow token, expired or not, while its forwarding account exists     |
 | `/api/plan`, `/api/plan/[id]`, `/api/plan/[id]/sign`, `/api/plan/[id]/events` | The shared-account signing relay, in process memory, with Server-Sent Events |
 | `POST /api/metrics`, `GET /api/metrics`                                       | First-party usage events, and the aggregate behind a bearer token            |
-| `POST /api/soroswap`                                                          | A same-origin proxy to the Soroswap aggregator; nothing in the app calls it  |
 
 `src/proxy.ts` sets the Content-Security-Policy on document responses (it skips `/api`, so the
 routes' streaming body caps apply). `src/instrumentation.ts` refuses to start the server when
@@ -120,8 +119,9 @@ each built step:
 - `assertSorobanFeeWithinCap` (`src/lib/soroban/fee-cap.ts`): the resource fee and declared writes
   are within the step's class.
 
-Allowance revokes and standalone-token transfers target the user's own token contracts and are held
-to exactly `approve(user, spender, 0, ledger)` and `transfer(user, destination, amount)` instead.
+Allowance revokes and standalone-token transfers target the account owner's own token contracts
+and are held to exactly `approve(user, spender, 0, ledger)` and `transfer(user, destination,
+amount)` instead.
 Whatever the wallet returns is checked by `verifySignedEnvelope` (`src/lib/wallet/signed-envelope.ts`):
 same transaction hash, valid signature from the connected key.
 

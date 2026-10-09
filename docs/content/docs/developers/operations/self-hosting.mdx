@@ -61,8 +61,10 @@ Three named volumes keep state across container recreation: `metrics` (the metri
 The `Dockerfile` builds on `node:24-slim` pinned by digest, installs with `--frozen-lockfile`,
 builds with the public build arguments, and ships only production dependencies. The runtime image
 has no pnpm: it starts `node node_modules/next/dist/bin/next start` as the non-root user `appuser`
-(uid 1001), exposes port 3000, and checks health by fetching `/` every 30 seconds. `/app/data` is
-the only path that user can write, and it is declared as a volume. The build context is an
+(uid 1001), exposes port 3000, and checks health by fetching `/` every 30 seconds. The app files
+(`.next`, `node_modules`, `public` and the config) are copied in as root, so `appuser` cannot
+change them. `/app/data` is the one directory under `/app` that `appuser` can write, and it is
+declared as a volume. The build context is an
 allow-list (`.dockerignore`), so `.env` files and anything else outside the sources never reach the
 builder.
 

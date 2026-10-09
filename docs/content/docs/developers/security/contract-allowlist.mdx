@@ -74,7 +74,7 @@ to the other network's list. It runs:
 | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Blend, Aquarius and Soroswap exits, and their trustline steps | Allow-list, authorization tree, fee cap. A refusal stops the close                                                                                                            |
 | `ConvertSorobanToXLM`                                         | The same checks. A refusal falls back to sending the token as-is on a direct close, under the transfer guard, and stops the close on an exchange close or when that fails too |
-| `TransferAsIs`                                                | `assertSafeTransferInvocation` and the `untrusted-token` fee cap                                                                                                              |
+| `TransferAsIs`                                                | `assertSafeTransferInvocation` and the `untrusted-transfer` fee cap. A refusal skips the transfer, and the result names the token as left behind                              |
 | `RevokeAllowance`                                             | `assertSafeRevokeInvocation` and the `untrusted-token` fee cap. A refusal skips the revoke                                                                                    |
 | `FinalClassicTx`, `MediatorForward`                           | Not applicable: classic transactions                                                                                                                                          |
 
@@ -153,12 +153,17 @@ arguments is refused as `UnsafeDefiAuthError`, and so is a tree that cannot be p
 resource fee, or declared writes, are above what its class of step legitimately costs. The caps
 are two to three times the largest fee measured for each class on testnet and mainnet:
 
-| Class               | Steps                                         | Resource fee cap | Write bound              |
-| ------------------- | --------------------------------------------- | ---------------- | ------------------------ |
-| `untrusted-token`   | Revoke, standalone-token transfer             | 0.2 XLM          | 8,192 bytes, 16 entries  |
-| `untrusted-convert` | Standalone-token conversion, Soroswap LP exit | 1.4 XLM          | 8,192 bytes, 16 entries  |
-| `pool-exit`         | Aquarius exits and their reward claims        | 3.3 XLM          | 32,768 bytes, 40 entries |
-| `defi-exit`         | Blend steps                                   | 3.3 XLM          | None                     |
+| Class                | Steps                                         | Resource fee cap | Write bound              |
+| -------------------- | --------------------------------------------- | ---------------- | ------------------------ |
+| `untrusted-token`    | Allowance revoke                              | 0.2 XLM          | 8,192 bytes, 16 entries  |
+| `untrusted-transfer` | Standalone-token transfer                     | 0.75 XLM         | 16,384 bytes, 24 entries |
+| `untrusted-convert`  | Standalone-token conversion, Soroswap LP exit | 1.4 XLM          | 8,192 bytes, 16 entries  |
+| `pool-exit`          | Aquarius exits and their reward claims        | 3.3 XLM          | 32,768 bytes, 40 entries |
+| `defi-exit`          | Blend steps                                   | 3.3 XLM          | None                     |
+
+A transfer gets a class of its own because it can create the destination's balance entry and pay
+rent for it, which a revoke never does. The largest legitimate transfer measured, a SEP-41 token
+creating a new balance on testnet, cost about 0.26 XLM.
 
 A one-operation trustline step carries no Soroban resources, and its bid is capped at 1,000,000 stroops.
 Before each Soroban signature the progress line shows the fee that signature allows.

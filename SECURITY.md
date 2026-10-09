@@ -23,21 +23,24 @@ open.
 
 ## Trust model
 
-- **Non-custodial.** A user's secret key never reaches the server. Wallets sign through Stellar
-  Wallets Kit. The pasted-key path keeps the seed in a private class field of
+- **Non-custodial.** The account owner's secret key never reaches the server. Wallets sign
+  through Stellar Wallets Kit. The pasted-key path keeps the seed in a private class field of
   `SecretKeyConnector` (`src/lib/wallet/secret-key.ts`), held in module scope only
   (`src/lib/wallet/active-connector.ts`), never in a store or browser storage, and no code sends
   it anywhere.
-- **The browser builds and submits.** The server never builds a transaction for a user to sign and
-  never submits one. The mediator forward is built and submitted by the browser too; the server only
+- **The browser builds and submits.** The server never builds a transaction for the account owner
+  to sign and never submits one. The mediator forward is built and submitted by the browser too; the server only
   adds the forwarding account's co-signature.
 - **The server is trusted for exchange closes.** `MEDIATOR_SECRET` (`src/server/mediator-secret.ts`,
   `server-only`) is an HMAC master that derives every forwarding account's key and signs flow
   tokens. An honest server co-signs only a forward to the destination, memo and network bound into
-  the flow token (`src/lib/mediator/validator.ts`). Whoever controls the server can derive every
-  forwarding key and change the code the browser runs, so an exchange close trusts the operator
-  with the balance while it is in transit. The merge and the forward run back to back. A direct
-  close never uses the forwarding account.
+  the flow token (`src/lib/mediator/validator.ts`). Whoever holds `MEDIATOR_SECRET`, the operator or
+  anyone who compromises the server, can derive every forwarding key and move any balance sitting
+  in a forwarding account, and a compromised server can also change the code the browser runs. That
+  exposure is bounded by the time between the merge and the forward, which run back to back, not by
+  cryptography. The token binding limits only a token that leaks on its own, from browser storage
+  or a log: script running in the page, from a cross-site scripting flaw or a malicious extension,
+  can mint its own flow. A direct close never uses the forwarding account.
 - **Horizon, Soroban RPC and on-chain contracts are untrusted.** They supply the state a plan is
   built from; the checks below decide what is signed.
 
@@ -47,7 +50,6 @@ open.
 | --------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `MEDIATOR_SECRET`     | Derives every forwarding key and signs flow tokens. Never logged: the mediator routes redact any seed from their error logs |
 | `METRICS_ADMIN_TOKEN` | Reads the aggregate usage metrics (`GET /api/metrics`)                                                                      |
-| `SOROSWAP_API_KEY`    | Spends the deployment's Soroswap aggregator quota through `/api/soroswap`                                                   |
 
 ## Threats and mitigations
 
@@ -60,7 +62,9 @@ open.
 | A wallet returning a different envelope                               | `verifySignedEnvelope` requires the built transaction's hash and a valid signature from the connected key (`src/lib/wallet/signed-envelope.ts`)                                                                                                                                                                             |
 | A Ledger signing a blind hash                                         | Ledger signs with `nonBlindTx`, so the device shows the operations; there is no hash-signing fallback                                                                                                                                                                                                                       |
 | Merging around an open or unreadable DeFi position                    | Positions are discovered again before the merge, and the merge is refused while any is open or any protocol could not be read                                                                                                                                                                                               |
-| A sale at a manipulated price                                         | Minimum outputs carry the slippage tolerance (1% by default); a full-size sale more than 2% worse than a reference trade of 1/1000 of the balance, or worse than the reviewed quote, needs the user's decision per token                                                                                                    |
+| A DeFi exit paying out far less than its position                     | Every Aquarius and Soroswap exit, and every held-token conversion, carries a per-token minimum output: the step's own simulated output less the slippage tolerance, so a pool that would pay less fails on chain                                                                                                            |
+| A close that keeps retrying and spending fees                         | The close loop makes at most three attempts and 30 phases, retries only rejections a rebuild can clear, stops when the same quotes fail again, and caps each batch's fee to the spendable XLM; a Soroban step is attempted at most three times                                                                              |
+| A sale at a manipulated price                                         | Minimum outputs carry the slippage tolerance (1% by default); a full-size sale more than 2% worse than a reference trade of 1/1000 of the balance, or worse than the reviewed quote, needs the account owner's decision per token                                                                                           |
 | Lost exchange deposits                                                | A registry or SEP-29 memo-required destination needs a well-formed memo of an accepted type, and routes through the forwarding account; exchange internal wallets are refused                                                                                                                                               |
 | A leaked flow token                                                   | It unlocks only a forward to the committed destination, memo and network, with a fee of at most 2,000,000 stroops and no preconditions beyond a time bound of at most one hour                                                                                                                                              |
 | A double submission of an irreversible step                           | Submissions are journaled by hash; an unknown outcome is looked up on chain before anything is signed again                                                                                                                                                                                                                 |
@@ -75,8 +79,8 @@ open.
 `script-src` is `'self' 'unsafe-inline' 'wasm-unsafe-eval'`. Next's inline hydration scripts are not
 nonce-stamped in this deployment, and a nonce-only policy blocks hydration. The policy loads no
 third-party script origin, but an injected inline script would run and could reach every origin
-`connect-src` allows: Horizon, Soroban RPC, the Aquarius and Soroswap APIs, and the WalletConnect
-and Reown hosts. `next.config.ts` adds `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
+`connect-src` allows: Horizon, Soroban RPC, friendbot, the Aquarius API, and the WalletConnect and
+Reown hosts. `next.config.ts` adds `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
 `Referrer-Policy: no-referrer`, a `Permissions-Policy`, and HSTS in production.
 
 ## Residual risks
@@ -93,17 +97,16 @@ and Reown hosts. `next.config.ts` adds `X-Frame-Options: DENY`, `X-Content-Type-
   so, and offers a manual entry for standalone tokens.
 - **Gauge rewards in pools already left** are out of scope: no RPC-only source lists them.
 - **Blend backstop emissions.** On mainnet the backstop emissions claim currently traps inside the
-  BLND-USDC comet pool. The close then asks the user to forfeit the accrued BLND explicitly before
+  BLND-USDC comet pool. The close then asks the account owner to forfeit the accrued BLND explicitly before
   queueing the withdrawal.
 - **New Aquarius concentrated pools** are not on the pinned list until it is updated; discovery
   reports such a pool as an error, so the merge stays blocked instead of leaving the position.
-- **Third-party telemetry through WalletConnect.** When a user picks WalletConnect, or signs with a
-  restored WalletConnect session, Reown AppKit sends its mandatory events, including the page URL,
+- **Third-party telemetry through WalletConnect.** When the account owner picks WalletConnect, or
+  signs with a restored WalletConnect session, Reown AppKit sends its mandatory events, including the page URL,
   to `pulse.walletconnect.org`.
 - **First-party metrics.** A completed close sends its merge transaction hash to `/api/metrics`,
   which identifies the closed account on the public ledger. The close count rests on a public
   on-chain marker that anyone can copy into a merge, bounded by daily caps.
 - **The mainnet RPC default** is a third-party gateway (`src/lib/config/networks.ts`).
-- **Dependencies.** `pnpm audit --prod` reports five low and moderate advisories, all under a wallet
-  module the app does not import, with no fix inside the version ranges that pull them in. The
-  audit status page lists them.
+- **Dependencies.** `pnpm audit --prod` reports one low advisory, in `elliptic` under a wallet
+  module the app does not load, with no patched release. The audit status page lists it.

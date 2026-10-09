@@ -36,13 +36,13 @@ before it was merged.
 
 ### Severity scale
 
-| Severity | Meaning                                                                                                             |
-| -------- | ------------------------------------------------------------------------------------------------------------------- |
-| CRITICAL | Loss or stranding of user funds, key or secret compromise, or signing something the user did not intend             |
-| HIGH     | A close fails or misreports for a realistic account, a security control is bypassed, or success is reported falsely |
-| MEDIUM   | A real bug with a narrower trigger or recoverable impact, or misleading UI on a money path                          |
-| LOW      | An edge case, robustness, minor UX or accessibility                                                                 |
-| INFO     | Code quality, dead code, stale comments, or documentation drift with no runtime impact                              |
+| Severity | Meaning                                                                                                                 |
+| -------- | ----------------------------------------------------------------------------------------------------------------------- |
+| CRITICAL | Loss or stranding of the account owner's funds, key or secret compromise, or signing something the owner did not intend |
+| HIGH     | A close fails or misreports for a realistic account, a security control is bypassed, or success is reported falsely     |
+| MEDIUM   | A real bug with a narrower trigger or recoverable impact, or misleading UI on a money path                              |
+| LOW      | An edge case, robustness, minor UX or accessibility                                                                     |
+| INFO     | Code quality, dead code, stale comments, or documentation drift with no runtime impact                                  |
 
 ### Results
 
@@ -61,12 +61,15 @@ As recorded in the review's tracking file at the time of this documentation revi
 - **Partial**: the fix landed for part of the issue, and a follow-up in another area remains
   tracked.
 - **Open**: 25 of the 28 are documentation issues (2 HIGH, 7 MEDIUM, 10 LOW, 6 INFO): pages that
-  described behavior the code no longer has, or had not yet had. This documentation revision,
-  together with `README.md`, `SECURITY.md`, `ARCHITECTURE.md` and `.env.example`, is the work that
-  addresses them. The other 3 are test-coverage gaps: the integration suite does not execute a
-  live DeFi exit end to end (MEDIUM), the end-to-end suite covers only a direct single-signer close
-  (LOW), and the Playwright configuration reuses an already running local server and runs
-  friendbot-funded specs fully in parallel (LOW).
+  described behavior the code no longer has, or had not yet had. The rewrite of this documentation,
+  `README.md`, `SECURITY.md`, `ARCHITECTURE.md` and `.env.example` works through them, and each one
+  stays open in the tracking file until an independent check against the code passes it. The other
+  3 are the test-coverage gaps the review recorded: no integration test ran a live DeFi exit end to
+  end (MEDIUM), the end-to-end suite covered only a direct single-signer close (LOW), and the
+  Playwright configuration reused an already running local server and ran friendbot-funded specs
+  in parallel (LOW). The live DeFi close tests in `tests/integration/`, the exchange, retry and
+  shared-account specs in `tests/e2e/`, and a `playwright.config.ts` that starts its own server and
+  runs one worker are the work that answers them.
 - **Not a bug**: 4 issues the fix work showed were already handled.
 
 ### What the CRITICAL fixes changed
@@ -106,20 +109,18 @@ Runtime dependencies are pinned by the committed `pnpm-lock.yaml` and installed 
 `--frozen-lockfile`. CI and the release workflow both run `pnpm audit --prod --audit-level high`
 and fail on any high or critical advisory in the production tree. The production tree carries none.
 
-One override in `pnpm-workspace.yaml` lifts `axios` to 1.20.0 under the Stellar SDK 16 copy that
-`@blend-capital/blend-sdk` pins, which would otherwise ship `axios` 1.18.0 and its advisories.
+Two overrides in `pnpm-workspace.yaml` remove advisories that the upstream version ranges would
+otherwise ship:
 
-No advisory is suppressed. `pnpm audit --prod` reports five below the gate, on 2026-10-09. All five
-sit under `@hot-wallet/sdk`, which the Stellar Wallets Kit's HOT Wallet module depends on. The app
-does not import that module (it is not in the kit's default modules), and none of the five has a
-fix inside the version ranges that pull it in:
+- `axios` 1.20.0 under the Stellar SDK 16 copy that `@blend-capital/blend-sdk` pins, which would
+  otherwise ship `axios` 1.18.0.
+- `jayson` 5.0.0 under `@solana/web3.js` 1, which drops the `uuid` 8 and `stream-json` 1 copies
+  that `jayson` 4 carries.
 
-| Advisory              | Package           | Severity | Why it stays                                                                  |
-| --------------------- | ----------------- | -------- | ----------------------------------------------------------------------------- |
-| `GHSA-848j-6mx2-7j84` | elliptic 6.6.1    | Low      | No patched release exists. The app signs with ed25519 through the Stellar SDK |
-| `GHSA-w5hq-g745-h8pq` | uuid 8.3.2        | Moderate | Fixed in uuid 11.1.1; `jayson` 4 requires uuid `^8.3.2`                       |
-| `GHSA-528h-pc64-c93x` | stream-json 1.9.1 | Moderate | Fixed in stream-json 3.5.0; `jayson` 4 requires stream-json `^1.9.1`          |
-| `GHSA-hqr4-qq8f-hg3x` | stream-json 1.9.1 | Moderate | Fixed in stream-json 3.6.0; same constraint                                   |
-| `GHSA-mjw6-4jj6-33hc` | stream-json 1.9.1 | Moderate | Fixed in stream-json 3.6.0; same constraint                                   |
+No advisory is suppressed. On 2026-10-09, `pnpm audit --prod` reports one advisory below the gate:
 
-The toolchain is Node.js 24 LTS and pnpm 12, with Stellar SDK 17, Next.js 16.3 and React 19.3.
+| Advisory              | Package        | Severity | Why it stays                                                                                                                                                                                               |
+| --------------------- | -------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GHSA-848j-6mx2-7j84` | elliptic 6.6.1 | Low      | No patched release exists. It sits under `@hot-wallet/sdk`, which only the Stellar Wallets Kit's HOT Wallet module uses; the app does not load that module, and signs with ed25519 through the Stellar SDK |
+
+The toolchain is Node.js 24 LTS and pnpm 12, with Stellar SDK 17, Next.js 16.4 and React 19.3.

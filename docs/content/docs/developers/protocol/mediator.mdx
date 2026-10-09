@@ -82,7 +82,10 @@ The browser builds the forward (`src/lib/mediator/forward.ts`):
    a view that shows only the 2 XLM funding.
 3. It pays everything above the mediator's minimum balance
    (`(2 + subentries + sponsoring - sponsored) × base reserve`), minus selling liabilities and the
-   fee. The merge leg then carries only that minimum and any unused fee.
+   fee. The merge leg then carries only that minimum, two base reserves (1 XLM at the current
+   0.5 XLM base reserve), plus whatever part of the fee the network did not charge. That remainder
+   reaches the exchange as an `ACCOUNT_MERGE`, and an exchange that credits only payments does not
+   credit it.
 4. It asks the server to co-sign and checks that the signed transaction has the same hash as the
    one it built.
 5. It runs the SEP-29 memo check, submits, and reconciles by hash whenever the outcome is unknown.
@@ -122,10 +125,10 @@ backoff, honoring `retry-after` up to 60 seconds.
 `MEDIATOR_SECRET` is a Stellar seed used only as an HMAC master key. It is never a signing key and
 never an account. The master is its 32-byte raw ed25519 seed, cached after first use.
 
-| Purpose               | HMAC-SHA-256 message                  |
-| --------------------- | ------------------------------------- |
-| Per-flow keypair seed | `mediator-flow-key:<nonceHex>`        |
-| Flow token MAC        | `mediator-flow-token-v2:<token body>` |
+| Purpose               | HMAC-SHA-256 message                                                                    |
+| --------------------- | --------------------------------------------------------------------------------------- |
+| Per-flow keypair seed | `mediator-flow-key:<nonceHex>`                                                          |
+| Flow token MAC        | `mediator-flow-token-v2:v2.<nonceHex>.<expiryMillis>.<network>.<destination>.<memoXdr>` |
 
 The 32-byte digest becomes the flow's ed25519 seed. Derivation is deterministic and stateless: the
 same nonce and master always give the same keypair, so no per-flow seed is stored and any server
@@ -165,7 +168,13 @@ Content-Type: application/json
 
 The route accepts an authentic token, expired or not, and re-signs it for the same nonce, so the
 same mediator, with the same network, destination and memo and a new 15-minute expiry. Renewal never
-widens what the token allows. It answers only while the mediator account exists:
+widens what the token allows. Success answers 200 with the same fields as a mint:
+
+```json
+{ "ok": true, "flowToken": "v2....", "mediatorPublicKey": "G...", "expiresAt": 1760000000000 }
+```
+
+The route renews a token only while the mediator account exists:
 
 | Code                  | Status | Condition                                         |
 | --------------------- | ------ | ------------------------------------------------- |
@@ -218,19 +227,24 @@ this order:
 
 ## Trust: what the server can do
 
-An honest server co-signs only a forward that meets the flow's terms. That bound holds against a
-leaked token, not against the server itself:
+An honest server co-signs only a forward that meets the flow's terms. The binding of destination,
+network and memo into the token limits what a token that leaks on its own, from browser storage or
+a log, can be used for. It does not limit these parties:
 
-- The server holds the master secret and chooses every nonce, so it derives every mediator key and
-  can move any balance that sits in a mediator.
-- The server serves the app code, so a compromised server can change the destination and memo the
-  page builds against before you sign.
+- **Whoever holds `MEDIATOR_SECRET`**: the operator, or anyone who compromises the server. The
+  holder derives every mediator key from the master and a nonce, so it can move any balance that
+  sits in a mediator without a token.
+- **A compromised server.** The server serves the app code, so it can change the destination and
+  memo the page builds against before you sign.
+- **Script running in the page**, from a cross-site scripting flaw or a malicious browser
+  extension. It calls `GET /api/mediator/sign` like the app does and mints its own flow for a
+  destination and memo of its choosing, so the binding does not constrain it.
 
 The client checks above (the returned terms, a valid mediator key, the signed hash) catch a bug or
 a cache answering for other terms. They do not stop a malicious server. An exchange close trusts
-the operator with the balance while it is in transit, and the exposure is bounded by how long the
-balance sits in the mediator: the merge and the forward run back to back. A direct close, to an
-address that needs no memo, never uses the mediator.
+the operator with the balance while it is in transit. That exposure is bounded by time, not by
+cryptography: it lasts from the merge into the mediator to the forward out of it, and the two run
+back to back. A direct close, to an address that needs no memo, never uses the mediator.
 
 ## Interrupted forwards
 

@@ -14,7 +14,6 @@ behind boundaries you can verify in the code.
 | `/api/mediator/sign`, `/api/mediator/reissue` | Mints an ephemeral mediator for one exchange close, renews its token, and co-signs one strictly validated two-operation forward |
 | `/api/plan` and its subroutes                 | Collects signatures for a shared-account close and merges them into one envelope, in memory                                     |
 | `/api/metrics`                                | Records page visits, funnel steps and verified closes; serves the aggregate behind a bearer token                               |
-| `/api/soroswap`                               | A same-origin proxy to the Soroswap aggregator's quote and build endpoints. No code in the app calls it                         |
 
 The deployment does **not**:
 
@@ -32,34 +31,39 @@ gates all run in the browser. There is no server-side positions proxy.
 | --------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | `MEDIATOR_SECRET`     | An HMAC master that derives every mediator key and signs flow tokens. It never signs a transaction itself and is never an account |
 | `METRICS_ADMIN_TOKEN` | Reads the aggregate metrics                                                                                                       |
-| `SOROSWAP_API_KEY`    | Spends the deployment's Soroswap aggregator quota through the proxy                                                               |
 
 ## The mediator and the operator
 
-An honest server co-signs only a forward that pays the destination and memo bound into the flow
-token, on the network bound into it, with a capped fee and a short time bound. That bound protects
-you against a leaked token. It does not hold against the server itself:
+An honest server co-signs only a forward that pays the destination bound into the flow token,
+with the memo bound into it, on the network bound into it, with a capped fee and a short time bound.
+That binding limits what a token that leaks on its own, from browser storage or a log, can be used
+for. It does not limit:
 
-- The server holds `MEDIATOR_SECRET` and chooses every nonce, so it derives every mediator key and
-  can move any balance that sits in a mediator.
-- The server serves the app code, so a compromised server can change the destination and memo the
-  page builds against before you sign.
+- **Whoever holds `MEDIATOR_SECRET`**: the operator, or anyone who compromises the server. The
+  holder derives every mediator key, so it can move any balance that sits in a mediator, whatever
+  any token says.
+- **A compromised server.** The server serves the app code, so it can change the destination and
+  memo the page builds against before you sign.
+- **Script running in the page**, from a cross-site scripting flaw or a malicious browser
+  extension. It can mint its own flow for a destination and memo of its choosing, so the binding
+  does not constrain it.
 
-An exchange close therefore trusts the operator with the balance while it is in transit. The
-exposure is bounded by time, not by cryptography: the merge into the mediator and the forward out
-of it run back to back. A direct close, to an address that needs no memo, never uses the mediator.
+An exchange close therefore trusts the operator with the balance while it is in transit. That
+exposure is bounded by time, not by cryptography: it lasts from the merge into the mediator to the
+forward out of it, and the two run back to back. A direct close, to an address that needs no memo,
+never uses the mediator.
 
 Full detail in [Mediator forward protocol](/docs/developers/protocol/mediator).
 
 ## Trust boundaries
 
-| Boundary                    | Trust                       | What bounds it                                                                                                                                                                                                                                                                         |
-| --------------------------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Browser**                 | Highest                     | Your key lives here or in your wallet and nowhere else                                                                                                                                                                                                                                 |
-| **Wallet**                  | Separate signer             | Shows its own confirmation. The app submits only an envelope whose hash equals the transaction it built and checked, carrying a valid signature from the connected key                                                                                                                 |
-| **Server**                  | Trusted for exchange closes | Holds the HMAC master that derives every mediator key, and serves the app code. A compromised server can redirect an exchange close in flight. It never receives a user key                                                                                                            |
-| **Horizon and Soroban RPC** | Untrusted for integrity     | They supply the state and simulations a plan is built from. Each classic batch is rebuilt from a fresh audit, each Soroban step is re-simulated, and before every signature the target, the authorization tree and the fee are checked, so a lying endpoint cannot widen what you sign |
-| **On-chain contracts**      | Untrusted                   | Only pinned entry points can be the root of a signed call, each held to the exact authorization tree its call needs and a fee cap                                                                                                                                                      |
+| Boundary                    | Trust                       | What bounds it                                                                                                                                                                                                                                                                                                                                                |
+| --------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Browser**                 | Highest                     | Your key lives here or in your wallet and nowhere else                                                                                                                                                                                                                                                                                                        |
+| **Wallet**                  | Separate signer             | Shows its own confirmation. The app submits only an envelope whose hash equals the transaction it built and checked, carrying a valid signature from the connected key                                                                                                                                                                                        |
+| **Server**                  | Trusted for exchange closes | Holds `MEDIATOR_SECRET`, the HMAC master. Whoever holds it, the operator or anyone who compromises the server, derives every mediator key and can move any balance sitting in a mediator between the merge and the forward. The server also serves the app code, so a compromised server can redirect an exchange close in flight. It never receives your key |
+| **Horizon and Soroban RPC** | Untrusted for integrity     | They supply the state and simulations a plan is built from. Each classic batch is rebuilt from a fresh audit, each Soroban step is re-simulated, and before every signature the target, the authorization tree and the fee are checked, so a lying endpoint cannot widen what you sign                                                                        |
+| **On-chain contracts**      | Untrusted                   | Only pinned entry points can be the root of a signed call, each held to the exact authorization tree its call needs and a fee cap                                                                                                                                                                                                                             |
 
 ## Assets
 
@@ -67,8 +71,8 @@ In rough order of severity:
 
 - **Your account and its funds.** A close is irreversible, so the destination, the memo and the
   disposal of every balance are the primary asset.
-- **A balance in transit through a mediator.** Exposed to the operator for the time between the
-  merge and the forward.
+- **A balance in transit through a mediator.** Exposed to whoever holds `MEDIATOR_SECRET` for the
+  time between the merge and the forward.
 - **The mediator HMAC master.** Whoever holds it can derive every mediator key.
 - **Signing keys.** Your key, which never reaches the server, and each flow's mediator key,
   derived on demand and never stored.
@@ -86,7 +90,7 @@ In rough order of severity:
 | **A hostile wallet or extension** returning a different envelope                                              | `verifySignedEnvelope` refuses any envelope whose hash differs from the transaction the app built, or that carries no valid signature from the connected key                                                                                                                                                                                                                         |
 | **A network attacker in the middle**                                                                          | HTTPS from the TLS-terminating proxy, HSTS in production, and a CSP that lists every host the browser is allowed to contact                                                                                                                                                                                                                                                          |
 | **A malicious co-signer** trying to get a different transaction signed, or to bloat the request               | Signatures merge only when the transaction hash matches the stored one and the signature verifies against one of the account's signers. Deduplication keys on the recovered signer, the envelope stops at the threshold, and the app checks the bundle against the live account before submitting                                                                                    |
-| **Someone holding a leaked flow token**                                                                       | The co-signer signs only a forward to the committed destination, with the committed memo, on the committed network, with a fee of at most 2,000,000 stroops and no preconditions beyond a short time bound                                                                                                                                                                           |
+| **Someone holding a flow token leaked from storage or a log**                                                 | The co-signer signs only a forward to the committed destination, with the committed memo, on the committed network, with a fee of at most 2,000,000 stroops and no preconditions beyond a short time bound                                                                                                                                                                           |
 | **A manipulated market**                                                                                      | A conversion whose full-size price is more than 2% worse than a reference trade of 1/1000 of the balance is never sold without your per-token decision. Minimum outputs carry the configured slippage (1% by default), and a fresh quote worse than the reviewed one stops the close                                                                                                 |
 | **A supply-chain attacker**                                                                                   | A committed lockfile installed with `--frozen-lockfile`, a dependency audit in CI, a digest-pinned base image, and a CSP that loads no third-party script origin                                                                                                                                                                                                                     |
 | **Abuse of the API routes**                                                                                   | Every route is rate-limited per client address, request bodies are capped (and capped again at the proxy), and the relay accepts only a close already signed by one of the account's signers                                                                                                                                                                                         |
@@ -100,8 +104,10 @@ In rough order of severity:
   native XLM, quoted conversions of credit balances, and XLM claimed from claimable balances, or
   when it moves any holding the app cannot price.
 - **Scam-token checks.** Four checks run over the account's assets and standalone tokens:
-  - _Symbol collision_: a well-known symbol (XLM, USDC, EURC, AQUA, BLND) from an issuer other
-    than its canonical one on this network, including any credit asset coded XLM.
+  - _Symbol collision_: a well-known symbol (XLM, USDC, EURC, AQUA, BLND) from an issuer or
+    contract other than its canonical one, where the network has a canonical issuer for that
+    symbol, and any credit asset coded XLM. On testnet, AQUA and BLND have no canonical issuer, so
+    the check does not flag them there.
   - _Look-alike symbol_: within an edit distance of 2 of one of those symbols.
   - _Suspicious characters_: a symbol with characters outside A to Z, a to z and 0 to 9, or a token
     name with hidden or text-reordering characters.
@@ -135,8 +141,6 @@ The browser talks directly to these hosts, and to nothing else outside the deplo
 | WalletConnect and Reown hosts                                  | Only when you pick WalletConnect or sign with a restored WalletConnect session | The relay carries the encrypted session. AppKit sends its mandatory initialization and connection events to `pulse.walletconnect.org`, including the page URL |
 | Your wallet's own services                                     | Whatever the wallet you pick does                                              | Outside the app's control                                                                                                                                     |
 
-`api.soroswap.finance` is also in the CSP's `connect-src`, but no code in the browser calls it.
-
 ### Usage metrics
 
 The app sends first-party usage events to its own `/api/metrics`, never to a third party:
@@ -159,15 +163,6 @@ the verified closes in `closes.jsonl` and the counts in `counters.json` under `M
 `GET /api/metrics` answers 503 until `METRICS_ADMIN_TOKEN` is set to at least 16 characters, and 401
 without the matching `Authorization: Bearer` token.
 
-### The Soroswap proxy
-
-`POST /api/soroswap` forwards two operations, `quote` and `build`, to the aggregator, adding the
-server's API key so it never reaches the browser. It refuses a request without an `Origin` header
-or from another origin (403), allows 5 requests per 60 seconds per client address, caps the request
-body at 16,384 bytes, abandons an upstream that has not answered in 15 seconds, and refuses an
-upstream answer over 1,000,000 bytes. The app itself does not call it: conversions go through the
-pinned Soroswap router on chain.
-
 ## Content Security Policy
 
 Built in `src/lib/config/csp.ts` and set on every document response by `src/proxy.ts` (Next 16's
@@ -176,18 +171,18 @@ their caps apply. `next.config.ts` sets the static headers on every response: `X
 DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, a `Permissions-Policy`
 that denies camera, microphone and geolocation, and HSTS in production.
 
-| Directive                 | Production value                                                                                                                                                                     |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `default-src`             | `'self'`                                                                                                                                                                             |
-| `connect-src`             | `'self'`, Horizon, Soroban RPC and its failovers and friendbot (derived from `NETWORKS`), the Aquarius API on both networks, the Soroswap API, and the WalletConnect and Reown hosts |
-| `script-src`              | `'self' 'unsafe-inline' 'wasm-unsafe-eval'`                                                                                                                                          |
-| `style-src`               | `'self' 'unsafe-inline'`                                                                                                                                                             |
-| `img-src`                 | `'self' data:` and the wallet-icon hosts                                                                                                                                             |
-| `font-src`                | `'self'` and `fonts.reown.com`                                                                                                                                                       |
-| `frame-src`               | `'self'` and the WalletConnect verify hosts                                                                                                                                          |
-| `object-src`              | `'none'`                                                                                                                                                                             |
-| `frame-ancestors`         | `'none'`                                                                                                                                                                             |
-| `base-uri`, `form-action` | `'self'`                                                                                                                                                                             |
+| Directive                 | Production value                                                                                                                                                   |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `default-src`             | `'self'`                                                                                                                                                           |
+| `connect-src`             | `'self'`, Horizon, Soroban RPC and its failovers and friendbot (derived from `NETWORKS`), the Aquarius API on both networks, and the WalletConnect and Reown hosts |
+| `script-src`              | `'self' 'unsafe-inline' 'wasm-unsafe-eval'`                                                                                                                        |
+| `style-src`               | `'self' 'unsafe-inline'`                                                                                                                                           |
+| `img-src`                 | `'self' data:` and the wallet-icon hosts                                                                                                                           |
+| `font-src`                | `'self'` and `fonts.reown.com`                                                                                                                                     |
+| `frame-src`               | `'self'` and the WalletConnect verify hosts                                                                                                                        |
+| `object-src`              | `'none'`                                                                                                                                                           |
+| `frame-ancestors`         | `'none'`                                                                                                                                                           |
+| `base-uri`, `form-action` | `'self'`                                                                                                                                                           |
 
 `connect-src` is derived from `NETWORKS` in `src/lib/config/networks.ts`, so adding a network
 endpoint there adds it to the policy.

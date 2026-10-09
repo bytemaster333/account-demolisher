@@ -49,8 +49,9 @@ RUN pnpm build
 FROM node AS runner
 WORKDIR /app
 ENV NODE_ENV=production
-# the durable metrics store (closes ledger + counters). the only path the runtime
-# user may write to; mount a volume here so it survives a container recreate.
+# the durable metrics store (closes ledger + counters). the only directory under
+# /app the runtime user may write to, since everything else is copied in as root;
+# mount a volume here so it survives a container recreate.
 ENV METRICS_DB_DIR=/app/data
 RUN useradd --system --uid 1001 --create-home appuser \
   && mkdir -p /app/data \
