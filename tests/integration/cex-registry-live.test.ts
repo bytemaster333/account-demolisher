@@ -109,6 +109,18 @@ describe("integration: exchange registry against the live directory and mainnet"
         problems.push(`${cex.address} (${cex.name}): the account does not exist on mainnet`);
         continue;
       }
+      // an owner-approved dormant entry passes only while it is unchanged; once
+      // it moves, the exception is out of date and the entry needs a new look
+      if (cex.dormantSinceLedger !== undefined) {
+        if (account.lastModifiedLedger !== cex.dormantSinceLedger) {
+          problems.push(
+            `${cex.address} (${cex.name}): recorded dormant since ledger ` +
+              `${String(cex.dormantSinceLedger)}, but last changed at ledger ` +
+              `${String(account.lastModifiedLedger)}; verify it again and update dormantSinceLedger`,
+          );
+        }
+        continue;
+      }
       if (account.lastModifiedTime === null) {
         if (account.lastModifiedLedger >= elder) {
           throw new Error(`horizon gave no time for ${cex.address}'s ledger inside its history`);

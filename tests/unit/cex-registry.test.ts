@@ -103,6 +103,18 @@ describe("KNOWN_CEXES registry invariants", () => {
     expect(byName.get("Binance Deposits")).toBe("id");
     expect(byName.get("Bitstamp")).toBe("id");
   });
+
+  // a dormancy exception switches off the live check's activity limit, so the
+  // list of excepted accounts is exactly the one the owner approved (L-24)
+  it("marks only the owner-kept Upbit account as known dormant", () => {
+    const dormant = KNOWN_CEXES.filter((c) => c.dormantSinceLedger !== undefined).map((c) => [
+      c.address,
+      c.dormantSinceLedger,
+    ]);
+    expect(dormant).toEqual([
+      ["GAW4E6NGM4NPNX2LO2BKDPCCTUX3FJLKWHPU4VQPGBIBQGD6JTVF5C7C", 56030614],
+    ]);
+  });
 });
 
 describe("requireMemoEnforcement, non-CEX and requirement gating", () => {

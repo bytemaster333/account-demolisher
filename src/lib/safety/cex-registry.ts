@@ -21,6 +21,12 @@ export interface CexInfo {
   readonly verifiedAt: string;
   // citation for the address+policy
   readonly source: string;
+  // set only on a deposit address the owner chose to keep although horizon shows
+  // the account unchanged since this ledger. the scheduled live check
+  // (tests/integration/cex-registry-live.test.ts) skips its activity limit only
+  // while the account still sits at exactly this ledger, so any later change to
+  // the account is reported again instead of hiding behind the exception
+  readonly dormantSinceLedger?: number;
 }
 
 const STELLAR_EXPERT_DIRECTORY =
@@ -84,6 +90,8 @@ export const KNOWN_CEXES: readonly CexInfo[] = [
     memoType: "text",
     verifiedAt: "2026-10-06",
     source: `${STELLAR_EXPERT_DIRECTORY}: name "Upbit", tags exchange + memo-required, checked 2026-10-06. Upbit publishes no deposit address (it shows one only to logged-in users); horizon shows the account unchanged since ledger 56030614, so the active deposit account is the "Upbit Deposits" entry below.`,
+    // kept by owner decision 2026-10-06 although dormant (L-24)
+    dormantSinceLedger: 56030614,
   },
   // the active upbit deposit account (owner decision 2026-10-06). upbit shows
   // deposit addresses only to logged-in users, so there is no upbit-published
