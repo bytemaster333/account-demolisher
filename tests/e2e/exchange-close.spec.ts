@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { Keypair, Operation } from "@stellar/stellar-sdk";
+import { Asset, Keypair, Operation } from "@stellar/stellar-sdk";
 
 import {
   accountExists,
@@ -145,6 +145,50 @@ test("a forward the mediator could not co-sign finishes on Retry", async ({ page
   await expect(closedHeading(page)).toBeVisible({ timeout: 180_000 });
 
   await expectForwardedToExchange(source, exchange, depositMemo);
+  const received = (await nativeBalance(exchange.publicKey())) - exchangeBefore;
+  expect(received).toBeLessThanOrEqual(sourceBalance);
+  expect(received).toBeGreaterThan(sourceBalance - 1_0000000n);
+});
+
+// an account with little more than its reserves: the temporary account's 2 XLM
+// starting balance only fits once the close has removed the account's
+// trustlines and data entry, so the funding has to come after them in the
+// batch. funding it first fails op_underfunded and nothing reaches the exchange.
+test("closes a near-reserve account into a memo-required deposit account", async ({ page }) => {
+  test.setTimeout(240_000);
+
+  const funder = Keypair.random();
+  const issuer = Keypair.random();
+  const source = Keypair.random();
+  const exchange = Keypair.random();
+  await friendbotFund(funder.publicKey());
+  await friendbotFund(issuer.publicKey());
+  await friendbotFund(exchange.publicKey());
+  await submitAs(exchange, [Operation.manageData({ name: "config.memo_required", value: "1" })]);
+  // 4.6 XLM over five entries: 3 XLM of it is reserve until they are removed
+  await submitAs(
+    funder,
+    [
+      Operation.createAccount({ destination: source.publicKey(), startingBalance: "4.6" }),
+      ...["AAA", "BBB", "CCC"].map((code) =>
+        Operation.changeTrust({
+          asset: new Asset(code, issuer.publicKey()),
+          source: source.publicKey(),
+        }),
+      ),
+      Operation.manageData({ name: "note", value: "1", source: source.publicKey() }),
+    ],
+    [source],
+  );
+  const depositMemo = `e2e-low-${Date.now().toString(36)}`;
+  const sourceBalance = await nativeBalance(source.publicKey());
+  expect(sourceBalance).toBe(4_6000000n);
+  const exchangeBefore = await nativeBalance(exchange.publicKey());
+
+  await startExchangeClose(page, source, exchange, depositMemo);
+  await expect(closedHeading(page)).toBeVisible({ timeout: 180_000 });
+  await expectForwardedToExchange(source, exchange, depositMemo);
+
   const received = (await nativeBalance(exchange.publicKey())) - exchangeBefore;
   expect(received).toBeLessThanOrEqual(sourceBalance);
   expect(received).toBeGreaterThan(sourceBalance - 1_0000000n);
