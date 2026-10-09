@@ -8,7 +8,11 @@ import { Horizon } from "@stellar/stellar-sdk";
 import { createActor, waitFor, type SnapshotFrom } from "xstate";
 
 import type { NetworkConfig } from "@/lib/config/networks";
-import { pageFlowMachine, type PageFlowInput } from "@/lib/orchestrator/page-flow-machine";
+import {
+  confirmBlockers,
+  pageFlowMachine,
+  type PageFlowInput,
+} from "@/lib/orchestrator/page-flow-machine";
 import type { Connector } from "@/lib/wallet/connector";
 
 export type FlowSnapshot = SnapshotFrom<typeof pageFlowMachine>;
@@ -32,15 +36,13 @@ export async function reachReview(actor: FlowActor, input: PageFlowInput): Promi
 }
 
 // what the review shows the user that keeps confirm disabled, in one list, so a
-// failing test names the reason instead of timing out on a refused CONFIRM
+// failing test names the reason instead of timing out on a refused CONFIRM.
+// confirmBlockers is the list the machine's own CONFIRM guard checks.
 export function reviewProblems(s: FlowSnapshot): string[] {
   const c = s.context;
   return [
     ...(s.matches("failed") ? [`failed (${c.failureKind}): ${c.error}`] : []),
-    ...c.reviewBlockers.map((b) => `blocker: ${b}`),
-    ...c.unroutableCredits.map((u) => `unroutable credit: ${u.key}`),
-    ...c.refusedConversions.map((r) => `refused conversion ${r.key}: ${r.reason}`),
-    ...c.emissionForfeits.map((f) => `emission forfeit ${f.poolId}: ${f.reason}`),
+    ...confirmBlockers(c),
   ];
 }
 
@@ -53,6 +55,12 @@ export function confirm(actor: FlowActor): void {
     typed: input.destination.slice(-4),
     expected: { publicKey: input.publicKey, networkId: input.network.id },
   });
+  // a refused CONFIRM leaves the review on screen; say so instead of waiting
+  // for a run that never started
+  const after = actor.getSnapshot();
+  if (after.matches("awaiting_confirmation")) {
+    throw new Error(`CONFIRM was refused:\n${reviewProblems(after).join("\n")}`);
+  }
 }
 
 export async function waitForOutcome(actor: FlowActor): Promise<FlowSnapshot> {
