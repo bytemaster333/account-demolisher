@@ -17,6 +17,7 @@ import {
   estimateBackstopEmissions,
   latestQueueUnlocksAt,
   loadBackstopDeposits,
+  loadPoolAndUser,
   loadUserPositions,
   loadUserPositionsForPool,
   type BackstopDepositLoader,
@@ -28,6 +29,7 @@ import {
   BLEND_BACKSTOP_V1_MAINNET_ID,
 } from "@/lib/adapters/blend/constants";
 import { MAINNET, TESTNET } from "@/lib/config/networks";
+import { isFailoverError } from "@/lib/soroban/rpc-client";
 
 import { NOW_SECONDS, loaderFor, makePool, supplyEmissions } from "./blend-fixtures";
 
@@ -182,6 +184,66 @@ describe("defaultBlendPoolLoader names both version attempts (L-15)", () => {
       .catch((e: unknown) => e);
     expect((err as Error).message).toContain("V2 attempt=v2 reserve layout");
     expect((err as Error).message).toContain("V1 attempt=v1 reserve layout");
+  });
+});
+
+// the shape the sdk's http client rejects with when the rpc host rate-limits
+function rateLimited(): Error {
+  return Object.assign(new Error("Request failed with status code 429"), {
+    response: { status: 429 },
+  });
+}
+
+describe("defaultBlendPoolLoader on a rate-limited endpoint (NP5-34)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  // a v1 pool fails the v2 decode on every host ("ReserveConfig scvMap value
+  // malformed", it has no supply_cap or enabled) and is read on the v1 attempt
+  it("lets a 429 on the v1 attempt fail over to the next endpoint", async () => {
+    const v1Pool = makePool({
+      version: "V1",
+      poolId: POOL,
+      backstop: BLEND_BACKSTOP_V1_MAINNET_ID,
+      reserves: [{ assetId: XLM_SAC, index: 0, dRate: 1_000_000_000n, bRate: 1_000_000_000n }],
+    });
+    const v2 = vi
+      .spyOn(PoolV2, "load")
+      .mockRejectedValue(new Error("ReserveConfig scvMap value malformed"));
+    const v1 = vi.spyOn(PoolV1, "load").mockImplementation(async (network) => {
+      if (network.rpc === MAINNET.rpc) throw rateLimited();
+      return v1Pool as PoolV1;
+    });
+
+    const { pool } = await loadPoolAndUser(MAINNET, POOL, USER);
+
+    expect(pool).toBe(v1Pool);
+    expect(v1.mock.calls.map(([n]) => n.rpc)).toEqual([MAINNET.rpc, MAINNET.rpcFallbacks![0]]);
+    expect(v2).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not read a 429 on the v2 attempt as a v1 pool", async () => {
+    const v2 = vi.spyOn(PoolV2, "load").mockRejectedValue(rateLimited());
+    const v1 = vi.spyOn(PoolV1, "load").mockRejectedValue(new Error("v1 must not be read"));
+
+    const err: unknown = await defaultBlendPoolLoader
+      .load({ rpc: MAINNET.rpc, passphrase: MAINNET.passphrase }, POOL)
+      .catch((e: unknown) => e);
+
+    expect(isFailoverError(err)).toBe(true);
+    expect(v1).not.toHaveBeenCalled();
+    expect(v2).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports the rate limit, not the v2 decode, once every endpoint refused", async () => {
+    vi.spyOn(PoolV2, "load").mockRejectedValue(new Error("ReserveConfig scvMap value malformed"));
+    vi.spyOn(PoolV1, "load").mockRejectedValue(rateLimited());
+
+    const res = await loadUserPositions(MAINNET, USER, [POOL]);
+
+    expect(res.positions).toEqual([]);
+    expect(res.errors).toEqual([
+      { poolId: POOL, stage: "pool", message: "Request failed with status code 429" },
+    ]);
   });
 });
 

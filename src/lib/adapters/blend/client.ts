@@ -62,15 +62,26 @@ export interface BlendPoolLoader {
 }
 
 // SDK-backed loader. PoolV2.load and PoolV1.load each reject the other version's
-// reserve layout, so whichever succeeds is the pool's real version.
+// reserve layout, so whichever succeeds is the pool's real version. a v1 pool
+// always fails the v2 decode ("ReserveConfig scvMap value malformed": its
+// reserves carry no supply_cap or enabled).
+//
+// a host fault (429, 5xx, a dropped connection) on either attempt is thrown as
+// it is, so withBlendFailover recognises it and runs the load on the next
+// endpoint. wrapped in the two-attempt message it no longer reads as a rate
+// limit, and a v1 pool on a throttled host was reported as a load failure
+// without the other endpoints ever being tried.
 export const defaultBlendPoolLoader: BlendPoolLoader = {
   async load(network: BlendSdkNetwork, poolId: string): Promise<Pool> {
     try {
       return await PoolV2.load(network, poolId);
     } catch (errV2) {
+      // a host fault says nothing about the pool's version
+      if (isFailoverError(errV2)) throw errV2;
       try {
         return await PoolV1.load(network, poolId);
       } catch (errV1) {
+        if (isFailoverError(errV1)) throw errV1;
         throw new Error(
           `Pool.load failed for ${poolId}: V2 attempt=${errorMessage(errV2)}; ` +
             `V1 attempt=${errorMessage(errV1)}`,
