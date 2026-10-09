@@ -85,6 +85,14 @@ test("finds an approval on /allowances and revokes it on chain", async ({ page }
   const revoke = page.getByTestId(`revoke-button-${XLM_SAC}-${spender}`);
   await expect(revoke).toBeEnabled();
   await revoke.click();
+  // the revoke is built and its fee shown before anything is signed
+  const rowId = `${XLM_SAC}-${spender}`;
+  await expect(page.getByTestId(`revoke-fee-${rowId}`)).toContainText(/Network fee up to \d/, {
+    timeout: 60_000,
+  });
+  const sign = page.getByTestId(`revoke-sign-${rowId}`);
+  await expect(sign).toBeEnabled();
+  await sign.click();
   // once the revoke lands the viewer scans again, and the approval is no longer
   // listed as active
   await expect(page.getByText("No active allowances found")).toBeVisible({ timeout: 120_000 });
