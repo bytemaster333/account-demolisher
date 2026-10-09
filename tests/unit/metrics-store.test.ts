@@ -177,6 +177,55 @@ describe("MetricsStore durability (L-96)", () => {
   });
 });
 
+describe("MetricsStore torn append in a running process (NP5-61)", () => {
+  it("keeps a close appended after an earlier append failed part way", async () => {
+    const store = new MetricsStore(dir);
+    await store.snapshot();
+    const ledger = path.join(dir, "closes.jsonl");
+    const realOpen = fs.open.bind(fs);
+    // the first append to the ledger writes half its line, then the disk fills
+    let failed = false;
+    const open = vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
+      const fh = await realOpen(file, flags, mode);
+      if (failed || file !== ledger) return fh;
+      failed = true;
+      const tornWrite = async (text: string): Promise<never> => {
+        await fh.write(text.slice(0, Math.floor(text.length / 2)));
+        throw Object.assign(new Error("ENOSPC: no space left on device, write"), {
+          code: "ENOSPC",
+        });
+      };
+      return new Proxy(fh, {
+        get(target, prop) {
+          if (prop === "writeFile") return tornWrite;
+          const value: unknown = Reflect.get(target, prop, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    });
+    try {
+      await expect(store.recordClose(close("3".repeat(64), "mainnet", "5"))).rejects.toThrow(
+        /ENOSPC/,
+      );
+      expect(failed).toBe(true);
+      expect((await store.recordClose(close("4".repeat(64), "mainnet", "7"))).added).toBe(true);
+    } finally {
+      open.mockRestore();
+    }
+
+    // the torn fragment, then the next close on a line of its own
+    const lines = (await fs.readFile(ledger, "utf8")).split("\n");
+    expect(lines).toHaveLength(3);
+    expect(lines[2]).toBe("");
+    expect(JSON.parse(lines[1]!)).toMatchObject({ txHash: "4".repeat(64) });
+
+    const reloaded = new MetricsStore(dir);
+    expect(await reloaded.hasClose("4".repeat(64))).toBe(true);
+    expect(await reloaded.hasClose("3".repeat(64))).toBe(false);
+    expect((await reloaded.snapshot()).closes.reclaimedStroops.total).toBe("7");
+  });
+});
+
 describe("MetricsStore daily close caps (M-52)", () => {
   it("stops counting a network's closes for the day at its cap and logs it", async () => {
     // 199 closes already on disk from before a restart (written directly: 199

@@ -85,10 +85,21 @@ function dayOf(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10);
 }
 
-async function appendDurably(file: string, text: string): Promise<void> {
-  const fh = await fs.open(file, "a");
+// append one line and fsync it. the file is checked for a torn tail first: a
+// crash, or an append that failed part way (ENOSPC, say) in this same process,
+// leaves a partial line without its newline, and gluing the next line onto it
+// would lose that line on the next load as well.
+async function appendLineDurably(file: string, line: string): Promise<void> {
+  const fh = await fs.open(file, "a+");
   try {
-    await fh.writeFile(text, "utf8");
+    const { size } = await fh.stat();
+    let lead = "";
+    if (size > 0) {
+      const last = Buffer.alloc(1);
+      await fh.read(last, 0, 1, size - 1);
+      if (last[0] !== 0x0a) lead = "\n";
+    }
+    await fh.writeFile(`${lead}${line}\n`, "utf8");
     await fh.sync();
   } finally {
     await fh.close();
@@ -145,18 +156,13 @@ export class MetricsStore {
       try {
         rec = JSON.parse(trimmed) as VerifiedClose;
       } catch {
-        // a torn final line (crash mid-append) is skipped; the ledger is
-        // append-only, so only the last line can be partial
+        // a torn line (an append cut short by a crash or a full disk) is
+        // skipped; the append after it starts on a line of its own
         continue;
       }
       if (rec && typeof rec.txHash === "string" && !this.hashes.has(rec.txHash)) {
         this.remember(rec);
       }
-    }
-    // after a torn tail the file doesn't end in a newline; restore it so the
-    // next append starts its own line instead of gluing onto the torn one
-    if (raw.length > 0 && !raw.endsWith("\n")) {
-      await appendDurably(closesPath, "\n");
     }
 
     const countersPath = path.join(this.dir, COUNTERS_FILE);
@@ -262,7 +268,7 @@ export class MetricsStore {
         );
         return { added: false, reason: "daily_cap" };
       }
-      await appendDurably(path.join(this.dir, CLOSES_FILE), JSON.stringify(close) + "\n");
+      await appendLineDurably(path.join(this.dir, CLOSES_FILE), JSON.stringify(close));
       this.remember(close);
       return { added: true };
     });
