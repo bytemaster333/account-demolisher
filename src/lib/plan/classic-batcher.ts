@@ -1031,23 +1031,8 @@ export function unroutableCredits(
       paths,
     ),
   );
-  const held = new Map<string, { asset: { code: string; issuer: string }; amount: bigint }>();
-  for (const b of audit.balances) {
-    if (b.asset.kind !== "credit") continue;
-    held.set(pathKey(b.asset), { asset: b.asset, amount: toStroops(b.amount) });
-  }
-  const claims = planClaimableBalances(audit, extra.claimableBalanceIds, {
-    ...(extra.feePerOpStroops !== undefined ? { feePerOpStroops: extra.feePerOpStroops } : {}),
-  }).claimed;
-  for (const cb of claims) {
-    // the account's own asset is not held once claimed
-    if (cb.asset.kind !== "credit" || cb.asset.issuer === audit.accountId) continue;
-    const key = pathKey(cb.asset);
-    const entry = held.get(key) ?? { asset: cb.asset, amount: 0n };
-    held.set(key, { asset: entry.asset, amount: entry.amount + toStroops(cb.amount) });
-  }
   const out: UnroutableCredit[] = [];
-  for (const [key, { asset, amount }] of held) {
+  for (const [key, { asset, amount }] of heldCredits(audit, extra)) {
     if (amount <= 0n) continue;
     const disposal = decide(key);
     if (disposal.kind !== "blocked") continue;
@@ -1061,6 +1046,75 @@ export function unroutableCredits(
     });
   }
   return out;
+}
+
+// a credit balance the close sells for XLM unless the user picks another
+// disposal: it has a market path within the price-impact cap (or one the user
+// accepted above it). the user may send it as-is or return it to its issuer
+// instead, which the batcher ranks above the path.
+export interface RoutableCredit {
+  readonly key: string;
+  readonly code: string;
+  readonly issuer: string;
+  // the balance plus what this close claims into it
+  readonly amount: string;
+  // set at preview time: true when the merge destination can take the whole
+  // balance as-is, so "send to destination" can be offered
+  readonly destinationTrusts?: boolean;
+}
+
+// credit balances the close would convert when no explicit send or return choice
+// is made for them, whether or not one is made now, so the choice can be undone
+export function routableCredits(
+  audit: AccountAudit,
+  paths: ReadonlyMap<string, PathResultRef> | undefined,
+  extra: CreditPolicyOptions = {},
+): readonly RoutableCredit[] {
+  const decide = memoizedDecision(
+    disposalPolicy(
+      {
+        ...(extra.acceptedPriceImpactAssetKeys
+          ? { acceptedPriceImpactAssetKeys: extra.acceptedPriceImpactAssetKeys }
+          : {}),
+        ...(extra.reviewedReferenceQuotes
+          ? { reviewedReferenceQuotes: extra.reviewedReferenceQuotes }
+          : {}),
+        ...(extra.reviewedConversionQuotes
+          ? { reviewedConversionQuotes: extra.reviewedConversionQuotes }
+          : {}),
+      },
+      paths,
+    ),
+  );
+  const out: RoutableCredit[] = [];
+  for (const [key, { asset, amount }] of heldCredits(audit, extra)) {
+    if (amount <= 0n || decide(key).kind !== "convert") continue;
+    out.push({ key, code: asset.code, issuer: asset.issuer, amount: stroopsToDecimal(amount) });
+  }
+  return out;
+}
+
+// every credit balance by path key, plus what the close claims into it. the
+// account's own asset is not held once claimed.
+function heldCredits(
+  audit: AccountAudit,
+  extra: CreditPolicyOptions,
+): ReadonlyMap<string, { asset: { code: string; issuer: string }; amount: bigint }> {
+  const held = new Map<string, { asset: { code: string; issuer: string }; amount: bigint }>();
+  for (const b of audit.balances) {
+    if (b.asset.kind !== "credit") continue;
+    held.set(pathKey(b.asset), { asset: b.asset, amount: toStroops(b.amount) });
+  }
+  const claims = planClaimableBalances(audit, extra.claimableBalanceIds, {
+    ...(extra.feePerOpStroops !== undefined ? { feePerOpStroops: extra.feePerOpStroops } : {}),
+  }).claimed;
+  for (const cb of claims) {
+    if (cb.asset.kind !== "credit" || cb.asset.issuer === audit.accountId) continue;
+    const key = pathKey(cb.asset);
+    const entry = held.get(key) ?? { asset: cb.asset, amount: 0n };
+    held.set(key, { asset: entry.asset, amount: entry.amount + toStroops(cb.amount) });
+  }
+  return held;
 }
 
 export interface ClassicUnwindPlan {

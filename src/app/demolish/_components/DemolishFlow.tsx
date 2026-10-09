@@ -73,6 +73,7 @@ import { IdleConnect } from "./IdleConnect";
 import { LeftLoadingCard } from "./LoadingCard";
 import { MultisigContextBar } from "./MultisigContextBar";
 import { ResolvePanel, type CreditChoice, type HeldTokenChoice } from "./ResolvePanel";
+import type { ConversionChoice, ConversionChoices } from "./ConversionChoicesCard";
 import { ReviewPanel } from "./ReviewPanel";
 import { DemolishStatusWidget, type SigningMode } from "./StatusWidget";
 import { StepIndicator } from "./StepIndicator";
@@ -410,6 +411,9 @@ export function DemolishFlow(): React.JSX.Element {
   const showTokenSection =
     ctx.heldTokens.length > 0 || ctx.unreadableHeldTokens.length > 0 || ctx.heldTokenScanFailed;
   const hasClaimChoices = claimChoices !== undefined && claimChoices.balances.length > 0;
+  // a shared account's bundle sells nothing, so it has no conversions to choose
+  // for
+  const hasConversionChoices = !multisigRequired && ctx.routableCredits.length > 0;
   const hasAckItems =
     hasScam ||
     hasDiscovery ||
@@ -418,6 +422,7 @@ export function DemolishFlow(): React.JSX.Element {
     isHighValue ||
     showTokenSection ||
     hasClaimChoices ||
+    hasConversionChoices ||
     planNotes.length > 0;
 
   // initialise the confirm stage per built plan: resolve blockers first, then
@@ -909,6 +914,45 @@ export function DemolishFlow(): React.JSX.Element {
     });
   }, []);
 
+  // a credit the close can sell within the price cap: keep selling it (an
+  // accepted over-cap price stays accepted), or send or return it instead
+  const onConversionChoice = useCallback(
+    (key: string, choice: ConversionChoice) => {
+      if (choice === "destination" || choice === "issuer") {
+        onSetDisposal(key, choice);
+        return;
+      }
+      setForm((f) => ({
+        ...f,
+        returnToIssuer: f.returnToIssuer.filter((k) => k !== key),
+        sendToDestination: f.sendToDestination.filter((k) => k !== key),
+      }));
+    },
+    [onSetDisposal],
+  );
+  const conversionChoices = useMemo<ConversionChoices | undefined>(
+    () =>
+      !hasConversionChoices
+        ? undefined
+        : {
+            credits: ctx.routableCredits,
+            choiceFor: (key) =>
+              form.sendToDestination.includes(key)
+                ? "destination"
+                : form.returnToIssuer.includes(key)
+                  ? "issuer"
+                  : "sell",
+            onChoose: onConversionChoice,
+          },
+    [
+      hasConversionChoices,
+      ctx.routableCredits,
+      form.sendToDestination,
+      form.returnToIssuer,
+      onConversionChoice,
+    ],
+  );
+
   // one answer per refused token: the new rate, as-is, or left on the account
   const onHeldChoice = useCallback((r: RefusedConversion, choice: HeldTokenChoice) => {
     setAcceptedPriceKeys((keys) => {
@@ -981,6 +1025,11 @@ export function DemolishFlow(): React.JSX.Element {
 
   // choices made on the Warnings step only reach the plan by a rebuild
   const claimSelectionDirty = claimSelection !== null && !sameSet(claimSelection, builtClaimList);
+  // a send or return choice made for a conversion on this step
+  const disposalDirty =
+    runInput !== null &&
+    (!sameSet(form.sendToDestination, runInput.sendToDestinationAssetKeys ?? []) ||
+      !sameSet(form.returnToIssuer, runInput.returnToIssuerAssetKeys ?? []));
   // a failed look-alike check over the standalone tokens checked none of them, so
   // the close waits for a rebuild, which reads their names again
   const rebuildRequired =
@@ -992,7 +1041,9 @@ export function DemolishFlow(): React.JSX.Element {
         ? "Your token choices aren't in the plan yet. Rebuild the plan to apply them before continuing."
         : runInput !== null && claimSelectionDirty
           ? "Your choice of pending payments isn't in the plan yet. Rebuild the plan to apply it before continuing."
-          : null;
+          : disposalDirty
+            ? "Your choices for the balances sold for XLM aren't in the plan yet. Rebuild the plan to apply them before continuing."
+            : null;
 
   const preflightView: PreflightView =
     preflight.status === "error"
@@ -1386,6 +1437,7 @@ export function DemolishFlow(): React.JSX.Element {
                           : null
                       }
                       {...(claimChoices !== undefined ? { claimChoices } : {})}
+                      {...(conversionChoices !== undefined ? { conversionChoices } : {})}
                       planNotes={planNotes}
                       tokensSlot={
                         !showTokenSection ? undefined : multisigRequired ? (

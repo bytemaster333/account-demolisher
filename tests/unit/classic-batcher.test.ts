@@ -8,6 +8,7 @@ import {
   mediatorFundingCheck,
   MAX_OPS_PER_TX,
   planClaimableBalances,
+  routableCredits,
   unroutableCredits,
 } from "@/lib/plan/classic-batcher";
 import type { AccountAudit, AuditBalance, ClaimableBalanceEntry } from "@/lib/types/account";
@@ -993,6 +994,47 @@ describe("M-18: classic conversions are capped against a reference price", () =>
         reviewedReferenceQuotes: reviewed,
       })[0]?.reason,
     ).toBe("requote_worse");
+  });
+});
+
+describe("M-18: a balance the close sells can be opted out of the sale", () => {
+  const audit = makeAudit({ balances: [usdcLine("1000")] });
+  const within = new Map([[USDC_KEY, pricedPath("1000", "4000")]]);
+
+  it("lists a within-cap conversion as routable, and sends it once the user chooses", () => {
+    expect(routableCredits(audit, within).map((c) => c.key)).toEqual([USDC_KEY]);
+    const opts: BatchOptions = { ...directOptions, sendToDestinationAssetKeys: [USDC_KEY] };
+    const kinds = allOps(batchClassicDemolition(audit, opts, within)).map((o) => o.kind);
+    expect(kinds).not.toContain("path_payment_strict_send");
+    expect(kinds).toContain("send_residue_to_destination");
+  });
+
+  it("returns it to the issuer instead of selling it once the user chooses", () => {
+    const opts: BatchOptions = { ...directOptions, returnToIssuerAssetKeys: [USDC_KEY] };
+    const kinds = allOps(batchClassicDemolition(audit, opts, within)).map((o) => o.kind);
+    expect(kinds).not.toContain("path_payment_strict_send");
+  });
+
+  it("does not list a balance it can't sell; that one is the resolve step's", () => {
+    const impacted = new Map<string, PathResultRef>([
+      [
+        USDC_KEY,
+        {
+          sourceAmount: "1000",
+          destinationAmount: "3000",
+          path: [],
+          reference: { sourceAmount: "1", destinationAmount: "4" },
+        },
+      ],
+    ]);
+    expect(routableCredits(audit, impacted)).toEqual([]);
+    expect(routableCredits(audit, undefined)).toEqual([]);
+    // an over-cap price the user accepted is sold, so it is listed
+    expect(
+      routableCredits(audit, impacted, { acceptedPriceImpactAssetKeys: [USDC_KEY] }).map(
+        (c) => c.key,
+      ),
+    ).toEqual([USDC_KEY]);
   });
 });
 

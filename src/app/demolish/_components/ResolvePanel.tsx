@@ -326,7 +326,7 @@ function shortReason(reason: string): string {
   return first.length > 200 ? `${first.slice(0, 200)}…` : first;
 }
 
-function ChoiceButton({
+export function ChoiceButton({
   selected,
   onClick,
   label,

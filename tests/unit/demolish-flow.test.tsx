@@ -17,6 +17,8 @@ import type { HeldToken } from "@/lib/soroban/held-tokens";
 import type { EmissionForfeit, RefusedConversion } from "@/lib/orchestrator/page-flow-machine";
 import type { SignerSnapshot } from "@/lib/multisig/bundle-freshness";
 import type { ExecuteOutput } from "@/lib/orchestrator/actors/execute";
+import type { RoutableCredit } from "@/lib/plan/classic-batcher";
+import type { PathResultRef } from "@/lib/types/plan";
 
 import {
   ACC,
@@ -46,6 +48,7 @@ interface Previewed {
   readonly reviewBlockers?: readonly string[];
   readonly refusedConversions?: readonly RefusedConversion[];
   readonly emissionForfeits?: readonly EmissionForfeit[];
+  readonly routableCredits?: readonly RoutableCredit[];
 }
 
 const ctl = vi.hoisted(() => ({
@@ -1203,6 +1206,111 @@ describe("the claim selection reaches the plan explicitly (H-11)", () => {
     await waitFor(() => expect(ctl.previewInputs).toHaveLength(2));
     // unticking the only balance claims none, rather than every one
     expect(ctl.previewInputs[1]!["selectedClaimableBalanceIds"]).toEqual([]);
+  });
+});
+
+describe("a balance the close can sell may be sent or returned instead (M-18)", () => {
+  const ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
+  const KEY = `USDC:${ISSUER}`;
+  const audit = makeAudit({
+    subentryCount: 1,
+    balances: [
+      ...makeAudit().balances,
+      {
+        asset: { kind: "credit", code: "USDC", issuer: ISSUER },
+        amount: "100.0000000",
+        buyingLiabilities: "0.0000000",
+        sellingLiabilities: "0.0000000",
+        limit: "1000.0000000",
+      },
+    ],
+  });
+  // a full-size quote at the reference rate: within the price cap
+  const paths = new Map<string, PathResultRef>([
+    [
+      KEY,
+      {
+        sourceAmount: "100.0000000",
+        destinationAmount: "400.0000000",
+        path: [],
+        reference: { sourceAmount: "0.1000000", destinationAmount: "0.4000000" },
+      },
+    ],
+  ]);
+  const opKinds = (tree: PlanTree): string[] => {
+    const final = tree.allNodes.get("final-classic-tx");
+    if (final?.kind !== "FinalClassicTx") throw new Error("no close node");
+    return final.metadata.batches.flatMap((b) => b.operations.map((o) => o.kind));
+  };
+
+  it("sends the choice to the preview, which plans the payment instead of the sale", async () => {
+    const trees: PlanTree[] = [];
+    ctl.discover = async () => ({ audit, positions: emptyPositions(), heldTokens: [] });
+    ctl.preview = async (input) => {
+      const send = input["sendToDestinationAssetKeys"] as readonly string[] | undefined;
+      const tree = makeTree({
+        audit,
+        opts: { paths, ...(send ? { sendToDestinationAssetKeys: send } : {}) },
+      });
+      trees.push(tree);
+      return {
+        tree,
+        unroutableCredits: [],
+        routableCredits: [
+          {
+            key: KEY,
+            code: "USDC",
+            issuer: ISSUER,
+            amount: "100.0000000",
+            destinationTrusts: true,
+          },
+        ],
+      };
+    };
+    connect();
+    render(<DemolishFlow />);
+    await configureAndStart();
+    await waitFor(() => expect(ctl.previewInputs).toHaveLength(1));
+    expect(opKinds(trees[0]!)).toContain("path_payment_strict_send");
+
+    // the first plan sells it; the choice is offered next to the sale
+    expect((await screen.findByTestId(`conversion-sell-${KEY}`)).getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+    fireEvent.click(screen.getByTestId(`conversion-send-${KEY}`));
+    // the choice is not in the built plan yet, so the review waits for a rebuild
+    expect(screen.getByTestId("acknowledge-rebuild-needed").textContent).toMatch(
+      /balances sold for XLM/,
+    );
+    fireEvent.click(screen.getByTestId("acknowledge-rebuild"));
+    await waitFor(() => expect(ctl.previewInputs).toHaveLength(2));
+    expect(ctl.previewInputs[1]!["sendToDestinationAssetKeys"]).toEqual([KEY]);
+    expect(opKinds(trees[1]!)).not.toContain("path_payment_strict_send");
+    expect(opKinds(trees[1]!)).toContain("send_residue_to_destination");
+    // the rebuilt plan keeps the choice shown, and nothing waits for a rebuild
+    await waitFor(() =>
+      expect(screen.getByTestId(`conversion-send-${KEY}`).getAttribute("aria-pressed")).toBe(
+        "true",
+      ),
+    );
+    expect(screen.queryByTestId("acknowledge-rebuild-needed")).toBeNull();
+  });
+
+  it("offers no send-to-destination where the destination can't take the balance", async () => {
+    ctl.discover = async () => ({ audit, positions: emptyPositions(), heldTokens: [] });
+    ctl.preview = async () => ({
+      tree: makeTree({ audit, opts: { paths } }),
+      unroutableCredits: [],
+      routableCredits: [
+        { key: KEY, code: "USDC", issuer: ISSUER, amount: "100.0000000", destinationTrusts: false },
+      ],
+    });
+    connect();
+    render(<DemolishFlow />);
+    await configureAndStart();
+    await screen.findByTestId(`conversion-sell-${KEY}`);
+    expect(screen.queryByTestId(`conversion-send-${KEY}`)).toBeNull();
+    expect(screen.getByTestId(`conversion-issuer-${KEY}`)).toBeTruthy();
   });
 });
 

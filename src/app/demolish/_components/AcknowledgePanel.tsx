@@ -15,6 +15,7 @@ import type { ScamFinding } from "@/lib/safety/scam-heuristics";
 import type { AssetIdentifier } from "@/lib/types/account";
 
 import type { ClaimableSplit, LeftBehindClaim, UnlockTime } from "../_lib/claimables";
+import { ConversionChoicesCard, type ConversionChoices } from "./ConversionChoicesCard";
 import { stroopsToXlm } from "../_lib/fees";
 
 // small acknowledgment control rendered in each resolution card's footer
@@ -110,6 +111,7 @@ export function AcknowledgePanel({
   baseReserveStroops,
   highValue,
   claimChoices,
+  conversionChoices,
   planNotes = [],
   tokensSlot,
   rebuildRequired,
@@ -137,6 +139,10 @@ export function AcknowledgePanel({
   // the claimable balances the user may tick in or out of the close; a change
   // reaches the plan only through a rebuild
   readonly claimChoices?: ClaimChoices;
+  // the credits the close sells for XLM, each of which the user may send as-is
+  // or return to its issuer instead; a change reaches the plan only through a
+  // rebuild
+  readonly conversionChoices?: ConversionChoices;
   // facts about the built plan the user should know before the review
   readonly planNotes?: readonly string[];
   // optional standalone-token section (opt-in sweep + manual-add); not gated by an
@@ -342,6 +348,10 @@ export function AcknowledgePanel({
 
       {claimChoices !== undefined && claimChoices.balances.length > 0 ? (
         <ClaimChoicesCard choices={claimChoices} />
+      ) : null}
+
+      {conversionChoices !== undefined && conversionChoices.credits.length > 0 ? (
+        <ConversionChoicesCard choices={conversionChoices} />
       ) : null}
 
       {hasPlanNotes ? (

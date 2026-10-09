@@ -810,6 +810,84 @@ describe("send-to-destination is offered only where the payment can land", () =>
     ]);
     expect(usable.size).toBe(0);
   });
+
+  // a credit the close can sell within the price cap gets the same check, so the
+  // user can send it as-is instead of selling it (M-18)
+  describe("for a balance the close sells", () => {
+    const key = `USDC:${issuer}`;
+    const held = {
+      asset: { kind: "credit" as const, code: "USDC", issuer },
+      amount: "5.0000000",
+      buyingLiabilities: "0",
+      sellingLiabilities: "0",
+      limit: "1000",
+    };
+    beforeEach(() => {
+      auditAccount.mockImplementation(async () =>
+        makeAudit({ subentryCount: 1, balances: [...makeAudit().balances, held] }),
+      );
+      // the full-size quote at the reference rate: within the cap
+      resolveCreditPaths.mockResolvedValue(
+        new Map([
+          [
+            key,
+            {
+              sourceAmount: "5.0000000",
+              destinationAmount: "20.0000000",
+              path: [],
+              reference: { sourceAmount: "0.0050000", destinationAmount: "0.0200000" },
+            },
+          ],
+        ]),
+      );
+      const load = net.horizon.loadAccount.getMockImplementation()!;
+      net.horizon.loadAccount.mockImplementation(async (id: string) =>
+        id === DEST
+          ? (Object.assign(new Account(id, "1"), { balances: [line("USDC", {})] }) as never)
+          : load(id),
+      );
+    });
+
+    it("lists it as sold, with send-to-destination open where the destination can take it", async () => {
+      const actor = createActor(pageFlowMachine).start();
+      actor.send({ type: "START", input: input({ destination: DEST, useMediator: false }) });
+      await settle(actor, "awaiting_confirmation");
+      const ctx = actor.getSnapshot().context;
+      expect(ctx.unroutableCredits).toEqual([]);
+      expect(ctx.routableCredits).toEqual([
+        { key, code: "USDC", issuer, amount: "5.0000000", destinationTrusts: true },
+      ]);
+      actor.stop();
+    });
+
+    it("still lists it once the user chose to send it, so the choice can be undone", async () => {
+      const actor = createActor(pageFlowMachine).start();
+      actor.send({
+        type: "START",
+        input: input({ destination: DEST, useMediator: false, sendToDestinationAssetKeys: [key] }),
+      });
+      await settle(actor, "awaiting_confirmation");
+      const ctx = actor.getSnapshot().context;
+      expect(ctx.routableCredits.map((c) => c.key)).toEqual([key]);
+      const final = ctx.tree!.allNodes.get("final-classic-tx")!;
+      if (final.kind !== "FinalClassicTx") throw new Error("no close node");
+      const kinds = final.metadata.batches.flatMap((b) => b.operations.map((o) => o.kind));
+      expect(kinds).not.toContain("path_payment_strict_send");
+      expect(kinds).toContain("send_residue_to_destination");
+      actor.stop();
+    });
+
+    it("never offers it on an exchange close, and reads no destination line", async () => {
+      const actor = createActor(pageFlowMachine).start();
+      actor.send({ type: "START", input: input() });
+      await settle(actor, "awaiting_confirmation");
+      expect(actor.getSnapshot().context.routableCredits).toEqual([
+        { key, code: "USDC", issuer, amount: "5.0000000", destinationTrusts: false },
+      ]);
+      expect(net.horizon.loadAccount).not.toHaveBeenCalledWith(EXCHANGE);
+      actor.stop();
+    });
+  });
 });
 
 describe("a signed bundle is checked against the account as it is now", () => {

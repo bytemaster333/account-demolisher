@@ -22,7 +22,9 @@ import {
   auditAfterUnwind,
   mediatorFundingCheck,
   planClaimableBalances,
+  routableCredits,
   unroutableCredits,
+  type RoutableCredit,
   type UnroutableCredit,
 } from "@/lib/plan/classic-batcher";
 import { hydratePlanTransactions, type HydrationFailure } from "@/lib/plan/hydration";
@@ -122,6 +124,9 @@ export interface PreviewOutput {
   // positive credit balances with no XLM path and no return-to-issuer consent;
   // while any exist the account can't fully merge (surfaced in the UI).
   readonly unroutableCredits: readonly UnroutableCredit[];
+  // credit balances the close sells for XLM within the price cap; the user can
+  // send each as-is or return it to its issuer instead
+  readonly routableCredits?: readonly RoutableCredit[];
   // held-token disposition notes that depend on the destination kind (e.g. a CEX
   // close can't receive raw SEP-41 tokens); merged into the discovery warnings.
   readonly heldTokenWarnings: readonly string[];
@@ -395,18 +400,35 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
             feePerOpStroops: classicFeePerOp,
           },
         ).filter((c) => !frozen.has(c.key));
+  const routableBase =
+    prepare !== undefined || finalNow === undefined
+      ? []
+      : routableCredits(unwound, paths, {
+          ...(finalNow.metadata.claimableBalanceIds !== undefined
+            ? { claimableBalanceIds: finalNow.metadata.claimableBalanceIds }
+            : {}),
+          ...(input.acceptedPriceImpactAssetKeys
+            ? { acceptedPriceImpactAssetKeys: input.acceptedPriceImpactAssetKeys }
+            : {}),
+          feePerOpStroops: classicFeePerOp,
+        }).filter((c) => !frozen.has(c.key));
   // offer "send to destination" only where the destination can really take the
   // whole residue. an exchange close never offers it: the payment would reach the
   // exchange's shared address without the deposit memo.
+  const residues = [...unroutableBase, ...routableBase];
   const usableKeys =
-    unroutableBase.length > 0 && !input.useMediator
+    residues.length > 0 && !input.useMediator
       ? await fetchDestinationUsableKeys(
           input.destination,
           network,
-          unroutableBase.map((c) => ({ key: c.key, amount: c.amount })),
+          residues.map((c) => ({ key: c.key, amount: c.amount })),
         )
       : new Set<string>();
   const unroutable = unroutableBase.map((c) => ({
+    ...c,
+    destinationTrusts: usableKeys.has(c.key),
+  }));
+  const routable = routableBase.map((c) => ({
     ...c,
     destinationTrusts: usableKeys.has(c.key),
   }));
@@ -532,6 +554,7 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
   return {
     tree,
     unroutableCredits: unroutable,
+    routableCredits: routable,
     heldTokenWarnings,
     reviewNotes,
     reviewBlockers,

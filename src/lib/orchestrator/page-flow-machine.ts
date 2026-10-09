@@ -7,7 +7,7 @@ import { TransactionBuilder, type Operation } from "@stellar/stellar-sdk";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import type { PlanTree, PreparePlan } from "@/lib/plan/tree";
-import type { UnroutableCredit } from "@/lib/plan/classic-batcher";
+import type { RoutableCredit, UnroutableCredit } from "@/lib/plan/classic-batcher";
 import type { SignerSnapshot } from "@/lib/multisig/bundle-freshness";
 import { classifyFailure, isRetryableFailure, type FailureKind } from "@/lib/orchestrator/failures";
 import { landedClassicPhases, type PhaseReceipt } from "@/lib/orchestrator/journal";
@@ -132,6 +132,8 @@ export interface PageFlowContext {
   // the pool's withdraw
   readonly aquariusGaugeRewards: readonly PoolGaugeRewards[];
   readonly unroutableCredits: readonly UnroutableCredit[];
+  // credits the plan sells for XLM; the user may send or return each instead
+  readonly routableCredits: readonly RoutableCredit[];
   // what the preview found that keeps the close from starting (mergeability,
   // the BLND trustline, the exchange-forward funding), in words for the user
   readonly reviewBlockers: readonly string[];
@@ -205,6 +207,7 @@ const initialContext: PageFlowContext = {
   aquariusRewardToken: null,
   aquariusGaugeRewards: [],
   unroutableCredits: [],
+  routableCredits: [],
   reviewBlockers: [],
   refusedConversions: [],
   emissionForfeits: [],
@@ -340,6 +343,7 @@ const clearedPlan = {
   tree: null,
   signedBundle: null,
   unroutableCredits: [],
+  routableCredits: [],
   reviewBlockers: [],
   refusedConversions: [],
   emissionForfeits: [],
@@ -536,6 +540,7 @@ export const pageFlowMachine = setup({
             tree: ({ event }) => event.output.tree,
             unroutableCredits: ({ event }) => event.output.unroutableCredits,
             // optional in the output: a preview that found none leaves them out
+            routableCredits: ({ event }) => event.output.routableCredits ?? [],
             reviewBlockers: ({ event }) => event.output.reviewBlockers ?? [],
             refusedConversions: ({ event }) => event.output.refusedConversions ?? [],
             emissionForfeits: ({ event }) => event.output.emissionForfeits ?? [],
