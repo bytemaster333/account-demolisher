@@ -11,8 +11,6 @@ allowBuilds:
   unrs-resolver: false
   utf-8-validate: false
 
-enablePrePostScripts: true
-
 # blend-sdk 3.3.1 pins @stellar/stellar-sdk 16.3.0, which pins axios 1.18.0 (7 high
 # and 5 moderate advisories, all fixed in 1.20.0). the sdk's default http client is
 # fetch, so axios is not on blend's request path, but it ships in the production
