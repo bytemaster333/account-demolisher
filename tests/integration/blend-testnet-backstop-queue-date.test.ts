@@ -59,6 +59,23 @@ async function friendbot(pk: string): Promise<void> {
   if (!res.ok) throw new Error(`friendbot funding failed for ${pk}: ${res.status}`);
 }
 
+// ledger the last transaction of this test landed in
+let lastLedger = 0;
+
+// the backstop rewrites a pool's BEmisData on a deposit or queue only when the
+// ledger time moved since its last update. a simulation against the ledger of
+// the previous call sees no time passed, leaves BEmisData out of the write
+// footprint, and the transaction then traps applying in the next ledger. so
+// each simulation waits for a ledger after the one the previous call landed in
+async function afterLastLedger(): Promise<void> {
+  const deadline = Date.now() + 60_000;
+  while ((await rpc.getLatestLedger()).sequence <= lastLedger) {
+    if (Date.now() > deadline)
+      throw new Error(`testnet did not close a ledger after ${lastLedger}`);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+}
+
 async function signAndSend(kp: Keypair, tx: Transaction): Promise<xdr.ScVal | undefined> {
   tx.sign(kp);
   const sent = await rpc.sendTransaction(tx);
@@ -69,6 +86,7 @@ async function signAndSend(kp: Keypair, tx: Transaction): Promise<xdr.ScVal | un
   if (res.status !== "SUCCESS") {
     throw new Error(`soroban tx ${sent.hash} failed: ${res.status}`);
   }
+  lastLedger = res.ledger;
   return res.returnValue;
 }
 
@@ -85,6 +103,7 @@ async function call(
     .addOperation(new Contract(contractId).call(fn, ...args))
     .setTimeout(120)
     .build();
+  await afterLastLedger();
   const ret = await signAndSend(kp, (await rpc.prepareTransaction(tx)) as Transaction);
   return ret === undefined ? undefined : scValToNative(ret);
 }
@@ -210,6 +229,7 @@ describe("integration: backstop queue unlock date from testnet q4w (M-25)", () =
       i128(shares / 2n),
     )) as { amount: bigint; exp: bigint };
 
+    await afterLastLedger();
     const queue = await buildBackstopQueueTx(
       TESTNET,
       { poolId: POOL },
