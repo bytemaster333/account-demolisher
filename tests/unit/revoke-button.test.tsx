@@ -4,17 +4,22 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // the revoke primitives build, sign, submit and poll real transactions; here they
-// are replaced so the button's own state handling can be driven step by step
-const submitRevoke = vi.fn();
+// are replaced so the button's own state handling can be driven step by step.
+// the real path is covered in revoke-fee-review.test.tsx and revoke-flow.test.ts
+const prepareRevoke = vi.fn();
+const submitPreparedRevoke = vi.fn();
 const confirmRevoke = vi.fn();
-vi.mock("@/lib/soroban/revoke", () => ({
-  submitRevoke: (...args: unknown[]) => submitRevoke(...args),
+vi.mock("@/lib/soroban/revoke", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/soroban/revoke")>()),
+  prepareRevoke: (...args: unknown[]) => prepareRevoke(...args),
+  submitPreparedRevoke: (...args: unknown[]) => submitPreparedRevoke(...args),
   confirmRevoke: (...args: unknown[]) => confirmRevoke(...args),
 }));
 
 import { RevokeButton } from "@/components/allowance-viewer/RevokeButton";
 import { TESTNET } from "@/lib/config/networks";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
+import { RevokeFeeChangedError, type PreparedRevoke } from "@/lib/soroban/revoke";
 import type { Connector } from "@/lib/wallet/connector";
 
 const record: AllowanceRecord = {
@@ -27,6 +32,11 @@ const record: AllowanceRecord = {
 };
 const network = TESTNET;
 const testId = "revoke-button-CTOKEN-GSPENDER";
+const rowId = "CTOKEN-GSPENDER";
+
+function prepared(totalFee: bigint): PreparedRevoke {
+  return { record, userAddress: "GUSER", network, fee: { totalFee } } as unknown as PreparedRevoke;
+}
 
 function deferred(): {
   promise: Promise<void>;
@@ -42,7 +52,7 @@ function deferred(): {
   return { promise, resolve, reject };
 }
 
-async function clickRevoke(onRevoked = vi.fn()) {
+async function openReview(onRevoked = vi.fn()) {
   render(
     <RevokeButton
       record={record}
@@ -58,10 +68,20 @@ async function clickRevoke(onRevoked = vi.fn()) {
   return onRevoked;
 }
 
+async function clickRevoke(onRevoked = vi.fn()) {
+  await openReview(onRevoked);
+  await act(async () => {
+    fireEvent.click(screen.getByTestId(`revoke-sign-${rowId}`));
+  });
+  return onRevoked;
+}
+
 beforeEach(() => {
-  submitRevoke.mockReset();
+  prepareRevoke.mockReset();
+  submitPreparedRevoke.mockReset();
   confirmRevoke.mockReset();
-  submitRevoke.mockResolvedValue("abcdef0123456789");
+  prepareRevoke.mockResolvedValue(prepared(115_929n));
+  submitPreparedRevoke.mockResolvedValue("abcdef0123456789");
 });
 
 afterEach(cleanup);
@@ -116,5 +136,43 @@ describe("RevokeButton confirmation", () => {
     expect(screen.queryByText("Revoked")).toBeNull();
     expect(screen.getByTestId("revoke-unconfirmed").textContent).toMatch(/failed on-chain/);
     expect(screen.getByTestId(testId).textContent).toBe("Retry revoke");
+  });
+});
+
+describe("RevokeButton fee review", () => {
+  it("shows the fee and submits nothing until the user signs", async () => {
+    await openReview();
+    expect(screen.getByTestId(`revoke-fee-${rowId}`).textContent).toBe(
+      "Network fee up to 0.0115929 XLM",
+    );
+    expect(submitPreparedRevoke).not.toHaveBeenCalled();
+  });
+
+  it("puts a dearer rebuilt revoke back up for review instead of signing it", async () => {
+    const reviewed = prepared(115_929n);
+    const current = prepared(120_000n);
+    prepareRevoke.mockResolvedValue(reviewed);
+    submitPreparedRevoke.mockRejectedValueOnce(new RevokeFeeChangedError(reviewed, current));
+    await clickRevoke();
+    expect(screen.getByTestId(`revoke-fee-${rowId}`).textContent).toBe(
+      "Network fee up to 0.012 XLM",
+    );
+    expect(screen.getByRole("alert").textContent).toMatch(/rose to 0\.012 XLM/);
+
+    submitPreparedRevoke.mockResolvedValueOnce("abcdef0123456789");
+    confirmRevoke.mockResolvedValue(undefined);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId(`revoke-sign-${rowId}`));
+    });
+    expect(submitPreparedRevoke.mock.calls[1]![1]).toBe(current);
+    expect(screen.getByText("Revoked")).toBeTruthy();
+  });
+
+  it("shows why a revoke could not be built and offers a retry", async () => {
+    prepareRevoke.mockRejectedValue(new Error("Refusing to sign: this step would cost 0.41 XLM"));
+    await openReview();
+    expect(screen.getByRole("alert").textContent).toMatch(/0\.41 XLM/);
+    expect(screen.getByTestId(testId).textContent).toBe("Retry revoke");
+    expect(submitPreparedRevoke).not.toHaveBeenCalled();
   });
 });

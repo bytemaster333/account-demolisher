@@ -30,7 +30,11 @@ vi.mock("@/lib/soroban/sep41", async (importOriginal) => ({
   decimals: async () => 7,
 }));
 vi.mock("@/lib/soroban/revoke", () => ({
-  submitRevoke: async () => "hash",
+  prepareRevokes: async (_n: unknown, _c: unknown, list: readonly { spender: string }[]) => ({
+    prepared: list.map((record) => ({ record, fee: { totalFee: 115_929n } })),
+    failed: [],
+  }),
+  submitPreparedRevoke: async () => "hash",
   confirmRevoke: async () => undefined,
 }));
 vi.mock("@/components/layout/AppShell", () => ({
@@ -114,6 +118,7 @@ describe("/allowances bulk refresh", () => {
     await act(async () => {
       fireEvent.click(screen.getByTestId("bulk-revoke-all"));
     });
+    await settle();
     await act(async () => {
       fireEvent.click(screen.getByTestId("bulk-revoke-confirm-go"));
     });

@@ -3,14 +3,16 @@ import type { NetworkConfig } from "@/lib/config/networks";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
 import type { Connector } from "@/lib/wallet/connector";
 
-// submitRevoke reaches for getRpc / buildRevoke through
-// module-level imports and reconstructs the signed tx via
-// TransactionBuilder.fromXdr, so we stub those seams to drive sendTransaction's
-// status and observe the enqueue guard without touching the network.
+// submitPreparedRevoke reaches for getRpc through module-level imports and
+// reconstructs the signed tx via TransactionBuilder.fromXdr, so we stub those
+// seams to drive sendTransaction's status and observe the enqueue guard without
+// touching the network.
 
 const sendTransaction = vi.fn();
 const getLatestLedger = vi.fn(async () => ({ sequence: 1000 }));
-const getAccount = vi.fn(async () => ({}) as never);
+// the account still sits at the sequence the prepared revoke was built from, so
+// the reviewed tx is signed as is
+const getAccount = vi.fn(async () => ({ sequenceNumber: () => "1000" }) as never);
 
 vi.mock("@/lib/soroban/rpc-client", () => ({
   getRpc: () => ({ getLatestLedger, getAccount, sendTransaction }),
@@ -21,7 +23,7 @@ vi.mock("@/lib/soroban/allowances", () => ({
 // buildRevoke is stubbed to a bare object here, so the auth-tree guard (which
 // inspects a real approve tx) has nothing meaningful to check; it is verified in
 // its own suite (revoke-guard.test.ts). Stub it to a no-op so these enqueue /
-// serialization tests stay focused on submitRevoke's RPC behavior.
+// serialization tests stay focused on submitPreparedRevoke's RPC behavior.
 vi.mock("@/lib/soroban/revoke-guard", () => ({
   assertSafeRevokeInvocation: vi.fn(),
 }));
@@ -36,14 +38,23 @@ vi.mock("@/lib/stellar/ledger-clock", () => ({
   fetchLedgerClock: vi.fn(async () => ({ sequence: 1000, closedAt: 1_700_000_000 })),
 }));
 vi.mock("@stellar/stellar-sdk", () => ({
+  Account: class {},
   TransactionBuilder: { fromXdr: () => ({}) },
 }));
 
-import { submitRevoke } from "@/lib/soroban/revoke";
+import { submitPreparedRevoke, type PreparedRevoke } from "@/lib/soroban/revoke";
 
 const NETWORK = { passphrase: "Test SDF Network ; September 2015" } as NetworkConfig;
 const RECORD = { contractId: "C_TOKEN", spender: "G_SPENDER" } as AllowanceRecord;
 const USER = "GCAWLISZMTHWMMHJE7BRYYNNKR4OL2PR4COXKH2MKGVDOH4BP6DMAHPE";
+// a reviewed revoke built at the account's next sequence, inside its time bound
+const PREPARED = {
+  network: NETWORK,
+  record: RECORD,
+  userAddress: USER,
+  tx: { sequence: "1001", timeBounds: { minTime: "0", maxTime: "1700000300" } },
+  fee: { totalFee: 116_000n },
+} as unknown as PreparedRevoke;
 
 function connector(): Connector {
   return {
@@ -59,21 +70,21 @@ beforeEach(() => {
   getLatestLedger.mockResolvedValue({ sequence: 1000 });
 });
 
-// let a batch of queued microtasks settle (submitRevokeImpl awaits the ledger,
-// the ledger clock, account load, build and signing before it ever calls sendTransaction).
+// let a batch of queued microtasks settle (signAndSend awaits the signer check,
+// the account load, the ledger clock and signing before it ever calls sendTransaction).
 async function flush(): Promise<void> {
   for (let i = 0; i < 10; i++) await Promise.resolve();
 }
 
-describe("submitRevoke enqueue guard", () => {
+describe("submitPreparedRevoke enqueue guard", () => {
   it("returns the hash when the RPC enqueues it (PENDING)", async () => {
     sendTransaction.mockResolvedValue({ status: "PENDING", hash: "HASH_OK" });
-    await expect(submitRevoke(NETWORK, connector(), RECORD, USER)).resolves.toBe("HASH_OK");
+    await expect(submitPreparedRevoke(connector(), PREPARED)).resolves.toBe("HASH_OK");
   });
 
   it("returns the hash on DUPLICATE (already enqueued)", async () => {
     sendTransaction.mockResolvedValue({ status: "DUPLICATE", hash: "HASH_DUP" });
-    await expect(submitRevoke(NETWORK, connector(), RECORD, USER)).resolves.toBe("HASH_DUP");
+    await expect(submitPreparedRevoke(connector(), PREPARED)).resolves.toBe("HASH_DUP");
   });
 
   it("resends the same envelope while the RPC says TRY_AGAIN_LATER and returns the hash once queued", async () => {
@@ -82,7 +93,7 @@ describe("submitRevoke enqueue guard", () => {
       sendTransaction
         .mockResolvedValueOnce({ status: "TRY_AGAIN_LATER", hash: "HASH_LATER" })
         .mockResolvedValueOnce({ status: "PENDING", hash: "HASH_LATER" });
-      const p = submitRevoke(NETWORK, connector(), RECORD, USER);
+      const p = submitPreparedRevoke(connector(), PREPARED);
       await vi.runAllTimersAsync();
       await expect(p).resolves.toBe("HASH_LATER");
       expect(sendTransaction).toHaveBeenCalledTimes(2);
@@ -98,7 +109,7 @@ describe("submitRevoke enqueue guard", () => {
     vi.useFakeTimers();
     try {
       sendTransaction.mockResolvedValue({ status: "TRY_AGAIN_LATER", hash: "HASH_PHANTOM" });
-      const p = submitRevoke(NETWORK, connector(), RECORD, USER);
+      const p = submitPreparedRevoke(connector(), PREPARED);
       const settled = p.catch((e: unknown) => e);
       await vi.runAllTimersAsync();
       expect(await settled).toMatchObject({
@@ -123,12 +134,12 @@ describe("submitRevoke enqueue guard", () => {
         ext: xdr.TransactionResultExt.v0(),
       }),
     });
-    await expect(submitRevoke(NETWORK, connector(), RECORD, USER)).rejects.toThrow(
+    await expect(submitPreparedRevoke(connector(), PREPARED)).rejects.toThrow(
       /did not enqueue.*txBadSeq/,
     );
   }, 30_000);
 
-  it("refuses to build/submit when the wallet's active account drifted from the owner", async () => {
+  it("refuses to sign when the wallet's active account drifted from the owner", async () => {
     // a kit wallet signing as a different account than the one we're revoking for
     // (user switched accounts in the extension) must be caught up front, not sent
     const OTHER = "GDLJJ5CGPWNOCBJMCPJY5HXDIAPV2UGQJWKUL35EVS7IR6JJZQ27WOPC";
@@ -136,17 +147,16 @@ describe("submitRevoke enqueue guard", () => {
       getPublicKey: vi.fn(async () => OTHER),
       signTransaction: vi.fn(),
     } as unknown as Connector;
-    await expect(submitRevoke(NETWORK, drifted, RECORD, USER)).rejects.toThrow(
-      /active account changed/,
-    );
+    await expect(submitPreparedRevoke(drifted, PREPARED)).rejects.toThrow(/active account changed/);
     expect(sendTransaction).not.toHaveBeenCalled();
   });
 });
 
-describe("submitRevoke per-source serialization", () => {
-  it("does not build the second revoke until the first has fully returned", async () => {
-    // two concurrent submits for the same source must not both read Horizon's
-    // sequence N and build at N+1; chaining guarantees the first completes first.
+describe("submitPreparedRevoke per-source serialization", () => {
+  it("does not sign the second revoke until the first has fully returned", async () => {
+    // two concurrent submits for the same source must not both check the
+    // account at sequence N and send at N+1; chaining guarantees the first
+    // completes first.
     let firstReleased = false;
     let overlap = false;
     let firstResolve: (v: { status: string; hash: string }) => void = () => {};
@@ -165,8 +175,8 @@ describe("submitRevoke per-source serialization", () => {
         return { status: "PENDING", hash: "HASH_2" };
       });
 
-    const p1 = submitRevoke(NETWORK, connector(), RECORD, USER);
-    const p2 = submitRevoke(NETWORK, connector(), RECORD, USER);
+    const p1 = submitPreparedRevoke(connector(), PREPARED);
+    const p2 = submitPreparedRevoke(connector(), PREPARED);
 
     // drain enough microtasks that the first submit reaches its (parked)
     // sendTransaction; the second must still be waiting behind it.
@@ -186,8 +196,8 @@ describe("submitRevoke per-source serialization", () => {
       .mockResolvedValueOnce({ status: "ERROR", hash: "PHANTOM" })
       .mockResolvedValueOnce({ status: "PENDING", hash: "HASH_NEXT" });
 
-    const p1 = submitRevoke(NETWORK, connector(), RECORD, USER);
-    const p2 = submitRevoke(NETWORK, connector(), RECORD, USER);
+    const p1 = submitPreparedRevoke(connector(), PREPARED);
+    const p2 = submitPreparedRevoke(connector(), PREPARED);
 
     await expect(p1).rejects.toThrow(/did not enqueue/);
     await expect(p2).resolves.toBe("HASH_NEXT");

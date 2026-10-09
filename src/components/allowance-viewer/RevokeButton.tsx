@@ -1,7 +1,8 @@
 "use client";
 
-// per-row revoke action: builds, signs and submits an approve(amount=0) tx for
-// the row's allowance, then waits for the ledger before calling it revoked
+// per-row revoke action: builds an approve(amount=0) tx for the row's allowance,
+// shows its fee for the user to accept, then signs and submits it and waits for
+// the ledger before calling it revoked
 
 import { useCallback, useState } from "react";
 
@@ -10,7 +11,14 @@ import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import { explorerTxUrl } from "@/lib/explorer";
 import { type AllowanceRecord } from "@/lib/soroban/allowances";
-import { confirmRevoke, submitRevoke } from "@/lib/soroban/revoke";
+import {
+  confirmRevoke,
+  prepareRevoke,
+  RevokeFeeChangedError,
+  submitPreparedRevoke,
+  type PreparedRevoke,
+} from "@/lib/soroban/revoke";
+import { stroopsToTrimmedDecimal } from "@/lib/stellar/amount";
 import type { Connector } from "@/lib/wallet/connector";
 import { shortAddress } from "@/lib/safe-display";
 
@@ -30,10 +38,20 @@ export interface RevokeButtonProps {
   readonly inactive?: boolean;
 }
 
-// submitting: building and signing. submitted: the rpc took it, waiting for a
-// ledger. unconfirmed: the poll ended without a success (reverted, timed out, or
-// the poll itself failed), so the allowance may still be live.
-type Phase = "idle" | "submitting" | "submitted" | "confirmed" | "unconfirmed" | "failed";
+// preparing: building and simulating. review: the fee is on screen, nothing is
+// signed yet. submitting: signing and sending. submitted: the rpc took it,
+// waiting for a ledger. unconfirmed: the poll ended without a success
+// (reverted, timed out, or the poll itself failed), so the allowance may still
+// be live.
+type Phase =
+  | "idle"
+  | "preparing"
+  | "review"
+  | "submitting"
+  | "submitted"
+  | "confirmed"
+  | "unconfirmed"
+  | "failed";
 
 export function RevokeButton({
   record,
@@ -47,9 +65,13 @@ export function RevokeButton({
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
+  const [prepared, setPrepared] = useState<PreparedRevoke | null>(null);
+  // set when the reviewed tx had to be rebuilt and now costs more
+  const [feeNote, setFeeNote] = useState<string | null>(null);
 
-  const onClick = useCallback(async () => {
+  const onPrepare = useCallback(async () => {
     setError(null);
+    setFeeNote(null);
     // read ref only here, never during render
     const connector = connectorRef?.current ?? null;
     if (connector === null) {
@@ -57,8 +79,28 @@ export function RevokeButton({
       return;
     }
     try {
+      setPhase("preparing");
+      setPrepared(await prepareRevoke(network, connector, record, userAddress));
+      setPhase("review");
+    } catch (e: unknown) {
+      setError(errorMessage(e, "Could not build the revoke."));
+      setPhase("failed");
+    }
+  }, [connectorRef, network, record, userAddress]);
+
+  const onSign = useCallback(async () => {
+    setError(null);
+    const connector = connectorRef?.current ?? null;
+    if (connector === null) {
+      setError("Connect a wallet first.");
+      return;
+    }
+    if (prepared === null) return;
+    try {
       setPhase("submitting");
-      const submitHash = await submitRevoke(network, connector, record, userAddress);
+      const submitHash = await submitPreparedRevoke(connector, prepared);
+      setPrepared(null);
+      setFeeNote(null);
       setTxHash(submitHash);
       setPhase("submitted");
       // a security action never shows success early: only a SUCCESS from the
@@ -74,15 +116,30 @@ export function RevokeButton({
       setPhase("confirmed");
       onRevoked?.(record, submitHash);
     } catch (e: unknown) {
-      const message = errorMessage(e, "Revoke failed.");
-      setError(message);
+      if (e instanceof RevokeFeeChangedError) {
+        // nothing was signed; put the rebuilt revoke and its fee up for review
+        setPrepared(e.current);
+        setFeeNote(e.message);
+        setPhase("review");
+        return;
+      }
+      setPrepared(null);
+      setError(errorMessage(e, "Revoke failed."));
       setPhase("failed");
     }
-  }, [connectorRef, network, record, userAddress, onRevoked]);
+  }, [connectorRef, network, prepared, record, onRevoked]);
+
+  const onCancel = useCallback(() => {
+    setPrepared(null);
+    setFeeNote(null);
+    setError(null);
+    setPhase("idle");
+  }, []);
 
   const noConnector = connectorRef === null;
-  const inFlight = phase === "submitting" || phase === "submitted";
-  const testId = `revoke-button-${record.contractId}-${record.spender}`;
+  const inFlight = phase === "preparing" || phase === "submitting" || phase === "submitted";
+  const rowId = `${record.contractId}-${record.spender}`;
+  const testId = `revoke-button-${rowId}`;
 
   const txLink = (color: string) =>
     txHash !== null ? (
@@ -170,9 +227,83 @@ export function RevokeButton({
           }}
         >
           <Spinner size={13} />
-          {phase === "submitted" ? "Submitted, confirming…" : "Revoking…"}
+          {phase === "preparing"
+            ? "Checking the fee…"
+            : phase === "submitted"
+              ? "Submitted, confirming…"
+              : "Revoking…"}
         </span>
         {txLink("var(--fg-3)")}
+      </div>
+    );
+  }
+
+  // the fee is shown and nothing is signed until the user accepts it
+  if (phase === "review" && prepared !== null) {
+    const signBlocked =
+      noConnector || busy === true
+        ? noConnector
+          ? "Connect the wallet that owns this address to revoke"
+          : "A bulk revoke is in progress"
+        : null;
+    return (
+      <div
+        data-testid={`revoke-review-${rowId}`}
+        style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 }}
+      >
+        <span
+          data-testid={`revoke-fee-${rowId}`}
+          style={{ fontSize: 11, color: "var(--fg-2)", textAlign: "right", maxWidth: 220 }}
+        >
+          Network fee up to{" "}
+          <strong style={{ fontFamily: '"Geist Mono", monospace', color: "var(--fg)" }}>
+            {stroopsToTrimmedDecimal(prepared.fee.totalFee)} XLM
+          </strong>
+        </span>
+        {feeNote !== null ? (
+          <p
+            role="alert"
+            style={{
+              fontSize: 11,
+              color: "var(--warning)",
+              margin: 0,
+              maxWidth: 220,
+              textAlign: "right",
+            }}
+          >
+            {feeNote} Check the new fee.
+          </p>
+        ) : null}
+        <div style={{ display: "flex", gap: 6 }}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onCancel}
+            data-testid={`revoke-cancel-${rowId}`}
+          >
+            Cancel
+          </Button>
+          {signBlocked !== null ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled
+              disabledReason={signBlocked}
+              data-testid={`revoke-sign-${rowId}`}
+            >
+              Sign
+            </Button>
+          ) : (
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={() => void onSign()}
+              data-testid={`revoke-sign-${rowId}`}
+            >
+              Sign
+            </Button>
+          )}
+        </div>
       </div>
     );
   }
@@ -238,7 +369,7 @@ export function RevokeButton({
         Revoke
       </Button>
     ) : (
-      <Button variant="danger" size="sm" onClick={() => void onClick()} data-testid={testId}>
+      <Button variant="danger" size="sm" onClick={() => void onPrepare()} data-testid={testId}>
         {phase === "failed" || phase === "unconfirmed" ? "Retry revoke" : "Revoke"}
       </Button>
     );

@@ -2,10 +2,12 @@
 
 // bulk revoke controller. sits above the AllowanceList and revokes many
 // standing approvals in one sweep: all active, or only those to unknown
-// spenders. runs strictly sequentially: each approve(amount=0) is submitted and
-// confirmed on-chain before the next, because the next tx reloads the source
-// account's sequence number and would be rejected as tx_bad_seq if the previous
-// hadn't landed yet. one wallet signature per approval.
+// spenders. every approve(amount=0) is built first and the summed fee is shown
+// for the user to accept before anything is signed. the sweep then runs strictly
+// sequentially: each revoke is submitted and confirmed on-chain before the next,
+// because the next tx carries the following sequence number and would be
+// rejected as tx_bad_seq if the previous hadn't landed yet. one wallet signature
+// per approval.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -14,8 +16,14 @@ import { Button, Card, Notice, Progress, Spinner } from "@/components/ui";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
-import { confirmRevoke, submitRevoke } from "@/lib/soroban/revoke";
+import {
+  confirmRevoke,
+  prepareRevokes,
+  submitPreparedRevoke,
+  type PreparedRevoke,
+} from "@/lib/soroban/revoke";
 import { lookupSpender } from "@/lib/soroban/spender-registry";
+import { stroopsToTrimmedDecimal } from "@/lib/stellar/amount";
 import type { Connector } from "@/lib/wallet/connector";
 import { useNetworkStore } from "@/stores/network";
 import { shortAddress } from "@/lib/safe-display";
@@ -37,7 +45,9 @@ type Outcome =
   | { readonly record: AllowanceRecord; readonly ok: true; readonly hash: string }
   | { readonly record: AllowanceRecord; readonly ok: false; readonly error: string };
 
-type Phase = "idle" | "confirm" | "running" | "done";
+type Failure = Extract<Outcome, { ok: false }>;
+
+type Phase = "idle" | "preparing" | "confirm" | "running" | "done";
 
 export function BulkRevokeBar({
   records,
@@ -54,7 +64,16 @@ export function BulkRevokeBar({
   );
 
   const [phase, setPhase] = useState<Phase>("idle");
-  const [pendingTargets, setPendingTargets] = useState<readonly AllowanceRecord[]>([]);
+  // the built revokes whose summed fee is on screen, in signing order
+  const [prepared, setPrepared] = useState<readonly PreparedRevoke[]>([]);
+  // records that could not be built (simulation error, auth guard, fee cap);
+  // nothing is signed for them
+  const [notPrepared, setNotPrepared] = useState<readonly Failure[]>([]);
+  // set when building could not start at all (account or ledger read failed)
+  const [prepError, setPrepError] = useState<string | null>(null);
+  const [prepTotal, setPrepTotal] = useState(0);
+  const [prepDone, setPrepDone] = useState(0);
+  const prepAbort = useRef<AbortController | null>(null);
   const [total, setTotal] = useState(0);
   const [doneCount, setDoneCount] = useState(0);
   const [current, setCurrent] = useState<AllowanceRecord | null>(null);
@@ -76,6 +95,7 @@ export function BulkRevokeBar({
     return () => {
       mountedRef.current = false;
       stopRef.current = true;
+      prepAbort.current?.abort();
     };
   }, []);
 
@@ -108,12 +128,53 @@ export function BulkRevokeBar({
     return () => window.removeEventListener("beforeunload", handler);
   }, [phase]);
 
-  const ask = (list: readonly AllowanceRecord[]): void => {
-    setPendingTargets(list);
+  // build every revoke and read its fee; nothing is signed here
+  const ask = async (list: readonly AllowanceRecord[]): Promise<void> => {
+    const connector = connectorRef?.current ?? null;
+    setPrepared([]);
+    setNotPrepared([]);
+    setPrepError(null);
+    setPrepTotal(list.length);
+    setPrepDone(0);
+    if (connector === null) {
+      setPrepError("Connect the wallet that owns this address to revoke.");
+      setPhase("confirm");
+      return;
+    }
+    const controller = new AbortController();
+    prepAbort.current = controller;
+    setPhase("preparing");
+    try {
+      const result = await prepareRevokes(network, connector, list, userAddress, {
+        signal: controller.signal,
+        onProgress: (done) => {
+          if (!controller.signal.aborted) setPrepDone(done);
+        },
+      });
+      if (controller.signal.aborted) return;
+      setPrepared(result.prepared);
+      setNotPrepared(
+        result.failed.map((f) => ({
+          record: f.record,
+          ok: false,
+          error: errorMessage(f.error, "Could not build the revoke."),
+        })),
+      );
+    } catch (e: unknown) {
+      if (controller.signal.aborted) return;
+      setPrepError(errorMessage(e, "Could not build the revokes."));
+    } finally {
+      if (prepAbort.current === controller) prepAbort.current = null;
+    }
     setPhase("confirm");
   };
 
-  const run = async (list: readonly AllowanceRecord[]): Promise<void> => {
+  const cancelPrepare = (): void => {
+    prepAbort.current?.abort();
+    setPhase("idle");
+  };
+
+  const run = async (list: readonly PreparedRevoke[]): Promise<void> => {
     stopRef.current = false;
     setStopping(false);
     setPhase("running");
@@ -124,7 +185,8 @@ export function BulkRevokeBar({
     setStopReason(null);
 
     const acc: Outcome[] = [];
-    for (const [i, record] of list.entries()) {
+    for (const [i, revoke] of list.entries()) {
+      const record = revoke.record;
       if (stopRef.current) break;
       const connector = connectorRef?.current ?? null;
       if (connector === null) {
@@ -137,7 +199,9 @@ export function BulkRevokeBar({
       }
       setCurrent(record);
       try {
-        const hash = await submitRevoke(network, connector, record, userAddress);
+        // signs the reviewed tx, or a rebuilt one that costs no more than the
+        // fee the user accepted; a dearer one throws and nothing is signed
+        const hash = await submitPreparedRevoke(connector, revoke);
         await confirmRevoke(network, hash);
         acc.push({ record, ok: true, hash });
       } catch (e: unknown) {
@@ -223,7 +287,9 @@ export function BulkRevokeBar({
 
   if (phase === "done") {
     const succeeded = outcomes.filter((o) => o.ok);
-    const failures = outcomes.filter((o): o is Extract<Outcome, { ok: false }> => !o.ok);
+    const failures = outcomes.filter((o): o is Failure => !o.ok);
+    // the ones that were never built count as failed too, and a retry covers them
+    const retryable = [...failures, ...notPrepared];
     return (
       <Card padding={18} style={{ marginBottom: 16 }} data-testid="bulk-revoke-done">
         <div style={{ fontWeight: 600, fontSize: 14 }}>
@@ -235,9 +301,15 @@ export function BulkRevokeBar({
             {stopReason}
           </p>
         ) : null}
-        {failures.length > 0 ? (
+        {notPrepared.length > 0 ? (
+          <p style={{ margin: "8px 0 0", fontSize: 12.5, color: "var(--warning)" }}>
+            {notPrepared.length} could not be built and {notPrepared.length === 1 ? "was" : "were"}{" "}
+            not signed.
+          </p>
+        ) : null}
+        {retryable.length > 0 ? (
           <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 7 }}>
-            {failures.map((f) => (
+            {retryable.map((f) => (
               <div
                 key={`${f.record.contractId}|${f.record.spender}`}
                 style={{
@@ -253,14 +325,14 @@ export function BulkRevokeBar({
           </div>
         ) : null}
         <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
-          {failures.length > 0 && connectorRef !== null ? (
+          {retryable.length > 0 && connectorRef !== null ? (
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => void run(failures.map((f) => f.record))}
+              onClick={() => void ask(retryable.map((f) => f.record))}
               data-testid="bulk-revoke-retry"
             >
-              Retry {failures.length} failed
+              Retry {retryable.length} failed
             </Button>
           ) : null}
           <Button
@@ -285,24 +357,85 @@ export function BulkRevokeBar({
   const hasUnknownSubset =
     unknownActive.length > 0 && unknownActive.length < activeRevocable.length;
 
+  if (phase === "preparing") {
+    return (
+      <Card padding={18} style={{ marginBottom: 16 }} data-testid="bulk-revoke-preparing">
+        <Progress
+          value={prepDone}
+          max={prepTotal}
+          tone="accent"
+          label="Building revokes and reading their fees"
+          valueLabel={`${prepDone} / ${prepTotal}`}
+        />
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={cancelPrepare}
+            data-testid="bulk-revoke-prepare-cancel"
+          >
+            Cancel
+          </Button>
+        </div>
+      </Card>
+    );
+  }
+
   if (phase === "confirm") {
+    const totalFee = prepared.reduce((sum, p) => sum + p.fee.totalFee, 0n);
+    const n = prepared.length;
     return (
       <Card padding={18} style={{ marginBottom: 16 }} data-testid="bulk-revoke-confirm">
-        <Notice tone="warning" title={`Revoke ${pendingTargets.length} approvals?`}>
-          Your wallet will prompt you to sign each one: {pendingTargets.length} signature
-          {pendingTargets.length === 1 ? "" : "s"} in total. Each revoke is submitted and confirmed
-          on-chain before the next, so this can take a couple of minutes. You can stop after any
-          approval.
-        </Notice>
+        {prepError !== null ? (
+          <Notice tone="danger" role="alert" title="Could not build the revokes">
+            {prepError}
+          </Notice>
+        ) : n > 0 ? (
+          <Notice tone="warning" title={`Revoke ${n} approval${n === 1 ? "" : "s"}?`}>
+            <span data-testid="bulk-revoke-fee-total">
+              Network fees: up to{" "}
+              <strong style={{ fontFamily: '"Geist Mono", monospace' }}>
+                {stroopsToTrimmedDecimal(totalFee)} XLM
+              </strong>{" "}
+              in total.
+            </span>{" "}
+            Your wallet will prompt you to sign each one: {n} signature
+            {n === 1 ? "" : "s"} in total. Each revoke is submitted and confirmed on-chain before
+            the next, so this can take a couple of minutes. None is signed for more than its fee
+            here; one whose fee has gone up by then is skipped and you can review it again. You can
+            stop after any approval.
+          </Notice>
+        ) : null}
+        {notPrepared.length > 0 ? (
+          <div style={{ marginTop: 12 }} data-testid="bulk-revoke-not-prepared">
+            <Notice
+              tone="warning"
+              title={`${notPrepared.length} could not be built and will not be signed`}
+            >
+              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                {notPrepared.map((f) => (
+                  <div key={`${f.record.contractId}|${f.record.spender}`} style={{ fontSize: 12 }}>
+                    <span style={{ fontFamily: '"Geist Mono", monospace' }}>
+                      {shortAddress(f.record.spender)}
+                    </span>
+                    : {f.error}
+                  </div>
+                ))}
+              </div>
+            </Notice>
+          </div>
+        ) : null}
         <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
-          <Button
-            variant="danger"
-            size="sm"
-            onClick={() => void run(pendingTargets)}
-            data-testid="bulk-revoke-confirm-go"
-          >
-            Revoke {pendingTargets.length}
-          </Button>
+          {n > 0 && prepError === null ? (
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={() => void run(prepared)}
+              data-testid="bulk-revoke-confirm-go"
+            >
+              Revoke {n}
+            </Button>
+          ) : null}
           <Button
             variant="ghost"
             size="sm"
@@ -342,7 +475,7 @@ export function BulkRevokeBar({
             <Button
               variant="danger"
               size="sm"
-              onClick={() => ask(unknownActive)}
+              onClick={() => void ask(unknownActive)}
               data-testid="bulk-revoke-unknown"
             >
               Revoke {unknownActive.length} unrecognized
@@ -351,7 +484,7 @@ export function BulkRevokeBar({
           <Button
             variant={hasUnknownSubset ? "secondary" : "danger"}
             size="sm"
-            onClick={() => ask(activeRevocable)}
+            onClick={() => void ask(activeRevocable)}
             data-testid="bulk-revoke-all"
           >
             Revoke all {activeRevocable.length}

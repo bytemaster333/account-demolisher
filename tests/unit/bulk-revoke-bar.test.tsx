@@ -4,12 +4,20 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the revoke module so no real tx is built/signed/submitted. submitRevoke
-// is a controllable deferred so we can hold the loop mid-flight, unmount, then
-// release it and assert the sweep does not keep submitting.
+// (submitPreparedRevoke) is a controllable deferred so we can hold the loop
+// mid-flight, unmount, then release it and assert the sweep does not keep
+// submitting. the real build and fee path is covered in revoke-fee-review.test.tsx
 const submitRevoke = vi.fn();
 const confirmRevoke = vi.fn();
+const prepareRevokes = vi.fn(
+  async (_network: unknown, _connector: unknown, list: readonly AllowanceRecord[]) => ({
+    prepared: list.map((record) => ({ record, fee: { totalFee: 115_929n } })),
+    failed: [],
+  }),
+);
 vi.mock("@/lib/soroban/revoke", () => ({
-  submitRevoke: (...args: unknown[]) => submitRevoke(...args),
+  prepareRevokes: (...args: Parameters<typeof prepareRevokes>) => prepareRevokes(...args),
+  submitPreparedRevoke: (...args: unknown[]) => submitRevoke(...args),
   confirmRevoke: (...args: unknown[]) => confirmRevoke(...args),
 }));
 
@@ -64,6 +72,10 @@ function renderBar() {
 async function startSweep(): Promise<void> {
   await act(async () => {
     screen.getByTestId("bulk-revoke-all").click();
+  });
+  // the revokes are built and their fees read before the confirm dialog shows
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
   });
   // confirm dialog -> go
   await act(async () => {
@@ -219,5 +231,59 @@ describe("BulkRevokeBar active approvals", () => {
       />,
     );
     expect(screen.getByTestId("bulk-revoke-all").textContent).toBe("Revoke all 2");
+  });
+});
+
+describe("BulkRevokeBar fee confirmation", () => {
+  beforeEach(() => {
+    submitRevoke.mockReset();
+    confirmRevoke.mockReset();
+    confirmRevoke.mockResolvedValue(undefined);
+    prepareRevokes.mockClear();
+    useNetworkStore.setState({ networkId: "testnet" });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("shows the summed fee and submits nothing until the user confirms", async () => {
+    renderBar();
+    await act(async () => {
+      screen.getByTestId("bulk-revoke-all").click();
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(prepareRevokes).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("bulk-revoke-fee-total").textContent).toBe(
+      "Network fees: up to 0.0347787 XLM in total.",
+    );
+    expect(submitRevoke).not.toHaveBeenCalled();
+    await act(async () => {
+      screen.getByTestId("bulk-revoke-cancel").click();
+    });
+    expect(submitRevoke).not.toHaveBeenCalled();
+  });
+
+  it("rebuilds and asks again before retrying a revoke that failed", async () => {
+    submitRevoke.mockRejectedValueOnce(new Error("The fee for this revoke rose"));
+    submitRevoke.mockResolvedValue("hash");
+    renderBar();
+    await startSweep();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(screen.getByTestId("bulk-revoke-done").textContent).toMatch(/Revoked 2 of 3/);
+    await act(async () => {
+      screen.getByTestId("bulk-revoke-retry").click();
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(prepareRevokes).toHaveBeenCalledTimes(2);
+    expect(prepareRevokes.mock.calls[1]![2]).toEqual([records[0]]);
+    expect(screen.getByTestId("bulk-revoke-fee-total").textContent).toMatch(/0\.0115929 XLM/);
+    expect(submitRevoke).toHaveBeenCalledTimes(3);
   });
 });

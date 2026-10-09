@@ -26,7 +26,7 @@ import { RevokeButton } from "./RevokeButton";
 
 const SECONDS_PER_LEDGER = 5;
 
-const GRID_COLS = "minmax(0, 1.5fr) minmax(0, 1.7fr) 0.9fr 0.8fr 118px";
+const GRID_COLS = "minmax(0, 1.5fr) minmax(0, 1.7fr) 0.9fr 0.8fr 150px";
 
 // any contract can emit approve events naming this address, and the per-contract
 // cap in allowances.ts does not bound how many contracts do it, so the table
@@ -115,7 +115,7 @@ export function AllowanceList({
         // otherwise crush the mono addresses and badges below legibility. The
         // header and rows share one min-width track so they scroll as a unit.
         <div style={{ overflowX: "auto" }}>
-          <div style={{ minWidth: 620 }}>
+          <div style={{ minWidth: 652 }}>
             <div
               style={{
                 display: "grid",
