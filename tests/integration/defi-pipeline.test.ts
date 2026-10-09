@@ -29,10 +29,9 @@ import { topologicalOrder } from "@/lib/plan/tree";
 //
 // The account is seeded with a real on-chain SEP-41 allowance (on a deployed
 // token) so the plan carries a RevokeAllowance node alongside the classic merge.
-// Seeding a live Blend/Aquarius/Soroswap POSITION additionally needs
-// entry-side liquidity/pool state (the tool unwinds, it doesn't open positions),
-// so those unwinds are proven at the unit level + by the on-chain SEP-41 / classic
-// / pool / multisig closes; this test proves the pipeline itself runs live.
+// This test covers discovery, planning, hydration and simulation only: nothing
+// is signed or submitted. The Blend, Soroswap and Aquarius exits are executed on
+// chain through the state machine and executor by the defi-close-*.test.ts files.
 const rpc = getRpc(TESTNET);
 const horizon = getHorizon(TESTNET);
 const horizonDirect = new Horizon.Server(TESTNET.horizon, { allowHttp: false });

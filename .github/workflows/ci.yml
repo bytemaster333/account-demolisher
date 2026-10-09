@@ -54,9 +54,11 @@ jobs:
           ! git grep -n $'\xe2\x80\x94' -- src tests public '*.ts' '*.tsx' '*.yml' '*.mjs' '*.mts' '*.sh' '*.md' '*.mdx' Dockerfile Caddyfile .env.example .dockerignore .gitignore
 
       # unit tests include the property-based fuzzing (fast-check) and adversarial
-      # cases; they are pure/mocked, so no network is required
-      - name: Unit tests
-        run: pnpm test
+      # cases; they are pure/mocked, so no network is required. they run with
+      # coverage, and the thresholds in vitest.config.mts fail the job when
+      # src/lib or src/server coverage drops below what was measured.
+      - name: Unit tests with coverage
+        run: pnpm test:coverage
 
       - name: Production build
         run: pnpm build
