@@ -62,6 +62,26 @@ describe("InfoTip", () => {
     expect(screen.queryByRole("tooltip")).not.toBeNull();
   });
 
+  // safari on macos doesn't focus a button on press, so pressing the term and
+  // dragging off before release fires no click and no blur (NP5-55)
+  it("opens on a later keyboard focus after a press that was dragged off", () => {
+    const trigger = renderTip();
+    fireEvent.pointerDown(trigger, { pointerType: "mouse" });
+    fireEvent.pointerUp(document.body, { pointerType: "mouse" });
+    fireEvent.keyDown(document.body, { key: "Tab" });
+    fireEvent.focus(trigger);
+    expect(screen.queryByRole("tooltip")).not.toBeNull();
+  });
+
+  it("opens on a later focus after a press that was dragged off and a click elsewhere", () => {
+    const trigger = renderTip();
+    fireEvent.pointerDown(trigger, { pointerType: "mouse" });
+    fireEvent.pointerUp(document.body, { pointerType: "mouse" });
+    fireEvent.pointerDown(document.body, { pointerType: "mouse" });
+    fireEvent.focus(trigger);
+    expect(screen.queryByRole("tooltip")).not.toBeNull();
+  });
+
   it("takes the first Escape for itself instead of letting it close a dialog", () => {
     const dialogEscape = vi.fn();
     const onKey = (e: KeyboardEvent): void => {

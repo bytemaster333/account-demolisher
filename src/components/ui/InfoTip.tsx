@@ -23,6 +23,32 @@ export function InfoTip({
   // the button before the click arrives, so a focus that opened the tip would
   // let the click close it straight away; only keyboard focus opens it.
   const pressedRef = useRef(false);
+  // a press dragged off the term before release fires no click, and safari on
+  // macos doesn't focus a button on press, so no blur follows either. any key
+  // or a press anywhere else ends the press instead, so a later tab focus opens
+  // the tip.
+  const stopWatchingRef = useRef<(() => void) | null>(null);
+  const endPress = useCallback((): void => {
+    pressedRef.current = false;
+    stopWatchingRef.current?.();
+    stopWatchingRef.current = null;
+  }, []);
+  const startPress = (): void => {
+    pressedRef.current = true;
+    if (stopWatchingRef.current !== null) return;
+    const onKey = (): void => endPress();
+    const onPointer = (e: PointerEvent): void => {
+      if (e.target instanceof Node && ref.current?.contains(e.target)) return;
+      endPress();
+    };
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("pointerdown", onPointer, true);
+    stopWatchingRef.current = () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("pointerdown", onPointer, true);
+    };
+  };
+  useEffect(() => endPress, [endPress]);
   const tipId = useId();
 
   const place = useCallback((): void => {
@@ -70,16 +96,12 @@ export function InfoTip({
           // click handler (e.g. a <summary> that would also collapse a <details>)
           e.preventDefault();
           e.stopPropagation();
-          pressedRef.current = false;
+          endPress();
           if (open) hide();
           else show();
         }}
-        onPointerDown={() => {
-          pressedRef.current = true;
-        }}
-        onPointerCancel={() => {
-          pressedRef.current = false;
-        }}
+        onPointerDown={startPress}
+        onPointerCancel={endPress}
         // hover is mouse-only: on touch, a synthetic enter before the click
         // would open the tip and the click would immediately close it again
         onPointerEnter={(e) => {
@@ -92,7 +114,7 @@ export function InfoTip({
           if (!pressedRef.current) show();
         }}
         onBlur={() => {
-          pressedRef.current = false;
+          endPress();
           hide();
         }}
         style={{
