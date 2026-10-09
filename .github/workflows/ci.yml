@@ -101,11 +101,12 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # the mainnet discovery timing test measures public mainnet rpc speed, so a
-      # rate limit there says nothing about this change. it runs on its own
-      # schedule in mainnet-timing.yml instead of blocking here.
+      # the mainnet discovery timing test measures public mainnet rpc speed, and
+      # the exchange registry check reads the live stellar.expert directory and
+      # mainnet accounts, so neither says anything about this change. they run on
+      # their own schedule in mainnet-timing.yml instead of blocking here.
       - name: Integration tests
-        run: pnpm test:integration --exclude tests/integration/mainnet-discovery-timing.test.ts
+        run: pnpm test:integration --exclude tests/integration/mainnet-discovery-timing.test.ts --exclude tests/integration/cex-registry-live.test.ts
 
   # end-to-end and accessibility sweep against the built app. smoke and
   # accessibility use no wallet; secret-key-close and walletconnect-close drive
