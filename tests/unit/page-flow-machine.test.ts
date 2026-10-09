@@ -803,6 +803,33 @@ describe("RETRY", () => {
     actor.stop();
   });
 
+  it("rebuilds the plan after a backstop emissions claim that can no longer run", async () => {
+    // the rebuilt review is where the user is asked to forfeit the BLND, so a
+    // retry must never replay the tree that still holds the claim
+    const { actor, execute, discover } = machineWith({
+      tree: () =>
+        treeOf(node("claim", "ClaimBackstopEmissions"), node("final-classic-tx", "FinalClassicTx")),
+      execute: async (input) =>
+        failedOutput(
+          input.tree,
+          ["The Blend backstop emissions claim for pool CBPO...OLID can no longer run"],
+          "claim_unavailable",
+        ),
+    });
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
+    await waitFor(actor, (s) => s.matches("failed"));
+    expect(actor.getSnapshot().context.failureKind).toBe("claim_unavailable");
+    const discoveriesBefore = discover.mock.calls.length;
+    actor.send({ type: "RETRY", connector });
+    const snap = actor.getSnapshot();
+    expect(snap.matches("discovering")).toBe(true);
+    expect(snap.context.tree).toBeNull();
+    await waitFor(actor, () => discover.mock.calls.length === discoveriesBefore + 1);
+    expect(execute).toHaveBeenCalledTimes(1);
+    actor.stop();
+  });
+
   it("never executes a stale tree after a failed rediscovery", async () => {
     let discoveries = 0;
     const { actor, execute } = machineWith({
@@ -1057,6 +1084,8 @@ describe("failure taxonomy", () => {
       "unsafe",
       "bundle_stale",
       "mediator_expired",
+      "conversion_refused",
+      "claim_unavailable",
       "unknown",
     ] as const) {
       expect(isRetryableFailure(k)).toBe(false);
@@ -1069,6 +1098,7 @@ describe("failure taxonomy", () => {
       "ambiguous",
       "forward_pending",
       "interrupted",
+      "close_running",
     ] as const) {
       expect(isRetryableFailure(k)).toBe(true);
     }
