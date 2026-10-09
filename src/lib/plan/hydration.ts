@@ -125,7 +125,7 @@ export interface HydrationAdapterOverrides {
 // repay, a sweep behind the exits that pay it) is simulated here against state
 // those steps haven't changed yet, so its failure only defers it: it stays
 // "pending" with node.deferred set and is built at execute time once they land.
-// A refused conversion and a backstop emissions claim that can't run fail either
+// a refused conversion and a backstop emissions claim that can't run fail either
 // way: they need the user's answer, which no earlier step provides. only `deps`
 // misuse throws. nodes that already carry a transaction are skipped.
 export async function hydratePlanTransactions(
@@ -183,9 +183,9 @@ export async function hydratePlanTransactions(
   return { tree, failures };
 }
 
-// Force-rebuild ONE node's transaction from fresh on-chain state: a fresh
+// force-rebuild one node's transaction from fresh on-chain state: a fresh
 // sequence number, a fresh simulation footprint/resource fee, and a fresh
-// timebound. Called at EXECUTE time immediately before signing, so a plan that
+// timebound. called at execute time right before signing, so a plan that
 // sat in the review step for minutes is not submitted carrying the preview-time
 // sequence/footprint/5-minute timebound (which would fail as tx_bad_seq, a stale
 // footprint, or an expired tx). No-op for the classic batches and the forward:
@@ -484,10 +484,10 @@ async function buildNode(
       }
       const fn = a.aquariusWithdraw ?? aquariusWithdraw;
       const poolIndex = poolIndexHexToBytes(node.metadata.poolIndex);
-      // First build+simulate with zero floors to read the router's expected
+      // first build+simulate with zero floors to read the router's expected
       // per-token output, then rebuild with a slippage-bounded minimum so the
       // signed tx cannot silently accept near-zero output for any reserve token.
-      // (The executor only signs/submits. Nothing downstream floors this.)
+      // the executor only signs and submits, so nothing downstream floors this.
       const probe = await fn(
         {
           user: userPublicKey,
@@ -614,10 +614,10 @@ async function buildNode(
       // the router checks this against the ledger timestamp, so it is counted
       // from the ledger's clock like the tx's own time bound
       const deadline = deps.ledgerCloseTime + SOROSWAP_DEADLINE_SECONDS;
-      // First build+simulate with zero floors to read remove_liquidity's expected
+      // first build+simulate with zero floors to read remove_liquidity's expected
       // (amountA, amountB), then rebuild with slippage-bounded minimums so the
       // signed tx cannot silently accept near-zero output for either token.
-      // (The executor only signs/submits. Nothing downstream floors this.)
+      // the executor only signs and submits, so nothing downstream floors this.
       const probe = await fn(
         {
           tokenAAddress: node.metadata.tokenA,

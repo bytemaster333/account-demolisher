@@ -18,10 +18,10 @@ const STORAGE_KEY = "demolisher.theme";
 function readStoredTheme(): Theme {
   if (typeof window === "undefined") return "dark";
   try {
-    // localStorage access THROWS (not just returns null) when site data is blocked,
-    // in a sandboxed iframe, or with storage disabled. This runs in the render-time
+    // localStorage access throws (not just returns null) when site data is blocked,
+    // in a sandboxed iframe, or with storage disabled. this runs in the render-time
     // useState initializer of the app-wrapping provider, so an unguarded throw would
-    // white-screen the whole app. Default to "dark" instead.
+    // white-screen the whole app. default to "dark" instead.
     const stored = window.localStorage.getItem(STORAGE_KEY);
     if (stored === "dark" || stored === "light") return stored;
     // no explicit choice yet: honor the OS preference (matches the pre-hydration
@@ -34,9 +34,9 @@ function readStoredTheme(): Theme {
 }
 
 export function ThemeProvider({ children }: { readonly children: React.ReactNode }) {
-  // null until resolved after mount. The server and the FIRST client render must
-  // agree (both "dark", the SSR default) or React throws a hydration mismatch, so
-  // we do NOT read localStorage/prefers-color-scheme during render. The real theme
+  // null until resolved after mount. the server and the first client render must
+  // agree (both "dark", the ssr default) or react throws a hydration mismatch, so
+  // localStorage/prefers-color-scheme are not read during render. the real theme
   // is applied in the mount effect below; the pre-hydration inline script in
   // layout.tsx has already set data-theme for CSS, so there is no visual flash,
   // only a one-frame correction of the theme-toggle icon.

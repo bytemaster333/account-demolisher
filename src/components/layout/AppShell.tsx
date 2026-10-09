@@ -744,7 +744,7 @@ function NetworkSwitcher({
         // storage disabled; selection still applies for this session
       }
       // a connected account is network-scoped; changing network invalidates it.
-      // Full teardown (connector + kit + store), not just the store, so the wallet
+      // full teardown (connector + kit + store), not just the store, so the wallet
       // extension doesn't stay authorized to the old network's session.
       void disconnectSession(disconnect, onTeardownError);
     },

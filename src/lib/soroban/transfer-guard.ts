@@ -1,19 +1,19 @@
 // guard the auto-drain of standalone SEP-41 tokens against auth-entry smuggling.
 //
 // held tokens are discovered by scanning `transfer`-to-the-account events, so the
-// list can include a token an ATTACKER airdropped, a fully attacker-controlled
+// list can include a token an attacker airdropped, a fully attacker-controlled
 // contract. to sweep one, the close builds contractId.transfer(user, destination,
 // amount) and the user signs it. assembling the simulation attaches whatever
 // SorobanAuthorizationEntry tree the token's own simulation returns, and this
 // drain path is (like the revoke path) exempt from the DeFi allow-list. without a
 // guard a hostile token could smuggle an over-broad auth entry (a nested transfer
-// of the victim's OTHER balances, or an approve to the attacker) that the single
+// of the victim's other balances, or an approve to the attacker) that the single
 // signature would authorize.
 //
-// before signing we assert the built transaction is EXACTLY the intended
+// before signing we assert the built transaction is exactly the intended
 // transfer to the user's chosen destination and that its auth tree authorizes
 // nothing else: no other contract, no other function, no sub-invocations, no
-// address credentials. this mirrors assertSafeRevokeInvocation (SEC-02).
+// address credentials. this mirrors assertSafeRevokeInvocation.
 
 import { Address, scValToNative, xdr, type Transaction } from "@stellar/stellar-sdk";
 import { assertExactSingleInvocation } from "@/lib/soroban/single-invocation-guard";

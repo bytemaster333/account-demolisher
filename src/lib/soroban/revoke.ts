@@ -27,7 +27,7 @@ import type { Connector } from "@/lib/wallet/connector";
 
 // serialize revokes per source account so the next one is only *signed* after
 // the previous one has landed in a ledger. this is the subtle part: submit-only
-// acceptance (PENDING) does NOT advance the account sequence, only ledger
+// acceptance (PENDING) does not advance the account sequence, only ledger
 // inclusion does. two rapid per-row revokes for the same source would otherwise
 // both go out at sequence N+1 and the second loses to tx_bad_seq /
 // TRY_AGAIN_LATER. the per-source gate below only opens once the previous revoke
@@ -39,7 +39,7 @@ import type { Connector } from "@/lib/wallet/connector";
 // inclusion-serialized by its own loop; the extra confirm here is a fast no-op
 // for it.
 //
-// value = a promise that resolves when it is safe to sign the NEXT revoke for
+// value = a promise that resolves when it is safe to sign the next revoke for
 // that source. a best-effort confirm opens it even on poll failure, and a timer
 // opens it if the confirm never settles, so a tx that never lands can't deadlock
 // the queue (worst case the next one hits tx_bad_seq and the user retries).
@@ -204,7 +204,7 @@ export async function prepareRevoke(
 }
 
 // sign and submit a reviewed revoke. resolves with the tx hash once the RPC
-// accepts it (PENDING/DUPLICATE). does NOT wait for ledger inclusion before
+// accepts it (PENDING/DUPLICATE). it does not wait for ledger inclusion before
 // resolving to the caller, but internally holds the per-source gate closed until
 // this tx is included so the next one for the same source is sequence-safe.
 export async function submitPreparedRevoke(

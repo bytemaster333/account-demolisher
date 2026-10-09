@@ -3,7 +3,7 @@
 //
 // this is network-aware: the curated allow-list differs per network (a contract
 // id well-known on mainnet is a different, unrelated contract on testnet), so a
-// lookup MUST be scoped to the network the allowance was read on. keying only on
+// lookup has to be scoped to the network the allowance was read on. keying only on
 // the mainnet list, as this module used to, mislabels every testnet spender as
 // "unknown", which is the app's default network.
 

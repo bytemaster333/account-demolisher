@@ -1,12 +1,12 @@
 "use client";
 
 // shown when the account holds credit balances with no XLM conversion path.
-// Such balances block the merge (their trustlines can't be removed with a live
+// such balances block the merge (their trustlines can't be removed with a live
 // balance). For each one the user picks a disposal: send it to the merge
 // destination, or return it to its issuer (permanent, keeps nothing). sending is
 // only offered when the destination's trustline was authorized and had room for
 // the whole balance at review; the executor checks that again right before the
-// close, since the destination can change in between. Doing nothing leaves it in
+// close, since the destination can change in between. doing nothing leaves it in
 // place and keeps blocking the close.
 
 import { Button, CopyableAddress, Notice } from "@/components/ui";

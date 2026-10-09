@@ -27,7 +27,7 @@ export type MetricNetwork = StellarNetwork;
 export const METRIC_PAGES = ["landing", "demolish", "allowances", "sign"] as const;
 export type MetricPage = (typeof METRIC_PAGES)[number];
 
-// usage milestones, in flow order. close completion is NOT here: it is the
+// usage milestones, in flow order. close completion is not one of them: it is the
 // verifiable `close` event, counted only after on-chain verification.
 export const FUNNEL_STEPS = [
   "wallet_connected",

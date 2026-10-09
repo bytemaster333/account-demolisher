@@ -69,10 +69,10 @@ export interface BatchOptions {
   readonly destination: string;
   readonly useMediator: boolean;
   readonly mediatorPublicKey?: string;
-  // Two-phase close (SEC-13): once the ephemeral mediator has been funded by an
-  // earlier batch, a later re-audited batch must NOT re-emit the create-account
-  // funding op (the mediator already exists; a second create_account reverts with
-  // op_already_exists). The executor sets this on re-audit phases after the
+  // two-phase close: once an earlier batch has funded the ephemeral mediator, a
+  // later re-audited batch must not emit the create-account funding op again
+  // (the mediator already exists, so a second create_account reverts with
+  // op_already_exists). the executor sets this on re-audit phases after the
   // funding op has landed.
   readonly mediatorAlreadyFunded?: boolean;
   // reviewed claimable-balance selection; [] claims none. Left undefined, every
@@ -97,11 +97,11 @@ export interface BatchOptions {
   // issuer. An explicit choice wins over a market path found later.
   readonly returnToIssuerAssetKeys?: readonly string[];
   // pathKey()s of credit assets the user chose to send to the merge destination.
-  // The destination needs an authorized trustline with room for the amount, or
-  // the payment fails with op_no_trust / op_not_authorized / op_line_full. The
+  // the destination needs an authorized trustline with room for the amount, or
+  // the payment fails with op_no_trust / op_not_authorized / op_line_full. the
   // preview checks it, but the line can be removed, deauthorized or filled after
   // that, so the executor checks it again before every batch.
-  // Refused on a mediator close: the payment would reach the exchange's shared
+  // refused on a mediator close: the payment would reach the exchange's shared
   // address without the deposit memo.
   readonly sendToDestinationAssetKeys?: readonly string[];
   readonly memo?: ClassicMemo;

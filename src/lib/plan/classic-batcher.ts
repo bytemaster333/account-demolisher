@@ -104,7 +104,7 @@ export function batchClassicDemolition(
   // 3. claim claimable balances. A credit claim whose asset is then sold on the
   // market goes in an earlier phase: the conversion and the trustline removal are
   // sized from this audit, so they must be rebuilt after the claim has landed.
-  // Claims of assets with an explicit disposal are sized exactly here and stay
+  // claims of assets with an explicit disposal are sized exactly here and stay
   // in the same transaction as that disposal. A claim into a trustline the close
   // opens always goes first: this audit has no balance line to dispose of yet.
   const claimPlan = planClaimableBalances(audit, options.claimableBalanceIds, {
@@ -264,7 +264,7 @@ export function batchClassicDemolition(
   // 7. self-sponsored entries need no explicit revoke: removing/cancelling/
   // clearing them (trustlines, offers, signers) or claiming their CBs releases
   // the sponsorship automatically, dropping num_sponsoring so the merge passes.
-  // Foreign sponsorships (entries this account sponsors for OTHERS) can't be
+  // foreign sponsorships (entries this account sponsors for other accounts) can't be
   // enumerated from this account's Horizon record and are blocked upstream in
   // assessMergeability rather than papered over with a wrong revoke op.
 
@@ -325,9 +325,9 @@ export function batchClassicDemolition(
     },
   };
 
-  // SEC-13 two-phase close: a liquidity_pool_withdraw or a credit claim credits
+  // two-phase close: a liquidity_pool_withdraw or a credit claim credits
   // balances this audit never saw, so converting/removing those trustlines or
-  // merging in the same transaction reverts. They go in a leading phase of their
+  // merging in the same transaction reverts. they go in a leading phase of their
   // own; the executor re-audits after it confirms and rebuilds the rest.
   const isolate = poolWithdraws.length > 0 || isolatedClaims.length > 0;
   const leading = isolate ? [...poolWithdraws, ...offerCancels, ...isolatedClaims] : [];
@@ -1003,17 +1003,17 @@ function hasPositive(amountStr: string): boolean {
 }
 
 // slippage haircut (configured tolerance, default 1%), truncated to 7 decimals.
-// Routed through the single slippage policy (safety/slippage.applySlippageMin) so
-// the classic path uses the SAME tolerance as the DeFi-exit floors.
+// routed through the single slippage policy (safety/slippage.applySlippageMin) so
+// the classic path uses the same tolerance as the defi-exit floors.
 export function applySlippage(amountStr: string): string {
   const stroops = toStroops(amountStr);
   const adjusted = BigInt(applySlippageMin(stroops.toString(), resolveConfiguredSlippageBps()));
   return stroopsToDecimal(adjusted);
 }
 
-// slippage-bounded minimum for one reserve of an LP withdraw. The holder's
-// expected output for a reserve is reserve * myShares / totalShares; haircut
-// THAT by the slippage tolerance. A pool record without positive total shares
+// slippage-bounded minimum for one reserve of an lp withdraw. the holder's
+// expected output for a reserve is reserve * myShares / totalShares, and the
+// slippage tolerance is taken off that. a pool record without positive total shares
 // can't size the payout, and a withdraw without a floor would accept any
 // output, so that throws instead.
 export function proportionalWithdrawMin(

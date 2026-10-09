@@ -303,16 +303,16 @@ export function DemolishFlow(): React.JSX.Element {
 
   return (
     <div style={{ maxWidth: 1080, margin: "0 auto", padding: "40px 24px 96px" }}>
-      {/* SEC-01 part B: offer to resume an interrupted exchange forward, if any.
-          A run that failed inside the helper account shows its own resume in the
-          status widget, so this one steps aside to avoid two resume buttons. */}
+      {/* offer to resume an interrupted exchange forward, if any. a run that
+          failed inside the helper account shows its own resume in the status
+          widget, so this one steps aside to avoid two resume buttons. */}
       {!failedInMediator ? <PendingForwardBanner publicKey={publicKey} /> : null}
 
       {teardownError !== null ? (
         <TeardownNotice message={teardownError} onDismiss={clearTeardownError} />
       ) : null}
 
-      {/* IDLE, connect. Keyed by network so a switch starts it fresh. */}
+      {/* idle: connect. keyed by network so a switch starts it fresh. */}
       {isIdle ? (
         <IdleConnect
           key={network.id}
@@ -324,7 +324,7 @@ export function DemolishFlow(): React.JSX.Element {
         />
       ) : null}
 
-      {/* BLOCKED, full takeover */}
+      {/* blocked: a full-page takeover */}
       {!isIdle && review.isImmutableBlock ? <AuthImmutableBlock onDismiss={onReset} /> : null}
       {!isIdle && !review.isImmutableBlock && review.isSponsorBlock ? (
         // foreign sponsorships the close can't release on its own
@@ -335,7 +335,7 @@ export function DemolishFlow(): React.JSX.Element {
         />
       ) : null}
 
-      {/* FLOW */}
+      {/* the review and close flow */}
       {showFlow ? (
         <>
           <FlowHeading steps={flowSteps} />

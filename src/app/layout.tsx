@@ -36,7 +36,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     <html lang="en" suppressHydrationWarning className={`${geist.variable} ${geistMono.variable}`}>
       <body>
         {/* set data-theme before first paint so a returning light-mode user (or a
-            light-OS visitor) never flashes the dark default. Mirrors readStoredTheme. */}
+            light-os visitor) never flashes the dark default. mirrors readStoredTheme. */}
         <script
           dangerouslySetInnerHTML={{
             __html:
