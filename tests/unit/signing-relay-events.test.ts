@@ -9,6 +9,7 @@ import {
   Operation,
   TransactionBuilder,
 } from "@stellar/stellar-sdk";
+import { getEventListeners } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GET } from "@/app/api/plan/[id]/events/route";
@@ -81,6 +82,37 @@ describe("plan events route", () => {
     let done = end.done;
     while (!done) done = (await reader.read()).done;
     expect(vi.getTimerCount()).toBe(base);
+  });
+
+  it("removes its abort listener when the client cancels the stream (NP5-57)", async () => {
+    const maxTime = Math.floor(Date.now() / 1000) + 3600;
+    const id = __seedPlanForTests("testnet", signedClose(maxTime), []);
+    const request = new Request(`http://localhost/api/plan/${id}/events`, {
+      headers: { "x-forwarded-for": "203.0.113.150" },
+    });
+    const before = getEventListeners(request.signal, "abort").length;
+    const res = await GET(request, { params: Promise.resolve({ id }) });
+    expect(res.status).toBe(200);
+    expect(getEventListeners(request.signal, "abort")).toHaveLength(before + 1);
+
+    await res.body!.cancel();
+    expect(getEventListeners(request.signal, "abort")).toHaveLength(before);
+  });
+
+  it("removes its abort listener when the relay closes the stream (NP5-57)", async () => {
+    const maxTime = Math.floor(Date.now() / 1000) + 30 * 60;
+    const id = __seedPlanForTests("testnet", signedClose(maxTime), []);
+    const request = new Request(`http://localhost/api/plan/${id}/events`, {
+      headers: { "x-forwarded-for": "203.0.113.151" },
+    });
+    const before = getEventListeners(request.signal, "abort").length;
+    const res = await GET(request, { params: Promise.resolve({ id }) });
+    expect(getEventListeners(request.signal, "abort")).toHaveLength(before + 1);
+
+    const reader = res.body!.getReader();
+    await vi.advanceTimersByTimeAsync(31 * 60 * 1000);
+    while (!(await reader.read()).done);
+    expect(getEventListeners(request.signal, "abort")).toHaveLength(before);
   });
 
   it("answers 503 once one client holds three streams for the plan", async () => {

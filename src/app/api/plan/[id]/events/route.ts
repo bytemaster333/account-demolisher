@@ -41,6 +41,9 @@ export async function GET(
   let heartbeat: ReturnType<typeof setInterval> | null = null;
   let torn = false;
   let opened = false;
+  // set once the abort listener is attached; every teardown path removes it so
+  // a finished stream leaves nothing on the request's signal
+  let detachAbort: (() => void) | null = null;
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -59,6 +62,7 @@ export async function GET(
         torn = true;
         if (heartbeat !== null) clearInterval(heartbeat);
         heartbeat = null;
+        detachAbort?.();
         unsubscribe?.();
         try {
           controller.close();
@@ -83,6 +87,7 @@ export async function GET(
         return;
       }
       request.signal.addEventListener("abort", cleanup, { once: true });
+      detachAbort = () => request.signal.removeEventListener("abort", cleanup);
 
       const current = getPlan(id);
       if (torn || current === null) {
@@ -104,6 +109,7 @@ export async function GET(
       torn = true;
       if (heartbeat !== null) clearInterval(heartbeat);
       heartbeat = null;
+      detachAbort?.();
       unsubscribe?.();
     },
   });
