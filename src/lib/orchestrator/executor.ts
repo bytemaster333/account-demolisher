@@ -1251,7 +1251,6 @@ async function runFinalClassic(node: FinalClassicTxNode, run: Run): Promise<Conf
       }
 
       assertCreditsRoutable(freshAudit, freshPaths);
-      await assertResidueDeliverable(freshAudit, freshPaths, node, deps.horizon);
 
       // the network clock this batch's time bounds and claims are judged by, read
       // after the slow path and position reads above. a claim that would not stay
@@ -1265,6 +1264,9 @@ async function runFinalClassic(node: FinalClassicTxNode, run: Run): Promise<Conf
         freshPaths = await quote(auditNow, claimedNow);
         assertCreditsRoutable(auditNow, freshPaths);
       }
+      // judged on the audit and claims the batch is built from, so the amount
+      // checked is the amount paid
+      await assertResidueDeliverable(auditNow, node, feeBase, deps.horizon);
 
       const mediatorFunded = mediator ? await mediator.probe() : false;
       // the options the plan was reviewed with, plus what only execute time
@@ -1677,22 +1679,35 @@ async function assertExitPayoutsSwept(
 }
 
 // a residue the user chose to send to the destination must still be receivable
-// there: the line can be removed, deauthorized or filled after the preview
+// there: the line can be removed, deauthorized or filled after the preview. an
+// explicit send choice beats a market path in the batcher, so a credit that has
+// a path is checked too, for its balance plus what the same batch claims into it.
 async function assertResidueDeliverable(
   audit: AccountAudit,
-  paths: ReadonlyMap<string, PathResultRef>,
   node: FinalClassicTxNode,
+  feePerOpStroops: number,
   horizon: HorizonLike,
 ): Promise<void> {
-  const chosen = new Set(node.metadata.sendToDestinationAssetKeys ?? []);
+  const md = node.metadata;
+  const chosen = new Set(md.sendToDestinationAssetKeys ?? []);
   if (chosen.size === 0) return;
-  const residues = audit.balances.filter((b) => {
-    if (b.asset.kind !== "credit") return false;
+  const claimed = new Map<string, bigint>();
+  for (const cb of planClaimableBalances(audit, md.claimableBalanceIds, { feePerOpStroops })
+    .claimed) {
+    if (cb.asset.kind !== "credit") continue;
+    const key = pathKey(cb.asset);
+    claimed.set(key, (claimed.get(key) ?? 0n) + toStroops(cb.amount));
+  }
+  const residues: { readonly code: string; readonly key: string; readonly amount: string }[] = [];
+  for (const b of audit.balances) {
+    if (b.asset.kind !== "credit") continue;
     const key = pathKey(b.asset);
-    return chosen.has(key) && !paths.has(key) && toStroops(b.amount) > 0n;
-  });
+    if (!chosen.has(key)) continue;
+    const paid = toStroops(b.amount) + (claimed.get(key) ?? 0n);
+    if (paid > 0n) residues.push({ code: b.asset.code, key, amount: stroopsToDecimal(paid) });
+  }
   if (residues.length === 0) return;
-  const destination = node.metadata.destination;
+  const destination = md.destination;
   let lines: readonly DestinationLine[] = [];
   try {
     const account = await withHorizonRetry(() => horizon.loadAccount(destination));
@@ -1701,12 +1716,11 @@ async function assertResidueDeliverable(
     if (!(isNotFound(err) || err instanceof AccountNotFoundError)) throw err;
   }
   for (const r of residues) {
-    if (r.asset.kind !== "credit") continue;
-    const problem = residueLineProblem(destination, lines, pathKey(r.asset), r.amount);
+    const problem = residueLineProblem(destination, lines, r.key, r.amount);
     if (problem !== null) {
       throw new CloseFailure(
         "not_mergeable",
-        `Your destination can no longer receive ${r.amount} ${r.asset.code}: ${problem}. ` +
+        `Your destination can no longer receive ${r.amount} ${r.code}: ${problem}. ` +
           "Choose another way to handle that balance and rebuild the plan.",
       );
     }

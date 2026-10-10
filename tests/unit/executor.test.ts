@@ -738,6 +738,67 @@ describe("residue sent to the destination is re-checked at execute", () => {
     }
   });
 
+  it("re-checks a chosen residue that also has a market path", async () => {
+    // the explicit send choice beats the path in the batcher, so the line must be
+    // checked even though the credit could have been sold
+    resolveCreditPaths.mockResolvedValue(
+      new Map([
+        [
+          `JUNK:${ISSUER}`,
+          {
+            destinationAmount: "1.0000000",
+            path: [],
+            sourceAmount: "5.0000000",
+            reference: { sourceAmount: "0.0050000", destinationAmount: "0.0010000" },
+          },
+        ],
+      ]),
+    );
+    const d = deps({}, withDestinationLine(null));
+    await expect(run(tree(finalNode([], send)), d)).rejects.toMatchObject({
+      kind: "not_mergeable",
+      message: expect.stringMatching(/no trustline/),
+    });
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
+  });
+
+  it("checks room for the balance plus what the same batch claims into it", async () => {
+    // 5 held and 6 claimed in the same transaction is 11 paid out, more than the
+    // 10 of room left on the destination line
+    auditAccount.mockResolvedValue(
+      makeAudit({
+        balances: [...makeAudit().balances, residue],
+        subentryCount: 1,
+        claimableBalances: [
+          {
+            id: `00000000${"cc".repeat(32)}`,
+            asset: residue.asset,
+            amount: "6.0000000",
+            sponsor: ATTACKER,
+            claimants: [USER],
+            claimantsRaw: [{ destination: USER, predicate: { unconditional: true } }],
+            claimableNow: true,
+          },
+        ],
+      }),
+    );
+    const line = {
+      asset_type: "credit_alphanum4",
+      asset_code: "JUNK",
+      asset_issuer: ISSUER,
+      balance: "90",
+      limit: "100",
+      is_authorized: true,
+    };
+    const d = deps({}, withDestinationLine(line));
+    const node = finalNode([], { ...send, claimableBalanceIds: [`00000000${"cc".repeat(32)}`] });
+    await expect(run(tree(node), d)).rejects.toMatchObject({
+      kind: "not_mergeable",
+      message: expect.stringMatching(/11(\.0+)? JUNK.*does not have room/),
+    });
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
+  });
+
   it("pays the residue when the line can take it", async () => {
     const line = {
       asset_type: "credit_alphanum4",
