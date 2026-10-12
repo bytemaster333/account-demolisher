@@ -46,31 +46,28 @@ before it was merged.
 
 ### Results
 
-As recorded in the review's tracking file at the time of this documentation revision:
+The counts below are the review's tracking file as of this revision of the documentation:
 
-| Severity  | Issues  | Fixed   | Partial | Open   | Not a bug |
-| --------- | ------- | ------- | ------- | ------ | --------- |
-| CRITICAL  | 8       | 8       | 0       | 0      | 0         |
-| HIGH      | 39      | 35      | 1       | 2      | 1         |
-| MEDIUM    | 64      | 53      | 3       | 8      | 0         |
-| LOW       | 125     | 104     | 6       | 12     | 3         |
-| INFO      | 25      | 17      | 2       | 6      | 0         |
-| **Total** | **261** | **217** | **12**  | **28** | **4**     |
+| Severity  | Issues  | Fixed   | Partial | Open  | Not a bug |
+| --------- | ------- | ------- | ------- | ----- | --------- |
+| CRITICAL  | 8       | 8       | 0       | 0     | 0         |
+| HIGH      | 39      | 38      | 1       | 0     | 0         |
+| MEDIUM    | 64      | 62      | 2       | 0     | 0         |
+| LOW       | 125     | 112     | 2       | 9     | 2         |
+| INFO      | 25      | 24      | 1       | 0     | 0         |
+| **Total** | **261** | **244** | **6**   | **9** | **2**     |
 
-- **Fixed**: every CRITICAL issue, and 217 in all.
-- **Partial**: the fix landed for part of the issue, and a follow-up in another area remains
-  tracked.
-- **Open**: 25 of the 28 are documentation issues (2 HIGH, 7 MEDIUM, 10 LOW, 6 INFO): pages that
-  described behavior the code no longer has, or had not yet had. The rewrite of this documentation,
-  `README.md`, `SECURITY.md`, `ARCHITECTURE.md` and `.env.example` works through them, and each one
-  stays open in the tracking file until an independent check against the code passes it. The other
-  3 are the test-coverage gaps the review recorded: no integration test ran a live DeFi exit end to
-  end (MEDIUM), the end-to-end suite covered only a direct single-signer close (LOW), and the
-  Playwright configuration reused an already running local server and ran friendbot-funded specs
-  in parallel (LOW). The live DeFi close tests in `tests/integration/`, the exchange, retry and
-  shared-account specs in `tests/e2e/`, and a `playwright.config.ts` that starts its own server and
-  runs one worker are the work that answers them.
-- **Not a bug**: 4 issues the fix work showed were already handled.
+- **Fixed**: every CRITICAL issue, and 244 in all.
+- **Partial**: the fix landed for part of the issue, and the rest stays tracked until an
+  independent check against the code passes it.
+- **Open**: all 9 are LOW documentation issues: pages that described behavior the code does not
+  have. They cover how far the allow-list check reaches, the Soroswap conversion path, whether a
+  failed preview simulation holds the close, whether event-derived allowances are confirmed before
+  a close acts on them, how a redundant forwarding-account funding operation fails, the liquidity
+  pool withdraw batch on single-signature and shared closes, the scam checks, this page's
+  description of the mainnet notice, and what the review's network fee figure covers. Each one
+  stays open in the tracking file until an independent check against the code passes it.
+- **Not a bug**: 2 issues the fix work showed were already handled.
 
 ### What the CRITICAL fixes changed
 
@@ -117,10 +114,19 @@ otherwise ship:
 - `jayson` 5.0.0 under `@solana/web3.js` 1, which drops the `uuid` 8 and `stream-json` 1 copies
   that `jayson` 4 carries.
 
-No advisory is suppressed. On 2026-10-09, `pnpm audit --prod` reports one advisory below the gate:
+No advisory is suppressed. On 2026-10-12, `pnpm audit --prod` reports one advisory below the gate,
+and `pnpm audit` without `--prod`, which adds the development dependencies, reports one more:
 
-| Advisory              | Package        | Severity | Why it stays                                                                                                                                                                                               |
-| --------------------- | -------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GHSA-848j-6mx2-7j84` | elliptic 6.6.1 | Low      | No patched release exists. It sits under `@hot-wallet/sdk`, which only the Stellar Wallets Kit's HOT Wallet module uses; the app does not load that module, and signs with ed25519 through the Stellar SDK |
+| Advisory              | Package        | Tree             | Severity | Why it stays                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| --------------------- | -------------- | ---------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GHSA-848j-6mx2-7j84` | elliptic 6.6.1 | Production       | Low      | No patched release exists. It sits under `@hot-wallet/sdk`, which only the Stellar Wallets Kit's HOT Wallet module uses; the app does not load that module, and signs with ed25519 through the Stellar SDK                                                                                                                                                                                                                   |
+| `GHSA-vfj7-8cjw-p6xm` | braces 3.0.3   | Development only | High     | No patched release exists: 3.0.3 is the latest braces release. It arrives through `eslint-config-next` > `@next/eslint-plugin-next` > `fast-glob` > `micromatch` > `braces` and runs only while ESLint lints the repository. The plugin expands only the `settings.next.rootDir` patterns of the lint configuration, which this repository does not set. The production image installs with `--prod` and does not contain it |
+
+ESLint stays on 9.39.5, the last 9.x release, while the latest is 10.12.0. `eslint-config-next`
+16.4.0 depends on `eslint-plugin-react` ^7.37.0, and that plugin's latest release, 7.37.5, declares
+the peer range `^3 || ^4 || ^5 || ^6 || ^7 || ^8 || ^9.7`, which leaves ESLint 10 out. ESLint 10
+support is tracked upstream in
+[jsx-eslint/eslint-plugin-react#3977](https://github.com/jsx-eslint/eslint-plugin-react/issues/3977),
+open on 2026-10-12. ESLint is a development tool and is not in the production image.
 
 The toolchain is Node.js 24 LTS and pnpm 12, with Stellar SDK 17, Next.js 16.4 and React 19.3.
