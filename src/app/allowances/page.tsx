@@ -439,9 +439,8 @@ const SCAN_QUIPS: readonly string[] = [
   "Sorting active from expired…",
 ];
 
-// scanning stage: a medallion with a search glyph inside a slowly-rotating accent
-// ring, plus a cycling sub-line. A step up from a bare spinner, in the spirit of
-// the demolish "proving stage" loader, without pulling in its bespoke animation.
+// shown while the scan runs: a spinning ring around a search icon and a line
+// that cycles through what the scan reads, so a slow scan still reads as working
 function ScanningCard(): React.JSX.Element {
   const [quip, setQuip] = useState(0);
   useEffect(() => {
