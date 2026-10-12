@@ -3,6 +3,7 @@ import { SignClient } from "@walletconnect/sign-client";
 import { Networks, TransactionBuilder, type Keypair } from "@stellar/stellar-sdk";
 
 import { accountExists, fundedPair, mergesOf, nativeBalance } from "./support/chain";
+import { isWalletConnectTelemetry, watchCspViolations } from "./support/csp";
 import {
   acknowledgeNotices,
   closedHeading,
@@ -94,6 +95,7 @@ test("closes a testnet account signed over WalletConnect (headless wallet, no ph
   const destBefore = await nativeBalance(destination.publicKey());
 
   const wallet = await startHeadlessWcWallet(account);
+  const cspViolations = await watchCspViolations(page);
 
   try {
     // --- connect over WalletConnect ---
@@ -130,6 +132,11 @@ test("closes a testnet account signed over WalletConnect (headless wallet, no ph
     const received = (await nativeBalance(destination.publicKey())) - destBefore;
     expect(received).toBeLessThanOrEqual(accountBalance);
     expect(received).toBeGreaterThan(accountBalance - 1_0000000n);
+
+    // the whole connection and signing ran under the policy as shipped: the only
+    // thing it blocked is WalletConnect telemetry, which it leaves out on purpose
+    const blocked = (await cspViolations()).filter((v) => !isWalletConnectTelemetry(v));
+    expect(blocked).toEqual([]);
   } finally {
     for (const s of wallet.session.getAll()) {
       await wallet.disconnect({

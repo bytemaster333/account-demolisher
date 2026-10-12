@@ -1,12 +1,14 @@
 import { test, expect } from "@playwright/test";
 
+import { watchCspViolations } from "./support/csp";
+
 // Verifies the wallet picker integrates the two Tranche-1 wallets that aren't in
 // the kit's zero-config defaults: Ledger (hardware, always present) and
 // WalletConnect (mobile via QR, added only when a project id is configured).
-// Constructing the WalletConnect module spins up Reown AppKit + a relay client, so
-// when it is configured this also proves that wiring loads at runtime without
-// throwing and without breaking the picker. Full hardware/mobile signing is out of
-// scope for an unattended run; this asserts the modules are present and load cleanly.
+// Opening the picker must not start WalletConnect (src/lib/wallet/kit.ts builds it
+// only when it is picked), and nothing the picker loads may be blocked by the
+// Content-Security-Policy. Full hardware/mobile signing is out of scope for an
+// unattended run; this asserts the modules are present and load cleanly.
 // In CI the build and this test process receive the same
 // NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID from the job environment, so the
 // WalletConnect assertion tracks the picker's actual conditional behaviour.
@@ -15,6 +17,7 @@ const WC_PROJECT_ID = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID?.trim() ?
 test("wallet picker lists Ledger and WalletConnect and loads without error", async ({ page }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (err) => pageErrors.push(String(err)));
+  const cspViolations = await watchCspViolations(page);
 
   await page.goto("/demolish");
 
@@ -42,4 +45,6 @@ test("wallet picker lists Ledger and WalletConnect and loads without error", asy
   await expect(page.getByText("Freighter", { exact: true }).first()).toBeVisible();
 
   expect(pageErrors, `unexpected page errors: ${pageErrors.join("\n")}`).toEqual([]);
+  // the wallet icons and the picker itself load under the policy as shipped
+  expect(await cspViolations()).toEqual([]);
 });
