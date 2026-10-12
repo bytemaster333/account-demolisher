@@ -7,8 +7,9 @@ import {
 } from "@stellar/stellar-sdk";
 import { describe, expect, it } from "vitest";
 
-import { closeSignerSet, trimToThreshold } from "@/components/multisig/envelope";
+import { trimToThreshold } from "@/components/multisig/envelope";
 import { TESTNET } from "@/lib/config/networks";
+import { thresholdForClose } from "@/lib/multisig/signing-request";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 
 // live testnet proof that a 2-of-3 close signed by all three is rejected with
@@ -72,8 +73,17 @@ describe("integration: multisig envelope trimming (testnet)", () => {
     }
     expect(rejected).toEqual({ transaction: "tx_bad_auth_extra" });
 
-    const set = closeSignerSet(await server.loadAccount(master.publicKey()));
-    const trimmed = trimToThreshold(close.toXdr(), TESTNET.passphrase, set.signers, set.required);
+    // the signer set and weight the execute actor trims a bundled close with
+    const live = await server.loadAccount(master.publicKey());
+    const signers = live.signers
+      .filter((s) => s.type === "ed25519_public_key" && s.weight > 0)
+      .map((s) => ({ key: s.key, weight: s.weight }));
+    const required = thresholdForClose({
+      low: live.thresholds.low_threshold,
+      medium: live.thresholds.med_threshold,
+      high: live.thresholds.high_threshold,
+    });
+    const trimmed = trimToThreshold(close.toXdr(), TESTNET.passphrase, signers, required);
     expect(trimmed.met).toBe(true);
     expect(trimmed.kept).toEqual([master.publicKey(), a.publicKey()]);
 

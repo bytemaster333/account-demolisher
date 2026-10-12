@@ -1,7 +1,6 @@
 import {
   Account,
   BASE_FEE,
-  Horizon,
   Keypair,
   Networks,
   Operation,
@@ -12,7 +11,6 @@ import {
 import { describe, expect, it } from "vitest";
 
 import {
-  closeSignerSet,
   decodePinned,
   EnvelopeMismatchError,
   mergeRelayEnvelope,
@@ -189,28 +187,5 @@ describe("mergeRelayEnvelope", () => {
     expect(() => mergeRelayEnvelope(held, signed(many[20]!), NET, id, keys)).toThrow(
       TooManySignaturesError,
     );
-  });
-});
-
-describe("closeSignerSet", () => {
-  it("needs the largest of the three thresholds and skips zero-weight and non-ed25519 signers", () => {
-    const account = new Horizon.AccountResponse({
-      id: source.publicKey(),
-      account_id: source.publicKey(),
-      sequence: "1",
-      subentry_count: 0,
-      thresholds: { low_threshold: 1, med_threshold: 3, high_threshold: 2 },
-      signers: [
-        { key: source.publicKey(), weight: 1, type: "ed25519_public_key" },
-        { key: a.publicKey(), weight: 0, type: "ed25519_public_key" },
-        { key: "TBAD", weight: 1, type: "preauth_tx" },
-      ],
-      balances: [],
-      data: {},
-      flags: {},
-    } as unknown as ConstructorParameters<typeof Horizon.AccountResponse>[0]);
-    const set = closeSignerSet(account);
-    expect(set.required).toBe(3);
-    expect(set.signers).toEqual([{ key: source.publicKey(), weight: 1 }]);
   });
 });

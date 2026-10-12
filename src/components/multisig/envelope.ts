@@ -14,7 +14,6 @@ import {
   TransactionBuilder,
   xdr,
   type FeeBumpTransaction,
-  type Horizon,
   type Transaction,
 } from "@stellar/stellar-sdk";
 
@@ -26,7 +25,6 @@ import {
   type TrimResult,
   type WeightedSigner,
 } from "@/lib/multisig/partial-xdr";
-import { thresholdForClose } from "@/lib/multisig/signing-request";
 
 export { trimToThreshold, type TrimResult, type WeightedSigner };
 
@@ -104,26 +102,4 @@ export function mergeRelayEnvelope(
     added = true;
   }
   return added ? base.toXdr() : held;
-}
-
-export interface CloseSignerSet {
-  readonly signers: readonly WeightedSigner[];
-  // weight the close needs. the bundle always has an accountMerge (high), usually
-  // medium cleanup ops, and core checks the tx-level low threshold too. the three
-  // are independent bytes, so the largest one is what the bundle needs.
-  readonly required: number;
-}
-
-export function closeSignerSet(account: Horizon.AccountResponse): CloseSignerSet {
-  const t = account.thresholds;
-  return {
-    signers: account.signers
-      .filter((s) => s.type === "ed25519_public_key" && s.weight > 0)
-      .map((s) => ({ key: s.key, weight: s.weight })),
-    required: thresholdForClose({
-      low: t.low_threshold,
-      medium: t.med_threshold,
-      high: t.high_threshold,
-    }),
-  };
 }
