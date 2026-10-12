@@ -79,10 +79,13 @@ Your browser talks to these services directly:
 - **Horizon and Soroban RPC** for the selected network, to read the account and submit
   transactions.
 - **The Aquarius API**, to find your Aquarius pool positions.
-- **WalletConnect**, only when you pick WalletConnect or sign with a WalletConnect session you
-  restored. Its relay carries the encrypted session. Its Reown AppKit modal always sends an
-  initialization event and a connection event to `pulse.walletconnect.org`, carrying the page
-  address and, once connected, your wallet address.
+- **WalletConnect**, only when you pick WalletConnect, sign with a WalletConnect session you
+  restored, or disconnect or close such a session. Its relay carries the encrypted session, and
+  its RPC, API and verify hosts back the connection and the Reown AppKit modal. The app turns
+  AppKit's analytics and the WalletConnect client's telemetry off. AppKit still tries to send two
+  events it always reports, the initialization and a successful connection, to
+  `pulse.walletconnect.org`, and your browser blocks them, because the app's Content Security
+  Policy leaves that host out.
 
 The app's own server receives first-party usage counts: which page you opened, which network you
 are on, four milestones of a close (wallet connected, discovery done, plan built, close started),

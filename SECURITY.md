@@ -31,16 +31,19 @@ open.
 - **The browser builds and submits.** The server never builds a transaction for the account owner
   to sign and never submits one. The mediator forward is built and submitted by the browser too; the server only
   adds the forwarding account's co-signature.
-- **The server is trusted for exchange closes.** `MEDIATOR_SECRET` (`src/server/mediator-secret.ts`,
-  `server-only`) is an HMAC master that derives every forwarding account's key and signs flow
-  tokens. An honest server co-signs only a forward to the destination, memo and network bound into
-  the flow token (`src/lib/mediator/validator.ts`). Whoever holds `MEDIATOR_SECRET`, the operator or
-  anyone who compromises the server, can derive every forwarding key and move any balance sitting
-  in a forwarding account, and a compromised server can also change the code the browser runs. That
-  exposure is bounded by the time between the merge and the forward, which run back to back, not by
-  cryptography. The token binding limits only a token that leaks on its own, from browser storage
-  or a log: script running in the page, from a cross-site scripting flaw or a malicious extension,
-  can mint its own flow. A direct close never uses the forwarding account.
+- **The server is trusted for every close.** It serves the app code every close runs, so a
+  compromised server can change what the browser builds, the destination included, on a direct
+  close as much as on an exchange close. A direct close never uses the forwarding account, but it
+  still runs the code the deployment serves.
+- **The mediator is trusted for exchange closes only.** `MEDIATOR_SECRET`
+  (`src/server/mediator-secret.ts`, `server-only`) is an HMAC master that derives every forwarding
+  account's key and signs flow tokens. An honest server co-signs only a forward to the destination,
+  memo and network bound into the flow token (`src/lib/mediator/validator.ts`). Whoever holds
+  `MEDIATOR_SECRET`, the operator or anyone who compromises the server, can derive every forwarding
+  key and move any balance sitting in a forwarding account. That exposure is bounded by the time
+  between the merge and the forward, which run back to back, not by cryptography. The token binding
+  limits only a token that leaks on its own, from browser storage or a log: script running in the
+  page, from a cross-site scripting flaw or a malicious extension, can mint its own flow.
 - **Horizon, Soroban RPC and on-chain contracts are untrusted.** They supply the state a plan is
   built from; the checks below decide what is signed.
 
@@ -101,12 +104,18 @@ Reown hosts. `next.config.ts` adds `X-Frame-Options: DENY`, `X-Content-Type-Opti
   queueing the withdrawal.
 - **New Aquarius concentrated pools** are not on the pinned list until it is updated; discovery
   reports such a pool as an error, so the merge stays blocked instead of leaving the position.
-- **Third-party telemetry through WalletConnect.** When the account owner picks WalletConnect, or
-  signs with a restored WalletConnect session, Reown AppKit sends its mandatory events, including the page URL,
-  to `pulse.walletconnect.org`.
+- **WalletConnect's own hosts.** When the account owner picks WalletConnect, signs with a restored
+  WalletConnect session, or disconnects or closes a restored session, the browser reaches the
+  WalletConnect relay, RPC, API and verify hosts. AppKit analytics and the sign client's telemetry
+  are off (`src/lib/wallet/kit.ts`), and the CSP leaves `pulse.walletconnect.*` out of
+  `connect-src`, so the browser blocks the mandatory events AppKit still tries to send there.
 - **First-party metrics.** A completed close sends its merge transaction hash to `/api/metrics`,
   which identifies the closed account on the public ledger. The close count rests on a public
   on-chain marker that anyone can copy into a merge, bounded by daily caps.
 - **The mainnet RPC default** is a third-party gateway (`src/lib/config/networks.ts`).
 - **Dependencies.** `pnpm audit --prod` reports one low advisory, in `elliptic` under a wallet
-  module the app does not load, with no patched release. The audit status page lists it.
+  module the app does not load, with no patched release. `pnpm audit` without `--prod` also reports
+  a high advisory in `braces` 3.0.3, with no patched release, which only the ESLint toolchain
+  reaches and the production image does not contain. ESLint is held at 9.39.5 because
+  `eslint-plugin-react`, which `eslint-config-next` depends on, does not support ESLint 10. The
+  audit status page lists all three.

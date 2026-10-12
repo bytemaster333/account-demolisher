@@ -106,11 +106,16 @@ A transaction too large for the device to show cannot be signed on a Ledger.
 
 The picker lists WalletConnect through a lightweight stand-in that needs no network. The real
 module, which opens the relay connection and starts Reown AppKit, is built only when WalletConnect
-is used: when you pick it, or when you sign with a restored WalletConnect session. Restoring a
-saved session after a reload reads the stored address and does not start it.
+is used: when you pick it, when you sign with a restored WalletConnect session, or when you
+disconnect or close a restored session, which has to go through the relay. Restoring a saved
+session after a reload reads the stored address and does not start it.
 
-Once started, AppKit sends its mandatory events (the initialization and a successful connection)
-to `pulse.walletconnect.org`, including the page URL. The
+`realWalletConnect` in `src/lib/wallet/kit.ts` passes `appKitOptions: { features: { analytics:
+false } }` and `signClientOptions: { telemetryEnabled: false }`, so AppKit reports no optional
+analytics event and the sign client keeps no telemetry log. AppKit still queues its mandatory
+events (the initialization and a successful connection, with the page URL) and sends them to
+`pulse.walletconnect.org` with `navigator.sendBeacon`. The Content Security Policy leaves the
+`pulse.walletconnect.*` hosts out of `connect-src`, so the browser blocks those requests. The
 [security model](/docs/developers/security/model#what-the-app-and-its-providers-can-see) lists every
 host the browser contacts.
 
