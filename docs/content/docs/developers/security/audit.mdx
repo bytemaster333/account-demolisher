@@ -32,9 +32,9 @@ Before the external audit, the codebase went through an internal review at commi
   distinct issues, one per root cause, and two more found while fixing were added, for 261.
 - Nothing was signed or submitted on mainnet during the review.
 
-Each code fix was made with a regression test written to fail first, and checked by a separate
-reviewer before it was merged. Documentation-only issues have no test; a separate reviewer checked
-each corrected page against the code.
+Each code fix that changed behavior was made with a regression test written to fail first.
+Refactors and dead-code removals were checked with the type checker and the existing test suites,
+and documentation-only issues against the code. A separate reviewer checked every fix.
 
 ### Severity scale
 

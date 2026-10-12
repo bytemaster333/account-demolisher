@@ -5,8 +5,9 @@ description: The compiled-in set of contracts a signed DeFi call can target, the
 
 Every DeFi-protocol Soroban transaction is checked against a network-specific allow-list before
 it is signed: the adapter that builds it checks it, and the executor checks it again right before
-signing. Allowance revokes and standalone-token transfers target your own token contracts and are
-held to an exact call shape by their own guards instead.
+signing. Allowance revokes and standalone-token transfers target token contracts found by scanning
+your account, which anyone can create, and are held to an exact call shape by their own guards
+instead.
 
 The list is a compile-time constant in `src/lib/config/contracts.ts`. There is no environment
 variable, no fetch, and no runtime mutation path. **A position discovered on chain cannot extend
@@ -80,8 +81,9 @@ to the other network's list. It runs:
 
 ### Why two kinds are exempt
 
-`TransferAsIs` and `RevokeAllowance` target **your own token contract**, chosen from your own scan,
-so the protocol list does not apply to them. Each is held to one exact call instead:
+`TransferAsIs` and `RevokeAllowance` target a token contract found by scanning your account, so
+the protocol list does not apply to them. Anyone can create such a contract and make it show up in
+that scan, so each is held to one exact call instead:
 
 - `TransferAsIs` to exactly `transfer(user, destination, amount)`.
 - `RevokeAllowance` to exactly `approve(user, spender, 0, ledger)`.
