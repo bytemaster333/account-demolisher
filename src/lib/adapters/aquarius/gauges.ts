@@ -27,11 +27,11 @@ import {
   type TransactionSource,
 } from "@stellar/stellar-sdk";
 
-import { readInstanceStorage, storageValue } from "@/lib/adapters/aquarius/client";
 import { readAquariusPoolAddress } from "@/lib/adapters/aquarius/pools";
 import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { mapConcurrent } from "@/lib/soroban/concurrency";
+import { instanceStorageValue, readContractInstances } from "@/lib/soroban/contract-instance";
 import { address as scvAddress, fromScValAddress, fromScValI128 } from "@/lib/soroban/scval";
 import { assembleSubmittable, simulateRead, SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
 import {
@@ -88,9 +88,12 @@ async function readPoolGauges(
 ): Promise<PoolGauges[]> {
   const pools = [...new Set(poolAddresses)];
   if (pools.length === 0) return [];
-  const storage = await readInstanceStorage(server, pools);
+  const instances = await readContractInstances(server, pools);
   const gauged = pools.flatMap((pool) => {
-    const tokens = gaugeMapTokens(pool, storageValue(storage.get(pool)!, "RewardGaugesMap"));
+    const tokens = gaugeMapTokens(
+      pool,
+      instanceStorageValue(instances.get(pool)!, "RewardGaugesMap"),
+    );
     return tokens.length > 0 ? [{ pool, tokens }] : [];
   });
   return mapConcurrent(gauged, GAUGE_READ_CONCURRENCY, async ({ pool, tokens }) => {

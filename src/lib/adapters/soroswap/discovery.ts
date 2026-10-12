@@ -31,6 +31,7 @@ import { getAllowlistForNetwork, type AllowedContract } from "@/lib/config/contr
 import type { NetworkConfig } from "@/lib/config/networks";
 import { address as scvAddress, u32 as scvU32 } from "@/lib/soroban/scval";
 import { fromScValAddress, fromScValI128, fromScValU32 } from "@/lib/soroban/scval";
+import { contractInstanceKey } from "@/lib/soroban/contract-instance";
 import { simulateRead } from "@/lib/soroban/simulate";
 import type { SoroswapPositionSummary } from "@/lib/adapters/positions/interface";
 
@@ -269,15 +270,7 @@ export async function loadSoroswapPairs(
     sourcePublicKey,
   );
 
-  const instanceKeys = pairs.map((p) =>
-    xdr.LedgerKey.contractData(
-      new xdr.LedgerKeyContractData({
-        contract: new Address(p).toScAddress(),
-        key: xdr.ScVal.scvLedgerKeyContractInstance(),
-        durability: xdr.ContractDataDurability.persistent,
-      }),
-    ),
-  );
+  const instanceKeys = pairs.map(contractInstanceKey);
   const byPair = new Map<string, SoroswapPairInfo>();
   const batches = await Promise.all(
     chunk(instanceKeys, batchSize).map((c) => server.getLedgerEntries(...c)),

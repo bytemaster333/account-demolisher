@@ -12,6 +12,11 @@ import type { NetworkConfig } from "@/lib/config/networks";
 import { fromScValAddress, fromScValI128, fromScValSymbol, fromScValU32 } from "./scval";
 import { allowance as readAllowance, buildApprove } from "./sep41";
 import { mapConcurrent } from "./concurrency";
+import {
+  INSTANCE_BATCH_SIZE,
+  contractInstanceKey,
+  isStellarAssetInstance,
+} from "./contract-instance";
 import { EVENT_RETENTION_WINDOW_LEDGERS } from "./event-retention";
 import { scanEventWindows, type EventScanIncomplete } from "./event-scan";
 
@@ -274,30 +279,21 @@ export async function scanAllowances(
 // the ids among these whose instance runs the built-in stellar asset contract.
 // a SAC runs no token code, so its approve events are the user's own approvals
 // and are never cut. an instance the rpc does not return can't be shown to be
-// one and stays capped.
-const INSTANCE_BATCH = 190;
-
+// one and stays capped, so this reads the entries itself rather than through
+// readContractInstances, which throws on a missing one.
 async function stellarAssetContracts(
   server: rpc.Server,
   contractIds: readonly string[],
 ): Promise<Set<string>> {
   const out = new Set<string>();
-  for (let i = 0; i < contractIds.length; i += INSTANCE_BATCH) {
+  for (let i = 0; i < contractIds.length; i += INSTANCE_BATCH_SIZE) {
     const resp = await server.getLedgerEntries(
-      ...contractIds.slice(i, i + INSTANCE_BATCH).map((id) =>
-        xdr.LedgerKey.contractData(
-          new xdr.LedgerKeyContractData({
-            contract: new Address(id).toScAddress(),
-            key: xdr.ScVal.scvLedgerKeyContractInstance(),
-            durability: xdr.ContractDataDurability.persistent,
-          }),
-        ),
-      ),
+      ...contractIds.slice(i, i + INSTANCE_BATCH_SIZE).map(contractInstanceKey),
     );
     for (const entry of resp.entries) {
       const cd = xdr.expectUnionVariant(entry.val, "contractData").contractData;
       const instance = xdr.expectUnionVariant(cd.val, "scvContractInstance").instance;
-      if (instance.executable.type === "contractExecutableStellarAsset") {
+      if (isStellarAssetInstance(instance)) {
         out.add(Address.fromScAddress(cd.contract).toString());
       }
     }

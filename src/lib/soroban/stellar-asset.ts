@@ -14,15 +14,7 @@
 // derives back to its own contract id: a SAC's id is the hash of its asset, so
 // the asset it names cannot be wrong without the id differing.
 
-import {
-  Address,
-  Asset,
-  AuthRequiredFlag,
-  Keypair,
-  StrKey,
-  xdr,
-  type rpc,
-} from "@stellar/stellar-sdk";
+import { Asset, AuthRequiredFlag, Keypair, StrKey, xdr, type rpc } from "@stellar/stellar-sdk";
 
 import {
   getUserReward,
@@ -34,6 +26,11 @@ import type { ProtocolPositions } from "@/lib/adapters/positions/interface";
 import type { NetworkConfig } from "@/lib/config/networks";
 import type { AuditBalance } from "@/lib/types/account";
 import { mapConcurrent } from "@/lib/soroban/concurrency";
+import {
+  INSTANCE_BATCH_SIZE,
+  isStellarAssetInstance,
+  readContractInstances,
+} from "@/lib/soroban/contract-instance";
 import { fromScValString } from "@/lib/soroban/scval";
 import { simulateRead } from "@/lib/soroban/simulate";
 
@@ -59,8 +56,6 @@ export interface StellarAssetDeps {
   readonly batchSize?: number;
 }
 
-const DEFAULT_BATCH_SIZE = 190;
-
 // maps each contract id to the classic asset it wraps, or null for a contract
 // that is not a stellar asset contract, with whether its issuer lets a new line
 // receive. throws when an instance is missing or a SAC's name does not derive
@@ -73,35 +68,13 @@ export async function readWrappedAssets(
   deps: StellarAssetDeps = {},
 ): Promise<Map<string, WrappedAsset | null>> {
   const read = deps.simulateRead ?? simulateRead;
-  const batchSize = deps.batchSize ?? DEFAULT_BATCH_SIZE;
+  const batchSize = deps.batchSize ?? INSTANCE_BATCH_SIZE;
   const ids = [...new Set(contractIds)];
-  const isSac = new Map<string, boolean>();
-  for (let i = 0; i < ids.length; i += batchSize) {
-    const keys = ids.slice(i, i + batchSize).map((id) =>
-      xdr.LedgerKey.contractData(
-        new xdr.LedgerKeyContractData({
-          contract: new Address(id).toScAddress(),
-          key: xdr.ScVal.scvLedgerKeyContractInstance(),
-          durability: xdr.ContractDataDurability.persistent,
-        }),
-      ),
-    );
-    const resp = await server.getLedgerEntries(...keys);
-    for (const entry of resp.entries) {
-      const cd = xdr.expectUnionVariant(entry.val, "contractData").contractData;
-      const id = Address.fromScAddress(cd.contract).toString();
-      const instance = xdr.expectUnionVariant(cd.val, "scvContractInstance").instance;
-      isSac.set(id, instance.executable.type === "contractExecutableStellarAsset");
-    }
-  }
-  const missing = ids.filter((id) => !isSac.has(id));
-  if (missing.length > 0) {
-    throw new Error(`token contract instances not returned by the rpc: ${missing.join(", ")}`);
-  }
+  const instances = await readContractInstances(server, ids, batchSize);
 
   const named = new Map<string, SacName | null>();
   for (const id of ids) {
-    if (isSac.get(id) !== true) {
+    if (!isStellarAssetInstance(instances.get(id)!)) {
       named.set(id, null);
       continue;
     }
