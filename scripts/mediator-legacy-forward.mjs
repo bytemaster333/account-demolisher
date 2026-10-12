@@ -51,6 +51,18 @@ function die(message) {
   process.exit(1);
 }
 
+// the same rule as errorMessage in src/lib/errors.ts: the soroban rpc client
+// rejects with plain { code, message } objects, which String() turns into
+// "[object Object]". plain node only loads that .ts file by stripping its types
+// and reparsing it as an es module, with a warning on every run, so the rule is
+// repeated here.
+function errorText(err) {
+  if (err instanceof Error && err.message.length > 0) return err.message;
+  if (typeof err === "string" && err.length > 0) return err;
+  if (typeof err?.message === "string" && err.message.length > 0) return err.message;
+  return String(err);
+}
+
 const { values } = parseArgs({
   options: {
     network: { type: "string" },
@@ -129,7 +141,7 @@ try {
             ? Memo.return(hashMemoBytes(values["memo-return"]))
             : Memo.none();
 } catch (err) {
-  die(`--${memoFlags[0]} is not a valid memo: ${err instanceof Error ? err.message : String(err)}`);
+  die(`--${memoFlags[0]} is not a valid memo: ${errorText(err)}`);
 }
 
 const mediator = Keypair.fromRawEd25519Seed(hmac(`${KEY_DERIVATION_LABEL}:${nonce}`));
@@ -227,5 +239,5 @@ try {
   console.log(`submitted in ledger ${res.ledger}`);
 } catch (err) {
   const codes = err?.response?.data?.extras?.result_codes;
-  die(`submit failed: ${codes ? JSON.stringify(codes) : String(err)}`);
+  die(`submit failed: ${codes ? JSON.stringify(codes) : errorText(err)}`);
 }
