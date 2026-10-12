@@ -66,8 +66,8 @@ docker compose up --build -d        # http://localhost (set SITE_ADDRESS for HTT
 
 Caddy is the only published service. The app's `NEXT_PUBLIC_*` settings are build arguments
 (rebuild after changing them), and its server settings are passed at runtime. Compose builds in
-`self-hosted` mode by default, which leaves exchange closes off until you set
-`NEXT_PUBLIC_DEPLOYMENT_MODE=reference` and `MEDIATOR_SECRET`. See
+`self-hosted` mode by default, which leaves closes to an exchange or a memo-required address off
+until you set `NEXT_PUBLIC_DEPLOYMENT_MODE=reference` and `MEDIATOR_SECRET`. See
 [Self-hosting](https://docs.demolisher.app/docs/developers/operations/self-hosting).
 
 ## Environment variables
@@ -94,7 +94,7 @@ Server-only:
 Public (inlined at build time):
 
 - `NEXT_PUBLIC_STELLAR_NETWORK`: `mainnet` or `testnet` (default `testnet`), the starting network.
-- `NEXT_PUBLIC_DEPLOYMENT_MODE`: `reference` (default) runs the exchange mediator;
+- `NEXT_PUBLIC_DEPLOYMENT_MODE`: `reference` (default) runs the mediator;
   `self-hosted` refuses closes that need it.
 - `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID`: adds WalletConnect to the wallet picker when set.
 - `NEXT_PUBLIC_SITE_URL`: the canonical origin for metadata, the sitemap and `robots.txt`.
@@ -126,13 +126,17 @@ API:
 ## Testing
 
 ```bash
-pnpm test              # unit tests (Vitest)
-pnpm test:integration  # live testnet and read-only mainnet checks
-pnpm test:e2e          # Playwright (pnpm exec playwright install chromium first)
+pnpm test                      # unit tests (Vitest)
+pnpm test:integration          # live testnet closes and offline checks
+pnpm test:integration:mainnet  # read-only mainnet checks
+pnpm test:e2e                  # Playwright (pnpm exec playwright install chromium first)
 ```
 
-The integration suite funds real testnet accounts and closes them, and reads mainnet state
-read-only, so it needs outbound network access.
+The integration suite funds real testnet accounts and closes them, so it needs outbound network
+access. CI and the release workflow run it as a gate. The read-only mainnet checks in
+`tests/integration/mainnet/` run daily and on demand in `.github/workflows/mainnet-timing.yml`, not
+in CI or a release, so a public mainnet endpoint outage or rate limit cannot block a merge or a
+release.
 
 ## Scripts
 
@@ -140,9 +144,10 @@ read-only, so it needs outbound network access.
 | --------------------------------------------- | ----------------------------------------------------------- |
 | `pnpm dev`                                    | Next.js dev server                                          |
 | `pnpm build` / `pnpm start`                   | Production build and server                                 |
-| `pnpm typecheck`                              | `tsc --noEmit`                                              |
+| `pnpm typecheck`                              | `tsc --noEmit` for the app and for the Playwright specs     |
 | `pnpm lint` / `pnpm format`                   | ESLint and Prettier                                         |
 | `pnpm test` / `test:integration` / `test:e2e` | Tests                                                       |
+| `pnpm test:integration:mainnet`               | Read-only mainnet checks                                    |
 | `pnpm mediator:legacy-forward`                | Operator tool to finish a forward saved by an earlier build |
 
 ## Documentation

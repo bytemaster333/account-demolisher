@@ -70,17 +70,28 @@ This step collects what you need to know but nothing you have to fix: a token th
 copy of a known one, a scan that did not finish, a close that moves over 1000 XLM or holdings it
 cannot price, payments the close collects for you, and notes about the plan.
 
-Here you also see **Pending payments this close collects**: every claimable balance the account
-can claim now, ticked. Untick one to leave it behind. A balance the account sponsors itself is
-always collected, because leaving it would keep the account a sponsor and block the merge. A
-change applies when you rebuild the plan.
+Here you also see **Pending payments this close collects**, which lists every claimable balance
+the account can claim now. A box starts ticked when the plan collects that balance. Untick one to
+leave it behind. A balance the close cannot collect (no trustline it can open, an unauthorized
+trustline, a full trustline, or no XLM for a new trustline's reserve) starts unticked, and ticking
+it does not collect it: it stays under **Some pending payments will be left behind** with the
+reason. A balance the account sponsors itself has no box and stays in the claim list, because
+leaving it would keep the account a sponsor and block the merge. A change applies when you rebuild
+the plan. On a run that only prepares the close, nothing is collected yet, so every box starts
+unticked.
+
+On a shared account this list does not appear. The close collects every pending payment it can,
+and you cannot leave one out.
 
 **Balances this close sells for XLM** lists every token balance the close sells at the market
 price. For each one you choose **Sell for XLM** (the default), **Send it as-is to your
 destination**, or **Return to issuer (keep nothing)**. Sending as-is is offered only when the
 destination has an authorized trustline for that token with room for the whole balance, and never
 on an exchange close, because the payment would arrive without your memo. A change applies when you
-rebuild the plan.
+rebuild the plan. Right before the close transaction is signed, the app reads the destination again
+for every balance you send as-is, counting the pending payments the same transaction collects into
+it, and stops the close unsigned when the destination can no longer take the whole amount. On a
+shared account the collected transaction gets the same check before it is submitted.
 
 Tick each box, then select **Continue to review**.
 
@@ -106,9 +117,10 @@ XLM, up to ... XLM", or as "fee up to ... XLM" for a step that is not built yet.
 
 Below the figures is the plan, grouped by phase in the order it runs, such as **Token permissions**,
 **Repay loans**, **Withdraw from apps**, **Collect rewards**, **Leftover tokens**, **Close the
-account** and, for an exchange, **Deliver to destination**. A group appears only when the plan
-has steps in it, and a Blend backstop or a classic unwind ahead of a loan repayment adds its own
-group. The last two carry an **Irreversible** badge.
+account** and, for a close to an exchange or another address that requires a memo, **Deliver to
+destination**. A group appears only when the plan has steps in it, and a Blend backstop or a
+classic unwind ahead of a loan repayment adds its own group. The last two carry an
+**Irreversible** badge.
 
 Check the address under **SENDING EVERYTHING TO**, then select **Continue to final
 confirmation**. The button stays disabled while anything in the review still blocks the close.

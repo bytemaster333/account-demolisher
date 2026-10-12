@@ -16,7 +16,8 @@ The batcher throws before emitting anything when:
 - `useMediator` is set without `mediatorPublicKey`,
 - an exchange close asks to send a balance to the destination (it would arrive without the memo),
 - a direct close merges into the account itself (`ACCOUNT_MERGE_MALFORMED` on chain),
-- a credit balance is frozen by its issuer (`FROZEN_TRUSTLINE`).
+- a credit balance is frozen by its issuer (`FROZEN_TRUSTLINE`),
+- `claimableBalanceIds` is neither `"every-collectable"` nor an array of ids.
 
 ## Operation order
 
@@ -37,7 +38,10 @@ One cancel per open offer.
 ### 3. Claim claimable balances
 
 `planClaimableBalances(audit, claimableBalanceIds)` decides which balances the close claims. The
-list is the reviewed selection: `undefined` claims every collectable balance, `[]` claims none.
+list is required: `"every-collectable"` claims every balance the close can collect, and an array of
+ids is the reviewed selection (`[]` claims none). A caller that leaves it out, or passes anything
+else, makes both `planClaimableBalances` and `batchClassicDemolition` throw, so a missing selection
+never turns into claiming everything.
 Self-sponsored balances are claimed regardless of the selection, because leaving one keeps the
 account a sponsor. A balance is left behind, with its reason, when it is not claimable yet, has no
 trustline the close can open, has an unauthorized or full trustline, or needs a trustline whose
@@ -57,6 +61,9 @@ For each credit balance, in this precedence:
 
 An explicit choice wins over a market path found later. The path payment sends to the account
 itself, converting in place, and its `destMin` is the quoted output less the slippage tolerance.
+The batcher records the quoted path on every path payment, `[]` for a direct hop, and
+`src/lib/stellar/classic-builder.ts` refuses one whose path is missing instead of building a
+direct hop nobody quoted.
 See [Simulation](/docs/developers/internals/simulation) for how quotes and the price-impact cap are
 computed.
 

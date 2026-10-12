@@ -24,7 +24,9 @@ allowed instead.
 | `POST /api/mediator/reissue` | Renew a flow token for a mediator that exists on chain | 5 per 60 s per flow; requests without an authentic token, 5 per 60 s per address  |
 | `OPTIONS` on both            | CORS preflight, 204                                    |                                                                                   |
 
-Any other method answers 405 `METHOD_NOT_ALLOWED` with an `allow` header. A rate-limited request
+Each route advertises only the methods it serves, in `access-control-allow-methods` and in the
+`allow` header of a 405: `GET, POST, OPTIONS` on `/api/mediator/sign` and `POST, OPTIONS` on
+`/api/mediator/reissue`. Any other method answers 405 `METHOD_NOT_ALLOWED`. A rate-limited request
 answers 429 `RATE_LIMITED` with `retry-after` in seconds. The limits are keyed as described in
 [Self-hosting](/docs/developers/operations/self-hosting#proxy-and-rate-limits); a deployment that
 cannot identify the client answers 500 `PROXY_MISCONFIGURED`.

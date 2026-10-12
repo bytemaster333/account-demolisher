@@ -59,7 +59,10 @@ host), and `AquariusEventScanPoolProvider` scans the router's deposit and withdr
 RPC's retention window, about seven days. Both always run. Pools are keyed by their sorted token
 set plus pool index, because a pool index is unique only within a token set. When the REST source
 fails, what the scan found is kept and an error is recorded, because the scan cannot rule out an
-older position. Discovery fails only when both sources fail. Share balances are read on chain.
+older position. When the scan fails, what REST found is kept and an error is recorded too, because
+a REST answer that left out a recent pool cannot be checked against the chain. Either error warns
+at review and makes the merge-time check refuse the merge. Discovery fails only when both sources
+fail. Share balances are read on chain.
 
 **Concentrated pools** hold tick-range positions in the pool contract itself, which neither source
 sees. Discovery reads each pinned concentrated pool's per-user storage with batched

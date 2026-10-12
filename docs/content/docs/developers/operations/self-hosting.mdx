@@ -58,7 +58,9 @@ Three named volumes keep state across container recreation: `metrics` (the metri
 
 ### The image
 
-The `Dockerfile` builds on `node:24-slim` pinned by digest, installs with `--frozen-lockfile`,
+The `Dockerfile` builds on `node:24-slim` pinned by digest to the 2026-10-06 build of Node.js
+24.21.0, so the base cannot drift under the tag. The digest is updated by hand when Node.js moves
+or the tag is rebuilt with newer Debian packages. The build installs with `--frozen-lockfile`,
 builds with the public build arguments, and ships only production dependencies. The runtime image
 has no pnpm: it starts `node node_modules/next/dist/bin/next start` as the non-root user `appuser`
 (uid 1001), exposes port 3000, and checks health by fetching `/` every 30 seconds. The app files

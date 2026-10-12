@@ -87,10 +87,12 @@ after each lands. For each phase it:
 DeFi position(s) still open`) or a protocol could not be read (`network`).
 4. Refuses when a balance can no longer be disposed of as reviewed: `conversion_refused` for a
    price refusal, `not_mergeable` for a balance with no path.
-5. Checks that a balance the account owner chose to send to the destination is still receivable
-   there.
-6. Reads the ledger clock, leaves out claims that would not stay claimable for the signing window,
+5. Reads the ledger clock, leaves out claims that would not stay claimable for the signing window,
    and quotes again when that changed the claims.
+6. Reads the destination again and refuses with `not_mergeable` when it can no longer receive a
+   balance the account owner chose to send there, for the balance plus what this batch claims into
+   it. A balance with a market path is checked too, because an explicit send choice wins over the
+   sale.
 7. On an exchange close, probes the forwarding account (see below).
 8. Re-batches and runs `assessMergeability` against the claims the batch makes and the transactions
    still to come.

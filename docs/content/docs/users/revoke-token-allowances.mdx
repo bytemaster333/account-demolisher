@@ -59,7 +59,10 @@ not make it malicious. Inspect it with the explorer link.
 
 Select **Revoke** on a row. The app builds the revoke and shows **Network fee up to ... XLM**
 before anything is signed. Select **Sign** to sign it in your wallet, or **Cancel**. The approval
-is set to zero, and the row updates to **Revoked** once the ledger confirms it.
+is set to zero, and the row updates to **Revoked** once the ledger confirms it. When the ledger
+includes the revoke but it fails, the row says the allowance is still live, links the transaction,
+and offers **Retry revoke**. When the app cannot learn the outcome in time, the row shows **Not
+confirmed** and asks you to refresh the list, because the revoke can still land.
 
 The token's own code decides what a revoke costs, so the fee is on screen first. When the revoke has
 to be rebuilt before it is signed, because another revoke landed first or its time window ran out

@@ -155,7 +155,9 @@ checks the bundle against the live account before submitting it.
 ## Tests
 
 - `tests/unit`: Vitest, no network.
-- `tests/integration`: live testnet closes and read-only mainnet checks.
+- `tests/integration`: live testnet closes and offline checks, run in CI and the release workflow.
+- `tests/integration/mainnet`: read-only mainnet checks, run on a schedule
+  (`.github/workflows/mainnet-timing.yml`) and never as a CI or release gate.
 - `tests/e2e`: Playwright against a built app.
 
 ## The docs site

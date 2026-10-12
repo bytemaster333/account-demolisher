@@ -137,8 +137,10 @@ and a multisig signing request collects signatures on exactly one. See
 [Close a shared account](/docs/users/close-a-shared-account).
 
 **A Blend backstop still locked.** When a backstop withdrawal stays locked after the run, the run
-only prepares the close: it creates no forwarding account and sends nothing to the exchange. Come
-back after the unlock date to run the close to the exchange.
+only prepares the close: it creates no forwarding account and sends nothing to the exchange. The
+close that finishes it after the unlock date cannot go to the exchange, because the withdrawal pays
+out the BLND-USDC LP token, which an exchange close cannot sell or forward. Review and the
+confirmation say so on the preparing run. Finish the close to your own Stellar address.
 
 **Self-hosted deployments.** A deployment built in self-hosted mode does not run the forwarding
 service, so it refuses a close that needs it. Withdraw to an address you control instead.
