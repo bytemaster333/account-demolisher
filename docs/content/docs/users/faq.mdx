@@ -46,8 +46,11 @@ the account.
 
 Once per transaction. Stellar does not combine Soroban and classic operations in one transaction,
 so every DeFi step and every allowance revoke is its own signature, plus the classic close. The
-classic close is one transaction unless it holds over 100 operations or the account has a classic
-liquidity pool share, which is withdrawn in a transaction of its own first. An exchange close's
+classic close is one transaction unless it holds over 100 operations, the account has a classic
+liquidity pool share, a claimable balance has to land before its token is sold or before a
+trustline it needs exists, or two conversions trade through the same market. Each of those adds a
+transaction ahead of the close, and [Close an account](/docs/users/close-an-account#close) explains
+why. An exchange close's
 final delivery needs no signature from you.
 
 ## Can I send straight to an exchange?

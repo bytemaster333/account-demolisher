@@ -190,5 +190,6 @@ Allow-list violation: 2 contract invocation(s) blocked.
 
 `getViolations` returns the same list without throwing.
 
-This is a hard stop by design. When closing a position needs a contract that is not on the list,
-the safe move is to add it to the source after checking it, not to sign blindly.
+For a required step, such as a DeFi exit, this is a hard stop by design. When closing a position
+needs a contract that is not on the list, the safe move is to add it to the source after checking
+it, not to sign blindly. Only an optional conversion has a fallback, listed in the table above.

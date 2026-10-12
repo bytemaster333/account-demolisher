@@ -147,9 +147,19 @@ appears.
 
 Every Soroban step is its own transaction, because Stellar does not combine Soroban and classic
 operations in one transaction. The classic close is one transaction for most accounts. It takes
-more when it holds over 100 operations, and an account with a classic liquidity pool share
-withdraws it in a transaction of its own first. Right before each Soroban signature the progress
-line shows the network fee that signature allows.
+more in these cases, each adding a signature:
+
+- It holds over 100 operations.
+- The account has a classic liquidity pool share. It is withdrawn in a transaction of its own
+  first.
+- A claimable balance in a token that is then sold on the market, or that needs a trustline the
+  close opens, is claimed in a transaction of its own first, so the sale is sized from what
+  actually landed.
+- Two conversions trade through the same market. Each is quoted against the market as it is, so
+  they run in separate transactions, and the later one is quoted again once the earlier one
+  landed.
+
+Right before each Soroban signature the progress line shows the network fee that signature allows.
 
 <Callout type="warn">
   Keep the tab open until it finishes. Closing the tab stops the close partway. Steps that already

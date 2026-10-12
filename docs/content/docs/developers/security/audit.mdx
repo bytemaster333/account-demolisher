@@ -8,8 +8,9 @@ description: The state of the external audit, the internal pre-audit review and 
 An independent external audit of Account Demolisher has not been performed yet. The app tells you
 so: whenever it is on mainnet, from the build default, a restored selection or a switch, the
 browser has to acknowledge that the code has not had an independent audit before the app operates
-(`src/components/layout/AppShell.tsx`, `src/components/layout/MainnetConfirm.tsx`). A co-signer on
-`/sign` signs on the network the signing request names and does not see that notice.
+(`src/components/layout/AppShell.tsx`, `src/components/layout/MainnetConfirm.tsx`). The notice
+follows the network the app has selected, not the one a signing request names, so a co-signer on
+`/sign` sees it whenever their browser is on mainnet without an acknowledgement.
 
 When the external audit runs, its findings and their resolutions are published on this page.
 
@@ -31,8 +32,9 @@ Before the external audit, the codebase went through an internal review at commi
   distinct issues, one per root cause, and two more found while fixing were added, for 261.
 - Nothing was signed or submitted on mainnet during the review.
 
-Each fix was made with a regression test written to fail first, and checked by a separate reviewer
-before it was merged.
+Each code fix was made with a regression test written to fail first, and checked by a separate
+reviewer before it was merged. Documentation-only issues have no test; a separate reviewer checked
+each corrected page against the code.
 
 ### Severity scale
 

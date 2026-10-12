@@ -85,15 +85,17 @@ browser only and are never uploaded or stored.
 ## What a shared close cannot include
 
 A signing request collects signatures on exactly one transaction, so the whole close has to fit
-in one classic transaction. The app tells you before you start when one of these applies:
+in one classic transaction. The app refuses to build the request when one of these applies, and
+names the reason:
 
-| Situation                                        | Why it does not fit                                 | What to do                                           |
-| ------------------------------------------------ | --------------------------------------------------- | ---------------------------------------------------- |
-| The destination is an exchange                   | The exchange path runs as several transactions      | Close to an address you control instead              |
-| The account holds Soroban DeFi positions         | Each exit is its own transaction                    | Unwind them first, or close with all signers present |
-| The account has token allowances to revoke       | Each revoke is its own transaction                  | Revoke them first, or close with all signers present |
-| You selected standalone tokens to sweep          | Each token move is its own transaction              | Leave them out, or close with all signers present    |
-| The account holds a classic liquidity pool share | The pool withdraw runs in its own transaction first | Withdraw it first, or close with all signers present |
+| Situation                                                                                                           | Why it does not fit                                 | What to do                                                                                          |
+| ------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| The destination is an exchange                                                                                      | The exchange path runs as several transactions      | Close to an address you control instead                                                             |
+| The account holds Soroban DeFi positions                                                                            | Each exit is its own transaction                    | Unwind them first, or close with all signers present                                                |
+| The account has token allowances to revoke                                                                          | Each revoke is its own transaction                  | Revoke them first, or close with all signers present                                                |
+| You selected standalone tokens to sweep                                                                             | Each token move is its own transaction              | Leave them out, or close with all signers present                                                   |
+| The account holds a classic liquidity pool share                                                                    | The pool withdraw runs in its own transaction first | Withdraw it first, or close with all signers present                                                |
+| You chose to claim a claimable balance in a token the account does not trust, or in a token with no disposal chosen | The claim has to land in its own transaction first  | Leave it unclaimed, choose to send it or return it to its issuer, or close with all signers present |
 
 The close itself also has to fit in 100 operations, the Stellar limit for one transaction.
 

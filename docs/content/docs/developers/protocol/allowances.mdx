@@ -80,7 +80,8 @@ successful read differs from the event amount, and the viewer then shows the on-
 Both paths confirm. The viewer shows every confirmed row. Discovery for a close drops rows whose
 on-chain read is zero (`withoutConfirmedZero`), because an allowance spent through `transfer_from`
 or already revoked leaves nothing to revoke. When the confirm step fails as a whole, the close keeps
-the event-derived list and records the failure as a discovery warning.
+the event-derived list and records the failure in the discovery diagnostics, which the run status
+shows when the close is prepared or finished. It is not a review warning.
 
 A hostile token's `allowance()` can answer non-zero for spenders it invented, so confirmation does
 not filter fabricated rows on its own. The cap above and the revoke guard below bound what such a
