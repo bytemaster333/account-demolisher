@@ -6,6 +6,7 @@ import {
   groupPlanNodes,
   nodeExplainer,
   planStepNumbers,
+  runProgress,
   runnableSteps,
   simulatedBadgeLabel,
 } from "@/app/demolish/_lib/plan-copy";
@@ -128,5 +129,32 @@ describe("dry-run badges and step counts (L-60)", () => {
     const { runnable, skipped } = runnableSteps(ordered);
     expect(runnable).toBe(ordered.length - 1);
     expect(skipped.map((n) => n.id)).toEqual([withdraw.id]);
+  });
+});
+
+// the run's "N of M steps done" counter (NPF-25): a skipped step never ran, so
+// it is neither done nor one of the steps the run counts, the same count the
+// review header shows
+describe("run progress counts only the steps that run", () => {
+  it("leaves a skipped step out of both counts and counts only landed steps as done", () => {
+    const tree = treeWithBlendAquariusAndToken();
+    const ordered = topologicalOrder(tree);
+    expect(ordered.length).toBeGreaterThan(3);
+    const [first, second, third] = ordered;
+    first!.status = "confirmed";
+    second!.executed = { txHash: "ab".repeat(32), ledger: 7 };
+    third!.status = "skipped";
+    const { runnable } = runnableSteps(ordered);
+    expect(runProgress(ordered)).toEqual({ done: 2, total: runnable });
+    expect(runProgress(ordered).total).toBe(ordered.length - 1);
+  });
+
+  it("still counts a step that landed before a later status overwrote it", () => {
+    const tree = treeWithBlendAquariusAndToken();
+    const ordered = topologicalOrder(tree);
+    const [first] = ordered;
+    first!.executed = { txHash: "cd".repeat(32), ledger: 9 };
+    first!.status = "skipped";
+    expect(runProgress(ordered)).toEqual({ done: 1, total: ordered.length });
   });
 });

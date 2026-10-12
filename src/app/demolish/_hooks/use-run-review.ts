@@ -20,7 +20,7 @@ import type { ConversionChoices } from "../_components/ConversionChoicesCard";
 import { claimableSplit, type ClaimableSplit } from "../_lib/claimables";
 import { stroopsToXlm } from "../_lib/fees";
 import { heldSelectionDirty } from "../_lib/held-selection";
-import { groupPlanNodes, type PlanGroup } from "../_lib/plan-copy";
+import { groupPlanNodes, runProgress, type PlanGroup } from "../_lib/plan-copy";
 import { hasClassicPoolShares } from "../_lib/signing-bundle";
 import { useClaimedCreditQuotes, type ClaimedCreditQuotes } from "./use-claimed-credit-quotes";
 import type { CloseChoices } from "./use-close-choices";
@@ -327,11 +327,9 @@ export function useRunReview(args: {
   // plan in execution order; groups are consecutive runs of one phase
   const orderedNodes = useMemo(() => (tree ? topologicalOrder(tree) : []), [tree]);
   const planGroups = useMemo(() => groupPlanNodes(orderedNodes), [orderedNodes]);
-  const activeCount = orderedNodes.length;
-  // a landed receipt counts as done whatever status a later failure wrote
-  const doneCount = orderedNodes.filter(
-    (n) => n.executed !== undefined || n.status === "confirmed" || n.status === "skipped",
-  ).length;
+  // a skipped step never ran: it is neither done nor counted, so the total
+  // matches the review's "N steps run"
+  const { done: doneCount, total: activeCount } = runProgress(orderedNodes);
 
   // choices made on the Warnings step only reach the plan by a rebuild
   const claimSelectionDirty = claimSelection !== null && !sameSet(claimSelection, builtClaimList);

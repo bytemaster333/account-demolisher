@@ -28,11 +28,18 @@ export function groupPlanNodes(nodes: readonly PlanNode[]): readonly PlanGroup[]
   return groups;
 }
 
+// a step that will not run, or did not. a landed receipt outranks the status: a
+// later failure event may overwrite a step's status, but never undo what reached
+// the chain (the same rule PlanRow draws by)
+function isSkippedStep(n: PlanNode): boolean {
+  return n.executed === undefined && n.status === "skipped";
+}
+
 // 1-based step numbers in display order, which is the execution order. a
 // skipped step won't run, so it gets no number and the last number matches the
 // "N steps run" count in the review header.
 export function planStepNumbers(groups: readonly PlanGroup[]): ReadonlyMap<string, number> {
-  const runs = groups.flatMap((g) => g.nodes).filter((n) => n.status !== "skipped");
+  const runs = groups.flatMap((g) => g.nodes).filter((n) => !isSkippedStep(n));
   return new Map(runs.map((n, i) => [n.id, i + 1]));
 }
 
@@ -42,8 +49,19 @@ export function runnableSteps(ordered: readonly PlanNode[]): {
   readonly runnable: number;
   readonly skipped: readonly PlanNode[];
 } {
-  const skipped = ordered.filter((n) => n.status === "skipped");
+  const skipped = ordered.filter(isSkippedStep);
   return { runnable: ordered.length - skipped.length, skipped };
+}
+
+// the run's "N of M steps done" counter. a skipped step never ran, so it is
+// neither done nor counted, which keeps the total equal to the review's count
+// of steps that run
+export function runProgress(ordered: readonly PlanNode[]): {
+  readonly done: number;
+  readonly total: number;
+} {
+  const done = ordered.filter((n) => n.executed !== undefined || n.status === "confirmed").length;
+  return { done, total: runnableSteps(ordered).runnable };
 }
 
 // the classic close and the mediator forward are only built offline at preview
