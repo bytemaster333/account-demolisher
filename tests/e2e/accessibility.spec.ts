@@ -3,7 +3,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { Keypair, Operation } from "@stellar/stellar-sdk";
 
 import { friendbotFund, submitAs } from "./support/chain";
-import { configureClose, connectWithSecret } from "./support/flow";
+import { acknowledgeNotices, configureClose, connectWithSecret } from "./support/flow";
 
 // Accessibility sweep (Tranche-3 deliverable). We fail the build on CRITICAL and
 // SERIOUS axe violations (the impacts that meaningfully block users) and log
@@ -110,6 +110,29 @@ test.describe("blocked close screens", () => {
     await expect(block).toHaveRole("region");
     await expectNoBlockingViolations(page, testInfo, "/demolish sponsoring block");
   });
+});
+
+// the typed confirmation only opens after a real review, so the route sweep
+// above never reaches it. it is scanned while its unlock countdown still shows.
+test("the typed confirmation dialog has no critical/serious violations", async ({
+  page,
+}, testInfo) => {
+  test.setTimeout(180_000);
+  const account = Keypair.random();
+  const destination = Keypair.random();
+  await friendbotFund(account.publicKey());
+  await friendbotFund(destination.publicKey());
+
+  await page.goto("/demolish");
+  await connectWithSecret(page, account.secret());
+  await configureClose(page, destination.publicKey());
+  await acknowledgeNotices(page);
+  const reviewConfirm = page.getByTestId("demolish-confirm");
+  await reviewConfirm.waitFor({ state: "visible", timeout: 120_000 });
+  await reviewConfirm.click();
+  await page.getByTestId("typed-confirmation").waitFor();
+  await expect(page.getByRole("progressbar", { name: "Confirm unlock countdown" })).toBeVisible();
+  await expectNoBlockingViolations(page, testInfo, "/demolish typed confirmation");
 });
 
 // the landing runs looping animations (the pulsing rings, the floating and

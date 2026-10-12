@@ -360,6 +360,7 @@ export function TypedConfirmation({
             id={statusId}
             data-testid="typed-confirmation-status"
             role="progressbar"
+            aria-label="Confirm unlock countdown"
             aria-valuemin={0}
             aria-valuemax={Math.ceil(delayMs / 1000)}
             aria-valuenow={Math.ceil(delayMs / 1000) - timerLeft}

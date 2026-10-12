@@ -40,6 +40,20 @@ describe("TypedConfirmation timed-delay gate", () => {
     expect(onConfirm).not.toHaveBeenCalled();
   });
 
+  it("names the unlock countdown progressbar so assistive tech can announce it", () => {
+    render(
+      <TypedConfirmation
+        destination={DEST}
+        delayMs={4000}
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    const bar = screen.getByRole("progressbar", { name: "Confirm unlock countdown" });
+    expect(bar.getAttribute("data-testid")).toBe("typed-confirmation-status");
+    expect(bar.getAttribute("aria-valuetext")).toBe("Confirm unlocks in 4 seconds");
+  });
+
   it("enables confirm only AFTER the delay elapses and the last-4 match", () => {
     const onConfirm = vi.fn();
     render(
