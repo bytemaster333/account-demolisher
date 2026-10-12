@@ -3,8 +3,6 @@
 
 import { errorMessage } from "@/lib/errors";
 
-const ALLOWED_METHODS = "GET, POST, OPTIONS";
-
 // local dev origins; the project itself runs on 3002
 const DEV_ALLOWED_ORIGINS = new Set<string>([
   "http://localhost:3000",
@@ -15,8 +13,10 @@ const DEV_ALLOWED_ORIGINS = new Set<string>([
 export type HeaderMap = Record<string, string>;
 
 // CORS headers for an allow-listed origin. in production only origins listed in
-// MEDIATOR_ALLOWED_ORIGIN (csv) get them; unset means same-origin only.
-export function buildCorsHeaders(origin: string | null): HeaderMap {
+// MEDIATOR_ALLOWED_ORIGIN (csv) get them; unset means same-origin only. methods
+// is the route's own list, the same one its 405 answer names in allow, so a
+// caller is never told a method works that the route refuses.
+export function buildCorsHeaders(origin: string | null, methods: string): HeaderMap {
   if (origin === null) return {};
 
   let allowed: Set<string>;
@@ -36,7 +36,7 @@ export function buildCorsHeaders(origin: string | null): HeaderMap {
   if (!allowed.has(origin)) return {};
   return {
     "access-control-allow-origin": origin,
-    "access-control-allow-methods": ALLOWED_METHODS,
+    "access-control-allow-methods": methods,
     "access-control-allow-headers": "content-type",
     vary: "origin",
   };
@@ -56,10 +56,13 @@ export function jsonResponse(
   });
 }
 
-export function preflight(request: Request): Response {
+export function preflight(request: Request, methods: string): Response {
   return new Response(null, {
     status: 204,
-    headers: { "cache-control": "no-store", ...buildCorsHeaders(request.headers.get("origin")) },
+    headers: {
+      "cache-control": "no-store",
+      ...buildCorsHeaders(request.headers.get("origin"), methods),
+    },
   });
 }
 

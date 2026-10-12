@@ -36,8 +36,11 @@ export function __resetRateLimiterForTests(): void {
   flowLimiter.reset();
 }
 
+// the methods this route serves, for its cors answers and its 405 allow header
+const METHODS = "POST, OPTIONS";
+
 export function OPTIONS(request: Request): Response {
-  return preflight(request);
+  return preflight(request, METHODS);
 }
 
 async function readFlowToken(
@@ -66,7 +69,7 @@ async function readFlowToken(
 // memo. renewal never widens what the token allows; the mediator must exist so
 // tokens for flows that never got funded are not kept alive for nothing.
 export async function POST(request: Request): Promise<Response> {
-  const cors = buildCorsHeaders(request.headers.get("origin"));
+  const cors = buildCorsHeaders(request.headers.get("origin"), METHODS);
   const limitByIp = (): Response | null => {
     const limited = rateLimitByIp(ipLimiter, request);
     return limited === null ? null : withMediatorHeaders(limited, cors);
@@ -125,7 +128,7 @@ export async function POST(request: Request): Promise<Response> {
   );
 }
 
-const notAllowed = methodNotAllowed("POST, OPTIONS");
+const notAllowed = methodNotAllowed(METHODS);
 
 export const GET = notAllowed;
 export const PUT = notAllowed;

@@ -44,8 +44,11 @@ export function __resetRateLimiterForTests(): void {
   mintLimiter.reset();
 }
 
+// the methods this route serves, for its cors answers and its 405 allow header
+const METHODS = "GET, POST, OPTIONS";
+
 export function OPTIONS(request: Request): Response {
-  return preflight(request);
+  return preflight(request, METHODS);
 }
 
 type ParsedSignBody =
@@ -97,7 +100,7 @@ async function parseSignBody(
 // for an authentic token, per address otherwise), validate the envelope
 // against the token's terms, co-sign and return base64 xdr
 export async function POST(request: Request): Promise<Response> {
-  const cors = buildCorsHeaders(request.headers.get("origin"));
+  const cors = buildCorsHeaders(request.headers.get("origin"), METHODS);
   // anything that can't name an authentic flow is charged to the client address
   const limitByIp = (): Response | null => {
     const limited = rateLimitByIp(signIpLimiter, request);
@@ -182,7 +185,7 @@ export async function POST(request: Request): Promise<Response> {
 // key only, and only for a forward that meets those terms. it can be used more
 // than once (a failed forward is retried with it) until it expires.
 export function GET(request: Request): Response {
-  const cors = buildCorsHeaders(request.headers.get("origin"));
+  const cors = buildCorsHeaders(request.headers.get("origin"), METHODS);
   const limited = rateLimitByIp(mintLimiter, request);
   if (limited !== null) return withMediatorHeaders(limited, cors);
 
@@ -248,7 +251,7 @@ export function GET(request: Request): Response {
   }
 }
 
-const notAllowed = methodNotAllowed("GET, POST, OPTIONS");
+const notAllowed = methodNotAllowed(METHODS);
 
 export const PUT = notAllowed;
 export const PATCH = notAllowed;

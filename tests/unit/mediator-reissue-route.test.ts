@@ -230,3 +230,36 @@ describe("POST /api/mediator/reissue", () => {
     expect(reissueRoute.GET().status).toBe(405);
   });
 });
+
+// the route serves only POST, so its cors answers must not advertise the GET it
+// refuses with a 405 (NPF-9)
+describe("reissue CORS lists only the methods the route serves", () => {
+  const origin = "http://localhost:3002";
+
+  it("answers a preflight with POST and OPTIONS, the same list as its 405 allow header", () => {
+    const res = reissueRoute.OPTIONS(
+      new Request("http://app.test/api/mediator/reissue", {
+        method: "OPTIONS",
+        headers: { origin },
+      }),
+    );
+    expect(res.status).toBe(204);
+    expect(res.headers.get("access-control-allow-origin")).toBe(origin);
+    expect(res.headers.get("access-control-allow-methods")).toBe("POST, OPTIONS");
+    expect(res.headers.get("access-control-allow-methods")).toBe(
+      reissueRoute.GET().headers.get("allow"),
+    );
+  });
+
+  it("puts the same list on a cross-origin POST answer", async () => {
+    const res = await reissueRoute.POST(
+      new Request("http://app.test/api/mediator/reissue", {
+        method: "POST",
+        headers: { ...headers(), origin },
+        body: JSON.stringify({ flowToken: "junk" }),
+      }),
+    );
+    expect(res.headers.get("access-control-allow-origin")).toBe(origin);
+    expect(res.headers.get("access-control-allow-methods")).toBe("POST, OPTIONS");
+  });
+});
