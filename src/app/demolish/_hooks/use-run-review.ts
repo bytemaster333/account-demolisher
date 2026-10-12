@@ -307,6 +307,7 @@ export function useRunReview(args: {
         ? undefined
         : {
             credits: ctx.routableCredits,
+            viaExchange: runInput?.useMediator === true,
             choiceFor: (key) =>
               form.sendToDestination.includes(key)
                 ? "destination"
@@ -318,6 +319,7 @@ export function useRunReview(args: {
     [
       hasConversionChoices,
       ctx.routableCredits,
+      runInput,
       form.sendToDestination,
       form.returnToIssuer,
       onConversionChoice,

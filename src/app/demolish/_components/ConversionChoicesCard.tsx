@@ -12,6 +12,9 @@ export type ConversionChoice = "sell" | "destination" | "issuer";
 
 export interface ConversionChoices {
   readonly credits: readonly RoutableCredit[];
+  // an exchange close never sends a token as-is: the payment would reach the
+  // exchange's shared address without the deposit memo
+  readonly viaExchange: boolean;
   readonly choiceFor: (key: string) => ConversionChoice;
   readonly onChoose: (key: string, choice: ConversionChoice) => void;
 }
@@ -30,8 +33,11 @@ export function ConversionChoicesCard({
       data-testid="conversion-choices"
     >
       Each of these is sold for XLM at the market price, within the 2% the close allows. You can
-      send one to your destination as it is, where the destination can take it, or return it to its
-      issuer instead. A change applies when you rebuild the plan.
+      return one to its issuer instead
+      {choices.viaExchange
+        ? ". "
+        : ", or send it to your destination as it is when the destination can take it. "}
+      A change applies when you rebuild the plan.
       <ul style={{ listStyle: "none", margin: "10px 0 0", padding: 0 }}>
         {choices.credits.map((c) => {
           const choice = choices.choiceFor(c.key);
@@ -76,6 +82,15 @@ export function ConversionChoicesCard({
                   label="Return to issuer (keep nothing)"
                 />
               </div>
+              {c.destinationTrusts !== true && !choices.viaExchange ? (
+                <span
+                  data-testid={`conversion-send-unavailable-${c.key}`}
+                  style={{ fontSize: 12.5, color: "var(--fg-3)", lineHeight: 1.5 }}
+                >
+                  Sending it as-is isn&apos;t offered: your destination has no authorized {c.code}{" "}
+                  trustline with room for this amount.
+                </span>
+              ) : null}
             </li>
           );
         })}
