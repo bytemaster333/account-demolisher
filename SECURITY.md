@@ -17,9 +17,9 @@ and do not sign anything on mainnet to prove a finding.
 ## Audit status
 
 An independent external audit has not been performed yet. An internal pre-audit review of commit
-`764d808` recorded 261 issues (8 critical, 39 high, 64 medium, 125 low, 25 info). Every critical
-issue is fixed; the audit status page lists the counts by severity and status and what remains
-open.
+`764d808` recorded 261 issues (8 critical, 39 high, 64 medium, 125 low, 25 info). 259 are fixed,
+each confirmed by an independent check against the code, and 2 turned out to be handled already;
+the audit status page lists the counts by severity.
 
 ## Trust model
 

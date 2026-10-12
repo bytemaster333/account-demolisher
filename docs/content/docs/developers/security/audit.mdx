@@ -50,25 +50,17 @@ and documentation-only issues against the code. A separate reviewer checked ever
 
 The counts below are the review's tracking file as of this revision of the documentation:
 
-| Severity  | Issues  | Fixed   | Partial | Open  | Not a bug |
-| --------- | ------- | ------- | ------- | ----- | --------- |
-| CRITICAL  | 8       | 8       | 0       | 0     | 0         |
-| HIGH      | 39      | 38      | 1       | 0     | 0         |
-| MEDIUM    | 64      | 62      | 2       | 0     | 0         |
-| LOW       | 125     | 112     | 2       | 9     | 2         |
-| INFO      | 25      | 24      | 1       | 0     | 0         |
-| **Total** | **261** | **244** | **6**   | **9** | **2**     |
+| Severity  | Issues  | Fixed   | Not a bug |
+| --------- | ------- | ------- | --------- |
+| CRITICAL  | 8       | 8       | 0         |
+| HIGH      | 39      | 39      | 0         |
+| MEDIUM    | 64      | 64      | 0         |
+| LOW       | 125     | 123     | 2         |
+| INFO      | 25      | 25      | 0         |
+| **Total** | **261** | **259** | **2**     |
 
-- **Fixed**: every CRITICAL issue, and 244 in all.
-- **Partial**: the fix landed for part of the issue, and the rest stays tracked until an
-  independent check against the code passes it.
-- **Open**: all 9 are LOW documentation issues: pages that described behavior the code does not
-  have. They cover how far the allow-list check reaches, the Soroswap conversion path, whether a
-  failed preview simulation holds the close, whether event-derived allowances are confirmed before
-  a close acts on them, how a redundant forwarding-account funding operation fails, the liquidity
-  pool withdraw batch on single-signature and shared closes, the scam checks, this page's
-  description of the mainnet notice, and what the review's network fee figure covers. Each one
-  stays open in the tracking file until an independent check against the code passes it.
+- **Fixed**: 259 issues, every one confirmed by an independent check against the code after the fix
+  landed.
 - **Not a bug**: 2 issues the fix work showed were already handled.
 
 ### What the CRITICAL fixes changed
