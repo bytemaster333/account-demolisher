@@ -123,6 +123,7 @@ export function useSigningRequest(args: {
       const source = new Account(args.audit.accountId, "0") as unknown as Horizon.AccountResponse;
       const rebuilt = buildReviewedBundle({
         tree: args.tree,
+        audit: args.audit,
         input: args.runInput,
         sourceAccount: source,
         network: args.network,
@@ -202,6 +203,7 @@ export function useSigningRequest(args: {
       const sourceAccount = await getHorizon(network).loadAccount(audit.accountId);
       const tx = buildReviewedBundle({
         tree,
+        audit,
         input: runInput,
         sourceAccount,
         network,

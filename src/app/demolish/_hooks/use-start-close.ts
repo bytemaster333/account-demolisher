@@ -155,6 +155,7 @@ export function useStartClose(args: {
                 heldTokensSelected: selectedHeldTokens.length,
                 hasClassicPoolShares: hasClassicPoolShares(audit),
                 tree: null,
+                audit,
                 deterministic: true,
               })
             : configureGate;

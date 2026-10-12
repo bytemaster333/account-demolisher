@@ -157,7 +157,7 @@ export function buildCloseTransaction(params: {
     );
   }
   if (batches.length > 1) {
-    throw new Error(`buildCloseTransaction: ${splitReason(audit, batches)}`);
+    throw new Error(`buildCloseTransaction: ${bundleSplitReason(audit, batches)}`);
   }
 
   const result = buildClassicTransaction(
@@ -177,13 +177,13 @@ export function buildCloseTransaction(params: {
 // one transaction by operation count was split only because a claim has to land
 // first: into a trustline the close opens, or for an asset with no disposal
 // chosen, whose balance can only be sized after the claim.
-function splitReason(audit: AccountAudit, batches: readonly ClassicBatch[]): string {
+export function bundleSplitReason(audit: AccountAudit, batches: readonly ClassicBatch[]): string {
   const leading = batches.slice(0, -1).flatMap((b) => b.operations);
   if (leading.some((op) => op.kind === "liquidity_pool_withdraw")) return POOL_SHARE_REASON;
   const opCount = batches.reduce((n, b) => n + b.operations.length, 0);
   if (opCount > MAX_OPS_PER_TX) {
     return (
-      `this close needs ${opCount} operations, more than fit in one transaction, so it ` +
+      `This close needs ${opCount} operations, more than fit in one transaction, so it ` +
       "can't be a single signing request. Close with all signers present."
     );
   }
@@ -200,13 +200,13 @@ function splitReason(audit: AccountAudit, batches: readonly ClassicBatch[]): str
   }
   if (untrusted.size > 0) {
     return (
-      `this account doesn't trust ${[...untrusted.values()].join(", ")}, so claiming that ` +
+      `This account doesn't trust ${[...untrusted.values()].join(", ")}, so claiming that ` +
       "claimable balance means opening the trustline and claiming in a transaction of its " +
       "own first. Leave the balance unclaimed, or close with all signers present."
     );
   }
   return (
-    "a claimable balance in a credit asset has no disposal chosen (send it to the " +
+    "A claimable balance in a credit asset has no disposal chosen (send it to the " +
     "destination or return it to its issuer), so it would have to be claimed in a " +
     "transaction of its own first. Choose a disposal for it, leave it unclaimed, or close " +
     "with all signers present."

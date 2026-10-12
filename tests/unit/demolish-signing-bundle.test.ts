@@ -53,6 +53,7 @@ function gate(over: Partial<Parameters<typeof assessSigningRequest>[0]> = {}) {
     heldTokensSelected: 0,
     hasClassicPoolShares: false,
     tree: makeTree(),
+    audit: makeAudit(),
     deterministic: true,
     ...over,
   });
@@ -147,6 +148,7 @@ describe("the signing request is built from the reviewed plan (H-29)", () => {
     const tx = decode(
       buildReviewedBundle({
         tree,
+        audit: makeAudit(),
         input: { destination: DEST, useMediator: false, memo },
         sourceAccount: source(),
         network: TESTNET,
@@ -166,6 +168,7 @@ describe("the signing request is built from the reviewed plan (H-29)", () => {
     const tx = decode(
       buildReviewedBundle({
         tree: makeTree(),
+        audit: makeAudit(),
         input: { destination: DEST, useMediator: false },
         sourceAccount: source(),
         network: TESTNET,
@@ -184,6 +187,7 @@ describe("the signing request is built from the reviewed plan (H-29)", () => {
     const tx = decode(
       buildReviewedBundle({
         tree,
+        audit,
         input: { destination: DEST, useMediator: false },
         sourceAccount: source(),
         network: TESTNET,
@@ -200,6 +204,7 @@ describe("the signing request is built from the reviewed plan (H-29)", () => {
     expect(() =>
       buildReviewedBundle({
         tree,
+        audit: makeAudit(),
         input: { destination: DEST, useMediator: false, memo: { type: "id", value: "2" } },
         sourceAccount: source(),
         network: TESTNET,
@@ -213,12 +218,50 @@ describe("the signing request is built from the reviewed plan (H-29)", () => {
     expect(() =>
       buildReviewedBundle({
         tree,
+        audit: makeAudit(),
         input: { destination: Keypair.random().publicKey(), useMediator: false },
         sourceAccount: source(),
         network: TESTNET,
         ledgerCloseTime: LEDGER_TIME,
       }),
     ).toThrow(/destination/i);
+  });
+});
+
+describe("a reviewed close that splits says why before Create", () => {
+  // a claim into a token the account doesn't trust opens the trustline and
+  // claims in a transaction of its own, so the reviewed close is two
+  const issuer = Keypair.random().publicKey();
+  const audit = makeAudit({
+    claimableBalances: [
+      cb(CB_KEEP, { asset: { kind: "credit", code: "USD", issuer }, issuerAuthRequired: false }),
+    ],
+  });
+  const tree = makeTree({ audit, opts: { selectedClaimableBalanceIds: [CB_KEEP] } });
+
+  it("splits the reviewed close in the fixture", () => {
+    const final = tree.allNodes.get("final-classic-tx");
+    expect(final?.kind === "FinalClassicTx" && final.metadata.batches.length).toBe(2);
+  });
+
+  it("refuses at the gate and names the untrusted token", () => {
+    const result = gate({ tree, audit });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/doesn't trust USD issued by/);
+    expect(result.reason).toMatch(/Leave the balance unclaimed/);
+  });
+
+  it("gives Create the same reason", () => {
+    expect(() =>
+      buildReviewedBundle({
+        tree,
+        audit,
+        input: { destination: DEST, useMediator: false },
+        sourceAccount: source(),
+        network: TESTNET,
+        ledgerCloseTime: LEDGER_TIME,
+      }),
+    ).toThrow(/doesn't trust USD issued by/);
   });
 });
 

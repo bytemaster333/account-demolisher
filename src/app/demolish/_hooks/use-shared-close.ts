@@ -77,6 +77,7 @@ export function useSharedClose(args: {
     ),
     hasClassicPoolShares: audit !== null && hasClassicPoolShares(audit),
     tree,
+    audit,
     deterministic: runInput?.deterministicDisposal === true,
   });
   const claimRisks = useMemo(

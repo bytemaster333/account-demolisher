@@ -10,6 +10,7 @@ import { errorMessage } from "@/lib/errors";
 import {
   SIGNING_WINDOW_SECONDS,
   assessBundleability,
+  bundleSplitReason,
   type BundleabilityResult,
 } from "@/lib/multisig/signing-request";
 import type { PlanTree } from "@/lib/plan/tree";
@@ -38,6 +39,8 @@ export function assessSigningRequest(input: {
   readonly heldTokensSelected: number;
   readonly hasClassicPoolShares: boolean;
   readonly tree: PlanTree | null;
+  // the audit the tree was built from; it names why a reviewed close split
+  readonly audit: AccountAudit | null;
   // the plan was built with deterministic disposal (no market sells)
   readonly deterministic: boolean;
 }): BundleabilityResult {
@@ -73,6 +76,10 @@ export function assessSigningRequest(input: {
           "can't be packaged as one signing request. Handle it with all signers present first.",
       };
     }
+    // a claim that has to land first, or more than 100 operations, splits the
+    // close; Create would refuse it, so say why before the signer gets there
+    const split = splitMessage(input.tree, input.audit);
+    if (split !== null) return { ok: false, reason: split };
   }
 
   if (!input.deterministic) {
@@ -87,6 +94,16 @@ export function assessSigningRequest(input: {
   return { ok: true };
 }
 
+function splitMessage(tree: PlanTree, audit: AccountAudit | null): string | null {
+  const final = tree.allNodes.get("final-classic-tx");
+  if (!final || final.kind !== "FinalClassicTx") return null;
+  const batches = final.metadata.batches;
+  if (batches.length <= 1) return null;
+  return audit !== null
+    ? bundleSplitReason(audit, batches)
+    : `The reviewed close needs ${batches.length} transactions, but a signing request must be exactly one.`;
+}
+
 function sameMemo(a: ClassicMemo | undefined, b: ClassicMemo | undefined): boolean {
   if (a === undefined || b === undefined) return a === b;
   return a.type === b.type && a.value === b.value;
@@ -98,6 +115,7 @@ function sameMemo(a: ClassicMemo | undefined, b: ClassicMemo | undefined): boole
 // direct-merge batch to the reviewed destination with the reviewed memo.
 export function buildReviewedBundle(args: {
   readonly tree: PlanTree;
+  readonly audit: AccountAudit;
   readonly input: {
     readonly destination: string;
     readonly useMediator: boolean;
@@ -119,11 +137,10 @@ export function buildReviewedBundle(args: {
     throw new Error("An exchange close goes through the mediator and can't be a signing request.");
   }
   const batches = final.metadata.batches;
-  if (batches.length !== 1) {
-    throw new Error(
-      `The reviewed close needs ${batches.length} transactions, but a signing request must be exactly one.`,
-    );
+  if (batches.length === 0) {
+    throw new Error("The reviewed close has no transaction to sign.");
   }
+  if (batches.length > 1) throw new Error(bundleSplitReason(args.audit, batches));
   const batch: ClassicBatch = batches[0]!;
   if (batch.destination !== input.destination || final.metadata.destination !== input.destination) {
     throw new Error("The reviewed plan's destination doesn't match the destination you confirmed.");
