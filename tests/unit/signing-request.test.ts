@@ -436,6 +436,35 @@ describe("inspectClose: full transaction facts and op details (L-91)", () => {
     expect(c!.detail).toBe(`Removes signed-payload signer ${payload}.`);
   });
 
+  it("shortens issuers, balance ids and pool ids in expected steps (L-32)", () => {
+    const balanceId = `00000000${"ab".repeat(32)}`;
+    const poolId = "cd".repeat(32);
+    const info = inspectClose(
+      build([
+        Operation.claimClaimableBalance({ balanceId }),
+        Operation.liquidityPoolWithdraw({
+          liquidityPoolId: poolId,
+          amount: "5",
+          minAmountA: "1",
+          minAmountB: "2",
+        }),
+        Operation.changeTrust({ asset: usd, limit: "0" }),
+        Operation.accountMerge({ destination: dest }),
+      ]),
+      NET,
+    )!;
+    const [claim, withdraw, removal] = info.operations;
+    expect(claim!.detail).toBe(
+      `Claims balance ${balanceId.slice(0, 6)}…${balanceId.slice(-4)} into this account before it closes.`,
+    );
+    expect(withdraw!.detail).toBe(
+      `Withdraws 5.0000000 pool shares from pool ${poolId.slice(0, 6)}…${poolId.slice(-4)} into this account (minimums 1.0000000 and 2.0000000).`,
+    );
+    expect(removal!.detail).toBe(
+      `Removes the trustline for USD (${issuer.slice(0, 6)}…${issuer.slice(-4)}).`,
+    );
+  });
+
   it("flags flag, home domain and inflation changes as danger", () => {
     const info = inspectClose(
       build([

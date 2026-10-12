@@ -53,8 +53,8 @@
 // measured), and archived blend Positions and backstop balances in every pinned
 // pool, YieldBloxV2 included.
 // the YieldBloxV2 row is the largest of its 8 archived holders (2 entries
-// restored, 1,232 to 1,336 write bytes, 5 read-write entries); those withdraws
-// trapped before 2026-10-07 only because the builder asked for i128::MAX of a
+// restored, 1,232 to 1,336 write bytes, 5 read-write entries), far under the
+// worst blend row, so no cap changed for it. those withdraws trapped before 2026-10-07 only because the builder asked for i128::MAX of a
 // reserve whose b_rate is below 1e12, which overflowed the pool's bToken
 // conversion (fixed in blend/exit.ts v2WithdrawRequest). the aquarius worst
 // cases restore the pool's reward pages (one RewardInvData page is 3,316 bytes),
