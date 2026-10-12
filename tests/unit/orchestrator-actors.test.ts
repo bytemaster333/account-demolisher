@@ -10,6 +10,7 @@ import {
   StrKey,
   TransactionBuilder,
   TransactionFailedError,
+  xdr,
   type Transaction,
 } from "@stellar/stellar-sdk";
 
@@ -33,10 +34,17 @@ import {
   USER,
   USER_KP,
   XLM_SAC,
+  addr,
   allowlisted,
+  i128,
+  inv,
+  invokeTx,
   makeAudit,
   quietFeeStats,
   signingConnector,
+  sourceAuth,
+  sym,
+  u32,
 } from "./orchestrator-fixtures";
 
 // the real discover, preview and execute actors inside the real machine. only
@@ -2146,6 +2154,134 @@ describe("the review plans the claim of what aquarius reward gauges owe", () => 
     expect(confirmBlockers(ctx).join(" ")).toMatch(
       /is not the Aquarius pool the router lists for these tokens/,
     );
+    actor.stop();
+  });
+});
+
+// H-01: the real execute actor in the real machine. a required soroban exit is
+// signed, the rpc never queues it, and the close fails as retryable; RETRY must
+// sign that exit again and then the merge, rather than skip both
+describe("a required soroban step that did not land is signed again on RETRY, then the merge", () => {
+  const POOL = allowlisted("blend", "BlendPool::");
+  const withdrawArgs = [
+    addr(USER),
+    addr(USER),
+    addr(USER),
+    xdr.ScVal.scvVec([
+      xdr.ScVal.scvMap([
+        new xdr.ScMapEntry({ key: sym("address"), val: addr(USDC_SAC) }),
+        new xdr.ScMapEntry({ key: sym("amount"), val: i128(5n) }),
+        // blend request type 3: withdraw collateral
+        new xdr.ScMapEntry({ key: sym("request_type"), val: u32(3) }),
+      ]),
+    ]),
+  ];
+  const plan = (): PlanTree =>
+    tree(
+      {
+        id: "withdraw",
+        kind: "WithdrawBlend",
+        dependencies: [],
+        description: "withdraw collateral",
+        status: "simulated",
+        metadata: { kind: "WithdrawBlend", poolId: POOL, asset: USDC_SAC, bucket: "collateral" },
+      } as PlanNode,
+      {
+        id: "final-classic-tx",
+        kind: "FinalClassicTx",
+        dependencies: ["withdraw"],
+        description: "close account",
+        status: "simulated",
+        metadata: {
+          kind: "FinalClassicTx",
+          batches: [],
+          destination: DEST,
+          useMediator: false,
+          claimableBalanceIds: [],
+        },
+      } as PlanNode,
+    );
+  const isWithdraw = (tx: Transaction) =>
+    tx.operations.length === 1 && tx.operations[0]!.type === "invokeHostFunction";
+  const isMerge = (tx: Transaction) => tx.operations.some((op) => op.type === "accountMerge");
+
+  it("re-signs and lands the failed exit, then signs and submits the merge", async () => {
+    buildExitSequence.mockImplementation(async (_n: unknown, _p: unknown, _u: unknown, account) => [
+      {
+        kind: "withdraw_collateral",
+        asset: USDC_SAC,
+        transaction: invokeTx(account as Account, POOL, "submit", withdrawArgs, [
+          sourceAuth(inv(POOL, "submit", withdrawArgs)),
+        ]),
+      },
+    ]);
+    // the rpc keeps answering TRY_AGAIN_LATER on the first run, so nothing lands
+    let rpcBusy = true;
+    const sent: Transaction[] = [];
+    net.rpc = {
+      getLatestLedger: vi.fn(async () => ({ sequence: 1000 })),
+      sendTransaction: vi.fn(async (tx: Transaction) => {
+        sent.push(tx);
+        return {
+          status: rpcBusy ? "TRY_AGAIN_LATER" : "PENDING",
+          hash: Buffer.from(tx.hash()).toString("hex"),
+        };
+      }),
+      pollTransaction: vi.fn(async () => ({ status: "SUCCESS", ledger: 70 })),
+      // the merge reads what the exit paid out; nothing is left on the account
+      simulateTransaction: vi.fn(async (tx: Transaction) => {
+        const op = tx.operations[0] as Operation.InvokeHostFunction;
+        const call = xdr.expectUnionVariant(
+          op.func,
+          "hostFunctionTypeInvokeContract",
+        ).invokeContract;
+        if (call.functionName.toString() !== "balance") {
+          throw new Error(`unexpected simulation of ${call.functionName.toString()}`);
+        }
+        return {
+          latestLedger: 1000,
+          minResourceFee: "100",
+          transactionData: {},
+          result: { retval: i128(0n), auth: [] },
+        };
+      }),
+    };
+
+    const first = signingConnector();
+    const actor = withPlan(
+      plan,
+      input({ destination: DEST, useMediator: false, connector: first }),
+    );
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    actor.send({ type: "CONFIRM", typed: DEST.slice(-4), expected: RUN });
+    await settle(actor, "failed");
+
+    const failed = actor.getSnapshot().context;
+    expect(failed.failureKind).toBe("network");
+    expect(failed.tree!.allNodes.get("withdraw")!.status).toBe("failed");
+    expect(failed.tree!.allNodes.get("final-classic-tx")!.status).not.toBe("confirmed");
+    expect(first.signed).toHaveLength(1);
+    expect(isWithdraw(first.signed[0]!)).toBe(true);
+    expect(net.horizon.submitted).toHaveLength(0);
+    expect(net.horizon.accounts.has(USER)).toBe(true);
+
+    rpcBusy = false;
+    const second = signingConnector();
+    actor.send({ type: "RETRY", connector: second, expected: RUN });
+    await settle(actor, "succeeded");
+
+    const done = actor.getSnapshot().context;
+    expect(done.tree!.allNodes.get("withdraw")!.status).toBe("confirmed");
+    expect(done.tree!.allNodes.get("final-classic-tx")!.status).toBe("confirmed");
+    // the retry signed the exit again first, then the merge, with the wallet it was handed
+    expect(first.signed).toHaveLength(1);
+    expect(second.signed).toHaveLength(2);
+    expect(isWithdraw(second.signed[0]!)).toBe(true);
+    expect(isMerge(second.signed[1]!)).toBe(true);
+    expect(isWithdraw(sent.at(-1)!)).toBe(true);
+    expect(net.horizon.submitted).toHaveLength(1);
+    expect(isMerge(net.horizon.submitted[0]!)).toBe(true);
+    expect(net.horizon.accounts.has(USER)).toBe(false);
     actor.stop();
   });
 });
