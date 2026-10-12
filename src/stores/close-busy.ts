@@ -1,6 +1,8 @@
 // raised by the demolish page while its machine is executing a close. the app
-// shell reads it to hold navigation and the wallet and network controls, because
-// leaving the page or switching wallets mid-run does not stop the signing.
+// shell reads it to ask before in-app navigation and to hold the wallet and
+// network controls: leaving the page unmounts the run and a wallet or network
+// change cancels it, and either way the close stops at its next step with the
+// account part way closed.
 
 import { create } from "zustand";
 
