@@ -91,7 +91,10 @@ describe("Aquarius discovery union (SEC-05: a spoofed-empty API can't hide a poo
     expect(positions.errors[0]?.message).toMatch(/CPOOL/);
   });
 
-  it("still returns the API result when only the on-chain scan fails", async () => {
+  // the scan is the check against a spoofed or partial REST answer. losing it
+  // silently would let a REST source that omits a pool hide it whenever the scan
+  // fails, so the API result is kept and an error is recorded (NPF-16, M-29)
+  it("keeps the API result and records an error when only the on-chain scan fails", async () => {
     const positions = await provider(
       () => [aqPool(IDX_A)],
       () => {
@@ -99,7 +102,23 @@ describe("Aquarius discovery union (SEC-05: a spoofed-empty API can't hide a poo
       },
     ).getPositions(USER, TESTNET);
     expect(positions.aquarius.map((x) => x.poolIndex)).toEqual([IDX_A]);
-    expect(positions.errors).toEqual([]);
+    expect(positions.errors.map((e) => e.protocol)).toEqual(["aquarius"]);
+    expect(positions.errors[0]?.message).toMatch(/rpc down/);
+    expect(positions.errors[0]?.message).toMatch(/on-chain scan/);
+  });
+
+  it("records an error when the on-chain scan stops at its page cap", async () => {
+    const positions = await provider(
+      () => [],
+      () => {
+        throw new Error(
+          "Aquarius event scan stopped at its 100-page cap with more events pending; the scan is incomplete",
+        );
+      },
+    ).getPositions(USER, TESTNET);
+    expect(positions.aquarius).toEqual([]);
+    expect(positions.errors.map((e) => e.protocol)).toEqual(["aquarius"]);
+    expect(positions.errors[0]?.message).toMatch(/100-page cap/);
   });
 
   it("rejects a malformed pool (bad poolIndex) as an aquarius discovery error (schema fail-closed)", async () => {

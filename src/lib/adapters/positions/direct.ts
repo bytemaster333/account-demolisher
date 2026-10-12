@@ -252,9 +252,11 @@ export class DirectContractProvider implements IDeFiPositionProvider {
     // RPC's retention window (about the last 7 days) and never sees LP received
     // by transfer, so an empty scan is not evidence of no position. it runs
     // alongside REST as a check against a spoofed or partial REST answer, and the
-    // two are unioned. when REST fails, whatever the scan found (and any pools
-    // REST did read before failing) is kept and an error is recorded, so preview
-    // warns and the merge-time reprobe refuses to merge around an older position.
+    // two are unioned. when either source fails, whatever the other found (and
+    // any pools REST did read before failing) is kept and an error is recorded,
+    // so preview warns and the merge-time reprobe refuses to merge around a
+    // position it could not rule out. a failed scan counts too: without it a REST
+    // answer that left a recent pool out would go unchecked.
     // concentrated positions sit in the pool contracts, where neither source
     // looks, so every pinned concentrated pool is read directly.
     const [apiResult, scanResult, concentratedResult] = await Promise.allSettled([
@@ -274,6 +276,12 @@ export class DirectContractProvider implements IDeFiPositionProvider {
       sourceErrors.push(
         `Aquarius REST source failed (${apiMsg}); the on-chain scan only covers about the ` +
           `last 7 days, so an older Aquarius position could not be ruled out`,
+      );
+    } else if (scanResult.status === "rejected") {
+      sourceErrors.push(
+        `Aquarius on-chain scan failed (${errorMessage(scanResult.reason)}); the REST ` +
+          `answer could not be checked against the chain, so a recent Aquarius position ` +
+          `it left out could not be ruled out`,
       );
     }
 
