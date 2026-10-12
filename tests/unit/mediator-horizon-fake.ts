@@ -56,6 +56,8 @@ export class FakeHorizon {
   feeChargedP90 = "100";
   feeChargedMode = "100";
   ledgerCapacityUsage = "0.1";
+  // a proxy or a misbehaving horizon that answers fee_stats without fee_charged
+  omitFeeCharged = false;
   // per-op inclusion fee the network currently demands
   surgeFeePerOp = 100n;
   readonly submitScript: SubmitScript[] = [];
@@ -156,7 +158,9 @@ export class FakeHorizon {
         last_ledger: String(this.ledger),
         last_ledger_base_fee: "100",
         ledger_capacity_usage: this.ledgerCapacityUsage,
-        fee_charged: { p90: this.feeChargedP90, mode: this.feeChargedMode },
+        ...(this.omitFeeCharged
+          ? {}
+          : { fee_charged: { p90: this.feeChargedP90, mode: this.feeChargedMode } }),
         max_fee: { p90: "1000000" },
       });
     }

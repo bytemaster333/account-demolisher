@@ -171,6 +171,28 @@ describe("submitMediatorForward", () => {
     expect(fake.lastForward!.amount).toBe(102n * XLM - 2n * BASE_RESERVE - 200n);
   });
 
+  it("names an unreadable ledger_capacity_usage before choosing a fee_charged field", async () => {
+    fake.ledgerCapacityUsage = "";
+    fake.omitFeeCharged = true;
+    const input = await mergedFlow();
+    const result = await submitMediatorForward(input, deps);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain('unreadable ledger_capacity_usage ""');
+    expect(fake.submitted).toHaveLength(0);
+  });
+
+  it("names the fee_charged field it could not read", async () => {
+    fake.ledgerCapacityUsage = "0.95";
+    fake.omitFeeCharged = true;
+    const input = await mergedFlow();
+    const result = await submitMediatorForward(input, deps);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain('unreadable fee_charged.p90 "undefined"');
+    expect(fake.submitted).toHaveLength(0);
+  });
+
   it("escalates the fee on tx_insufficient_fee and pays less only by the higher fee", async () => {
     fake.feeChargedP90 = "5000";
     fake.ledgerCapacityUsage = "0.95";

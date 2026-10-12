@@ -305,17 +305,22 @@ async function waitForAccountView(
 // only used once they run near full. an underbid is raised on the rebuild, and
 // whatever the bid leaves unused travels in the uncredited merge leg.
 async function startingFeePerOp(server: Horizon.Server): Promise<number> {
-  const stats = await server.feeStats();
-  const usage = Number.parseFloat(stats.ledger_capacity_usage);
-  const pick = usage < SURGE_CAPACITY_USAGE ? stats.fee_charged.mode : stats.fee_charged.p90;
+  // typed loosely: a proxy or a misbehaving horizon can answer with any json
+  const stats: Partial<Horizon.HorizonApi.FeeStatsResponse> | null = await server.feeStats();
+  // the usage decides which field to read, so it is checked before the choice
+  const usage = Number.parseFloat(String(stats?.ledger_capacity_usage));
   if (!Number.isFinite(usage)) {
     throw new Error(
-      `Horizon fee_stats returned an unreadable ledger_capacity_usage "${stats.ledger_capacity_usage}".`,
+      `Horizon fee_stats returned an unreadable ledger_capacity_usage "${String(stats?.ledger_capacity_usage)}".`,
     );
   }
-  const fee = Number.parseInt(pick, 10);
+  const field = usage < SURGE_CAPACITY_USAGE ? "mode" : "p90";
+  const pick: unknown = stats?.fee_charged?.[field];
+  const fee = typeof pick === "string" ? Number.parseInt(pick, 10) : Number.NaN;
   if (!Number.isFinite(fee)) {
-    throw new Error(`Horizon fee_stats returned an unreadable fee_charged value "${pick}".`);
+    throw new Error(
+      `Horizon fee_stats returned an unreadable fee_charged.${field} "${String(pick)}".`,
+    );
   }
   return Math.min(Math.max(fee, NETWORK_MIN_FEE_PER_OP), MAX_FORWARD_FEE_PER_OP);
 }
