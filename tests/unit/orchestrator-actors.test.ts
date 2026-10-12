@@ -736,6 +736,38 @@ describe("discovery keeps its detail and never reads a timeout as an empty accou
   });
 });
 
+describe("the merge-time position re-check never hangs the close", () => {
+  it("fails as a network failure after its bound and never signs the merge", async () => {
+    // discovery reads the positions; the re-check right before the merge never answers
+    getPositions
+      .mockResolvedValueOnce(EMPTY_POSITIONS)
+      .mockImplementation(() => new Promise(() => {}));
+    const connector = signingConnector();
+    const actor = createActor(pageFlowMachine).start();
+    actor.send({
+      type: "START",
+      input: input({ destination: DEST, useMediator: false, connector }),
+    });
+    await settle(actor, "awaiting_confirmation");
+    actor.send({ type: "CONFIRM", typed: DEST.slice(-4), expected: RUN });
+    await vi.waitFor(() => expect(getPositions).toHaveBeenCalledTimes(2));
+
+    await vi.advanceTimersByTimeAsync(59_000);
+    expect(actor.getSnapshot().matches("executing")).toBe(true);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await waitFor(actor, (s) => s.matches("failed"));
+
+    const ctx = actor.getSnapshot().context;
+    expect(ctx.failureKind).toBe("network");
+    expect(ctx.error).toMatch(/could not re-check DeFi positions before the merge/);
+    expect(ctx.error).toMatch(/timed out after 60000ms/);
+    expect(connector.signTransaction).not.toHaveBeenCalled();
+    expect(net.horizon.submitTransaction).not.toHaveBeenCalled();
+    expect(net.horizon.accounts.has(USER)).toBe(true);
+    actor.stop();
+  });
+});
+
 describe("a running close stops when the page goes away", () => {
   it("signs nothing after the actor is stopped mid-close", async () => {
     const connector = signingConnector();
