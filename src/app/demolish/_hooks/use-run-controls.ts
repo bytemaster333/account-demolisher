@@ -51,7 +51,8 @@ export function useRunControls(args: {
   const { signing, setFormError, setShowConfirmDialog } = args;
   const { disconnectWallet, onTeardownError, clearTeardownError } = args;
   const { connectorRef, setConnector } = args.connector;
-  const { clearChoices, resetForm } = args.choices;
+  const { clearChoices, resetForm, setSelectedHeldTokens, setConvertHeldTokensToXLM } =
+    args.choices;
 
   // back from the first confirmation stage returns to Configure with the form
   // as it was: the plan is discarded (cancel), then the run is reset to idle.
@@ -108,19 +109,33 @@ export function useRunControls(args: {
   // start over after a cancel: back to Configure for the same connection. the
   // cancel came from a wallet or network switch, so the answers given for the
   // old plan (accepted rates, held-token choices, forfeits) may belong to
-  // another account and must be asked again
+  // another account and must be asked again. the standalone-token picks carry
+  // the old account's balances, so they go too; the destination stays.
   const onStartOverAfterCancel = useCallback(() => {
     clearChoices();
+    setSelectedHeldTokens([]);
+    setConvertHeldTokensToXLM(false);
     signing.reset();
     send({ type: "RESET" });
-  }, [send, signing, clearChoices]);
+  }, [send, signing, clearChoices, setSelectedHeldTokens, setConvertHeldTokensToXLM]);
 
   // a retry signs with the wallet connected now; without one the machine can
-  // only rebuild the plan from fresh discovery
+  // only rebuild the plan from fresh discovery. it names the account and
+  // network on screen so the machine refuses one for another run.
   const onRetry = useCallback(() => {
     if (runMismatched) return;
-    send({ type: "RETRY", connector: connectorRef.current });
-  }, [send, runMismatched, connectorRef]);
+    setFormError(null);
+    send({
+      type: "RETRY",
+      connector: connectorRef.current,
+      expected: { publicKey: publicKey ?? "", networkId },
+    });
+    if (getMachineState() === "failed") {
+      setFormError(
+        "The retry didn't start: the connected account or network doesn't match this close.",
+      );
+    }
+  }, [send, getMachineState, setFormError, runMismatched, connectorRef, publicKey, networkId]);
 
   // the confirm-dialog and Collect actions refuse a plan whose account or
   // network no longer match (the guard also cancels it). Each event also names
@@ -131,6 +146,8 @@ export function useRunControls(args: {
   const confirmClose = (typed: string): void => {
     setShowConfirmDialog(false);
     if (runMismatched) return;
+    // an earlier refusal must not linger onto the run this confirm starts
+    setFormError(null);
     send({ type: "CONFIRM", typed, expected });
     if (getMachineState() !== "executing") {
       setFormError(

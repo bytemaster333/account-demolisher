@@ -190,8 +190,9 @@ export type PageFlowEvent =
       snapshot: SignerSnapshot;
     }
   | { type: "CANCEL" }
-  // the wallet currently connected; without one a retry can only rediscover
-  | { type: "RETRY"; connector?: Connector | null }
+  // the wallet currently connected; without one a retry can only rediscover.
+  // expected names the account and network on screen, as on CONFIRM
+  | { type: "RETRY"; connector?: Connector | null; expected: ExpectedRun }
   | { type: "RESET" }
   | { type: "_PROGRESS"; event: DemolishProgressEvent }
   | { type: "_NODE_TICK" };
@@ -418,9 +419,14 @@ export const pageFlowMachine = setup({
         })
       );
     },
+    // a retry signs or rediscovers for the run it holds, so one sent for another
+    // account or network (the wallet or network switched while failed) is ignored
+    retryForThisRun: ({ context, event }) =>
+      event.type === "RETRY" && sameRun(context, event.expected),
     canResume: ({ context, event }) => {
       if (event.type !== "RETRY") return false;
       return (
+        sameRun(context, event.expected) &&
         context.tree !== null &&
         isRetryableFailure(context.failureKind ?? "unknown") &&
         event.connector !== undefined &&
@@ -732,7 +738,8 @@ export const pageFlowMachine = setup({
         // connected now: landed steps are skipped, everything else re-runs. any
         // other failure, or a retry without a wallet, rebuilds the plan from fresh
         // discovery and drops the old tree, its error and a collected bundle so
-        // none of it can be executed or shown later.
+        // none of it can be executed or shown later. a retry for another account
+        // or network matches neither and is ignored.
         RETRY: [
           {
             target: "executing",
@@ -744,6 +751,7 @@ export const pageFlowMachine = setup({
           },
           {
             target: "discovering",
+            guard: "retryForThisRun",
             actions: assign({
               connector: ({ event }) => event.connector ?? null,
               error: null,

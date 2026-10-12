@@ -73,7 +73,13 @@ export async function waitForOutcome(actor: FlowActor): Promise<FlowSnapshot> {
 }
 
 export function retry(actor: FlowActor, connector: Connector): void {
-  actor.send({ type: "RETRY", connector });
+  const input = actor.getSnapshot().context.input;
+  if (input === null) throw new Error("retry: the flow holds no run");
+  actor.send({
+    type: "RETRY",
+    connector,
+    expected: { publicKey: input.publicKey, networkId: input.network.id },
+  });
 }
 
 // the whole close with the default choices: review, confirm, run

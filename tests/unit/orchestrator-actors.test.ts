@@ -278,6 +278,7 @@ function mediatorPlan(): PlanTree {
         batches: [],
         destination: EXCHANGE,
         useMediator: true,
+        claimableBalanceIds: [],
         mediatorPublicKey: MEDIATOR_A,
       },
     } as PlanNode,
@@ -409,7 +410,7 @@ describe("an exchange close is not complete until the forward lands", () => {
       alreadyDelivered: false,
       flowToken: "TOKEN-1",
     });
-    actor.send({ type: "RETRY", connector: signingConnector() });
+    actor.send({ type: "RETRY", connector: signingConnector(), expected: RUN });
     await settle(actor, "succeeded");
     expect(submitMediatorForward).toHaveBeenCalledTimes(2);
     expect(submitMediatorForward.mock.calls[1]![0]).toMatchObject({
@@ -434,7 +435,7 @@ describe("an exchange close is not complete until the forward lands", () => {
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
     actor.send({ type: "CONFIRM", typed: EXCHANGE.slice(-4), expected: RUN });
     await settle(actor, "failed");
-    actor.send({ type: "RETRY", connector: signingConnector() });
+    actor.send({ type: "RETRY", connector: signingConnector(), expected: RUN });
     await settle(actor, "failed");
     expect(actor.getSnapshot().context.failureKind).toBe("forward_pending");
     expect(progressKinds(actor)).not.toContain("complete");
@@ -513,7 +514,7 @@ describe("a merge whose reply was lost is never re-minted around", () => {
     net.horizon.state.down = false;
     net.horizon.state.replyTimeout = false;
     const signer = signingConnector();
-    actor.send({ type: "RETRY", connector: signer });
+    actor.send({ type: "RETRY", connector: signer, expected: RUN });
     await settle(actor, "succeeded");
     expect(startMediatorFlow).toHaveBeenCalledTimes(1);
     expect(signer.signTransaction).not.toHaveBeenCalled();
@@ -566,7 +567,13 @@ describe("the bundle path submits only what everyone signed", () => {
       dependencies: extra.map((n) => n.id),
       description: "close account",
       status: "simulated",
-      metadata: { kind: "FinalClassicTx", batches: [], destination: DEST, useMediator: false },
+      metadata: {
+        kind: "FinalClassicTx",
+        batches: [],
+        destination: DEST,
+        useMediator: false,
+        claimableBalanceIds: [],
+      },
     } as PlanNode);
   }
 
@@ -623,7 +630,7 @@ describe("the bundle path submits only what everyone signed", () => {
     actor.send(submitBundle());
     await settle(actor, "failed");
     expect(actor.getSnapshot().context.failureKind).toBe("bundle_stale");
-    actor.send({ type: "RETRY", connector: signingConnector() });
+    actor.send({ type: "RETRY", connector: signingConnector(), expected: RUN });
     expect(actor.getSnapshot().matches("discovering")).toBe(true);
     expect(actor.getSnapshot().context.signedBundle).toBeNull();
     expect(net.horizon.submitTransaction).toHaveBeenCalledTimes(1);
@@ -749,7 +756,13 @@ describe("a running close stops when the page goes away", () => {
           dependencies: [],
           description: "close account",
           status: "simulated",
-          metadata: { kind: "FinalClassicTx", batches: [], destination: DEST, useMediator: false },
+          metadata: {
+            kind: "FinalClassicTx",
+            batches: [],
+            destination: DEST,
+            useMediator: false,
+            claimableBalanceIds: [],
+          },
         } as PlanNode),
       input({ destination: DEST, useMediator: false, connector }),
     );
@@ -934,7 +947,13 @@ describe("a signed bundle is checked against the account as it is now", () => {
       dependencies: [],
       description: "close account",
       status: "simulated",
-      metadata: { kind: "FinalClassicTx", batches: [], destination: DEST, useMediator: false },
+      metadata: {
+        kind: "FinalClassicTx",
+        batches: [],
+        destination: DEST,
+        useMediator: false,
+        claimableBalanceIds: [],
+      },
     } as PlanNode);
   const direct = () => input({ destination: DEST, useMediator: false });
 
@@ -1164,7 +1183,13 @@ describe("one close per account runs in a tab", () => {
         dependencies: [],
         description: "close account",
         status: "simulated",
-        metadata: { kind: "FinalClassicTx", batches: [], destination: DEST, useMediator: false },
+        metadata: {
+          kind: "FinalClassicTx",
+          batches: [],
+          destination: DEST,
+          useMediator: false,
+          claimableBalanceIds: [],
+        },
       } as PlanNode);
     const first = withPlan(plan, input({ destination: DEST, useMediator: false }));
     const second = withPlan(plan, input({ destination: DEST, useMediator: false }));
@@ -1218,6 +1243,7 @@ describe("one close per account runs in a tab", () => {
         batches: [],
         destination: DEST,
         useMediator: false,
+        claimableBalanceIds: [],
       },
     } as PlanNode);
 
@@ -1483,7 +1509,13 @@ describe("a close that merged without a held token it was asked to send is not a
         dependencies: ["drain"],
         description: "close account",
         status: "simulated",
-        metadata: { kind: "FinalClassicTx", batches: [], destination: DEST, useMediator: false },
+        metadata: {
+          kind: "FinalClassicTx",
+          batches: [],
+          destination: DEST,
+          useMediator: false,
+          claimableBalanceIds: [],
+        },
       } as PlanNode,
     );
 

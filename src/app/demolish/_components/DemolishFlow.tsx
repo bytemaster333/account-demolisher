@@ -383,6 +383,9 @@ export function DemolishFlow(): React.JSX.Element {
             />
           ) : null}
 
+          {/* a retry the machine refused (it named another account or network) */}
+          {isFailed && formError !== null ? <FlowError message={formError} /> : null}
+
           {/* single-column flow content, configure / review / sign-off / cancelled. */}
           {!(isDiscovering || isPreviewing) && !runStarted ? (
             <div style={{ maxWidth: 1080, margin: "0 auto" }}>

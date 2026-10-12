@@ -380,7 +380,7 @@ describe("the multisig bundle is bound to the reviewed close", () => {
     );
     actor.send(submit(bundle()));
     await waitFor(actor, (s) => s.matches("failed"));
-    actor.send({ type: "RETRY", connector });
+    actor.send({ type: "RETRY", connector, expected });
     const snap = actor.getSnapshot();
     expect(snap.matches("discovering")).toBe(true);
     expect(snap.context.signedBundle).toBeNull();
@@ -718,10 +718,35 @@ describe("RETRY", () => {
     // the close ended, so the wallet it captured is gone
     expect(failed.connector).toBeNull();
 
-    actor.send({ type: "RETRY", connector: otherConnector });
+    actor.send({ type: "RETRY", connector: otherConnector, expected: EXPECTED });
     expect(actor.getSnapshot().matches("executing")).toBe(true);
     expect(execute).toHaveBeenCalledTimes(2);
     expect(execute.mock.calls[1]![0].connector).toBe(otherConnector);
+    actor.stop();
+  });
+
+  it("ignores a RETRY that names another account or network than the run", async () => {
+    const { actor, execute } = machineWith({
+      tree: () => treeOf(node("final-classic-tx", "FinalClassicTx")),
+      execute: async (input) => failedOutput(input.tree, ["Bad Gateway (502)"], "network"),
+    });
+    await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
+    actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
+    await waitFor(actor, (s) => s.matches("failed"));
+    const failedTree = actor.getSnapshot().context.tree;
+    expect(failedTree).not.toBeNull();
+    for (const expected of [
+      { ...EXPECTED, publicKey: "GOTHER" },
+      { ...EXPECTED, networkId: "public" },
+    ]) {
+      actor.send({ type: "RETRY", connector, expected });
+      expect(actor.getSnapshot().matches("failed")).toBe(true);
+      expect(actor.getSnapshot().context.tree).toBe(failedTree);
+    }
+    // without a wallet a retry only rediscovers, and that too is refused
+    actor.send({ type: "RETRY", expected: { ...EXPECTED, publicKey: "GOTHER" } });
+    expect(actor.getSnapshot().matches("failed")).toBe(true);
+    expect(execute).toHaveBeenCalledTimes(1);
     actor.stop();
   });
 
@@ -761,7 +786,7 @@ describe("RETRY", () => {
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
     actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
     await waitFor(actor, (s) => s.matches("failed"));
-    actor.send({ type: "RETRY", connector });
+    actor.send({ type: "RETRY", connector, expected: EXPECTED });
     expect(seen[1]).toEqual({
       withdraw: "confirmed",
       repay: "pending",
@@ -780,7 +805,7 @@ describe("RETRY", () => {
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
     actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
     await waitFor(actor, (s) => s.matches("failed"));
-    actor.send({ type: "RETRY" });
+    actor.send({ type: "RETRY", expected: EXPECTED });
     expect(actor.getSnapshot().matches("discovering")).toBe(true);
     expect(actor.getSnapshot().context.tree).toBeNull();
     expect(execute).toHaveBeenCalledTimes(1);
@@ -797,7 +822,7 @@ describe("RETRY", () => {
     actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
     await waitFor(actor, (s) => s.matches("failed"));
     expect(actor.getSnapshot().context.failureKind).toBe("position_open");
-    actor.send({ type: "RETRY", connector });
+    actor.send({ type: "RETRY", connector, expected: EXPECTED });
     expect(actor.getSnapshot().matches("discovering")).toBe(true);
     expect(execute).toHaveBeenCalledTimes(1);
     actor.stop();
@@ -821,7 +846,7 @@ describe("RETRY", () => {
     await waitFor(actor, (s) => s.matches("failed"));
     expect(actor.getSnapshot().context.failureKind).toBe("claim_unavailable");
     const discoveriesBefore = discover.mock.calls.length;
-    actor.send({ type: "RETRY", connector });
+    actor.send({ type: "RETRY", connector, expected: EXPECTED });
     const snap = actor.getSnapshot();
     expect(snap.matches("discovering")).toBe(true);
     expect(snap.context.tree).toBeNull();
@@ -854,13 +879,13 @@ describe("RETRY", () => {
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
     actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
     await waitFor(actor, (s) => s.matches("failed"));
-    actor.send({ type: "RETRY", connector });
+    actor.send({ type: "RETRY", connector, expected: EXPECTED });
     await waitFor(actor, (s) => s.matches("failed"));
     const snap = actor.getSnapshot();
     expect(snap.context.failureKind).toBe("network");
     expect(snap.context.tree).toBeNull();
     expect(snap.context.signedBundle).toBeNull();
-    actor.send({ type: "RETRY", connector });
+    actor.send({ type: "RETRY", connector, expected: EXPECTED });
     expect(actor.getSnapshot().matches("discovering")).toBe(true);
     expect(execute).toHaveBeenCalledTimes(1);
     actor.stop();
@@ -953,7 +978,7 @@ describe("a rejected execute still reports the batches that landed", () => {
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
     actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
     await waitFor(actor, (s) => s.matches("failed"));
-    actor.send({ type: "RETRY", connector });
+    actor.send({ type: "RETRY", connector, expected: EXPECTED });
     await waitFor(actor, (s) => s.matches("failed") && calls === 2);
     expect(actor.getSnapshot().context.landedPhases.map((p) => p.txHash)).toEqual([
       "UNWIND",
@@ -1116,7 +1141,7 @@ describe("failure taxonomy", () => {
     await waitFor(actor, (s) => s.matches("awaiting_confirmation"));
     actor.send({ type: "CONFIRM", typed: "DEST", expected: EXPECTED });
     await waitFor(actor, (s) => s.matches("failed"));
-    actor.send({ type: "RETRY", connector });
+    actor.send({ type: "RETRY", connector, expected: EXPECTED });
     await waitFor(actor, (s) => s.matches("failed") && calls === 2);
     expect(actor.getSnapshot().context.error).toBe("HTTP 503 attempt 2");
     actor.stop();
