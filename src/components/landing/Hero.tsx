@@ -238,7 +238,7 @@ export function Hero(): React.JSX.Element {
             </div>
           </div>
 
-          {/* RIGHT: plan preview */}
+          {/* right: plan preview */}
           <div
             style={{
               background: "var(--surface)",

@@ -243,7 +243,7 @@ export function subscribePlan(
     };
     es.onerror = () => {
       errors += 1;
-      // a refused stream (404, 503) is CLOSED at once; an unreachable server
+      // a refused stream (404, 503) is closed at once; an unreachable server
       // stays CONNECTING, so count failures instead of waiting forever
       if (es.readyState === EventSource.CLOSED || errors >= MAX_STREAM_ERRORS) {
         fallBackToPolling();

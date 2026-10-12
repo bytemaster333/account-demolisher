@@ -103,8 +103,8 @@ export function useRunReview(args: {
   const runInput = ctx.input;
   const finalNode = finalNodeOf(tree);
 
-  // prefer the AUTHORITATIVE discovery audit once it's available. ctx.audit is
-  // the audit the plan is actually built from.
+  // prefer the discovery audit once it's available: ctx.audit is the audit the
+  // plan is actually built from, so it is the one to trust.
   const effectiveMultisig = useMemo(() => {
     if (audit) {
       return {
@@ -268,8 +268,8 @@ export function useRunReview(args: {
   }, [tree, finalNode]);
 
   // two distinct concerns, kept as separate steps:
-  //  - a BLOCKER needs an ACTION + rebuild          → "resolve"
-  //  - warnings / info need only READ-AND-UNDERSTAND → "acknowledge"
+  //  - a blocker needs an action + rebuild          → "resolve"
+  //  - warnings / info need only read-and-understand → "acknowledge"
   const hasBlocker = blockers.length > 0;
   const hasScam = scamFindings.length > 0;
   const discoveryWarnings = useMemo(

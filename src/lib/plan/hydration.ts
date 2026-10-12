@@ -935,7 +935,7 @@ export function resolveContractIdForAsset(asset: AssetIdentifier, network: Netwo
           `them with liquidity_pool_withdraw in the classic batch`,
       );
     case "contract":
-      // a standalone SEP-41 token: the contract id IS the address to invoke
+      // a standalone SEP-41 token: the contract id is the address to invoke
       return asset.contractId;
   }
 }

@@ -478,9 +478,9 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
         page -= 1; // the for-loop's page++ then redoes this page with the clamp
         continue;
       }
-      // NB: do NOT break on an empty page. getEvents can return an empty page with
-      // a still-advancing cursor; the cursor-stall check below is the real end
-      // condition, and maxPages bounds the loop.
+      // an empty page is not the end: getEvents can return one with a cursor that
+      // still advances. the cursor-stall check below is the real end condition,
+      // and maxPages bounds the loop.
 
       for (const ev of resp.events) {
         const decoded = tryDecodeDepositOrWithdrawEvent(ev, userPublicKey, this.routerId);
@@ -537,10 +537,11 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
           shareBalance,
         });
       } catch (e) {
-        // an RPC/decode failure while probing a pool the user has interacted with
-        // is NOT "no position": swallowing it could strand a live LP balance and
-        // let the merge proceed. surface it so discovery reports an incomplete
-        // scan (a whole-scan throw becomes a user-facing discoveryWarning).
+        // an rpc or decode failure while probing a pool the user has interacted
+        // with does not mean "no position": swallowing it could strand a live lp
+        // balance and let the merge proceed. surface it so discovery reports an
+        // incomplete scan (a whole-scan throw becomes a user-facing
+        // discoveryWarning).
         throw new Error(
           `Aquarius: failed to probe pool ${value.poolAddress}; discovery may be incomplete ` +
             `(${errorMessage(e)})`,

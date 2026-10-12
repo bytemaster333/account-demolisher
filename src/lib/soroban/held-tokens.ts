@@ -144,7 +144,7 @@ export async function discoverHeldTokens(
   // probe every candidate concurrently (bounded), each independently time-boxed.
   // balance() is a read-only simulation (no signed tx), so a hostile token can
   // only make it fail, never smuggle auth. a token that reverts or stalls is
-  // recorded as UNREADABLE (not silently dropped): it can't be auto-drained, but
+  // recorded as unreadable (not silently dropped): it can't be auto-drained, but
   // the user should know it exists and can target it manually.
   const probed = await mapConcurrent(candidates, PROBE_CONCURRENCY, async (contractId) => {
     try {

@@ -24,7 +24,7 @@ export function useFlowConnector(
 ): FlowConnector {
   const connectorRef = useRef<Connector | null>(null);
 
-  // do we have a live connector that can actually SIGN here? Derived (not stored)
+  // do we have a live connector that can actually sign here? Derived (not stored)
   // so it stays in sync with the app-wide wallet session across client-side
   // navigation: a kit connection can always be reconstructed, and any live
   // connector shared via setActiveConnector (e.g. from /allowances) counts. A

@@ -38,7 +38,7 @@ export interface ForwardCommitment {
 // max maxTime horizon. shields against replay of a leaked envelope
 export const MAX_TIME_BOUND_SECONDS = 3600;
 
-// the forward envelope is the ONLY shape the mediator co-signs:
+// the forward envelope is the only shape the mediator co-signs:
 //   op0 = mediator-sourced native payment -> destination D
 //   op1 = mediator accountMerge           -> destination D (same D)
 // carrying the committed memo, a bounded fee and no precondition beyond a short
@@ -123,7 +123,7 @@ export function validateMediatorForwardEnvelope(
       reason: "Forward accountMerge source must be the mediator (or omitted to inherit it).",
     };
   }
-  // the payout (op0) and the reserve-reclaiming merge (op1) must go to the SAME
+  // the payout (op0) and the reserve-reclaiming merge (op1) must go to the same
   // final destination. without this, a crafted envelope could pay the mediator's
   // balance to an attacker while merging the reserve elsewhere.
   if (op0.destination !== op1.destination) {

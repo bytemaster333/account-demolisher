@@ -38,7 +38,7 @@ export function createRpcServer(
 // a per-host load limit, so another host may still serve the request
 const JSONRPC_PROCESSING_LIMIT = -32001;
 
-// which THROWN errors justify switching endpoints. only host-specific faults are
+// which thrown errors justify switching endpoints. only host-specific faults are
 // worth retrying elsewhere: rate limits (429), upstream 5xx, the processing-limit
 // throttle, and network/timeout errors. a deterministic 4xx or json-rpc error is
 // the same on every host, so failing over just multiplies load. the sdk throws a
@@ -103,7 +103,7 @@ function isBadSeq(res: rpc.Api.SendTransactionResponse): boolean {
 // wraps an ordered list of rpc.Server instances so every method call tries the
 // current host and, on a failover-worthy error, advances to the next host and
 // retries the identical call. sticky: once a host works we stay on it, shedding
-// load off the faulted one until IT faults too. a single server is returned as-is
+// load off the faulted one until it faults too. a single server is returned as-is
 // (no proxy overhead).
 //
 // sendTransaction is the one call where a retry is not idempotent from the

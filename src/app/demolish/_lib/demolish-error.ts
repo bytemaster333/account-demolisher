@@ -95,7 +95,7 @@ export function parseDemolishError(raw: string | null): ParsedError {
       ? parsed.operations.filter((o): o is string => typeof o === "string")
       : [];
     if (txCode === null && ops.length === 0) continue;
-    // these index operations inside ONE transaction, not plan steps, so they're
+    // these index operations inside one transaction, not plan steps, so they're
     // labelled as operations to avoid clashing with the step counter
     const firstBadIdx = ops.findIndex((o) => o !== "op_success");
     const summary =

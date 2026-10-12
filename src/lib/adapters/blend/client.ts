@@ -21,7 +21,7 @@ import { isFailoverError } from "@/lib/soroban/rpc-client";
 import { resolveKnownBackstop, type BlendBackstopRef } from "./constants";
 
 // one pool's user positions keyed by asset id (the SAC/SEP-41 token contract).
-// amounts are UNDERLYING token units: liabilities are the debt owed (dTokens
+// amounts are underlying token units: liabilities are the debt owed (dTokens
 // times the reserve's dRate, rounded up) and collateral/supply what a full
 // withdraw returns (bTokens times bRate, rounded down). the exit builders re-read
 // the pool on chain, so these only drive the plan and the shortfall check.

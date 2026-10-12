@@ -113,7 +113,8 @@ export type DeFiPositionProviderName = "direct";
 // common shape every position-discovery adapter implements
 export interface IDeFiPositionProvider {
   readonly name: DeFiPositionProviderName;
-  // lightweight probe; MUST NOT throw. returns false when source isn't reachable
+  // lightweight probe that never throws: it returns false when the source isn't
+  // reachable
   isAvailable(): Promise<boolean>;
   // per-protocol failures are collected into ProtocolPositions.errors, not thrown
   getPositions(userAddress: string, network: NetworkConfig): Promise<ProtocolPositions>;

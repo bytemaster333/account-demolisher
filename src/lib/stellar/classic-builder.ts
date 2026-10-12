@@ -240,7 +240,7 @@ function addOperation(op: BatchedOperation): xdr.Operation {
   }
 }
 
-// set_options for clearing a non-master signer OR resetting thresholds
+// set_options for clearing a non-master signer or resetting thresholds
 // the batcher emits one op per case to respect the sdk's single-signer rule
 function buildSetOptions(op: BatchedOperation): xdr.Operation {
   const signerKey = op.metadata["signerKey"];

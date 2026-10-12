@@ -39,7 +39,7 @@ export interface CloseChoices {
 export function useCloseChoices(refused: readonly RefusedConversion[]): CloseChoices {
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
   // standalone SEP-41 tokens the user opted in to sweep (discovered ones they
-  // ticked + any added by contract id). Kept OUTSIDE the zod form because each
+  // ticked + any added by contract id). Kept outside the zod form because each
   // carries a bigint balance; default empty so nothing is swept without a choice.
   const [selectedHeldTokens, setSelectedHeldTokens] = useState<readonly HeldToken[]>([]);
   // opt-in: convert the opted-in held tokens to XLM (Soroswap-router swap) instead

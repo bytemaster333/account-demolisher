@@ -64,7 +64,7 @@ export interface BundleabilityResult {
 const POOL_SHARE_REASON =
   "This account holds a liquidity pool share, which must be withdrawn in its own transaction first. Withdraw it, or close with all signers present.";
 
-// can this close be expressed as ONE signable classic transaction? Soroban
+// can this close be expressed as one signable classic transaction? soroban
 // positions, allowance revocations and standalone token moves each need their
 // own transaction, the exchange-mediator flow is multi-step, and a classic pool
 // share is withdrawn in its own leading batch, so none of those can be bundled
@@ -681,9 +681,9 @@ export function inspectClose(xdrStr: string, passphrase: string): CloseInspectio
   const rawOps = tx.operations as unknown as readonly RawOp[];
   const mergeOp = rawOps.find((o) => o.type === "accountMerge");
 
-  // the account being closed is the accountMerge op's EFFECTIVE source
-  // (op.source ?? tx.source), NOT blindly tx.source. the relay binds the signer
-  // set to that account, so /sign must display and audit the same one.
+  // the account being closed is the accountMerge op's effective source
+  // (op.source ?? tx.source), never tx.source on its own. the relay binds the
+  // signer set to that account, so /sign must display and audit the same one.
   const closingSource = mergeOp?.source ?? tx.source;
   const ctx: InspectContext = {
     mergeDestination: mergeOp?.destination ?? null,

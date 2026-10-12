@@ -107,7 +107,7 @@ export async function POST(request: Request): Promise<Response> {
   const body = await parseSignBody(request, cors);
   if (!body.ok) return limitByIp() ?? body.response;
 
-  // resolve THIS flow's ephemeral keypair and terms from the token. A thrown
+  // resolve this flow's ephemeral keypair and terms from the token. A thrown
   // error means the master seed is unset or malformed: logged for the operator,
   // scrubbed for the client. no token can be authenticated then, so the request
   // is charged to its address first and junk can't flood the log.

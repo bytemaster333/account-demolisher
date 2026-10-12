@@ -44,7 +44,7 @@ export function MainnetConfirm({
     };
   }, []);
 
-  // Escape cancels (stays on the safer network)
+  // escape cancels, which keeps the safer network
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCancel();

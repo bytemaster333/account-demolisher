@@ -304,10 +304,10 @@ export interface FinalClassicTxMetadata {
   // full-size quotes shown at review, per pathKey; held to the same bound
   readonly reviewedConversionQuotes?: Readonly<Record<string, ReferenceQuote>>;
   readonly mediatorPublicKey?: string;
-  // deposit memo for a DIRECT (non-mediator) merge to a memo-required destination.
-  // MUST be re-applied during execute-time re-batching or the signed merge drops
-  // it; the batcher only attaches it to a non-mediator final batch (a mediator
-  // close carries its memo on the forward hop instead).
+  // deposit memo for a direct (non-mediator) merge to a memo-required
+  // destination. it has to be re-applied during execute-time re-batching or the
+  // signed merge drops it; the batcher only attaches it to a non-mediator final
+  // batch (a mediator close carries its memo on the forward hop instead).
   readonly memo?: ClassicMemo;
   // whether the reviewed batches carry the on-chain close marker. without it the
   // close still merges but is not counted by close verification.
@@ -322,9 +322,9 @@ export interface MediatorForwardMetadata {
   // stays usable until it expires and is renewed through /api/mediator/reissue
   readonly flowToken: string;
   readonly ultimateDestination: string;
-  // the user's CEX deposit memo (full type + value). This forward is the ONLY
-  // hop that reaches the exchange, so it must carry the memo verbatim; a numeric
-  // ("id") or hash memo dropped here means the deposit isn't credited.
+  // the memo the destination requires (full type + value). this forward is the
+  // only hop that reaches the destination, so it must carry the memo verbatim; a
+  // numeric ("id") or hash memo dropped here means the deposit isn't credited.
   readonly memo?: ClassicMemo;
 }
 

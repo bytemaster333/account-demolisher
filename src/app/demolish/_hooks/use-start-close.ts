@@ -106,7 +106,7 @@ export function useStartClose(args: {
 
       const memo = parseMemo(form);
 
-      // validate the memo VALUE shape for ANY destination, so a malformed id/hash
+      // validate the memo value shape for any destination, so a malformed id/hash
       // memo can't slip past a non-CEX close and throw inside Memo.id()/hash() only
       // at execute time (mid-close, after earlier steps may have submitted).
       if (memo !== undefined) {
@@ -140,11 +140,11 @@ export function useStartClose(args: {
         return;
       }
 
-      // A shared account is always closed the same way: the initiator signs with
-      // their own key, the reviewed close is built as ONE deterministic bundled
+      // a shared account is always closed the same way: the initiator signs with
+      // their own key, the reviewed close is built as one deterministic bundled
       // transaction (no market sell that could sink the signed bundle) and, after
-      // Review, published as a signing request the other signers add signatures
-      // to. When what's already known rules that out, refuse rather than start.
+      // review, published as a signing request the other signers add signatures
+      // to. when what's already known rules that out, refuse rather than start.
       if (multisigRequired) {
         const known =
           audit !== null && audit.accountId === publicKey
@@ -194,7 +194,7 @@ export function useStartClose(args: {
         ...(convertHeldTokensToXLM && selectedHeldTokens.length > 0
           ? { convertHeldTokensToXLM: true }
           : {}),
-        // the signing-request path signs ONE bundled transaction, so it can't rely
+        // the signing-request path signs one bundled transaction, so it can't rely
         // on a market sell: force deterministic disposal so the reviewed plan is
         // exactly the transaction every signer signs
         ...(multisigRequired ? { deterministicDisposal: true } : {}),

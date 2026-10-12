@@ -179,8 +179,8 @@ export function useSigningRequest(args: {
         return;
       }
       // the request is valid for the signing window from now, on the network's
-      // clock: every claim it makes has to stay claimable for all of it. The
-      // Review's check ran earlier, on this browser's clock.
+      // clock: every claim it makes has to stay claimable for all of it. the
+      // review's check ran earlier, on this browser's clock.
       const clock = await fetchLedgerClock(network);
       const sinking = sinkingClaims(
         claimsAtRiskInWindow({

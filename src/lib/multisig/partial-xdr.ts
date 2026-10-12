@@ -92,7 +92,7 @@ export function mergeNewSignatures(
     options.expectedSigners,
   ).map((key) => Keypair.fromPublicKey(key));
 
-  // dedup by the RECOVERED SIGNER KEY, not by wire bytes. the decorated
+  // dedup by the recovered signer key, not by wire bytes. the decorated
   // signature's 4-byte hint is attacker-chosen, so keying on wire bytes lets one
   // captured signature be replayed under many hints to bloat the envelope to the
   // 20-signature XDR cap and wedge the plan. One signature per authorized key is

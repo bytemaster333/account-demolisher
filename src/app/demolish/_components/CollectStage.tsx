@@ -8,7 +8,7 @@ import type { AccountAudit } from "@/lib/types/account";
 import type { PublishedRequest } from "../_hooks/use-signing-request";
 
 // the Signatures step: the reviewed close was published; collect the other
-// signatures live here, then the initiator closes. /sign is the page the OTHER
+// signatures live here, then the initiator closes. /sign is the page the other
 // signers open.
 export function CollectStage({
   request,

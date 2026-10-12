@@ -24,7 +24,7 @@ export interface AllowanceRecord {
   readonly lastSeenLedger: number;
   // true when live_until_ledger < currentLedger at enumeration time
   readonly expired: boolean;
-  // the amount read DIRECTLY from the token contract (allowance(from, spender)),
+  // the amount read directly from the token contract (allowance(from, spender)),
   // when it has been confirmed. `amount` above is event-derived and a hostile
   // contract can emit a fabricated approve event, so this on-chain read is the
   // accuracy check: undefined = not confirmed, null = the confirm read failed, a
@@ -32,7 +32,7 @@ export interface AllowanceRecord {
   readonly onChainAmount?: bigint | null;
 }
 
-// a record whose on-chain amount is DEFINED (confirmed or failed), i.e. the
+// a record whose on-chain amount is defined (confirmed or failed), i.e. the
 // result of confirmAllowancesOnChain.
 export interface ConfirmedAllowanceRecord extends AllowanceRecord {
   readonly onChainAmount: bigint | null;

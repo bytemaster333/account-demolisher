@@ -106,7 +106,7 @@ async function simulateClassicBatches(
   if (batches.length === 0) {
     throw new Error(`simulateNode: ${node.kind} "${node.id}" has zero batches; cannot validate`);
   }
-  // In-memory validation: actually BUILD each batch's classic envelope. A synthetic
+  // in-memory validation: actually build each batch's classic envelope. A synthetic
   // account (sequence 0) suffices because this is structural well-formedness, not a
   // submit: buildClassicTransaction throws on an empty/malformed op set or a total
   // fee over the u32 ceiling, so a doomed classic close surfaces at preview time

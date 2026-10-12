@@ -68,9 +68,9 @@ function repointBatches(batches: unknown, from: string, to: string): unknown {
   }));
 }
 
-// re-point FinalClassicTx (funds and merges INTO the mediator) and
-// MediatorForward (sweeps OUT of it, under the flow token) at `flow`. both must
-// carry the SAME mediatorPublicKey or the merge and the forward would target
+// re-point FinalClassicTx (funds and merges into the mediator) and
+// MediatorForward (sweeps out of it, under the flow token) at `flow`. both must
+// carry the same mediatorPublicKey or the merge and the forward would target
 // different accounts. returns true when the tree is a mediator close (a forward
 // node exists) and was updated; false otherwise (nothing to do).
 export function applyRefreshedMediatorFlow(tree: MediatorFlowTree, flow: RefreshedFlow): boolean {

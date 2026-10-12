@@ -56,8 +56,8 @@ export function useRunControls(args: {
 
   // back from the first confirmation stage returns to Configure with the form
   // as it was: the plan is discarded (cancel), then the run is reset to idle.
-  // Nothing else cancels a run by hand, so a cancelled run on screen always
-  // came from the run guard (wallet or network changed). The answers given for
+  // nothing else cancels a run by hand, so a cancelled run on screen always
+  // came from the run guard (wallet or network changed). the answers given for
   // that plan go with it: a price accepted once must be asked for again.
   const onBackToConfigure = useCallback(() => {
     setShowConfirmDialog(false);

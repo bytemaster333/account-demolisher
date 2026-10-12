@@ -83,13 +83,13 @@ export interface GeneratePlanOptions {
   readonly acceptedPriceImpactAssetKeys?: readonly string[];
   readonly memo?: ClassicMemo;
   // standalone SEP-41 tokens the account holds directly, swept to the destination
-  // before the merge (SEP-41 auto-include). Emitted only on a DIRECT close: an
+  // before the merge (SEP-41 auto-include). Emitted only on a direct close: an
   // exchange (mediator) destination can't be credited with a raw contract token.
-  // The drains are best-effort ORDERING-only (they run before the merge but never
+  // the drains are best-effort ordering-only (they run before the merge but never
   // block it): a hostile airdropped token that reverts on transfer must not be
   // able to wedge the close, so a failed drain is skipped, not fatal (executor).
   readonly heldTokens?: readonly HeldToken[];
-  // when true, held SEP-41 tokens are CONVERTED to XLM (a Soroswap-router swap) so
+  // when true, held SEP-41 tokens are converted to XLM (a Soroswap-router swap) so
   // the account ends as a single XLM balance, instead of transferred as-is to the
   // destination. Default false: transfer-as-is preserves the exact token and can't
   // be defeated by an illiquid/unroutable token (which has no swap route), so it's
@@ -125,8 +125,8 @@ export interface GeneratePlanOptions {
   // pools whose accrued backstop emissions the user agreed to forfeit because
   // the claim can't run; their queue is planned without a claim ahead of it
   readonly forfeitBackstopEmissionsPoolIds?: readonly string[];
-  // wall-clock ms used only to ESTIMATE the Blend backstop unlock date shown on a
-  // BackstopQueue node (the real timer starts on-chain at submit). Defaults to
+  // wall-clock ms used only to estimate the Blend backstop unlock date shown on a
+  // BackstopQueue node (the real timer starts on-chain at submit). defaults to
   // Date.now(); tests pass a fixed value for determinism.
   readonly now?: number;
 }
@@ -429,8 +429,8 @@ export function generatePlan(
   }
 
   // blend emissions, one per pool, after its withdraws and the BLND trustline.
-  // Emitted only when the user actually has accrued emissions to claim, and
-  // targeting the SPECIFIC reserve_token_ids that carry them.
+  // emitted only when the user actually has accrued emissions to claim, and
+  // targeting the specific reserve_token_ids that carry them.
   const rewardClaimIds: string[] = [];
   for (const pool of claimingPools) {
     const reserveTokenIds = pool.emissionReserveTokenIds;
@@ -572,9 +572,9 @@ export function generatePlan(
 
   // standalone SEP-41 tokens: sweep each to the destination before the merge so a
   // custom token held in contract storage isn't stranded on the deleted account.
-  // DIRECT closes only: a mediator/CEX destination can't receive a raw token
+  // direct closes only: a mediator/CEX destination can't receive a raw token
   // (the preview surfaces a "move these first" warning for that case instead).
-  // These become dependencies of the merge purely for ORDERING (drain runs first);
+  // these become dependencies of the merge purely for ordering (drain runs first);
   // the executor treats a failed drain as skip-not-fatal, so a hostile airdropped
   // token that reverts on transfer can't wedge the close. They also run after
   // every exit, since an exit can pay out more of the same token; hydration reads
@@ -694,7 +694,7 @@ export function generatePlan(
     ...(reviewedConversionQuotes ? { reviewedConversionQuotes } : {}),
     ...(useMediator && opts.mediatorPublicKey ? { mediatorPublicKey: opts.mediatorPublicKey } : {}),
     // carry the memo so execute-time re-batching can re-apply it. The batcher
-    // only puts it on a DIRECT final batch (a mediator close routes the memo
+    // only puts it on a direct final batch (a mediator close routes the memo
     // through the forward), so attaching it here unconditionally is safe.
     ...(opts.memo ? { memo: opts.memo } : {}),
   };
@@ -739,7 +739,7 @@ export function generatePlan(
         mediatorPublicKey: opts.mediatorPublicKey,
         flowToken: opts.flowToken ?? "",
         ultimateDestination: destination,
-        // carry the FULL memo (any type) to the forward: this is the hop that
+        // carry the full memo (any type) to the forward: this is the hop that
         // reaches the CEX, so a numeric/hash deposit memo must survive here.
         ...(opts.memo ? { memo: opts.memo } : {}),
       },

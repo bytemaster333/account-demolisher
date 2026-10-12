@@ -75,7 +75,7 @@ export function Select({
     if (items === undefined || items.length === 0) return;
     const selectedIdx = options.findIndex((o) => o.value === value);
     items[selectedIdx >= 0 ? selectedIdx : 0]?.focus();
-    // only when the menu OPENS: `options` is often a fresh array literal each parent
+    // only when the menu opens: `options` is often a fresh array literal each parent
     // render, and including it here would yank focus back mid-navigation on any
     // re-render while the menu is open.
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -51,7 +51,7 @@ export function TeardownNotice({
   );
 }
 
-// a failure BEFORE any plan tree exists (audit / discovery error, e.g. the
+// a failure before any plan tree exists (audit / discovery error, e.g. the
 // connected account has no record on the selected network)
 export function PreflightFailedCard({
   error,

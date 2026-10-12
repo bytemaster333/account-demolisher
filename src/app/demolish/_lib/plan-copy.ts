@@ -13,7 +13,7 @@ export interface PlanGroup {
   readonly nodes: readonly PlanNode[];
 }
 
-// groups CONSECUTIVE nodes of the same phase, given nodes in execution
+// groups consecutive nodes of the same phase, given nodes in execution
 // (topological) order. Folding every node of a phase into its first group would
 // list a later step (e.g. a Blend withdraw that waits on its repay) ahead of steps
 // that actually run before it, so a phase can appear more than once here.

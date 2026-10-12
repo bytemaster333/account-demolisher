@@ -81,7 +81,7 @@ export interface SwapToXLMDeps {
 }
 
 // build a router swap_exact_tokens_for_tokens converting assetIn -> XLM along
-// `path`. allow-list-gated on build AND after assembly, like the LP-removal builder.
+// `path`. allow-list-gated on build and after assembly, like the LP-removal builder.
 export async function buildSwapToXLM(
   args: SwapToXLMArgs,
   deps: SwapToXLMDeps,
