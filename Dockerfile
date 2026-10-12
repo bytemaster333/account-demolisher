@@ -8,9 +8,10 @@
 # NEXT_PUBLIC_* settings are build args because next build inlines them.
 
 # base image pinned by digest (multi-arch index for node:24-slim, node 24.21.0,
-# resolved 2026-10-02) so the build is reproducible and the base can't drift under
-# the tag. update the digest deliberately when bumping the base.
-FROM node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS node
+# the 2026-10-06 rebuild, resolved 2026-10-12) so the build is reproducible and the
+# base can't drift under the tag. update the digest deliberately when bumping the
+# base, and again when the tag is rebuilt with newer debian packages.
+FROM node:24-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS node
 
 # pnpm is needed to install and build, never to run
 FROM node AS base
