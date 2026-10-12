@@ -85,14 +85,26 @@ function dayOf(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10);
 }
 
+// fsync a directory, so a file created or renamed in it survives a power loss
+async function syncDir(dir: string): Promise<void> {
+  const dirHandle = await fs.open(dir, "r");
+  try {
+    await dirHandle.sync();
+  } finally {
+    await dirHandle.close();
+  }
+}
+
 // append one line and fsync it. the file is checked for a torn tail first: a
 // crash, or an append that failed part way (ENOSPC, say) in this same process,
 // leaves a partial line without its newline, and gluing the next line onto it
 // would lose that line on the next load as well.
 async function appendLineDurably(file: string, line: string): Promise<void> {
   const fh = await fs.open(file, "a+");
+  let wasEmpty: boolean;
   try {
     const { size } = await fh.stat();
+    wasEmpty = size === 0;
     let lead = "";
     if (size > 0) {
       const last = Buffer.alloc(1);
@@ -104,6 +116,11 @@ async function appendLineDurably(file: string, line: string): Promise<void> {
   } finally {
     await fh.close();
   }
+  // an empty file may be one this open just created, and its directory entry is
+  // not on disk until the directory itself is synced. syncing on every empty
+  // start also covers a file created by an earlier append that died before this
+  // step.
+  if (wasEmpty) await syncDir(path.dirname(file));
 }
 
 export class MetricsStore {
@@ -218,12 +235,7 @@ export class MetricsStore {
       await fh.close();
     }
     await fs.rename(tmp, path.join(this.dir, COUNTERS_FILE));
-    const dirHandle = await fs.open(this.dir, "r");
-    try {
-      await dirHandle.sync();
-    } finally {
-      await dirHandle.close();
-    }
+    await syncDir(this.dir);
   }
 
   async recordVisit(

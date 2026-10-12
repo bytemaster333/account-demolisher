@@ -10,12 +10,16 @@ import { MetricsStore, type VerifiedClose } from "@/server/metrics-store";
 
 let dir: string;
 
+// the hooks only touch the temp dir, but on a heavily loaded runner that alone
+// has run past the default 10s hook timeout, so they get their own
+const FS_HOOK_TIMEOUT_MS = 60_000;
+
 beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), "metrics-store-"));
-});
+}, FS_HOOK_TIMEOUT_MS);
 afterEach(async () => {
   await fs.rm(dir, { recursive: true, force: true });
-});
+}, FS_HOOK_TIMEOUT_MS);
 
 function close(txHash: string, network: VerifiedClose["network"], stroops: string): VerifiedClose {
   return {
@@ -223,6 +227,57 @@ describe("MetricsStore torn append in a running process (NP5-61)", () => {
     expect(await reloaded.hasClose("4".repeat(64))).toBe(true);
     expect(await reloaded.hasClose("3".repeat(64))).toBe(false);
     expect((await reloaded.snapshot()).closes.reclaimedStroops.total).toBe("7");
+  });
+});
+
+describe("MetricsStore ledger creation is durable (NPF-39)", () => {
+  // records every fsync, the ledger's and the data directory's, in order
+  function watchSyncs(ledger: string) {
+    const realOpen = fs.open.bind(fs);
+    const syncs: string[] = [];
+    const open = vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
+      const fh = await realOpen(file, flags, mode);
+      const name = file === ledger ? "ledger" : file === dir ? "dir" : null;
+      if (name === null) return fh;
+      return new Proxy(fh, {
+        get(target, prop) {
+          if (prop === "sync") {
+            return async () => {
+              await target.sync();
+              syncs.push(name);
+            };
+          }
+          const value: unknown = Reflect.get(target, prop, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    });
+    return { syncs, open };
+  }
+
+  it("fsyncs the directory after the append that creates closes.jsonl", async () => {
+    const store = new MetricsStore(dir);
+    await store.snapshot();
+    const ledger = path.join(dir, "closes.jsonl");
+    const { syncs, open } = watchSyncs(ledger);
+    try {
+      expect((await store.recordClose(close("5".repeat(64), "mainnet", "5"))).added).toBe(true);
+    } finally {
+      open.mockRestore();
+    }
+    expect(syncs).toEqual(["ledger", "dir"]);
+  });
+
+  it("does not fsync the directory again once the ledger holds a line", async () => {
+    const store = new MetricsStore(dir);
+    expect((await store.recordClose(close("6".repeat(64), "mainnet", "5"))).added).toBe(true);
+    const { syncs, open } = watchSyncs(path.join(dir, "closes.jsonl"));
+    try {
+      expect((await store.recordClose(close("7".repeat(64), "mainnet", "5"))).added).toBe(true);
+    } finally {
+      open.mockRestore();
+    }
+    expect(syncs).toEqual(["ledger"]);
   });
 });
 
