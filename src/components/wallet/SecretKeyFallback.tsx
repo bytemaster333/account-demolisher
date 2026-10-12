@@ -126,7 +126,6 @@ export function SecretKeyFallback({ onConnector }: SecretKeyFallbackProps): Reac
             color: "var(--fg)",
             fontFamily: "'Geist Mono', ui-monospace, monospace",
             fontSize: 13,
-            outline: "none",
           }}
         />
         <p id="secret-key-help" style={{ margin: 0, fontSize: 11.5, color: "var(--fg-3)" }}>

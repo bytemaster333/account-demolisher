@@ -59,4 +59,13 @@ describe("SecretKeyFallback", () => {
     expect(input.getAttribute("data-bwignore")).not.toBeNull();
     expect(input.getAttribute("data-form-type")).toBe("other");
   });
+
+  it("leaves the seed field's focus ring to the global focus-visible rule", () => {
+    render(<SecretKeyFallback />);
+    const input = screen.getByTestId("secret-key-input");
+    // an inline outline beats the stylesheet's input:focus-visible ring
+    expect(input.style.outline).toBe("");
+    expect(input.style.outlineStyle).toBe("");
+    expect(input.style.outlineWidth).toBe("");
+  });
 });
