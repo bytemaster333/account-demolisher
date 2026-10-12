@@ -27,6 +27,10 @@ export async function watchCspViolations(page: Page): Promise<() => Promise<CspV
 
 // the WalletConnect telemetry hosts the policy leaves out on purpose
 // (src/lib/config/csp.ts): AppKit still tries to send its mandatory events there
+export function isWalletConnectTelemetryUrl(url: string): boolean {
+  return /^https:\/\/pulse\.walletconnect\.(com|org)(\/|$)/.test(url);
+}
+
 export function isWalletConnectTelemetry(v: CspViolation): boolean {
-  return /^https:\/\/pulse\.walletconnect\.(com|org)(\/|$)/.test(v.blockedUri);
+  return isWalletConnectTelemetryUrl(v.blockedUri);
 }

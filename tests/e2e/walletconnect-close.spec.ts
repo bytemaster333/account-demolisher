@@ -3,7 +3,11 @@ import { SignClient } from "@walletconnect/sign-client";
 import { Networks, TransactionBuilder, type Keypair } from "@stellar/stellar-sdk";
 
 import { accountExists, fundedPair, mergesOf, nativeBalance } from "./support/chain";
-import { isWalletConnectTelemetry, watchCspViolations } from "./support/csp";
+import {
+  isWalletConnectTelemetry,
+  isWalletConnectTelemetryUrl,
+  watchCspViolations,
+} from "./support/csp";
 import {
   acknowledgeNotices,
   closedHeading,
@@ -96,6 +100,14 @@ test("closes a testnet account signed over WalletConnect (headless wallet, no ph
 
   const wallet = await startHeadlessWcWallet(account);
   const cspViolations = await watchCspViolations(page);
+  // AppKit sends its INITIALIZE and CONNECT_SUCCESS events even with analytics
+  // off, and the policy is what stops them. a request the csp blocks never
+  // reaches the network, so playwright sees no request event for it; any pulse
+  // request seen here left the browser.
+  const telemetryRequests: string[] = [];
+  page.context().on("request", (req) => {
+    if (isWalletConnectTelemetryUrl(req.url())) telemetryRequests.push(req.url());
+  });
 
   try {
     // --- connect over WalletConnect ---
@@ -137,6 +149,8 @@ test("closes a testnet account signed over WalletConnect (headless wallet, no ph
     // thing it blocked is WalletConnect telemetry, which it leaves out on purpose
     const blocked = (await cspViolations()).filter((v) => !isWalletConnectTelemetry(v));
     expect(blocked).toEqual([]);
+    // no WalletConnect telemetry request left the browser (M-61)
+    expect(telemetryRequests).toEqual([]);
   } finally {
     for (const s of wallet.session.getAll()) {
       await wallet.disconnect({
