@@ -71,9 +71,10 @@ jobs:
       # release blocker: no high or critical advisory may ship in the production
       # dependency tree of an attested artifact
       - run: pnpm audit --prod --audit-level high
-      # the mainnet timing test is a scheduled check (mainnet-timing.yml), not a
-      # release gate: public mainnet rate limits must not block a release
-      - run: pnpm test:integration --exclude tests/integration/mainnet-discovery-timing.test.ts
+      # testnet and offline files only. the read-only mainnet files
+      # (tests/integration/mainnet) are a scheduled check (mainnet-timing.yml),
+      # not a release gate: public mainnet rate limits must not block a release
+      - run: pnpm test:integration
 
   e2e:
     runs-on: ubuntu-latest

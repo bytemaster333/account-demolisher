@@ -1,24 +1,6 @@
-import { fileURLToPath } from "node:url";
-import { defineConfig } from "vitest/config";
+import { integrationConfig } from "./tests/integration/scope.mts";
 
-// integration tests: real round-trips against live testnet (Horizon, Soroban
-// RPC, Friendbot). Slow + network-dependent, so they run under a separate
-// command (`pnpm test:integration`) and are not part of the fast unit gate.
-export default defineConfig({
-  resolve: {
-    alias: {
-      "@": fileURLToPath(new URL("./src", import.meta.url)),
-    },
-  },
-  test: {
-    environment: "node",
-    include: ["tests/integration/**/*.test.{ts,tsx}"],
-    testTimeout: 120_000,
-    hookTimeout: 120_000,
-    // a glob or path that matches nothing must fail the run, never pass it
-    passWithNoTests: false,
-    // testnet round-trips share sequence numbers / friendbot rate limits, so
-    // don't run integration files in parallel.
-    fileParallelism: false,
-  },
-});
+// integration tests that block ci and a release: real round trips against live
+// testnet (Horizon, Soroban RPC, Friendbot) and offline checks. the read-only
+// mainnet files run through vitest.integration-mainnet.config.mts instead.
+export default integrationConfig("blocking");

@@ -11,7 +11,7 @@
 // three wasms, so no concentrated pool is on another version. a pool deployed
 // after this snapshot is not on the list; discovery reports it as an error so the
 // merge stays blocked instead of silently leaving the position behind, and
-// tests/integration/aquarius-mainnet-exits fails until it is added.
+// tests/integration/mainnet/aquarius-mainnet-exits fails until it is added.
 
 import { unsupportedNetwork, type NetworkConfig } from "@/lib/config/networks";
 
@@ -31,7 +31,7 @@ export const CONCENTRATED_POOLS_SOURCE =
 // pools are upgradable by aquarius: on 2026-10-02 the mainnet ones ran 12fca5a7...,
 // which stellar.expert validated against AquaToken/soroban-amm@a22139a1; by
 // 2026-10-06 all 37 had moved to the same wasm the testnet pools run, which
-// stellar.expert lists as unverified. tests/integration/aquarius-mainnet-exits
+// stellar.expert lists as unverified. tests/integration/mainnet/aquarius-mainnet-exits
 // fails when the deployed wasm drifts from this value again.
 export const MAINNET_CONCENTRATED_POOL_WASM =
   "155a17b9929ffb1f9e84bd6ef5c00a4d613c1ab5f4ad4c502d84515250cc2907";

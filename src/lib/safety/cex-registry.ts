@@ -23,7 +23,7 @@ export interface CexInfo {
   readonly source: string;
   // set only on a deposit address the owner chose to keep although horizon shows
   // the account unchanged since this ledger. the scheduled live check
-  // (tests/integration/cex-registry-live.test.ts) skips its activity limit only
+  // (tests/integration/mainnet/cex-registry-live.test.ts) skips its activity limit only
   // while the account still sits at exactly this ledger, so any later change to
   // the account is reported again instead of hiding behind the exception
   readonly dormantSinceLedger?: number;

@@ -21,6 +21,7 @@
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.mts",
+    "test:integration:mainnet": "vitest run --config vitest.integration-mainnet.config.mts",
     "test:e2e": "playwright test",
     "mediator:legacy-forward": "node scripts/mediator-legacy-forward.mjs"
   },

@@ -1,9 +1,9 @@
 name: Mainnet checks
 
-# read-only checks against public mainnet rpc, whose rate limits and latency
-# have nothing to do with a given change. they run here on a schedule (and on
-# demand) so a slowdown or on-chain drift is still noticed, without blocking ci
-# or a release.
+# read-only checks against public mainnet (every file in
+# tests/integration/mainnet), whose rate limits and latency have nothing to do
+# with a given change. they run here on a schedule (and on demand) so a slowdown
+# or on-chain drift is still noticed, without blocking ci or a release.
 on:
   schedule:
     - cron: "17 5 * * *"
@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   timing:
-    name: mainnet discovery timing and aquarius pins
+    name: mainnet discovery timing
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -33,20 +33,37 @@ jobs:
           package-manager-cache: false
       - run: pnpm install --frozen-lockfile
       - name: Mainnet discovery timing
-        run: pnpm test:integration tests/integration/mainnet-discovery-timing.test.ts
-      # the pinned concentrated pools are allow-listed entry points that aquarius
-      # can upgrade at any time, so their list and wasm are compared with the live
-      # router daily, not only when someone pushes. it runs even when the timing
-      # step failed, since a slow rpc says nothing about drift.
-      - name: Aquarius pinned pools and exits
-        if: ${{ !cancelled() }}
-        run: pnpm test:integration tests/integration/aquarius-mainnet-exits.test.ts
+        run: pnpm test:integration:mainnet tests/integration/mainnet/mainnet-discovery-timing.test.ts
+
+  # every other read-only mainnet file in tests/integration/mainnet: the pinned
+  # aquarius concentrated pools against the live router (aquarius can upgrade
+  # those allow-listed entry points at any time), the blend registry, backstop
+  # and request checks, the soroswap route reads, hydration on mainnet state, the
+  # sdk against current mainnet xdr, and the blend backstop wasm match. its own
+  # job, so a slow rpc in the timing job does not hide drift found here.
+  reads:
+    name: read-only mainnet checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 12.10.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - run: pnpm install --frozen-lockfile
+      - name: Mainnet reads
+        run: pnpm test:integration:mainnet --exclude tests/integration/mainnet/mainnet-discovery-timing.test.ts --exclude tests/integration/mainnet/cex-registry-live.test.ts
 
   # every exchange deposit address must still be in the stellar.expert directory
   # under the same name and memo rule and must have changed on mainnet within the
   # last 30 days; every refused destination must still be the same non-deposit
-  # account. its own job, so a stale registry entry does not hide the timing and
-  # aquarius results
+  # account. its own job, so a stale registry entry does not hide the other
+  # results
   cex-registry:
     name: exchange registry against the live directory
     runs-on: ubuntu-latest
@@ -63,4 +80,4 @@ jobs:
           package-manager-cache: false
       - run: pnpm install --frozen-lockfile
       - name: Registry addresses, names, memo rules and activity
-        run: pnpm test:integration tests/integration/cex-registry-live.test.ts
+        run: pnpm test:integration:mainnet tests/integration/mainnet/cex-registry-live.test.ts

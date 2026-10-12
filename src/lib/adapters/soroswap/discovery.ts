@@ -224,7 +224,7 @@ async function filterPairsWithBalance(
 
 // one soroswap pair with its tokens and reserves, read from the pair's contract
 // instance storage. layout checked against mainnet pair CB46LMGJ... (and the
-// pair's own token_0/token_1 reads in tests/integration/soroswap-route.test.ts):
+// pair's own token_0/token_1 reads in tests/integration/mainnet/soroswap-route.test.ts):
 //   U32(0) token_0, U32(1) token_1, U32(2) reserve_0, U32(3) reserve_1, U32(4) factory
 export interface SoroswapPairInfo {
   readonly pair: string;

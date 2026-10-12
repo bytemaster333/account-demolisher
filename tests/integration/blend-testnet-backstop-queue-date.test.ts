@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import { describe, it, expect } from "vitest";
 import {
   Address,
@@ -17,13 +15,10 @@ import {
 } from "@stellar/stellar-sdk";
 
 import { loadBackstopDeposits } from "@/lib/adapters/blend/client";
-import {
-  BLEND_BACKSTOP_MAINNET_ID,
-  BLEND_BACKSTOP_TESTNET_ID,
-} from "@/lib/adapters/blend/constants";
+import { BLEND_BACKSTOP_TESTNET_ID } from "@/lib/adapters/blend/constants";
 import { buildBackstopQueueTx } from "@/lib/adapters/blend/exit";
 import { BLEND_TESTNET_INFRASTRUCTURE, BLEND_TESTNET_POOL_IDS } from "@/lib/adapters/blend/pools";
-import { MAINNET, TESTNET } from "@/lib/config/networks";
+import { TESTNET } from "@/lib/config/networks";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
 import { fetchLedgerClock } from "@/lib/stellar/ledger-clock";
@@ -36,7 +31,8 @@ import { fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 // second time with the app's own queue builder. the expected dates are decoded
 // straight from the UserBalance ledger entry, without the blend sdk, so the two
 // readings are independent. the testnet backstop runs the mainnet backstop's
-// wasm, which the second test checks, so the result carries over.
+// wasm, which mainnet/blend-backstop-wasm.test.ts checks, so the result carries
+// over.
 
 const rpc = getRpc(TESTNET);
 const horizon = new Horizon.Server(TESTNET.horizon);
@@ -258,14 +254,5 @@ describe("integration: backstop queue unlock date from testnet q4w (M-25)", () =
     expect(deposit.queuedForWithdrawal).toBe(shares);
     expect(deposit.unlockedQueuedForWithdrawal).toBe(0n);
     expect(deposit.latestQueueUnlocksAt).toEqual(new Date(Number(second.exp) * 1000));
-  });
-
-  it("runs on the same backstop wasm as mainnet, so the date reading carries over", async () => {
-    const sha = (wasm: Uint8Array): string => createHash("sha256").update(wasm).digest("hex");
-    const [testnetWasm, mainnetWasm] = await Promise.all([
-      rpc.getContractWasmByContractId(BLEND_BACKSTOP_TESTNET_ID),
-      getRpc(MAINNET).getContractWasmByContractId(BLEND_BACKSTOP_MAINNET_ID),
-    ]);
-    expect(sha(testnetWasm)).toBe(sha(mainnetWasm));
   });
 });
