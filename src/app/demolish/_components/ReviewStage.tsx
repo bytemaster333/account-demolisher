@@ -20,6 +20,7 @@ export function ReviewStage({
   tree,
   network,
   baseReserveStroops,
+  baseReserveError,
   shared,
   goToStage,
   onBackToConfigure,
@@ -34,6 +35,7 @@ export function ReviewStage({
   // the network the run is on
   readonly network: NetworkConfig;
   readonly baseReserveStroops: number | null;
+  readonly baseReserveError: string | null;
   readonly shared: SharedClose;
   readonly goToStage: (stage: ConfirmStage) => void;
   readonly onBackToConfigure: () => void;
@@ -55,6 +57,7 @@ export function ReviewStage({
       planGroups={review.planGroups}
       audit={audit}
       baseReserveStroops={baseReserveStroops}
+      baseReserveError={baseReserveError}
       destination={runInput.destination}
       memo={runInput.memo ?? null}
       useMediator={runInput.useMediator}

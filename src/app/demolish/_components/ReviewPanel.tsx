@@ -63,6 +63,7 @@ export function ReviewPanel({
   planGroups,
   audit,
   baseReserveStroops,
+  baseReserveError,
   destination,
   memo,
   useMediator,
@@ -76,8 +77,11 @@ export function ReviewPanel({
 }: {
   readonly planGroups: readonly PlanGroup[];
   readonly audit: AccountAudit;
-  // the network's base reserve from the latest ledger; null when it couldn't be read
+  // the network's base reserve from the latest ledger; null while it loads or
+  // when it couldn't be read
   readonly baseReserveStroops: number | null;
+  // why the base reserve couldn't be read, or null
+  readonly baseReserveError: string | null;
   readonly destination: string;
   readonly memo: ClassicMemo | null;
   readonly useMediator: boolean;
@@ -196,7 +200,12 @@ export function ReviewPanel({
           },
           {
             label: "Reserve released (included)",
-            value: reserve === null ? "couldn't load" : `${stroopsToXlm(reserve)} XLM`,
+            value:
+              reserve !== null
+                ? `${stroopsToXlm(reserve)} XLM`
+                : baseReserveError !== null
+                  ? `couldn't load (${baseReserveError})`
+                  : "loading",
           },
         ]}
       />

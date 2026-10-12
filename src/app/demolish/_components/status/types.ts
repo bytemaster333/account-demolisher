@@ -9,7 +9,8 @@ import type { PlanGroup } from "../../_lib/plan-copy";
 export type DeliveredAmount =
   | { readonly status: "loading" }
   | { readonly status: "ok"; readonly xlm: string }
-  | { readonly status: "unavailable" };
+  // reason: why the amount couldn't be read, shown in place of the figure
+  | { readonly status: "unavailable"; readonly reason: string };
 
 // how the steps of this run get signed: a wallet prompts per step, a pasted or
 // demo key signs in this browser with no prompt, and a collected bundle is

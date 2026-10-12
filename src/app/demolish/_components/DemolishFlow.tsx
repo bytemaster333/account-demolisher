@@ -280,7 +280,8 @@ export function DemolishFlow(): React.JSX.Element {
   const destHead = destination.length > 4 ? destination.slice(0, -4) : "";
   const destTail = destination.length > 0 ? destination.slice(-4) : "";
 
-  const baseReserveStroops = useBaseReserve(runNetwork, audit !== null);
+  const baseReserve = useBaseReserve(runNetwork, audit !== null);
+  const baseReserveStroops = baseReserve.stroops;
   // an exchange close delivers through the forward out of the helper account
   const deliveryHash =
     (runInput?.useMediator ? ctx.result?.forwardTxHash : ctx.result?.mergedTxHash) ?? null;
@@ -467,6 +468,7 @@ export function DemolishFlow(): React.JSX.Element {
                       tree={tree}
                       network={runNetwork}
                       baseReserveStroops={baseReserveStroops}
+                      baseReserveError={baseReserve.error}
                       shared={shared}
                       goToStage={goToStage}
                       onBackToConfigure={onBackToConfigure}

@@ -25,6 +25,7 @@ function renderPanel(tree: PlanTree, over: Partial<Props> = {}) {
     planGroups: groupPlanNodes(ordered),
     audit: makeAudit(),
     baseReserveStroops: 5_000_000,
+    baseReserveError: null,
     destination: DEST,
     memo: null,
     useMediator: false,
@@ -87,6 +88,18 @@ describe("money figures (M-33)", () => {
   it("does not show a reserve figure when the base reserve is unknown", () => {
     renderPanel(makeTree(), { baseReserveStroops: null });
     expect(document.body.textContent ?? "").not.toMatch(/≈ 1 XLM/);
+  });
+
+  it("names why the base reserve could not be read", () => {
+    renderPanel(makeTree(), { baseReserveStroops: null, baseReserveError: "Service Unavailable" });
+    expect(document.body.textContent ?? "").toContain("couldn't load (Service Unavailable)");
+  });
+
+  it("says the reserve is loading while the read is still out", () => {
+    renderPanel(makeTree(), { baseReserveStroops: null, baseReserveError: null });
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("Reserve released (included)loading");
+    expect(text).not.toContain("couldn't load");
   });
 });
 

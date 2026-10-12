@@ -211,13 +211,25 @@ describe("success state amount and receipt (M-34, L-56)", () => {
     expect(document.body.textContent ?? "").not.toMatch(/100\.0000000 XLM/);
   });
 
-  it("says no number while the amount is unknown", () => {
+  it("says no number while the amount is unknown, and why", () => {
     renderWidget(closedTree(), {
       state: "succeeded",
-      delivered: { status: "unavailable" },
+      delivered: { status: "unavailable", reason: "Service Unavailable" },
       error: null,
     });
     expect(document.body.textContent ?? "").toMatch(/Your remaining balance was sent/i);
+    expect(screen.getByTestId("delivered-unavailable").textContent).toBe(
+      "The delivered amount couldn't be read from the network (Service Unavailable).",
+    );
+  });
+
+  it("gives no reason while the amount is still loading", () => {
+    renderWidget(closedTree(), {
+      state: "succeeded",
+      delivered: { status: "loading" },
+      error: null,
+    });
+    expect(screen.queryByTestId("delivered-unavailable")).toBeNull();
   });
 
   it("falls back to a selectable receipt when the clipboard is missing", async () => {

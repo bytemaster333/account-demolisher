@@ -90,6 +90,11 @@ function SucceededSubtitle({
         This account is now permanently closed. If that&apos;s an exchange or another wallet, the
         funds will appear there shortly.
       </span>
+      {delivered.status === "unavailable" ? (
+        <span data-testid="delivered-unavailable" style={{ display: "block", marginTop: 7 }}>
+          The delivered amount couldn&apos;t be read from the network ({delivered.reason}).
+        </span>
+      ) : null}
     </>
   );
 }
