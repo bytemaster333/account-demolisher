@@ -328,8 +328,13 @@ describe("plan generation, property-based fuzzing", () => {
         const batches = batchClassicDemolition(
           audit,
           useMediator
-            ? { destination: DEST, useMediator: true, mediatorPublicKey: mediator }
-            : { destination: DEST, useMediator: false },
+            ? {
+                destination: DEST,
+                useMediator: true,
+                mediatorPublicKey: mediator,
+                claimableBalanceIds: "every-collectable",
+              }
+            : { destination: DEST, useMediator: false, claimableBalanceIds: "every-collectable" },
         );
         for (const b of batches) {
           expect(b.operations.length).toBeGreaterThan(0);
@@ -369,8 +374,13 @@ describe("plan generation, property-based fuzzing", () => {
         const batches = batchClassicDemolition(
           audit,
           useMediator
-            ? { destination: DEST, useMediator: true, mediatorPublicKey: mediator }
-            : { destination: DEST, useMediator: false },
+            ? {
+                destination: DEST,
+                useMediator: true,
+                mediatorPublicKey: mediator,
+                claimableBalanceIds: "every-collectable",
+              }
+            : { destination: DEST, useMediator: false, claimableBalanceIds: "every-collectable" },
         );
         for (const batch of batches) {
           const built = buildClassicTransaction(
@@ -418,6 +428,7 @@ describe("plan generation, property-based fuzzing", () => {
         const batches = batchClassicDemolition(audit, {
           destination: DEST,
           useMediator: false,
+          claimableBalanceIds: "every-collectable",
           memo: { type: "text", value: "deposit" },
           sendToDestinationAssetKeys: tokens.map((a) =>
             a.kind === "credit" ? `${a.code}:${a.issuer}` : "native",

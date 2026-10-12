@@ -136,6 +136,7 @@ describe("integration: two-phase liquidity-pool close (testnet, SEC-13)", () => 
         batches: [],
         destination: destination.publicKey(),
         useMediator: false,
+        claimableBalanceIds: [],
         returnToIssuerAssetKeys: [pathKey(usdcAsset)],
       },
     };

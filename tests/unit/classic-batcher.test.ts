@@ -61,7 +61,13 @@ function makeAudit(over: Partial<AccountAudit> = {}): AccountAudit {
   };
 }
 
-const directOptions: BatchOptions = { destination: DEST, useMediator: false };
+// the tests below claim every collectable balance unless they say otherwise
+const EVERY = { claimableBalanceIds: "every-collectable" } as const;
+const directOptions: BatchOptions = {
+  destination: DEST,
+  useMediator: false,
+  claimableBalanceIds: "every-collectable",
+};
 
 function allOps(batches: readonly { readonly operations: readonly BatchedOperation[] }[]) {
   return batches.flatMap((b) => b.operations);
@@ -105,7 +111,11 @@ describe("applySlippage", () => {
 describe("batchClassicDemolition, guards", () => {
   it("throws when useMediator is set without a mediator public key", () => {
     expect(() =>
-      batchClassicDemolition(makeAudit(), { destination: DEST, useMediator: true }),
+      batchClassicDemolition(makeAudit(), {
+        destination: DEST,
+        useMediator: true,
+        claimableBalanceIds: "every-collectable",
+      }),
     ).toThrow();
   });
 });
@@ -343,6 +353,7 @@ describe("batchClassicDemolition, SEC-13 two-phase pool close", () => {
     const withFunding = batchClassicDemolition(poolAccount, {
       destination: DEST,
       useMediator: true,
+      claimableBalanceIds: "every-collectable",
       mediatorPublicKey: MED,
     });
     expect(withFunding[0]!.operations.map((o) => o.kind)).not.toContain("create_account_mediator");
@@ -353,6 +364,7 @@ describe("batchClassicDemolition, SEC-13 two-phase pool close", () => {
     const alreadyFunded = batchClassicDemolition(poolAccount, {
       destination: DEST,
       useMediator: true,
+      claimableBalanceIds: "every-collectable",
       mediatorPublicKey: MED,
       mediatorAlreadyFunded: true,
     });
@@ -367,6 +379,7 @@ describe("batchClassicDemolition, self-merge guard", () => {
       batchClassicDemolition(makeAudit({ accountId: ACC }), {
         destination: ACC,
         useMediator: false,
+        claimableBalanceIds: "every-collectable",
       }),
     ).toThrow(/self-merge is invalid/);
   });
@@ -461,7 +474,7 @@ describe("batchClassicDemolition, un-routable credit handling", () => {
     expect(kinds).not.toContain("return_residue_to_issuer");
     expect(kinds).not.toContain("path_payment_strict_send");
     expect(kinds).not.toContain("change_trust_remove"); // live balance => trustline stays
-    expect(unroutableCredits(withCredit, undefined, undefined)).toHaveLength(1);
+    expect(unroutableCredits(withCredit, undefined, undefined, undefined, EVERY)).toHaveLength(1);
   });
 
   it("returns to issuer only with explicit consent, then removes the trustline", () => {
@@ -469,7 +482,7 @@ describe("batchClassicDemolition, un-routable credit handling", () => {
     const kinds = allOps(batchClassicDemolition(withCredit, opts)).map((o) => o.kind);
     expect(kinds.filter((k) => k === "return_residue_to_issuer")).toHaveLength(1);
     expect(kinds.filter((k) => k === "change_trust_remove")).toHaveLength(1);
-    expect(unroutableCredits(withCredit, undefined, [key])).toHaveLength(0);
+    expect(unroutableCredits(withCredit, undefined, [key], undefined, EVERY)).toHaveLength(0);
   });
 
   it("converts via path payment when a path exists, then removes the trustline", () => {
@@ -480,7 +493,7 @@ describe("batchClassicDemolition, un-routable credit handling", () => {
     expect(kinds.filter((k) => k === "path_payment_strict_send")).toHaveLength(1);
     expect(kinds).not.toContain("return_residue_to_issuer");
     expect(kinds.filter((k) => k === "change_trust_remove")).toHaveLength(1);
-    expect(unroutableCredits(withCredit, paths, undefined)).toHaveLength(0);
+    expect(unroutableCredits(withCredit, paths, undefined, undefined, EVERY)).toHaveLength(0);
   });
 
   it("treats a zero-balance credit line as removable, not un-routable", () => {
@@ -496,7 +509,7 @@ describe("batchClassicDemolition, un-routable credit handling", () => {
     });
     const kinds = allOps(batchClassicDemolition(zero, directOptions)).map((o) => o.kind);
     expect(kinds.filter((k) => k === "change_trust_remove")).toHaveLength(1);
-    expect(unroutableCredits(zero, undefined, undefined)).toHaveLength(0);
+    expect(unroutableCredits(zero, undefined, undefined, undefined, EVERY)).toHaveLength(0);
   });
 });
 
@@ -523,7 +536,12 @@ describe("batchClassicDemolition, MAX_OPS splitting", () => {
 });
 
 describe("batchClassicDemolition, mediator", () => {
-  const opts: BatchOptions = { destination: DEST, useMediator: true, mediatorPublicKey: MED };
+  const opts: BatchOptions = {
+    destination: DEST,
+    useMediator: true,
+    mediatorPublicKey: MED,
+    claimableBalanceIds: "every-collectable",
+  };
 
   it("funds the mediator, merges into the mediator, and tags the batch", () => {
     const batches = batchClassicDemolition(makeAudit(), opts);
@@ -588,8 +606,10 @@ describe("batchClassicDemolition, un-routable residue disposal", () => {
   });
 
   it("unroutableCredits excludes assets consented to send-to-destination", () => {
-    expect(unroutableCredits(residueAudit, undefined).map((c) => c.key)).toEqual([RES_KEY]);
-    expect(unroutableCredits(residueAudit, undefined, [], [RES_KEY])).toEqual([]);
+    expect(
+      unroutableCredits(residueAudit, undefined, undefined, undefined, EVERY).map((c) => c.key),
+    ).toEqual([RES_KEY]);
+    expect(unroutableCredits(residueAudit, undefined, [], [RES_KEY], EVERY)).toEqual([]);
   });
 });
 
@@ -652,7 +672,7 @@ describe("H-09: credit claimable balances the account can't receive are not clai
     const audit = makeAudit({ claimableBalances: [usdcCb("cbSpam", "5")] });
     const ops = allOps(batchClassicDemolition(audit, directOptions));
     expect(ops.some(isClaim)).toBe(false);
-    expect(planClaimableBalances(audit, undefined).leftBehind).toEqual([
+    expect(planClaimableBalances(audit, "every-collectable").leftBehind).toEqual([
       { balance: audit.claimableBalances[0], reason: "no_trustline" },
     ]);
   });
@@ -663,7 +683,9 @@ describe("H-09: credit claimable balances the account can't receive are not clai
       claimableBalances: [usdcCb("cbFrozen", "5")],
     });
     expect(allOps(batchClassicDemolition(audit, directOptions)).some(isClaim)).toBe(false);
-    expect(planClaimableBalances(audit, undefined).leftBehind[0]!.reason).toBe("not_authorized");
+    expect(planClaimableBalances(audit, "every-collectable").leftBehind[0]!.reason).toBe(
+      "not_authorized",
+    );
   });
 
   it("raises the limit of a line that can't take every claim, instead of overfilling it", () => {
@@ -671,7 +693,7 @@ describe("H-09: credit claimable balances the account can't receive are not clai
       balances: [usdcLine("5", { limit: "10" })],
       claimableBalances: [usdcCb("cbFits", "3"), usdcCb("cbOver", "3")],
     });
-    const plan = planClaimableBalances(audit, undefined);
+    const plan = planClaimableBalances(audit, "every-collectable");
     expect(plan.claimed.map((c) => c.id)).toEqual(["cbFits", "cbOver"]);
     expect(plan.leftBehind).toEqual([]);
     expect(plan.trustlineChanges).toEqual([{ asset: USDC, change: "raise" }]);
@@ -681,6 +703,40 @@ describe("H-09: credit claimable balances the account can't receive are not clai
       kinds.indexOf("claim_claimable_balance"),
     );
     expect(ops.filter(isClaim).map((c) => c.metadata.balanceId)).toEqual(["cbFits", "cbOver"]);
+  });
+});
+
+describe("the claim selection has no default", () => {
+  // an untyped caller (a decoded request, a script) that leaves the selection
+  // out used to claim every balance; it is refused instead
+  const audit = makeAudit({
+    balances: [usdcLine("5")],
+    claimableBalances: [usdcCb("cbUnreviewed", "3")],
+  });
+  const missing = undefined as unknown as readonly string[];
+
+  it("batchClassicDemolition refuses a missing selection", () => {
+    expect(() =>
+      batchClassicDemolition(audit, {
+        destination: DEST,
+        useMediator: false,
+        claimableBalanceIds: missing,
+      }),
+    ).toThrow(/claimableBalanceIds must be the reviewed ids/);
+  });
+
+  it("planClaimableBalances refuses a missing or malformed selection", () => {
+    expect(() => planClaimableBalances(audit, missing)).toThrow(/got nothing/);
+    expect(() => planClaimableBalances(audit, [42] as unknown as readonly string[])).toThrow(
+      /got object/,
+    );
+  });
+
+  it("claims only what the selection names", () => {
+    expect(planClaimableBalances(audit, []).claimed).toEqual([]);
+    expect(planClaimableBalances(audit, "every-collectable").claimed.map((c) => c.id)).toEqual([
+      "cbUnreviewed",
+    ]);
   });
 });
 
@@ -743,7 +799,7 @@ describe("H-10: a credit claim lands before its asset is converted or its trustl
     expect(batches[claimAt]!.operations.some(isUsdcRemoval)).toBe(false);
     expect(batches[claimAt]!.operations.some((o) => o.kind === "account_merge")).toBe(false);
     // and the preview reports the claimed asset as needing a disposal
-    expect(unroutableCredits(audit, undefined)).toEqual([
+    expect(unroutableCredits(audit, undefined, undefined, undefined, EVERY)).toEqual([
       expect.objectContaining({ key: USDC_KEY, amount: "5.0000000", reason: "no_path" }),
     ]);
   });
@@ -801,6 +857,7 @@ describe("H-14: residue sent to the destination", () => {
       batchClassicDemolition(residue, {
         destination: DEST,
         useMediator: true,
+        claimableBalanceIds: "every-collectable",
         mediatorPublicKey: MED,
         sendToDestinationAssetKeys: [USDC_KEY],
       }),
@@ -832,7 +889,12 @@ describe("H-14: residue sent to the destination", () => {
 });
 
 describe("H-16: the mediator is funded right before the merge", () => {
-  const opts: BatchOptions = { destination: DEST, useMediator: true, mediatorPublicKey: MED };
+  const opts: BatchOptions = {
+    destination: DEST,
+    useMediator: true,
+    mediatorPublicKey: MED,
+    claimableBalanceIds: "every-collectable",
+  };
 
   it("places create_account_mediator after the ops that free reserves", () => {
     const audit = makeAudit({
@@ -963,7 +1025,7 @@ describe("M-18: classic conversions are capped against a reference price", () =>
     const kinds = allOps(batchClassicDemolition(audit, directOptions, paths)).map((o) => o.kind);
     expect(kinds).not.toContain("path_payment_strict_send");
     expect(kinds).not.toContain("change_trust_remove");
-    const [blocked] = unroutableCredits(audit, paths);
+    const [blocked] = unroutableCredits(audit, paths, undefined, undefined, EVERY);
     expect(blocked?.reason).toBe("price_impact");
     expect(blocked?.priceImpactBps).toBe(1635);
   });
@@ -975,6 +1037,7 @@ describe("M-18: classic conversions are capped against a reference price", () =>
     expect(kinds).toContain("path_payment_strict_send");
     expect(
       unroutableCredits(audit, paths, undefined, undefined, {
+        ...EVERY,
         acceptedPriceImpactAssetKeys: [USDC_KEY],
       }),
     ).toEqual([]);
@@ -986,7 +1049,9 @@ describe("M-18: classic conversions are capped against a reference price", () =>
     ]);
     const kinds = allOps(batchClassicDemolition(audit, directOptions, paths)).map((o) => o.kind);
     expect(kinds).not.toContain("path_payment_strict_send");
-    expect(unroutableCredits(audit, paths)[0]?.reason).toBe("unpriced");
+    expect(unroutableCredits(audit, paths, undefined, undefined, EVERY)[0]?.reason).toBe(
+      "unpriced",
+    );
   });
 
   it("blocks a re-quote whose reference rate fell below the reviewed one", () => {
@@ -997,6 +1062,7 @@ describe("M-18: classic conversions are capped against a reference price", () =>
     expect(kinds).not.toContain("path_payment_strict_send");
     expect(
       unroutableCredits(audit, paths, undefined, undefined, {
+        ...EVERY,
         reviewedReferenceQuotes: reviewed,
       })[0]?.reason,
     ).toBe("requote_worse");
@@ -1008,7 +1074,7 @@ describe("M-18: a balance the close sells can be opted out of the sale", () => {
   const within = new Map([[USDC_KEY, pricedPath("1000", "4000")]]);
 
   it("lists a within-cap conversion as routable, and sends it once the user chooses", () => {
-    expect(routableCredits(audit, within).map((c) => c.key)).toEqual([USDC_KEY]);
+    expect(routableCredits(audit, within, EVERY).map((c) => c.key)).toEqual([USDC_KEY]);
     const opts: BatchOptions = { ...directOptions, sendToDestinationAssetKeys: [USDC_KEY] };
     const kinds = allOps(batchClassicDemolition(audit, opts, within)).map((o) => o.kind);
     expect(kinds).not.toContain("path_payment_strict_send");
@@ -1033,11 +1099,11 @@ describe("M-18: a balance the close sells can be opted out of the sale", () => {
         },
       ],
     ]);
-    expect(routableCredits(audit, impacted)).toEqual([]);
-    expect(routableCredits(audit, undefined)).toEqual([]);
+    expect(routableCredits(audit, impacted, EVERY)).toEqual([]);
+    expect(routableCredits(audit, undefined, EVERY)).toEqual([]);
     // an over-cap price the user accepted is sold, so it is listed
     expect(
-      routableCredits(audit, impacted, { acceptedPriceImpactAssetKeys: [USDC_KEY] }).map(
+      routableCredits(audit, impacted, { ...EVERY, acceptedPriceImpactAssetKeys: [USDC_KEY] }).map(
         (c) => c.key,
       ),
     ).toEqual([USDC_KEY]);
@@ -1142,7 +1208,7 @@ describe("H-09: claimable balances of untrusted assets are collected with a new 
 
   it("opens the trustline and claims in the leading phase, before the merge batch", () => {
     const audit = makeAudit({ balances: [nativeLine("10")], claimableBalances: [untrusted()] });
-    const plan = planClaimableBalances(audit, undefined);
+    const plan = planClaimableBalances(audit, "every-collectable");
     expect(plan.claimed.map((c) => c.id)).toEqual([CB_ID(1)]);
     expect(plan.trustlineChanges).toEqual([{ asset: USDC, change: "add" }]);
 
@@ -1164,16 +1230,16 @@ describe("H-09: claimable balances of untrusted assets are collected with a new 
 
   it("asks for a disposal of the collected asset at review", () => {
     const audit = makeAudit({ balances: [nativeLine("10")], claimableBalances: [untrusted()] });
-    expect(unroutableCredits(audit, undefined)).toEqual([
+    expect(unroutableCredits(audit, undefined, undefined, undefined, EVERY)).toEqual([
       expect.objectContaining({ key: USDC_KEY, amount: "5.0000000", reason: "no_path" }),
     ]);
-    expect(unroutableCredits(audit, undefined, [USDC_KEY])).toEqual([]);
+    expect(unroutableCredits(audit, undefined, [USDC_KEY], undefined, EVERY)).toEqual([]);
   });
 
   it("leaves the balance behind when the account can't fund the trustline reserve", () => {
     // 1.4 XLM against a 1 XLM minimum: 0.4 free, short of the 0.5 XLM reserve
     const audit = makeAudit({ balances: [nativeLine("1.4")], claimableBalances: [untrusted()] });
-    const plan = planClaimableBalances(audit, undefined);
+    const plan = planClaimableBalances(audit, "every-collectable");
     expect(plan.claimed).toEqual([]);
     expect(plan.leftBehind.map((l) => l.reason)).toEqual(["reserve"]);
     const kinds = allOps(batchClassicDemolition(audit, directOptions)).map((o) => o.kind);
@@ -1193,7 +1259,7 @@ describe("H-09: claimable balances of untrusted assets are collected with a new 
         }),
       ],
     });
-    const plan = planClaimableBalances(audit, undefined, { feePerOpStroops: 100 });
+    const plan = planClaimableBalances(audit, "every-collectable", { feePerOpStroops: 100 });
     expect(plan.claimed.map((c) => c.id)).toEqual([CB_ID(1), CB_ID(2)]);
     expect(plan.leftBehind.map((l) => [l.balance.id, l.reason])).toEqual([[CB_ID(3), "reserve"]]);
   });
@@ -1206,9 +1272,9 @@ describe("H-09: claimable balances of untrusted assets are collected with a new 
           usdcCb(CB_ID(1), "5", flag === undefined ? {} : { issuerAuthRequired: flag }),
         ],
       });
-      expect(planClaimableBalances(audit, undefined).leftBehind.map((l) => l.reason)).toEqual([
-        "no_trustline",
-      ]);
+      expect(
+        planClaimableBalances(audit, "every-collectable").leftBehind.map((l) => l.reason),
+      ).toEqual(["no_trustline"]);
     }
   });
 
@@ -1222,7 +1288,7 @@ describe("H-09: claimable balances of untrusted assets are collected with a new 
         usdcCb(CB_ID(4), "5", { asset: own, issuerAuthRequired: true, issuedByAccount: true }),
       ],
     });
-    const plan = planClaimableBalances(audit, undefined);
+    const plan = planClaimableBalances(audit, "every-collectable");
     expect(plan.claimed.map((c) => c.id)).toEqual([CB_ID(4)]);
     expect(plan.trustlineChanges).toEqual([]);
     const batches = batchClassicDemolition(audit, directOptions);
@@ -1237,7 +1303,7 @@ describe("H-09: claimable balances of untrusted assets are collected with a new 
         ),
     );
     expect(touchesOwn).toEqual([]);
-    expect(unroutableCredits(audit, undefined)).toEqual([]);
+    expect(unroutableCredits(audit, undefined, undefined, undefined, EVERY)).toEqual([]);
     expect(built(batches[batches.length - 1]!).operations.map((o) => o.type)).toContain(
       "claimClaimableBalance",
     );
@@ -1248,7 +1314,7 @@ describe("H-09: claimable balances of untrusted assets are collected with a new 
       balances: [nativeLine("10"), usdcLine("5", { limit: "6" })],
       claimableBalances: [usdcCb(CB_ID(5), "3")],
     });
-    const plan = planClaimableBalances(audit, undefined);
+    const plan = planClaimableBalances(audit, "every-collectable");
     expect(plan.claimed.map((c) => c.id)).toEqual([CB_ID(5)]);
     expect(plan.trustlineChanges).toEqual([{ asset: USDC, change: "raise" }]);
     const ops = allOps(batchClassicDemolition(audit, directOptions)).map((o) => o.kind);
@@ -1299,6 +1365,7 @@ describe("M-52: the merge transaction carries the close marker", () => {
     const batches = batchClassicDemolition(audit, {
       destination: DEST,
       useMediator: true,
+      claimableBalanceIds: "every-collectable",
       mediatorPublicKey: MED,
     });
     expect(batches[batches.length - 1]!.operations.map((o) => o.kind)).toEqual([
@@ -1354,6 +1421,7 @@ describe("M-18: a conversion is bound to the full-size quote the user reviewed",
     expect(kinds).not.toContain("path_payment_strict_send");
     expect(
       unroutableCredits(audit, paths, undefined, undefined, {
+        ...EVERY,
         acceptedPriceImpactAssetKeys: [USDC_KEY],
         reviewedConversionQuotes: reviewed,
       })[0]?.reason,
@@ -1415,12 +1483,17 @@ describe("L-24: an exchange's internal wallet is never a close destination", () 
     const upbitCold = "GAGL7APMF7BZT6AVGNLBXKCMEHHLKPOL6PADWSLWFVYULGHPQQSIUU2W";
     const audit = makeAudit({ balances: [nativeLine("10")] });
     expect(() =>
-      batchClassicDemolition(audit, { destination: upbitCold, useMediator: false }),
+      batchClassicDemolition(audit, {
+        destination: upbitCold,
+        useMediator: false,
+        claimableBalanceIds: "every-collectable",
+      }),
     ).toThrow(/Upbit ColdStorage, an exchange internal wallet, not a deposit address/);
     expect(() =>
       batchClassicDemolition(audit, {
         destination: upbitCold,
         useMediator: true,
+        claimableBalanceIds: "every-collectable",
         mediatorPublicKey: MED,
       }),
     ).toThrow(/an exchange internal wallet/);
@@ -1520,7 +1593,7 @@ describe("H-12: a pool withdraw counts against the trustline room a claim needs"
       poolShares: [capPool],
       claimableBalances: [capCb(CB_ID(20), "50")],
     });
-    const plan = planClaimableBalances(audit, undefined);
+    const plan = planClaimableBalances(audit, "every-collectable");
     expect(plan.claimed.map((c) => c.id)).toEqual([CB_ID(20)]);
     expect(plan.trustlineChanges).toEqual([{ asset: CAP, change: "raise" }]);
     const ops = allOps(batchClassicDemolition(audit, directOptions)).map((o) => o.kind);
@@ -1534,7 +1607,7 @@ describe("H-12: a pool withdraw counts against the trustline room a claim needs"
       poolShares: [capPool],
       claimableBalances: [capCb(CB_ID(21), "30")],
     });
-    const plan = planClaimableBalances(audit, undefined);
+    const plan = planClaimableBalances(audit, "every-collectable");
     expect(plan.claimed.map((c) => c.id)).toEqual([CB_ID(21)]);
     expect(plan.trustlineChanges).toEqual([]);
   });
@@ -1547,7 +1620,7 @@ describe("H-12: a pool withdraw counts against the trustline room a claim needs"
       claimableBalances: [capCb(CB_ID(22), "60")],
     });
     // 85.4775807 of room before the withdraw, 55.4775807 after it
-    const plan = planClaimableBalances(audit, undefined);
+    const plan = planClaimableBalances(audit, "every-collectable");
     expect(plan.claimed).toEqual([]);
     expect(plan.leftBehind).toEqual([{ balance: audit.claimableBalances[0], reason: "line_full" }]);
   });
@@ -1569,7 +1642,7 @@ describe("H-12: a pool withdraw counts against the trustline room a claim needs"
       ],
       claimableBalances: [capCb(CB_ID(23), "0.0000007")],
     });
-    const plan = planClaimableBalances(audit, undefined);
+    const plan = planClaimableBalances(audit, "every-collectable");
     expect(plan.claimed.map((c) => c.id)).toEqual([CB_ID(23)]);
     expect(plan.trustlineChanges).toEqual([]);
   });
@@ -1661,7 +1734,7 @@ describe("a pool withdraw whose payout overflows a custom trustline limit", () =
       poolShares: [capPool()],
       claimableBalances: [capCb(CB_ID(30), "50")],
     });
-    const plan = planClaimableBalances(audit, undefined);
+    const plan = planClaimableBalances(audit, "every-collectable");
     expect(plan.claimed.map((c) => c.id)).toEqual([CB_ID(30)]);
     expect(plan.trustlineChanges).toEqual([]);
     expect(raises(allOps(batchClassicDemolition(audit, directOptions)))).toHaveLength(1);

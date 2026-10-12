@@ -11,6 +11,7 @@ import type {
 import {
   type BatchOptions,
   type BatchedOperation,
+  type ClaimSelection,
   type ClassicBatch,
   type PathResultRef,
   type ReferenceQuote,
@@ -57,6 +58,7 @@ export function batchClassicDemolition(
   if (options.useMediator && !options.mediatorPublicKey) {
     throw new Error("batchClassicDemolition: useMediator=true requires options.mediatorPublicKey");
   }
+  assertClaimSelection(options.claimableBalanceIds, "batchClassicDemolition");
   if (options.useMediator && (options.sendToDestinationAssetKeys?.length ?? 0) > 0) {
     // a mediator close's destination is the exchange's shared deposit address and
     // only the forward hop carries the memo, so a direct payment there can't be
@@ -452,6 +454,17 @@ export interface ClaimPlanOptions {
   readonly feePerOpStroops?: number;
 }
 
+// the type requires a selection, but an untyped caller (a decoded request, a
+// script) that leaves it out must not fall into claiming every balance
+function assertClaimSelection(selection: unknown, caller: string): void {
+  if (selection === "every-collectable") return;
+  if (Array.isArray(selection) && selection.every((id) => typeof id === "string")) return;
+  throw new Error(
+    `${caller}: claimableBalanceIds must be the reviewed ids ([] claims none) or ` +
+      `"every-collectable", got ${selection === undefined ? "nothing" : typeof selection}`,
+  );
+}
+
 // which claimable balances the close claims. A credit claim needs an authorized
 // trustline with room for the amount, or it fails the whole transaction with
 // op_no_trust / op_not_authorized / op_line_full. A missing trustline is opened
@@ -460,10 +473,12 @@ export interface ClaimPlanOptions {
 // asset needs no trustline at all (and change_trust on it is op_malformed).
 export function planClaimableBalances(
   audit: AccountAudit,
-  claimableBalanceIds: readonly string[] | undefined,
+  claimableBalanceIds: ClaimSelection,
   options: ClaimPlanOptions = {},
 ): ClaimPlan {
-  const selected = claimableBalanceIds === undefined ? null : new Set(claimableBalanceIds);
+  assertClaimSelection(claimableBalanceIds, "planClaimableBalances");
+  const selected =
+    claimableBalanceIds === "every-collectable" ? null : new Set(claimableBalanceIds);
   const feePerOp = BigInt(options.feePerOpStroops ?? CLASSIC_FEE_CEILING_PER_OP);
   const lines = new Map<string, AuditBalance>();
   for (const b of audit.balances) {
@@ -883,9 +898,12 @@ function offerCancelOp(offer: AccountAudit["offers"][number]): BatchedOperation 
 
 // leading-phase ops, packed front to back. None of these batches is final, so
 // none carries the memo or the merge.
+// what packing a batch reads: where it goes, the mediator and the memo
+type PackOptions = Pick<BatchOptions, "destination" | "useMediator" | "mediatorPublicKey" | "memo">;
+
 function packLeading(
   ops: readonly BatchedOperation[],
-  options: BatchOptions,
+  options: PackOptions,
 ): readonly ClassicBatch[] {
   const batches: ClassicBatch[] = [];
   for (let cursor = 0; cursor < ops.length; cursor += MAX_OPS_PER_TX) {
@@ -899,7 +917,7 @@ function packLeading(
 function packFinal(
   body: readonly BatchedOperation[],
   mergeGroup: readonly BatchedOperation[],
-  options: BatchOptions,
+  options: PackOptions,
 ): readonly ClassicBatch[] {
   if (mergeGroup.length > MAX_OPS_PER_TX) {
     throw new Error(
@@ -915,7 +933,7 @@ function packFinal(
 
 function buildBatch(
   ops: readonly BatchedOperation[],
-  options: BatchOptions,
+  options: PackOptions,
   isFinal: boolean,
 ): ClassicBatch {
   const usesMediator = ops.some((o) => o.kind === "create_account_mediator");
@@ -1051,7 +1069,8 @@ export interface UnroutableCredit {
 }
 
 export interface CreditPolicyOptions {
-  readonly claimableBalanceIds?: readonly string[];
+  // the same selection the batch is built with, so the claimed amounts count
+  readonly claimableBalanceIds: ClaimSelection;
   readonly acceptedPriceImpactAssetKeys?: readonly string[];
   readonly reviewedReferenceQuotes?: Readonly<Record<string, ReferenceQuote>>;
   readonly reviewedConversionQuotes?: Readonly<Record<string, ReferenceQuote>>;
@@ -1066,9 +1085,9 @@ export interface CreditPolicyOptions {
 export function unroutableCredits(
   audit: AccountAudit,
   paths: ReadonlyMap<string, PathResultRef> | undefined,
-  returnToIssuerAssetKeys?: readonly string[],
-  sendToDestinationAssetKeys?: readonly string[],
-  extra: CreditPolicyOptions = {},
+  returnToIssuerAssetKeys: readonly string[] | undefined,
+  sendToDestinationAssetKeys: readonly string[] | undefined,
+  extra: CreditPolicyOptions,
 ): readonly UnroutableCredit[] {
   const decide = memoizedDecision(
     disposalPolicy(
@@ -1125,7 +1144,7 @@ export interface RoutableCredit {
 export function routableCredits(
   audit: AccountAudit,
   paths: ReadonlyMap<string, PathResultRef> | undefined,
-  extra: CreditPolicyOptions = {},
+  extra: CreditPolicyOptions,
 ): readonly RoutableCredit[] {
   const decide = memoizedDecision(
     disposalPolicy(

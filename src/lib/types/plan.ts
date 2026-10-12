@@ -65,6 +65,11 @@ export interface PathResultRef {
   readonly reference?: ReferenceQuote;
 }
 
+// which claimable balances a close claims: the reviewed ids ([] claims none),
+// or every collectable claimable-now balance. there is no default, so a caller
+// that showed the user a list can't fall into claiming everything by leaving it out
+export type ClaimSelection = readonly string[] | "every-collectable";
+
 export interface BatchOptions {
   readonly destination: string;
   readonly useMediator: boolean;
@@ -75,11 +80,10 @@ export interface BatchOptions {
   // op_already_exists). the executor sets this on re-audit phases after the
   // funding op has landed.
   readonly mediatorAlreadyFunded?: boolean;
-  // reviewed claimable-balance selection; [] claims none. Left undefined, every
-  // collectable claimable-now balance is claimed (callers that showed the user a
-  // list must pass the reviewed ids). Self-sponsored claimable balances are always
-  // claimed: leaving one behind keeps num_sponsoring above zero and the merge fails.
-  readonly claimableBalanceIds?: readonly string[];
+  // reviewed claimable-balance selection; [] claims none. Self-sponsored
+  // claimable balances are always claimed: leaving one behind keeps
+  // num_sponsoring above zero and the merge fails.
+  readonly claimableBalanceIds: ClaimSelection;
   // pathKey()s of assets the user confirmed selling although the conversion is
   // over the price-impact cap or could not be priced against a reference quote
   readonly acceptedPriceImpactAssetKeys?: readonly string[];

@@ -88,6 +88,7 @@ describe("integration: a pool withdraw that overflows a custom trustline limit",
       const batches = batchClassicDemolition(audit, {
         destination: destination.publicKey(),
         useMediator: false,
+        claimableBalanceIds: "every-collectable",
         returnToIssuerAssetKeys: [capKey],
         feePerOpStroops: Number(BASE_FEE),
       });

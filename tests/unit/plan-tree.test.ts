@@ -160,6 +160,7 @@ describe("isSorobanNode", () => {
         batches: [],
         destination: "GDEST",
         useMediator: false,
+        claimableBalanceIds: [],
       },
     };
     const forward: PlanNode = {
@@ -282,7 +283,13 @@ describe("plan tree, prepare-only plans and the classic unwind", () => {
       dependencies: [],
       description: "final",
       status: "pending",
-      metadata: { kind: "FinalClassicTx", batches: [], destination: "GDEST", useMediator: false },
+      metadata: {
+        kind: "FinalClassicTx",
+        batches: [],
+        destination: "GDEST",
+        useMediator: false,
+        claimableBalanceIds: [],
+      },
     };
     expect(() =>
       buildPlanTree([final], { prepareOnly: { unlocksAt: new Date(0), reason: "locked" } }),

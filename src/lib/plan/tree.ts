@@ -291,10 +291,10 @@ export interface FinalClassicTxMetadata {
   readonly batches: readonly ClassicBatch[];
   readonly destination: string;
   readonly useMediator: boolean;
-  // forwarded into batchClassicDemolition during execute-time re-batching. The
-  // generator always sets the reviewed claim list, so an execute-time audit can
-  // only claim balances the user saw.
-  readonly claimableBalanceIds?: readonly string[];
+  // forwarded into batchClassicDemolition during execute-time re-batching. It is
+  // always the reviewed claim list, so an execute-time audit can only claim
+  // balances the user saw.
+  readonly claimableBalanceIds: readonly string[];
   readonly returnToIssuerAssetKeys?: readonly string[];
   readonly sendToDestinationAssetKeys?: readonly string[];
   readonly acceptedPriceImpactAssetKeys?: readonly string[];

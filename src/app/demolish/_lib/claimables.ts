@@ -114,13 +114,13 @@ export function claimableSplit(args: {
     const options = feePerOp !== undefined ? { feePerOpStroops: feePerOp } : {};
     // a balance the planner itself left out of the recorded list (the user made
     // no pick) has a reason only in the planner's own pass over every balance
-    for (const ids of [undefined, md.claimableBalanceIds]) {
+    for (const ids of ["every-collectable" as const, md.claimableBalanceIds]) {
       for (const l of planClaimableBalances(args.audit, ids, options).leftBehind) {
         reasons.set(l.balance.id, l.reason);
       }
     }
   }
-  const reviewed = md?.claimableBalanceIds === undefined ? null : new Set(md.claimableBalanceIds);
+  const reviewed = md === null ? null : new Set(md.claimableBalanceIds);
 
   const leftBehind = args.audit.claimableBalances
     .filter((cb) => !claimed.has(cb.id))

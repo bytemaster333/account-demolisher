@@ -69,6 +69,7 @@ describe("integration: classic account close (testnet)", () => {
     const batches = batchClassicDemolition(audit, {
       destination: destination.publicKey(),
       useMediator: false,
+      claimableBalanceIds: "every-collectable",
     });
     const connector = new SecretKeyConnector(kp.secret());
     for (const batch of batches) {

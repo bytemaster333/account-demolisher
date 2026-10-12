@@ -72,6 +72,7 @@ describe("integration: classic builder (testnet)", () => {
     const batches = batchClassicDemolition(audit, {
       destination: destination.publicKey(),
       useMediator: false,
+      claimableBalanceIds: "every-collectable",
       memo: { type: "hash", value: hashMemo },
     });
     for (const batch of batches) {

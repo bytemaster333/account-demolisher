@@ -98,6 +98,7 @@ describe("integration: exchange close of a near-reserve account (H-16)", () => {
     const batches = batchClassicDemolition(audit, {
       destination: exchange.publicKey(),
       useMediator: true,
+      claimableBalanceIds: "every-collectable",
       mediatorPublicKey: mediator.publicKey(),
       feePerOpStroops: Number(BASE_FEE),
     });

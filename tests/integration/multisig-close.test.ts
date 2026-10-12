@@ -77,6 +77,7 @@ describe("integration: multisig account close (testnet)", () => {
     const batches = batchClassicDemolition(audit, {
       destination: destination.publicKey(),
       useMediator: false,
+      claimableBalanceIds: "every-collectable",
     });
     for (const batch of batches) {
       const source = await server.loadAccount(master.publicKey());

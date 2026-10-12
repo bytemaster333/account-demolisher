@@ -667,7 +667,7 @@ export function generatePlan(
   const finalAudit = unwound === null ? audit : auditAfterUnwind(audit, unwound, feePerOp);
   const claimableBalanceIds =
     opts.selectedClaimableBalanceIds ??
-    planClaimableBalances(finalAudit, undefined, {
+    planClaimableBalances(finalAudit, "every-collectable", {
       ...(feePerOp !== undefined ? { feePerOpStroops: feePerOp } : {}),
     }).claimed.map((cb) => cb.id);
   const reviewedReferenceQuotes = quotesOf(opts.paths, (p) => p.reference);
@@ -862,9 +862,7 @@ export function finalBatchOptions(
   return {
     destination: md.destination,
     useMediator: md.useMediator,
-    ...(md.claimableBalanceIds !== undefined
-      ? { claimableBalanceIds: md.claimableBalanceIds }
-      : {}),
+    claimableBalanceIds: md.claimableBalanceIds,
     ...(md.returnToIssuerAssetKeys ? { returnToIssuerAssetKeys: md.returnToIssuerAssetKeys } : {}),
     ...(md.sendToDestinationAssetKeys
       ? { sendToDestinationAssetKeys: md.sendToDestinationAssetKeys }

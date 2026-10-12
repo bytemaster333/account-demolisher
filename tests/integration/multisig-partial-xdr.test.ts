@@ -82,6 +82,7 @@ describe("integration: 2-of-3 multisig close via partial-XDR merge (testnet)", (
     const batches = batchClassicDemolition(audit, {
       destination: destination.publicKey(),
       useMediator: false,
+      claimableBalanceIds: "every-collectable",
     });
 
     for (const batch of batches) {

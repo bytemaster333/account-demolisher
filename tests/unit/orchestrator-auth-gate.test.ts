@@ -243,7 +243,13 @@ function withMerge(node: PlanNode): PlanTree {
     dependencies: [node.id],
     description: "merge",
     status: "simulated",
-    metadata: { kind: "FinalClassicTx", batches: [], destination: DEST, useMediator: false },
+    metadata: {
+      kind: "FinalClassicTx",
+      batches: [],
+      destination: DEST,
+      useMediator: false,
+      claimableBalanceIds: [],
+    },
   } as PlanNode;
   return {
     rootNodes: [node],

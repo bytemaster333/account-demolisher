@@ -85,6 +85,7 @@ function mediatorTree(previewMediator: string, extra: PlanNode[] = []): PlanTree
       batches: [],
       destination: EXCHANGE,
       useMediator: true,
+      claimableBalanceIds: [],
       mediatorPublicKey: previewMediator,
     },
   } as PlanNode;

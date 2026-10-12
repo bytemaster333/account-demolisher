@@ -1200,9 +1200,7 @@ async function runFinalClassic(node: FinalClassicTxNode, run: Run): Promise<Conf
           md.returnToIssuerAssetKeys,
           md.sendToDestinationAssetKeys,
           {
-            ...(md.claimableBalanceIds !== undefined
-              ? { claimableBalanceIds: md.claimableBalanceIds }
-              : {}),
+            claimableBalanceIds: md.claimableBalanceIds,
             ...(md.acceptedPriceImpactAssetKeys
               ? { acceptedPriceImpactAssetKeys: md.acceptedPriceImpactAssetKeys }
               : {}),

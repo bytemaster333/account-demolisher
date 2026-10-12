@@ -235,9 +235,14 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
     input.deterministicDisposal
       ? new Map()
       : resolveCreditPaths(audit, network, { claimedBalanceIds });
-  let quotedClaims = planClaimableBalances(audit, input.selectedClaimableBalanceIds, {
-    feePerOpStroops: classicFeePerOp,
-  }).claimed.map((c) => c.id);
+  // no pick yet: the generator plans every collectable balance, so quote those
+  let quotedClaims = planClaimableBalances(
+    audit,
+    input.selectedClaimableBalanceIds ?? "every-collectable",
+    {
+      feePerOpStroops: classicFeePerOp,
+    },
+  ).claimed.map((c) => c.id);
   let paths = await quote(quotedClaims);
 
   // a frozen balance can't be sold, sent or returned, so no option is offered
@@ -391,9 +396,7 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
           input.returnToIssuerAssetKeys,
           input.sendToDestinationAssetKeys,
           {
-            ...(finalNow.metadata.claimableBalanceIds !== undefined
-              ? { claimableBalanceIds: finalNow.metadata.claimableBalanceIds }
-              : {}),
+            claimableBalanceIds: finalNow.metadata.claimableBalanceIds,
             ...(input.acceptedPriceImpactAssetKeys
               ? { acceptedPriceImpactAssetKeys: input.acceptedPriceImpactAssetKeys }
               : {}),
@@ -404,9 +407,7 @@ export const previewActor = fromPromise<PreviewOutput, PreviewInput>(async ({ in
     prepare !== undefined || finalNow === undefined
       ? []
       : routableCredits(unwound, paths, {
-          ...(finalNow.metadata.claimableBalanceIds !== undefined
-            ? { claimableBalanceIds: finalNow.metadata.claimableBalanceIds }
-            : {}),
+          claimableBalanceIds: finalNow.metadata.claimableBalanceIds,
           ...(input.acceptedPriceImpactAssetKeys
             ? { acceptedPriceImpactAssetKeys: input.acceptedPriceImpactAssetKeys }
             : {}),

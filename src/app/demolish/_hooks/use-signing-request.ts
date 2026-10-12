@@ -55,11 +55,7 @@ export function reviewedClaimList(
     return runInput.selectedClaimableBalanceIds;
   }
   const final = tree.allNodes.get("final-classic-tx");
-  if (
-    !final ||
-    final.kind !== "FinalClassicTx" ||
-    final.metadata.claimableBalanceIds === undefined
-  ) {
+  if (!final || final.kind !== "FinalClassicTx") {
     throw new Error("The reviewed plan doesn't record which pending payments it collects.");
   }
   return final.metadata.claimableBalanceIds;

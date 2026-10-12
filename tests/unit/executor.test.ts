@@ -101,6 +101,7 @@ function finalNode(deps: string[] = [], over: Record<string, unknown> = {}): Pla
       batches: [],
       destination: DEST,
       useMediator: false,
+      claimableBalanceIds: [],
       ...over,
     },
   } as PlanNode;
