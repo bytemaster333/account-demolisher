@@ -847,7 +847,7 @@ describe("the claim window is checked on the ledger clock when publishing (L-25)
     connect();
     render(<DemolishFlow />);
     await configureAndStart();
-    // collecting the payment is listed on the Warnings step first
+    // collecting the payment is listed on the Check the plan step first
     fireEvent.click(await screen.findByTestId("ack-autohandled"));
     fireEvent.click(screen.getByTestId("acknowledge-continue"));
     const create = await screen.findByTestId("review-create-request");

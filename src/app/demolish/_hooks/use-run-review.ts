@@ -333,7 +333,7 @@ export function useRunReview(args: {
   // matches the review's "N steps run"
   const { done: doneCount, total: activeCount } = runProgress(orderedNodes);
 
-  // choices made on the Warnings step only reach the plan by a rebuild
+  // choices made on the Check the plan step only reach the plan by a rebuild
   const claimSelectionDirty = claimSelection !== null && !sameSet(claimSelection, builtClaimList);
   // a send or return choice made for a conversion on this step
   const disposalDirty =

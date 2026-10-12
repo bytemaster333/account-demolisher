@@ -206,3 +206,32 @@ describe("the high-value acknowledgement counts what the close moves (M-22)", ()
     expect(text).toMatch(/plus 2 holdings whose value couldn't be estimated/);
   });
 });
+
+describe("the Check the plan step separates choices from notes", () => {
+  const ISSUER = Keypair.random().publicKey();
+  const conversionChoices = {
+    credits: [{ key: `USDC:${ISSUER}`, code: "USDC", issuer: ISSUER, amount: "3.0000000" }],
+    viaExchange: false,
+    choiceFor: () => "sell" as const,
+    onChoose: () => {},
+  };
+
+  it("puts the conversion choices under Your choices and the notes under Things to know", () => {
+    renderPanel({ conversionChoices, planNotes: ["A note about this plan."] });
+    const choices = screen.getByTestId("acknowledge-choices");
+    const notes = screen.getByTestId("acknowledge-notes");
+    expect(choices.textContent).toMatch(/^Your choices/);
+    expect(notes.textContent).toMatch(/^Things to know/);
+    expect(choices.contains(screen.getByTestId("conversion-choices"))).toBe(true);
+    expect(notes.contains(screen.getByTestId("plan-notes"))).toBe(true);
+    // choices come first
+    expect(choices.compareDocumentPosition(notes) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByText(/Just read, nothing to fix/)).toBeNull();
+  });
+
+  it("shows no notes section when there is only a choice, and lets it continue", () => {
+    renderPanel({ conversionChoices });
+    expect(screen.queryByTestId("acknowledge-notes")).toBeNull();
+    expect(screen.getByTestId("acknowledge-continue").hasAttribute("disabled")).toBe(false);
+  });
+});

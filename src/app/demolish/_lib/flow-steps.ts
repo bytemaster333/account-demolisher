@@ -56,7 +56,7 @@ export function buildFlowSteps(args: {
     "Connect",
     "Configure",
     ...(hasResolve ? ["Fix issues"] : []),
-    ...(hasAcknowledge ? ["Warnings"] : []),
+    ...(hasAcknowledge ? ["Check the plan"] : []),
     "Review",
     ...(hasCollect ? ["Signatures"] : []),
     lastLabel,
@@ -71,7 +71,7 @@ export function buildFlowSteps(args: {
         : phase === "resolve"
           ? "Fix issues"
           : phase === "acknowledge"
-            ? "Warnings"
+            ? "Check the plan"
             : phase === "review"
               ? "Review"
               : lastLabel;

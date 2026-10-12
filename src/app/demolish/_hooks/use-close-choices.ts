@@ -35,7 +35,7 @@ export interface CloseChoices {
 }
 
 // everything the user decides about the close, from the form on Configure to
-// the answers given on the Resolve and Warnings steps
+// the answers given on the Resolve and Check the plan steps
 export function useCloseChoices(refused: readonly RefusedConversion[]): CloseChoices {
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
   // standalone SEP-41 tokens the user opted in to sweep (discovered ones they

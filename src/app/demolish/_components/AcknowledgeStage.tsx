@@ -10,8 +10,8 @@ import type { ConfirmStage } from "../_lib/flow-steps";
 import { AcknowledgePanel } from "./AcknowledgePanel";
 import { SharedTokensNotice } from "./SharedTokensNotice";
 
-// the Warnings step, information only: read-and-understand each warning / info
-// card. Continue is gated until all are acknowledged.
+// the Check the plan step: optional choices that apply on a rebuild, then the
+// notes to read. Continue is gated until every note is acknowledged.
 export function AcknowledgeStage({
   ctx,
   network,

@@ -33,6 +33,33 @@ function AckRow({
   return <Checkbox checked={checked} onChange={onChange} data-testid={testId} label={label} />;
 }
 
+// a titled group of cards on this step
+function Section({
+  title,
+  intro,
+  testId,
+  children,
+}: {
+  readonly title: string;
+  readonly intro: string;
+  readonly testId: string;
+  readonly children: React.ReactNode;
+}): React.JSX.Element {
+  return (
+    <section data-testid={testId} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <div>
+        <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, letterSpacing: "-0.01em" }}>
+          {title}
+        </h3>
+        <p style={{ margin: "4px 0 0", fontSize: 13, lineHeight: 1.5, color: "var(--fg-2)" }}>
+          {intro}
+        </p>
+      </div>
+      {children}
+    </section>
+  );
+}
+
 const ARROW_RIGHT = (
   <svg
     width="15"
@@ -49,9 +76,6 @@ const ARROW_RIGHT = (
   </svg>
 );
 
-// the Acknowledge step, information only. Warnings and info that don't block
-// the close-out but must be read and understood. "Continue to review" is gated
-// until every card is acknowledged.
 function assetLabel(asset: AssetIdentifier): string {
   switch (asset.kind) {
     case "native":
@@ -102,6 +126,10 @@ function unlockText(unlock: UnlockTime): string {
   }
 }
 
+// the Check the plan step. Nothing here blocks the close: first the choices the
+// user may change (each has a working default and applies on a rebuild), then
+// the notes to read. "Continue to review" is gated until every note is
+// acknowledged.
 export function AcknowledgePanel({
   network,
   scamFindings,
@@ -205,6 +233,11 @@ export function AcknowledgePanel({
     ...(hasPlanNotes ? ["planNotes"] : []),
   ];
   const allAcked = allAcknowledged(requiredAckKeys, acks);
+  const hasClaimChoices = claimChoices !== undefined && claimChoices.balances.length > 0;
+  const hasConversionChoices =
+    conversionChoices !== undefined && conversionChoices.credits.length > 0;
+  const hasChoices = hasClaimChoices || hasConversionChoices || tokensSlot != null;
+  const hasNotes = requiredAckKeys.length > 0;
   const canContinue = allAcked && rebuildRequired === null && waitReason === null;
   const blockedReason =
     rebuildRequired ?? waitReason ?? (allAcked ? undefined : "Tick every box above to continue");
@@ -214,171 +247,188 @@ export function AcknowledgePanel({
       <div>
         <div style={{ marginBottom: 12 }}>
           <Badge tone="warning" dot>
-            Just read, nothing to fix
+            Nothing here blocks the close
           </Badge>
         </div>
         <h2 style={{ margin: 0, fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em" }}>
-          A few things to know
+          Check the plan
         </h2>
         <p style={{ margin: "8px 0 0", fontSize: 14, lineHeight: 1.55, color: "var(--fg-2)" }}>
-          Please read each one so nothing surprises you, then confirm you understand. Anything that
-          keeps the close from running is shown in the step before this one, not here.
+          {hasChoices && hasNotes
+            ? "Change any choice you want, read each note and confirm you understand it, then continue."
+            : hasChoices
+              ? "Change any choice you want, then continue."
+              : "Read each note and confirm you understand it, then continue."}{" "}
+          Anything that keeps the close from running is shown in the step before this one, not here.
         </p>
       </div>
 
-      {hasScam ? (
-        <ScamTokenNotice
-          findings={scamFindings}
-          network={network}
-          footer={
-            <AckRow
-              checked={acks.scam === true}
-              onChange={(v) => setAck("scam", v)}
-              testId="ack-scam"
-            />
-          }
-        />
-      ) : null}
-
-      {hasDiscovery ? (
-        <DiscoveryWarnings
-          warnings={discoveryWarnings}
-          footer={
-            <AckRow
-              checked={acks.discovery === true}
-              onChange={(v) => setAck("discovery", v)}
-              testId="ack-discovery"
-            />
-          }
-        />
-      ) : null}
-
-      {hasAutoHandled ? (
-        <Notice
-          tone="neutral"
-          role="status"
-          data-testid="auto-handled-notice"
-          title="Handled for you, nothing to do"
-          footer={
-            <AckRow
-              checked={acks.autoHandled === true}
-              onChange={(v) => setAck("autoHandled", v)}
-              testId="ack-autohandled"
-              label="Got it"
-            />
-          }
+      {hasChoices ? (
+        <Section
+          title="Your choices"
+          intro="Each one starts on a choice that works. A change applies when you rebuild the plan."
+          testId="acknowledge-choices"
         >
-          Closing the account takes care of these automatically. You keep the value, and there is
-          nothing for you to do:
-          <ul
-            style={{
-              listStyle: "disc",
-              margin: "7px 0 0",
-              paddingLeft: 18,
-              display: "flex",
-              flexDirection: "column",
-              gap: 5,
-            }}
-          >
-            {autoParts.map((p) => (
-              <li key={p} style={{ lineHeight: 1.5 }}>
-                {p}
-              </li>
-            ))}
-          </ul>
-        </Notice>
+          {hasClaimChoices ? <ClaimChoicesCard choices={claimChoices} /> : null}
+          {hasConversionChoices ? <ConversionChoicesCard choices={conversionChoices} /> : null}
+          {tokensSlot}
+        </Section>
       ) : null}
 
-      {highValue ? (
-        <Notice
-          tone="warning"
-          title="Large balance, double-check before closing"
-          data-testid="high-value-notice"
-          footer={
-            <AckRow
-              checked={acks.highValue === true}
-              onChange={(v) => setAck("highValue", v)}
-              testId="ack-highvalue"
-            />
-          }
+      {hasNotes ? (
+        <Section
+          title="Things to know"
+          intro="Tick each one once you have read it."
+          testId="acknowledge-notes"
         >
-          This close moves about {highValue.estimatedXlm} XLM
-          {highValue.unpricedHoldings > 0
-            ? ` plus ${highValue.unpricedHoldings} holding${
-                highValue.unpricedHoldings === 1 ? "" : "s"
-              } whose value couldn't be estimated`
-            : ""}
-          . Over {HIGH_VALUE_THRESHOLD_XLM} XLM, or any value that can&apos;t be priced, counts as
-          large. Closing moves it to your destination and permanently deletes this account.
-          Double-check the destination before you continue. This can&apos;t be undone.
-          {highValue.pricingError ? (
-            <span data-testid="high-value-pricing-error" style={{ display: "block", marginTop: 7 }}>
-              The pending payments this close collects couldn&apos;t be priced (
-              {highValue.pricingError}), so they count as holdings of unknown value.
-            </span>
+          {hasScam ? (
+            <ScamTokenNotice
+              findings={scamFindings}
+              network={network}
+              footer={
+                <AckRow
+                  checked={acks.scam === true}
+                  onChange={(v) => setAck("scam", v)}
+                  testId="ack-scam"
+                />
+              }
+            />
           ) : null}
-        </Notice>
-      ) : null}
 
-      {hasLeftBehind ? (
-        <Notice
-          tone="warning"
-          title="Some pending payments will be left behind"
-          data-testid="locked-claimables-notice"
-          footer={
-            <AckRow
-              checked={acks.lockedClaimables === true}
-              onChange={(v) => setAck("lockedClaimables", v)}
-              testId="ack-locked-claimables"
+          {hasDiscovery ? (
+            <DiscoveryWarnings
+              warnings={discoveryWarnings}
+              footer={
+                <AckRow
+                  checked={acks.discovery === true}
+                  onChange={(v) => setAck("discovery", v)}
+                  testId="ack-discovery"
+                />
+              }
             />
-          }
-        >
-          This close doesn&apos;t collect these payments set aside for this account. Once the
-          account is deleted it can&apos;t collect them, and the sender may take them back. If you
-          want them, collect them first (a locked one only once it unlocks), then close.
-          <ul style={{ margin: "7px 0 0", paddingLeft: 18 }}>
-            {claimables.leftBehind.map((c) => (
-              <li key={c.id} style={{ lineHeight: 1.5 }}>
-                {c.amount} {assetLabel(c.asset)}, {leftBehindText(c, baseReserveStroops)}
-              </li>
-            ))}
-          </ul>
-        </Notice>
-      ) : null}
+          ) : null}
 
-      {claimChoices !== undefined && claimChoices.balances.length > 0 ? (
-        <ClaimChoicesCard choices={claimChoices} />
-      ) : null}
+          {hasAutoHandled ? (
+            <Notice
+              tone="neutral"
+              role="status"
+              data-testid="auto-handled-notice"
+              title="Handled for you, nothing to do"
+              footer={
+                <AckRow
+                  checked={acks.autoHandled === true}
+                  onChange={(v) => setAck("autoHandled", v)}
+                  testId="ack-autohandled"
+                  label="Got it"
+                />
+              }
+            >
+              Closing the account takes care of these automatically. You keep the value, and there
+              is nothing for you to do:
+              <ul
+                style={{
+                  listStyle: "disc",
+                  margin: "7px 0 0",
+                  paddingLeft: 18,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 5,
+                }}
+              >
+                {autoParts.map((p) => (
+                  <li key={p} style={{ lineHeight: 1.5 }}>
+                    {p}
+                  </li>
+                ))}
+              </ul>
+            </Notice>
+          ) : null}
 
-      {conversionChoices !== undefined && conversionChoices.credits.length > 0 ? (
-        <ConversionChoicesCard choices={conversionChoices} />
-      ) : null}
+          {highValue ? (
+            <Notice
+              tone="warning"
+              title="Large balance, double-check before closing"
+              data-testid="high-value-notice"
+              footer={
+                <AckRow
+                  checked={acks.highValue === true}
+                  onChange={(v) => setAck("highValue", v)}
+                  testId="ack-highvalue"
+                />
+              }
+            >
+              This close moves about {highValue.estimatedXlm} XLM
+              {highValue.unpricedHoldings > 0
+                ? ` plus ${highValue.unpricedHoldings} holding${
+                    highValue.unpricedHoldings === 1 ? "" : "s"
+                  } whose value couldn't be estimated`
+                : ""}
+              . Over {HIGH_VALUE_THRESHOLD_XLM} XLM, or any value that can&apos;t be priced, counts
+              as large. Closing moves it to your destination and permanently deletes this account.
+              Double-check the destination before you continue. This can&apos;t be undone.
+              {highValue.pricingError ? (
+                <span
+                  data-testid="high-value-pricing-error"
+                  style={{ display: "block", marginTop: 7 }}
+                >
+                  The pending payments this close collects couldn&apos;t be priced (
+                  {highValue.pricingError}), so they count as holdings of unknown value.
+                </span>
+              ) : null}
+            </Notice>
+          ) : null}
 
-      {hasPlanNotes ? (
-        <Notice
-          tone="neutral"
-          role="status"
-          title="About this plan"
-          data-testid="plan-notes"
-          footer={
-            <AckRow
-              checked={acks.planNotes === true}
-              onChange={(v) => setAck("planNotes", v)}
-              testId="ack-plan-notes"
-            />
-          }
-        >
-          <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
-            {planNotes.map((n) => (
-              <li key={n} style={{ lineHeight: 1.5 }}>
-                {n}
-              </li>
-            ))}
-          </ul>
-        </Notice>
-      ) : null}
+          {hasLeftBehind ? (
+            <Notice
+              tone="warning"
+              title="Some pending payments will be left behind"
+              data-testid="locked-claimables-notice"
+              footer={
+                <AckRow
+                  checked={acks.lockedClaimables === true}
+                  onChange={(v) => setAck("lockedClaimables", v)}
+                  testId="ack-locked-claimables"
+                />
+              }
+            >
+              This close doesn&apos;t collect these payments set aside for this account. Once the
+              account is deleted it can&apos;t collect them, and the sender may take them back. If
+              you want them, collect them first (a locked one only once it unlocks), then close.
+              <ul style={{ margin: "7px 0 0", paddingLeft: 18 }}>
+                {claimables.leftBehind.map((c) => (
+                  <li key={c.id} style={{ lineHeight: 1.5 }}>
+                    {c.amount} {assetLabel(c.asset)}, {leftBehindText(c, baseReserveStroops)}
+                  </li>
+                ))}
+              </ul>
+            </Notice>
+          ) : null}
 
-      {tokensSlot}
+          {hasPlanNotes ? (
+            <Notice
+              tone="neutral"
+              role="status"
+              title="About this plan"
+              data-testid="plan-notes"
+              footer={
+                <AckRow
+                  checked={acks.planNotes === true}
+                  onChange={(v) => setAck("planNotes", v)}
+                  testId="ack-plan-notes"
+                />
+              }
+            >
+              <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+                {planNotes.map((n) => (
+                  <li key={n} style={{ lineHeight: 1.5 }}>
+                    {n}
+                  </li>
+                ))}
+              </ul>
+            </Notice>
+          ) : null}
+        </Section>
+      ) : null}
 
       {rebuildRequired !== null ? (
         <div

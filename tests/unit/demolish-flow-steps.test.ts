@@ -69,4 +69,26 @@ describe("flow phase for the step indicator (L-62)", () => {
     });
     expect(steps.at(-1)?.label).toBe("Close");
   });
+
+  // the step holds choices as well as notes, so it isn't named for warnings only
+  it("names the step between Fix issues and Review Check the plan", () => {
+    const steps = buildFlowSteps({
+      phase: "acknowledge",
+      hasResolve: true,
+      hasAcknowledge: true,
+      isSucceeded: false,
+      hasCollect: false,
+      collecting: false,
+      prepareOnly: false,
+    });
+    expect(steps.map((s) => s.label)).toEqual([
+      "Connect",
+      "Configure",
+      "Fix issues",
+      "Check the plan",
+      "Review",
+      "Close",
+    ]);
+    expect(steps.find((s) => s.isActive)?.label).toBe("Check the plan");
+  });
 });

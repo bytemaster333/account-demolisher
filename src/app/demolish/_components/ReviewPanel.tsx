@@ -470,7 +470,7 @@ export function ReviewPanel({
           <SnapStat
             label="Claimable"
             value={audit.claimableBalances.length}
-            tip="Payments set aside for this account that haven't been collected yet. The ones that can be collected now are claimed before closing; the Warnings step lists any that can't."
+            tip="Payments set aside for this account that haven't been collected yet. The ones that can be collected now are claimed before closing; the Check the plan step lists any that can't."
           />
         </div>
       </div>
