@@ -6,6 +6,7 @@ import {
   Horizon,
   Keypair,
   Memo,
+  MuxedAccount,
   Networks,
   Operation,
   StrKey,
@@ -1004,5 +1005,76 @@ describe("inspectClose flags operations on another account", () => {
       expect(op.detail).toContain(other);
     }
     expect(info.operations[2]!.unexpected).toBeFalsy();
+  });
+
+  // a caller that trusts isClose alone must not take a mixed-account bundle for a close
+  it("does not report a close when an operation acts on another account", () => {
+    const closing = Keypair.random().publicKey();
+    const other = Keypair.random().publicKey();
+    const dest = Keypair.random().publicKey();
+    const tx = new TransactionBuilder(new Account(closing, "1"), {
+      fee: BASE_FEE,
+      networkPassphrase: NET,
+      timebounds: { minTime: 0, maxTime: 0 },
+    })
+      .addOperation(
+        Operation.payment({ destination: dest, asset: Asset.native(), amount: "5", source: other }),
+      )
+      .addOperation(Operation.accountMerge({ destination: dest }))
+      .build();
+    const info = inspectClose(tx.toXdr(), NET)!;
+    expect(info.isClose).toBe(false);
+    expect(info.foreignSources).toEqual([other]);
+    expect(info.source).toBe(closing);
+  });
+
+  it("does not report a close when the transaction source is not the closing account", () => {
+    const payer = Keypair.random().publicKey();
+    const closing = Keypair.random().publicKey();
+    const dest = Keypair.random().publicKey();
+    const tx = new TransactionBuilder(new Account(payer, "1"), {
+      fee: BASE_FEE,
+      networkPassphrase: NET,
+      timebounds: { minTime: 0, maxTime: 0 },
+    })
+      .addOperation(Operation.accountMerge({ destination: dest, source: closing }))
+      .build();
+    const info = inspectClose(tx.toXdr(), NET)!;
+    expect(info.isClose).toBe(false);
+    expect(info.foreignSources).toEqual([payer]);
+    expect(info.source).toBe(closing);
+  });
+
+  it("does not report a close for a muxed closing account, which the relay refuses", () => {
+    const closing = Keypair.random().publicKey();
+    const muxed = new MuxedAccount(new Account(closing, "1"), "7");
+    const dest = Keypair.random().publicKey();
+    const tx = new TransactionBuilder(muxed, {
+      fee: BASE_FEE,
+      networkPassphrase: NET,
+      timebounds: { minTime: 0, maxTime: 0 },
+    })
+      .addOperation(Operation.accountMerge({ destination: dest }))
+      .build();
+    const info = inspectClose(tx.toXdr(), NET)!;
+    expect(info.source).toBe(muxed.accountId());
+    expect(info.foreignSources).toEqual([]);
+    expect(info.isClose).toBe(false);
+  });
+
+  it("reports a close whose every operation acts on the closing account", () => {
+    const closing = Keypair.random().publicKey();
+    const dest = Keypair.random().publicKey();
+    const tx = new TransactionBuilder(new Account(closing, "1"), {
+      fee: BASE_FEE,
+      networkPassphrase: NET,
+      timebounds: { minTime: 0, maxTime: 0 },
+    })
+      .addOperation(Operation.payment({ destination: dest, asset: Asset.native(), amount: "5" }))
+      .addOperation(Operation.accountMerge({ destination: dest, source: closing }))
+      .build();
+    const info = inspectClose(tx.toXdr(), NET)!;
+    expect(info.isClose).toBe(true);
+    expect(info.foreignSources).toEqual([]);
   });
 });

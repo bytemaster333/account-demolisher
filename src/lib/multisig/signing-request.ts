@@ -262,7 +262,12 @@ export interface CloseInspection {
   readonly sequence: string;
   // V2 preconditions beyond time bounds; null when there are none
   readonly preconditions: ClosePreconditions | null;
-  // is this a well-formed account close (contains an account-merge)?
+  // accounts other than the closing one that the transaction acts on: the
+  // effective source of any operation, or the transaction source (it pays the fee
+  // and spends its sequence). empty for a close the relay accepts.
+  readonly foreignSources: readonly string[];
+  // an account close the relay accepts: it merges a plain (non-muxed) account,
+  // and every operation and the transaction itself act on that account only
   readonly isClose: boolean;
 }
 
@@ -686,6 +691,15 @@ export function inspectClose(xdrStr: string, passphrase: string): CloseInspectio
     txSource: tx.source,
   };
 
+  // the same rule the relay's decodeClose applies, so a caller that reads
+  // isClose alone can't take a bundle that also moves another account's funds
+  const foreign = new Set<string>();
+  if (tx.source !== closingSource) foreign.add(tx.source);
+  for (const op of rawOps) {
+    const src = op.source ?? tx.source;
+    if (src !== closingSource) foreign.add(src);
+  }
+
   const tb = tx.timeBounds;
   const timeBounds =
     tb !== undefined ? { minTime: Number(tb.minTime), maxTime: Number(tb.maxTime) } : null;
@@ -700,6 +714,8 @@ export function inspectClose(xdrStr: string, passphrase: string): CloseInspectio
     memo: describeMemo(tx),
     sequence: tx.sequence,
     preconditions: describePreconditions(tx),
-    isClose: mergeOp !== undefined,
+    foreignSources: [...foreign],
+    isClose:
+      mergeOp !== undefined && StrKey.isValidEd25519PublicKey(closingSource) && foreign.size === 0,
   };
 }
