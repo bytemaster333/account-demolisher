@@ -80,6 +80,8 @@ interface LiveState {
   sequence?: string;
   usd?: string | null;
   extraLine?: boolean;
+  // a liquidity pool share line, by pool id
+  poolLine?: string;
   signers?: { key: string; weight: number }[];
   thresholds?: { low: number; med: number; high: number };
   data?: Record<string, string>;
@@ -101,6 +103,13 @@ function live(state: LiveState = {}): Horizon.AccountResponse {
       asset_type: "credit_alphanum4",
       asset_code: "EUR",
       asset_issuer: issuer,
+      balance: "0.0000000",
+    });
+  }
+  if (state.poolLine !== undefined) {
+    balances.push({
+      asset_type: "liquidity_pool_shares",
+      liquidity_pool_id: state.poolLine,
       balance: "0.0000000",
     });
   }
@@ -207,7 +216,23 @@ describe("checkBundleFreshness", () => {
   it("detects a new trustline the bundle doesn't remove", () => {
     const res = check({ extraLine: true });
     expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.reasons.join(" ")).toMatch(/EUR/);
+    // the issuer is shortened the way every other key in the app is
+    if (!res.ok) {
+      expect(res.reasons).toContain(
+        `The account now holds a EUR (${issuer.slice(0, 6)}…${issuer.slice(-4)}) trustline the bundle doesn't remove, so the merge would fail.`,
+      );
+    }
+  });
+
+  it("names a new pool share line by the head of its pool id", () => {
+    const pool = "ab12cd34".repeat(8);
+    const res = check({ poolLine: pool });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.reasons).toContain(
+        "The account now holds a pool share ab12cd34… trustline the bundle doesn't remove, so the merge would fail.",
+      );
+    }
   });
 
   it("detects a filled offer and a new offer", () => {
@@ -320,7 +345,11 @@ describe("bundle freshness edge cases", () => {
     } as unknown as Horizon.Server;
     const res = await loadBundleFreshness(horizon, xdrStr, TESTNET.passphrase);
     expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.reasons.join(" ")).toMatch(/no longer exists/);
+    if (!res.ok) {
+      expect(res.reasons).toContain(
+        `Claimable balance ${id.slice(0, 12)}… no longer exists, so claiming it would fail.`,
+      );
+    }
   });
 
   // core counts a claimable balance once per claimant in its sponsor's
