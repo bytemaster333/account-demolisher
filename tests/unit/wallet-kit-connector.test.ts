@@ -36,13 +36,16 @@ let kitState: typeof import("@creit.tech/stellar-wallets-kit/state");
 let LEDGER_ID: string;
 let WalletKitConnector: typeof import("@/lib/wallet/connector").WalletKitConnector;
 
+// loading the kit and the connector transforms a large module graph. on a
+// heavily loaded runner that has run past the default 10s hook timeout and
+// skipped every test in the file, so the import gets its own budget
 beforeAll(async () => {
   delete process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID;
   kitApi = await import("@creit.tech/stellar-wallets-kit");
   kitState = await import("@creit.tech/stellar-wallets-kit/state");
   ({ LEDGER_ID } = await import("@creit.tech/stellar-wallets-kit/modules/ledger"));
   ({ WalletKitConnector } = await import("@/lib/wallet/connector"));
-});
+}, 120_000);
 
 function walletModule(productId: string, signTransaction: SignFn) {
   return {
