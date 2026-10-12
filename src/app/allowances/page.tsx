@@ -4,7 +4,7 @@
 
 import { StrKey } from "@stellar/stellar-sdk";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { z } from "zod";
+import { z } from "@/lib/zod";
 
 import { AllowanceList } from "@/components/allowance-viewer/AllowanceList";
 import { addressExplorerUrl, isActive } from "@/components/allowance-viewer/allowance-state";

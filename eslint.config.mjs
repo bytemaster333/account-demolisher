@@ -38,7 +38,20 @@ const config = [
           message: "use errorMessage() from @/lib/errors",
         },
       ],
+      // src/lib/zod.ts turns off zod's eval probe before any schema is built; a
+      // direct import can build one first and trip the production csp
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [{ name: "zod", message: 'import { z } from "@/lib/zod"' }],
+          patterns: [{ regex: "^zod/", message: 'import { z } from "@/lib/zod"' }],
+        },
+      ],
     },
+  },
+  {
+    files: ["src/lib/zod.ts"],
+    rules: { "no-restricted-imports": "off" },
   },
 ];
 

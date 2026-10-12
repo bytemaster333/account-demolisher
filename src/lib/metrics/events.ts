@@ -15,7 +15,7 @@
 // carries just its tx hash, and every derived detail (reclaimed XLM, op
 // breakdown, ledger) is read back from the public ledger server-side.
 
-import { z } from "zod";
+import { z } from "@/lib/zod";
 
 import type { StellarNetwork } from "@/lib/config/networks";
 

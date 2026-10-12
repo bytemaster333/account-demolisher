@@ -1,7 +1,7 @@
 // public env vars. safe to import from client or server: only reads the
 // NEXT_PUBLIC_* subset. server-only vars live in src/server/server-env.ts
 
-import { z } from "zod";
+import { z } from "@/lib/zod";
 
 import {
   parseMinMarketOutEnv,

@@ -6,7 +6,7 @@
 // schema-validated boundary: a malformed balance (negative, non-integer), a
 // bad contract/pool id, or a wrong-shaped record is rejected rather than silently
 // carried into a close where it could mis-price a conversion or hide a position.
-import { z } from "zod";
+import { z } from "@/lib/zod";
 import { StrKey } from "@stellar/stellar-sdk";
 
 import type {

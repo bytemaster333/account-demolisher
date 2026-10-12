@@ -1,7 +1,7 @@
 // configure-step form schema and the memo it produces
 
 import { StrKey } from "@stellar/stellar-sdk";
-import { z } from "zod";
+import { z } from "@/lib/zod";
 
 import type { ClassicMemo } from "@/lib/types/plan";
 
