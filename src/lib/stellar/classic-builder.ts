@@ -298,9 +298,14 @@ function requireWeight(t: Record<string, unknown>, key: string): number {
   return v;
 }
 
+// the batcher always records the quoted path ([] for a direct hop), so a missing
+// one means the metadata lost it; building a direct hop from that would sell
+// along a route nobody quoted
 function requirePath(meta: Record<string, unknown>): AssetIdentifier[] {
   const raw = meta["path"];
-  if (raw === undefined) return [];
+  if (raw === undefined) {
+    throw new Error("path_payment metadata.path is missing; a direct hop needs an explicit []");
+  }
   if (!Array.isArray(raw)) {
     throw new Error("path_payment metadata.path must be an array of assets");
   }

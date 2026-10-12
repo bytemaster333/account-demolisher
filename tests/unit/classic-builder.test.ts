@@ -258,6 +258,19 @@ describe("buildClassicTransaction path validation", () => {
     expect(() => firstOp(batchOf(pathPayment([null])))).toThrow(/path/);
     expect(() => firstOp(batchOf(pathPayment("USDC")))).toThrow(/path/);
   });
+
+  // a batcher that dropped the path must not turn the sale into a direct hop
+  it("refuses a path payment that carries no path", () => {
+    const op = pathPayment(undefined);
+    const { path: _dropped, ...metadata } = op.metadata;
+    expect(() => firstOp(batchOf({ ...op, metadata }))).toThrow(/metadata\.path is missing/);
+    expect(() => firstOp(batchOf(op))).toThrow(/metadata\.path is missing/);
+  });
+
+  it("builds a direct hop only from an explicit empty path", () => {
+    const op = firstOp(batchOf(pathPayment([])));
+    expect(op["path"]).toEqual([]);
+  });
 });
 
 describe("buildClassicTransaction memos", () => {
