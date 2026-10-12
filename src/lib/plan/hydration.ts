@@ -929,8 +929,10 @@ export function resolveContractIdForAsset(asset: AssetIdentifier, network: Netwo
     case "credit":
       return new Asset(asset.code, asset.issuer).contractId(network.passphrase);
     case "liquidity_pool_shares":
+      // callers besides TransferAsIs reach this too, so the message names no node
       throw new TypeError(
-        "TransferAsIs: liquidity_pool_shares cannot be transferred as a SEP-41 asset; use removeLiquidity",
+        `liquidity pool shares ${asset.poolId} have no SEP-41 contract; the close exits ` +
+          `them with liquidity_pool_withdraw in the classic batch`,
       );
     case "contract":
       // a standalone SEP-41 token: the contract id IS the address to invoke

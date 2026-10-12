@@ -32,6 +32,7 @@ import {
   hydratePlanTransactions,
   PriceImpactRefusedError,
   rebuildSorobanNodeTransaction,
+  resolveContractIdForAsset,
 } from "@/lib/plan/hydration";
 import type { HydrationAdapterOverrides, HydrationDeps } from "@/lib/plan/hydration";
 import { buildPlanTree } from "@/lib/plan/tree";
@@ -1936,5 +1937,18 @@ describe("hydration, aquarius gauge reward claims", () => {
     expect(failures).toMatchObject([{ nodeId: "gauge", deferred: false }]);
     expect(node.status).toBe("failed");
     expect(node.error).toMatch(/Error\(Contract, #2004\)/);
+  });
+});
+
+describe("resolveContractIdForAsset", () => {
+  it("points a classic pool share at the pool withdraw, the op that exits it", () => {
+    const call = () =>
+      resolveContractIdForAsset(
+        { kind: "liquidity_pool_shares", poolId: "ab".repeat(32) },
+        TESTNET,
+      );
+    expect(call).toThrow(TypeError);
+    expect(call).toThrow(/liquidity_pool_withdraw/);
+    expect(call).not.toThrow(/removeLiquidity/);
   });
 });
