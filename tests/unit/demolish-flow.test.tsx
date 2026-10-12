@@ -81,8 +81,20 @@ const ctl = vi.hoisted(() => ({
   heldScamError: null as string | null,
   // the wallets kit's own disconnect fails with this, when set
   kitDisconnectError: null as string | null,
+  // the deployment mode the page reads from its public env
+  deploymentMode: "reference" as "reference" | "self-hosted",
 }));
 
+vi.mock("@/lib/config/env", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/config/env")>();
+  return {
+    ...actual,
+    getPublicEnv: () => ({
+      ...actual.getPublicEnv(),
+      NEXT_PUBLIC_DEPLOYMENT_MODE: ctl.deploymentMode,
+    }),
+  };
+});
 vi.mock("@/components/wallet/ConnectButton", () => ({
   ConnectButton: () => <button type="button">connect-wallet</button>,
 }));
@@ -323,6 +335,7 @@ async function configureAndStart(): Promise<void> {
 }
 
 beforeEach(() => {
+  ctl.deploymentMode = "reference";
   useNetworkStore.getState().setNetwork("testnet");
   window.localStorage.clear();
   ctl.effectNetworks = [];
@@ -1014,6 +1027,36 @@ describe("the memo is on the final confirmation (M-40)", () => {
     await configureAndStart();
     fireEvent.click(await screen.findByTestId("demolish-confirm"));
     expect((await screen.findByTestId("typed-confirmation-memo")).textContent).toMatch(/No memo/);
+  });
+});
+
+// a memo-required address that is not an exchange takes the mediator route too
+// (H-15), so the self-hosted refusal must not call it an exchange (NPF-24)
+describe("a self-hosted deployment refuses a close that needs the mediator", () => {
+  it("names the memo the destination requires, not an exchange", async () => {
+    ctl.deploymentMode = "self-hosted";
+    ctl.destinationData = { "config.memo_required": "MQ==" };
+    connect();
+    render(<DemolishFlow />);
+    const input = await screen.findByTestId("destination-input");
+    fireEvent.change(input, { target: { value: DEST } });
+    await waitFor(
+      () =>
+        expect(screen.getByTestId("demolish-start-hint").textContent).toMatch(/requires a memo/i),
+      { timeout: 3000 },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Memo type" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Text" }));
+    fireEvent.change(screen.getByTestId("memo-value-input"), { target: { value: "deposit-42" } });
+    const start = screen.getByTestId("demolish-start") as HTMLButtonElement;
+    await waitFor(() => expect(start.disabled).toBe(false));
+    fireEvent.click(start);
+
+    const error = (await screen.findByTestId("form-error")).textContent ?? "";
+    expect(error).toMatch(/doesn't run the mediator/);
+    expect(error).toMatch(/an exchange or an address that requires a memo/);
+    expect(error).not.toMatch(/memo-required exchange/);
+    expect(ctl.previewInputs).toHaveLength(0);
   });
 });
 

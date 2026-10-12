@@ -86,6 +86,20 @@ describe("plan explainers say what actually happens (L-59)", () => {
     expect(viaMediator).toMatch(/helper account/i);
   });
 
+  // a memo-required address that is not an exchange forwards through the
+  // mediator too (H-15), so the forward step must not call the memo an
+  // exchange deposit memo (NPF-24)
+  it("describes the forward's memo as the one the destination requires", () => {
+    const tree = makeTree({
+      opts: { useMediator: true, mediatorPublicKey: "GAMEDIATOR", flowToken: "token" },
+    });
+    const forward = tree.allNodes.get("mediator-forward")!;
+    expect(forward.kind).toBe("MediatorForward");
+    const text = nodeExplainer(forward, { deterministic: false });
+    expect(text).toMatch(/the memo the destination requires/);
+    expect(text).not.toMatch(/exchange/i);
+  });
+
   it("does not describe a SEP-41 transfer as freeing a trustline", () => {
     const tree = makeTree({ opts: { heldTokens: [{ contractId: TOKEN_C, balance: 5n }] } });
     const node = [...tree.allNodes.values()].find((n) => n.kind === "TransferAsIs")!;

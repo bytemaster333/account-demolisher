@@ -255,7 +255,7 @@ export function nodeExplainer(
       return `The close. ${cleanup}, ${delivery}. This runs in one or more transactions, and the last one is the irreversible delete.`;
     }
     case "MediatorForward":
-      return "Delivers your funds to the destination through a short-lived helper account, so your exchange deposit memo is preserved along the way.";
+      return "Delivers your funds to the destination through a short-lived helper account, so the memo the destination requires is preserved along the way.";
   }
 }
 

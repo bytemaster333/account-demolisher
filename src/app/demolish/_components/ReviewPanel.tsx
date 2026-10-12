@@ -413,8 +413,8 @@ export function ReviewPanel({
               style={{ marginTop: 9, fontSize: 12.5, color: "var(--fg-2)", lineHeight: 1.5 }}
             >
               About 1 XLM (the temporary account&apos;s minimum balance, plus any unused part of the
-              forward fee) reaches the exchange as an account merge, which most exchanges do not
-              credit. The rest arrives as a payment with your deposit memo.
+              forward fee) reaches this address as an account merge, which carries no memo, so most
+              exchanges do not credit it. The rest arrives as a payment with your memo.
             </div>
           ) : null}
         </div>

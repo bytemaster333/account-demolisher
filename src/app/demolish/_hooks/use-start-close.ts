@@ -128,14 +128,14 @@ export function useStartClose(args: {
         return;
       }
 
-      // a self-hosted deployment doesn't run the exchange mediator, so it can't
-      // safely route a close to a memo-required exchange: refuse up front rather
-      // than fail late at the mediator step (this is the documented self-hosted
-      // safety guarantee).
+      // a self-hosted deployment doesn't run the mediator, so it can't safely
+      // route a close to an exchange or a sep-29 memo-required address: refuse
+      // up front rather than fail late at the mediator step (this is the
+      // documented self-hosted safety guarantee).
       if (useMediator && getPublicEnv().NEXT_PUBLIC_DEPLOYMENT_MODE === "self-hosted") {
         setFormError(
-          "This self-hosted deployment doesn't run the exchange mediator, so it can't route a close " +
-            "to a memo-required exchange. Withdraw to a self-custody address instead.",
+          "This self-hosted deployment doesn't run the mediator, so it can't route a close to " +
+            "an exchange or an address that requires a memo. Withdraw to a self-custody address instead.",
         );
         return;
       }

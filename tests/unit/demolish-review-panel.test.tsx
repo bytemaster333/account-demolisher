@@ -235,9 +235,12 @@ describe("the exchange close says what the merge leg delivers (L-06)", () => {
       makeTree({ opts: { memo, useMediator: true, mediatorPublicKey: mediator, flowToken: "t" } }),
       { memo, useMediator: true },
     );
-    expect(screen.getByTestId("review-merge-leg").textContent).toMatch(
-      /About 1 XLM .* account merge, which most exchanges do not credit/,
-    );
+    const leg = screen.getByTestId("review-merge-leg").textContent ?? "";
+    expect(leg).toMatch(/About 1 XLM .* reaches this address as an account merge/);
+    expect(leg).toMatch(/carries no memo, so most exchanges do not credit it/);
+    // a memo-required address that is not an exchange takes this route too
+    expect(leg).not.toMatch(/reaches the exchange/);
+    expect(leg).not.toMatch(/deposit memo/);
   });
 
   it("says nothing about a merge leg on a direct close", () => {
