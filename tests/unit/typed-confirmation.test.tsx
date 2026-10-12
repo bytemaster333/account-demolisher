@@ -148,7 +148,8 @@ describe("TypedConfirmation memo", () => {
     );
     const memo = screen.getByTestId("typed-confirmation-memo").textContent ?? "";
     expect(memo).toContain("Memo (TEXT): deposit-42");
-    expect(memo).toMatch(/mediator/);
+    // the same words Review uses for the memo's payment
+    expect(memo).toMatch(/added to the delivery payment from the helper account/);
   });
 
   // same rendering as /sign and CollectSignatures, so the final gate cannot
@@ -200,5 +201,55 @@ describe("TypedConfirmation prepare-only run", () => {
     expect(summary).toMatch(/nothing is sent to the address below yet/);
     expect(screen.getByRole("heading").textContent).toBe("Confirm preparing the close");
     expect(screen.getByTestId("typed-confirmation-confirm").textContent).toBe("Prepare the close");
+  });
+
+  // the finishing run withdraws the blend backstop, which pays out an LP token
+  // a close through the mediator can't forward (NPF-12)
+  it("tells a prepare-only run to a mediator address to finish to the user's own address", () => {
+    render(
+      <TypedConfirmation
+        destination={DEST}
+        delayMs={0}
+        prepareOnly
+        memoViaMediator
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    const summary = screen.getByTestId("typed-confirmation-summary").textContent ?? "";
+    expect(summary).toMatch(/only prepares the close/);
+    expect(summary).toMatch(/nothing is sent to the address below/);
+    expect(summary).not.toMatch(/yet/);
+    expect(summary).toMatch(/can't go to this address/);
+    expect(summary).toMatch(/your own Stellar address/);
+  });
+
+  it("puts the memo on the delivery payment only on a run that forwards", () => {
+    const memo = { type: "id", value: "42" } as const;
+    const { unmount } = render(
+      <TypedConfirmation
+        destination={DEST}
+        delayMs={0}
+        memo={memo}
+        memoViaMediator
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(document.body.textContent).toMatch(/added to the delivery payment/);
+    expect(document.body.textContent).not.toMatch(/exchange/);
+    unmount();
+    render(
+      <TypedConfirmation
+        destination={DEST}
+        delayMs={0}
+        memo={memo}
+        memoViaMediator
+        prepareOnly
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(document.body.textContent).not.toMatch(/delivery payment/);
   });
 });

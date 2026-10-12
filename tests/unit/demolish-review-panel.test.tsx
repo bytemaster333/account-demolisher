@@ -13,7 +13,14 @@ import { stroopsToXlm } from "@/app/demolish/_lib/fees";
 import { groupPlanNodes } from "@/app/demolish/_lib/plan-copy";
 import { computeReviewMoney } from "@/app/demolish/_lib/review-money";
 
-import { DEST, blendPositions, makeAudit, makeTree } from "./demolish-fixtures";
+import {
+  DEST,
+  POOL_ID,
+  blendPositions,
+  emptyPositions,
+  makeAudit,
+  makeTree,
+} from "./demolish-fixtures";
 
 afterEach(cleanup);
 
@@ -71,6 +78,43 @@ describe("memo on Review (M-40)", () => {
       { memo, useMediator: true },
     );
     expect(screen.getByTestId("review-memo").textContent).toMatch(/delivery payment/i);
+  });
+});
+
+// a prepare-only plan always holds a blend backstop deposit. the run that
+// finishes it withdraws the backstop, which pays out the BLND-USDC LP token, and
+// a close through the mediator can only forward XLM (assertExchangeCloseCanRun),
+// so that finishing close can't go to an exchange or memo-required address
+describe("prepare-only destination copy (NPF-12)", () => {
+  const backstop = emptyPositions({
+    backstop: [{ poolId: POOL_ID, shares: 5n, queuedForWithdrawal: 0n }],
+  });
+
+  it("tells an exchange prepare run to finish the close to the user's own address", () => {
+    const tree = makeTree({ positions: backstop, opts: { useMediator: true } });
+    expect(tree.prepareOnly).toBeDefined();
+    renderPanel(tree, { useMediator: true, prepareOnly: tree.prepareOnly! });
+    const text = screen.getByTestId("review-prepare-destination").textContent ?? "";
+    expect(text).toMatch(/Nothing is sent to this address in this run/);
+    expect(text).toMatch(/can't go to this address/);
+    expect(text).toMatch(/BLND-USDC LP token/);
+    expect(text).toMatch(/your own Stellar address/);
+    expect(text).not.toMatch(/sends the balance here/);
+  });
+
+  it("does not put the memo on a delivery payment a prepare run never makes", () => {
+    const memo: ClassicMemo = { type: "id", value: "7" };
+    const tree = makeTree({ positions: backstop, opts: { memo, useMediator: true } });
+    renderPanel(tree, { memo, useMediator: true, prepareOnly: tree.prepareOnly! });
+    expect(screen.getByTestId("review-memo").textContent).not.toMatch(/delivery payment/);
+  });
+
+  it("tells a direct prepare run the finishing close sends the balance here", () => {
+    const tree = makeTree({ positions: backstop });
+    renderPanel(tree, { prepareOnly: tree.prepareOnly! });
+    const text = screen.getByTestId("review-prepare-destination").textContent ?? "";
+    expect(text).toMatch(/The close that finishes later sends the balance here/);
+    expect(text).not.toMatch(/can't go to this address/);
   });
 });
 

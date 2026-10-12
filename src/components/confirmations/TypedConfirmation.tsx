@@ -19,7 +19,8 @@ export interface TypedConfirmationProps {
   // the reviewed memo, shown under the destination so a mistyped one is still
   // visible at this last gate. null shows "No memo"; leave it out to show nothing.
   readonly memo?: ClassicMemo | null | undefined;
-  // an exchange close: the mediator puts the memo on its forward to the exchange
+  // a close through the mediator (an exchange or a memo-required address): the
+  // memo rides on its forward payment, not on the merge
   readonly memoViaMediator?: boolean;
   // the run only prepares the close (a locked backstop queue): nothing merges,
   // so the dialog must not say the account closes or the funds leave
@@ -240,7 +241,11 @@ export function TypedConfirmation({
           }}
         >
           {prepareOnly
-            ? "This run only prepares the close. Your account stays open and nothing is sent to the address below yet. Run the close again after the withdrawal unlocks to finish it."
+            ? memoViaMediator
+              ? // the finishing run's backstop withdrawal pays out an LP token that a
+                // close through the temporary account can't forward
+                "This run only prepares the close. Your account stays open and nothing is sent to the address below. The close that finishes it after the withdrawal unlocks can't go to this address, because the Blend backstop withdrawal pays out a token it can't forward: finish it to your own Stellar address."
+              : "This run only prepares the close. Your account stays open and nothing is sent to the address below yet. Run the close again after the withdrawal unlocks to finish it."
             : "This sends all your funds to the address below and permanently closes the account. It cannot be undone."}
         </p>
         <div
@@ -289,7 +294,10 @@ export function TypedConfirmation({
                   {safeDisplay(memo.value)}
                 </span>
                 {hasHiddenCharacters(memo.value) ? " (contains hidden characters)" : null}
-                {memoViaMediator ? " (the mediator adds it to its forward to the exchange)" : null}
+                {/* a prepare-only run never forwards, so there is no payment to carry it yet */}
+                {memoViaMediator && !prepareOnly
+                  ? " (added to the delivery payment from the helper account)"
+                  : null}
               </>
             )}
           </p>

@@ -1005,7 +1005,7 @@ describe("the memo is on the final confirmation (M-40)", () => {
     fireEvent.click(await screen.findByTestId("demolish-confirm"));
     const memo = (await screen.findByTestId("typed-confirmation-memo")).textContent ?? "";
     expect(memo).toMatch(/Memo \(TEXT\): deposit-42/);
-    expect(memo).toMatch(/mediator/);
+    expect(memo).toMatch(/added to the delivery payment from the helper account/);
   });
 
   it("says no memo when the close has none", async () => {

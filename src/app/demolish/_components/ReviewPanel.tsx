@@ -378,16 +378,24 @@ export function ReviewPanel({
                   {safeDisplay(memo.value)}
                 </span>
                 {hasHiddenCharacters(memo.value) ? " (contains hidden characters)" : null}
-                {useMediator ? ", applied on the delivery payment from the helper account" : ""}
+                {useMediator && !prepareOnly
+                  ? ", applied on the delivery payment from the helper account"
+                  : ""}
               </>
             ) : (
               "No memo"
             )}
           </div>
           {prepareOnly ? (
-            <div style={{ marginTop: 9, fontSize: 13, color: "var(--fg-2)" }}>
-              Nothing is sent to this address in this run. The close that finishes later sends the
-              balance here.
+            <div
+              data-testid="review-prepare-destination"
+              style={{ marginTop: 9, fontSize: 13, color: "var(--fg-2)" }}
+            >
+              {useMediator
+                ? // the finishing run withdraws the backstop, and its LP token payout is
+                  // refused on a close through the temporary account (assertExchangeCloseCanRun)
+                  "Nothing is sent to this address in this run. The close that finishes later can't go to this address: a close to it runs through a temporary account that forwards only XLM, and the Blend backstop withdrawal pays out its BLND-USDC LP token. Finish the close to your own Stellar address."
+                : "Nothing is sent to this address in this run. The close that finishes later sends the balance here."}
             </div>
           ) : (
             <div style={{ marginTop: 9, fontSize: 13, color: "var(--fg-2)" }}>
