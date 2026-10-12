@@ -39,12 +39,11 @@ export function PlanRow({
   const isRunning = !landed && (node.status === "signed" || node.status === "submitted");
   const isSkipped = !landed && node.status === "skipped";
   const isFailed = !landed && node.status === "failed";
-  // a step whose preview check passed, distinct from a step not yet checked. In the plan/review this is the central output of the dry run, so
-  // it must read differently from a plain "pending" step. But during LIVE
-  // execution a not-yet-run step is still "simulated", and its accent-check badge
-  // reads as "done": there it must render as pending (waiting) so only a real
-  // "confirmed" step shows the green check.
-  const isSimulated = mode !== "live" && node.status === "simulated";
+  // a step whose preview check passed. on the review it is the dry run's result,
+  // so it reads apart from an unchecked step. during the live run a step that
+  // has not run yet is still "simulated", and a check there would read as done,
+  // so live mode draws it as pending and only a confirmed step gets the check.
+  const isSimulated = mode === "plan" && node.status === "simulated";
   const isPending = !isDone && !isRunning && !isSkipped && !isFailed && !isSimulated;
 
   // plan mode surfaces the network fee up-front so cost is visible before
@@ -98,9 +97,7 @@ export function PlanRow({
                     ? "Failed: "
                     : isSkipped
                       ? "Skipped: "
-                      : isSimulated
-                        ? "Simulated: "
-                        : "Pending: "}
+                      : "Pending: "}
             </span>
           ) : (
             // the plan view shows status only as color and a badge, so say it
@@ -213,35 +210,6 @@ export function PlanRow({
                     border: "1.5px solid var(--border-2)",
                   }}
                 />
-              ) : null}
-              {isSimulated ? (
-                // dry-run passed, not yet executing: a faint accent ring with a
-                // small check, distinct from the empty "pending" circle
-                <span
-                  title={`${simulatedBadgeLabel(node)} for this step`}
-                  style={{
-                    position: "absolute",
-                    inset: 0,
-                    borderRadius: "50%",
-                    border: "1.5px solid var(--accent-line)",
-                    display: "grid",
-                    placeItems: "center",
-                  }}
-                >
-                  <svg
-                    width="11"
-                    height="11"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="var(--accent)"
-                    strokeWidth={2.6}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden
-                  >
-                    <path d="M20 6L9 17l-5-5" />
-                  </svg>
-                </span>
               ) : null}
               {isSkipped ? (
                 <span

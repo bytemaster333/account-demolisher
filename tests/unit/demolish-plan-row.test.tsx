@@ -157,3 +157,68 @@ describe("a step built only after earlier steps land (H-18)", () => {
     );
   });
 });
+
+// the review shows a step's check result only as colour and a badge, so the
+// screen-reader prefix has to say it (NPF-26)
+describe("screen-reader status words on a review row", () => {
+  function nodesOf(kind: PlanNode["kind"]): PlanNode {
+    const node = topologicalOrder(makeTree({ positions: blendPositions() })).find(
+      (n) => n.kind === kind,
+    );
+    if (node === undefined) throw new Error(`no ${kind} node`);
+    return node;
+  }
+
+  function rowText(node: PlanNode, mode: "plan" | "live", index?: number): string {
+    const { unmount } = render(
+      <PlanRow
+        node={node}
+        network={TESTNET}
+        mode={mode}
+        {...(index !== undefined ? { index } : {})}
+      />,
+    );
+    const text = screen.getByTestId("plan-row").textContent ?? "";
+    unmount();
+    return text;
+  }
+
+  it("says the classic close was checked offline, not dry run", () => {
+    const close = tenOpClose();
+    expect(rowText(close, "plan", 3)).toMatch(/^Step 3, Checked offline: /);
+  });
+
+  it("says a simulated soroban step passed its dry run", () => {
+    const repay = nodesOf("RepayBlend");
+    repay.status = "simulated";
+    expect(rowText(repay, "plan", 1)).toMatch(/^Step 1, Dry run passed: /);
+  });
+
+  it("says a soroban step failed its dry run", () => {
+    const repay = nodesOf("RepayBlend");
+    repay.status = "failed";
+    expect(rowText(repay, "plan", 2)).toMatch(/^Step 2, Dry run failed: /);
+  });
+
+  it("says a skipped step is skipped and gives it no step number", () => {
+    const withdraw = nodesOf("WithdrawBlend");
+    withdraw.status = "skipped";
+    const text = rowText(withdraw, "plan");
+    expect(text).toMatch(/^Skipped: /);
+    expect(text).not.toMatch(/Step \d/);
+  });
+
+  it("says an unchecked step was not checked", () => {
+    const repay = nodesOf("RepayBlend");
+    expect(repay.status).toBe("pending");
+    expect(rowText(repay, "plan", 1)).toMatch(/^Step 1, Not checked: /);
+  });
+
+  // during the run a step that has not run is still "simulated", and it must
+  // read as waiting, not as a passed check
+  it("reads a not-yet-run simulated step as pending during the run", () => {
+    const repay = nodesOf("RepayBlend");
+    repay.status = "simulated";
+    expect(rowText(repay, "live")).toMatch(/^Pending: /);
+  });
+});
