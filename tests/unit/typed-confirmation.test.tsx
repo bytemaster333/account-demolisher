@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, act, fireEvent, cleanup } from "@testing-library/react";
 
 import { TypedConfirmation } from "@/components/confirmations/TypedConfirmation";
+import { describeCloseMemo } from "@/components/multisig/memo-label";
 
 // The final destructive gate combines a typed last-4 match AND a timed unlock
 // delay (canConfirm = matches && delayElapsed). These lock in that the DELAY half
@@ -166,6 +167,28 @@ describe("TypedConfirmation memo", () => {
     expect(screen.getByTestId("typed-confirmation-memo").textContent).toBe(
       "Memo (TEXT): 12345 (contains hidden characters)",
     );
+  });
+
+  it("words every memo type exactly as the signing pages do", () => {
+    for (const memo of [
+      { type: "text", value: "dep​osit" },
+      { type: "id", value: "18446744073709551615" },
+      { type: "hash", value: "ab".repeat(32) },
+      { type: "return", value: "cd".repeat(32) },
+    ] as const) {
+      render(
+        <TypedConfirmation
+          destination={DEST}
+          memo={memo}
+          onConfirm={() => {}}
+          onCancel={() => {}}
+        />,
+      );
+      expect(screen.getByTestId("typed-confirmation-memo").textContent).toBe(
+        describeCloseMemo(memo),
+      );
+      cleanup();
+    }
   });
 });
 

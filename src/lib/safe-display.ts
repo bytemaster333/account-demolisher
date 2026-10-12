@@ -8,11 +8,12 @@
 // call sites: AllowanceList (components/allowance-viewer) renders sep-41
 // symbol() text through safeDisplay and badges a non-ASCII one with
 // hasNonAscii. the multisig memo label (components/multisig/memo-label.ts)
-// shows a signing request's text memo through it, the demolish review panel
-// (app/demolish/_components/ReviewPanel.tsx) and the confirmation dialog
-// (components/confirmations/TypedConfirmation.tsx) the close memo, and the root
-// error boundary (app/error.tsx) its error message. the memo label, the review
-// panel and the dialog flag a memo with hasHiddenCharacters. the scam
+// shows a signing request's text memo through it, and the confirmation dialog
+// (components/confirmations/TypedConfirmation.tsx) the close memo through the
+// same label's memoParts. the demolish review panel
+// (app/demolish/_components/ReviewPanel.tsx) shows the close memo through it
+// directly, and the root error boundary (app/error.tsx) its error message. the
+// memo label and the review panel flag a memo with hasHiddenCharacters. the scam
 // heuristics use safeDisplay for their messages and hasHiddenCharacters to flag
 // a held token's name; the demolish page runs them over the held tokens
 // (use-held-token-scam). other on-chain strings are not routed through here.

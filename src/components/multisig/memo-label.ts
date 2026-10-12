@@ -10,8 +10,31 @@ import type { ClassicMemo } from "@/lib/types/plan";
 // are stripped for display and their presence is said out loud
 export function describeCloseMemo(memo: CloseMemo): string {
   if (memo.type === "none") return "No memo";
-  const hidden = hasHiddenCharacters(memo.value) ? " (contains hidden characters)" : "";
-  return `Memo (${memo.type.toUpperCase()}): ${safeDisplay(memo.value)}${hidden}`;
+  const { label, value, note } = memoParts({ type: memo.type, value: memo.value });
+  return `${label} ${value}${note}`;
+}
+
+// the pieces of that label, for the confirmation dialog, which styles the value
+// on its own. one source, so the final gate and the signing pages can't word a
+// memo differently.
+export interface MemoParts {
+  // "Memo (TEXT):"
+  readonly label: string;
+  // the value with hidden characters stripped
+  readonly value: string;
+  // " (contains hidden characters)" when any were stripped, otherwise ""
+  readonly note: string;
+}
+
+export function memoParts(memo: {
+  readonly type: ClassicMemo["type"] | Exclude<CloseMemo["type"], "none">;
+  readonly value: string;
+}): MemoParts {
+  return {
+    label: `Memo (${memo.type.toUpperCase()}):`,
+    value: safeDisplay(memo.value),
+    note: hasHiddenCharacters(memo.value) ? " (contains hidden characters)" : "",
+  };
 }
 
 export function closeMemoForConfirmation(memo: CloseMemo): ClassicMemo | null {

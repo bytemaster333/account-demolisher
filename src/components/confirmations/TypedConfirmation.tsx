@@ -7,8 +7,8 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 
+import { memoParts } from "@/components/multisig/memo-label";
 import { AddressActions } from "@/components/ui";
-import { hasHiddenCharacters, safeDisplay } from "@/lib/safe-display";
 import type { ClassicMemo } from "@/lib/types/plan";
 
 export interface TypedConfirmationProps {
@@ -143,6 +143,7 @@ export function TypedConfirmation({
   const showMismatch = typed.length === 4 && !matches;
   const timerPct = delayMs > 0 ? Math.min(100, (elapsedMs / delayMs) * 100) : 100;
   const timerLeft = Math.max(0, Math.ceil((delayMs - elapsedMs) / 1000));
+  const memoText = memo ? memoParts(memo) : null;
 
   return (
     <div
@@ -285,15 +286,15 @@ export function TypedConfirmation({
               wordBreak: "break-all",
             }}
           >
-            {memo === null ? (
+            {memoText === null ? (
               "No memo"
             ) : (
               <>
-                Memo ({memo.type.toUpperCase()}):{" "}
+                {memoText.label}{" "}
                 <span style={{ font: "600 13px/1.5 'Geist Mono', monospace", color: "var(--fg)" }}>
-                  {safeDisplay(memo.value)}
+                  {memoText.value}
                 </span>
-                {hasHiddenCharacters(memo.value) ? " (contains hidden characters)" : null}
+                {memoText.note}
                 {/* a prepare-only run never forwards, so there is no payment to carry it yet */}
                 {memoViaMediator && !prepareOnly
                   ? " (added to the delivery payment from the helper account)"
