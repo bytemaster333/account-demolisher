@@ -93,7 +93,9 @@ vi.mock("@/lib/stellar/ledger-clock", async (importOriginal) => ({
 
 import {
   REVOKE_GATE_RELEASE_MS,
+  RevokeFailedOnChainError,
   RevokeFeeChangedError,
+  confirmRevoke,
   prepareRevoke,
   prepareRevokes,
   submitPreparedRevoke,
@@ -311,5 +313,35 @@ describe("prepareRevokes for a sweep", () => {
       onProgress: () => controller.abort(new Error("cancelled")),
     });
     await expect(run).rejects.toThrow(/cancelled/);
+  });
+});
+
+// a revoke the ledger rejected is a definite failure, unlike one the poll never
+// saw, which may still land (NPF-29)
+describe("confirmRevoke", () => {
+  const failedResult = new xdr.TransactionResult({
+    feeCharged: xdr.Int64.fromString("100"),
+    result: xdr.TransactionResultResult.txFailed([]),
+    ext: xdr.TransactionResultExt.v0(),
+  });
+
+  it("names an on-chain failure as definite, with the result code", async () => {
+    pollTransaction.mockResolvedValue({
+      status: "FAILED",
+      resultXdr: failedResult,
+      diagnosticEventsXdr: [],
+    });
+    const err = await confirmRevoke(TESTNET, "ab".repeat(32)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RevokeFailedOnChainError);
+    expect((err as Error).message).toMatch(/failed on chain/);
+    expect((err as Error).message).toMatch(/txFailed/);
+  });
+
+  it("keeps a revoke the poll never saw apart from a failed one", async () => {
+    pollTransaction.mockResolvedValue({ status: "NOT_FOUND" });
+    const err = await confirmRevoke(TESTNET, "cd".repeat(32)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(RevokeFailedOnChainError);
+    expect((err as Error).message).toMatch(/may still land/);
   });
 });

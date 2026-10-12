@@ -19,7 +19,11 @@ vi.mock("@/lib/soroban/revoke", async (importOriginal) => ({
 import { RevokeButton } from "@/components/allowance-viewer/RevokeButton";
 import { TESTNET } from "@/lib/config/networks";
 import type { AllowanceRecord } from "@/lib/soroban/allowances";
-import { RevokeFeeChangedError, type PreparedRevoke } from "@/lib/soroban/revoke";
+import {
+  RevokeFailedOnChainError,
+  RevokeFeeChangedError,
+  type PreparedRevoke,
+} from "@/lib/soroban/revoke";
 import type { Connector } from "@/lib/wallet/connector";
 
 const record: AllowanceRecord = {
@@ -127,15 +131,38 @@ describe("RevokeButton confirmation", () => {
     expect(screen.getByTestId("revoke-unconfirmed").textContent).toMatch(/fetch failed/);
   });
 
-  it("offers a retry after an on-chain failure", async () => {
-    confirmRevoke.mockRejectedValue(new Error("Revoke transaction failed on-chain: trapped"));
+  // the ledger rejected it: the allowance is definitely still live, which is
+  // not the "may still land" case (NPF-29)
+  it("shows an on-chain failure as a failure and offers a retry", async () => {
+    confirmRevoke.mockRejectedValue(new RevokeFailedOnChainError("trapped"));
     await clickRevoke();
     await act(async () => {
       await Promise.resolve();
     });
     expect(screen.queryByText("Revoked")).toBeNull();
-    expect(screen.getByTestId("revoke-unconfirmed").textContent).toMatch(/failed on-chain/);
+    expect(screen.queryByTestId("revoke-unconfirmed")).toBeNull();
+    const failed = screen.getByTestId("revoke-failed");
+    expect(failed.getAttribute("role")).toBe("alert");
+    expect(failed.textContent).toMatch(/failed on chain: trapped/);
+    expect(failed.textContent).toMatch(/The allowance is still live/);
+    expect(failed.textContent).not.toMatch(/Not confirmed/);
+    expect(screen.getByRole("link").getAttribute("href")).toContain("abcdef0123456789");
     expect(screen.getByTestId(testId).textContent).toBe("Retry revoke");
+  });
+
+  it("drops the failed transaction's link once a retry starts", async () => {
+    confirmRevoke.mockRejectedValue(new RevokeFailedOnChainError("trapped"));
+    await clickRevoke();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("link")).toBeTruthy();
+    prepareRevoke.mockReturnValue(new Promise(() => {}));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId(testId));
+    });
+    expect(screen.getByTestId(testId).textContent).toMatch(/Checking the fee/);
+    expect(screen.queryByRole("link")).toBeNull();
   });
 });
 

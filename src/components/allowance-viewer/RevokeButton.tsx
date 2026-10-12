@@ -14,6 +14,7 @@ import { type AllowanceRecord } from "@/lib/soroban/allowances";
 import {
   confirmRevoke,
   prepareRevoke,
+  RevokeFailedOnChainError,
   RevokeFeeChangedError,
   submitPreparedRevoke,
   type PreparedRevoke,
@@ -40,9 +41,9 @@ export interface RevokeButtonProps {
 
 // preparing: building and simulating. review: the fee is on screen, nothing is
 // signed yet. submitting: signing and sending. submitted: the rpc took it,
-// waiting for a ledger. unconfirmed: the poll ended without a success
-// (reverted, timed out, or the poll itself failed), so the allowance may still
-// be live.
+// waiting for a ledger. unconfirmed: the poll timed out or itself failed, so
+// the revoke may still land. rejected: the ledger included it and it failed, so
+// the allowance is still live.
 type Phase =
   | "idle"
   | "preparing"
@@ -51,6 +52,7 @@ type Phase =
   | "submitted"
   | "confirmed"
   | "unconfirmed"
+  | "rejected"
   | "failed";
 
 export function RevokeButton({
@@ -72,6 +74,8 @@ export function RevokeButton({
   const onPrepare = useCallback(async () => {
     setError(null);
     setFeeNote(null);
+    // a retry starts a new transaction; the last one's link no longer applies
+    setTxHash(null);
     // read ref only here, never during render
     const connector = connectorRef?.current ?? null;
     if (connector === null) {
@@ -110,7 +114,7 @@ export function RevokeButton({
         await confirmRevoke(network, submitHash);
       } catch (e: unknown) {
         setError(errorMessage(e, "The revoke did not confirm."));
-        setPhase("unconfirmed");
+        setPhase(e instanceof RevokeFailedOnChainError ? "rejected" : "unconfirmed");
         return;
       }
       setPhase("confirmed");
@@ -331,6 +335,24 @@ export function RevokeButton({
         </span>
         {txLink("var(--warning)")}
       </div>
+    ) : phase === "rejected" ? (
+      <div
+        role="alert"
+        data-testid="revoke-failed"
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "flex-end",
+          gap: 3,
+          fontSize: 11,
+          color: "var(--danger)",
+          maxWidth: 220,
+          textAlign: "right",
+        }}
+      >
+        <span>{error} The allowance is still live.</span>
+        {txLink("var(--danger)")}
+      </div>
     ) : error !== null ? (
       <p
         role="alert"
@@ -370,7 +392,9 @@ export function RevokeButton({
       </Button>
     ) : (
       <Button variant="danger" size="sm" onClick={() => void onPrepare()} data-testid={testId}>
-        {phase === "failed" || phase === "unconfirmed" ? "Retry revoke" : "Revoke"}
+        {phase === "failed" || phase === "unconfirmed" || phase === "rejected"
+          ? "Retry revoke"
+          : "Revoke"}
       </Button>
     );
 

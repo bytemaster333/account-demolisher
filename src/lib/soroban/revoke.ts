@@ -92,6 +92,15 @@ export class RevokeFeeChangedError extends Error {
   }
 }
 
+// the ledger included the revoke and it failed, so the allowance is still live.
+// a poll that never saw the transaction is a different case: it may still land.
+export class RevokeFailedOnChainError extends Error {
+  constructor(reason: string) {
+    super(`Revoke transaction failed on chain${reason ? `: ${reason}` : ""}`);
+    this.name = "RevokeFailedOnChainError";
+  }
+}
+
 // guard against the wallet's active account drifting from the one the revoke is
 // for. a kit connector signs with whatever account the extension currently
 // holds, so a user switching accounts inside the wallet after connecting would
@@ -321,9 +330,8 @@ export async function confirmRevoke(network: NetworkConfig, hash: string): Promi
   const result = await pollSoroban(getRpc(network), hash);
   if (result.status === "SUCCESS") return;
   if (result.status === "FAILED") {
-    throw new Error(
-      `Revoke transaction failed on-chain${result.reason ? `: ${result.reason}` : ""}`,
-    );
+    // the decoded reason is empty when the rpc kept no diagnostic events
+    throw new RevokeFailedOnChainError(result.reason !== "" ? result.reason : result.resultCode);
   }
   throw new Error("Revoke did not confirm within the polling window; it may still land.");
 }
