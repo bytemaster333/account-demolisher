@@ -23,6 +23,7 @@ import {
   WALLET_CONNECT_ID,
   WalletConnectModule,
   WalletConnectTargetChain,
+  type TWalletConnectModuleParams,
 } from "@creit.tech/stellar-wallets-kit/modules/wallet-connect";
 
 import { getPublicEnv } from "@/lib/config/env";
@@ -110,12 +111,22 @@ function wcTargetChain(network: NetworkConfig): WalletConnectTargetChain {
 }
 
 // the real WalletConnect module. constructing it runs SignClient.init (a relay
-// socket) and createAppKit, whose mandatory INITIALIZE event reports the page url
-// to pulse.walletconnect.org. so it is built only when WalletConnect is actually
-// used: the user picks it in the picker, or signs with a restored WalletConnect
-// session. never on page load, session restore or another wallet's connect.
+// socket) and createAppKit. so it is built only when WalletConnect is actually
+// used: the user picks it in the picker, signs with a restored WalletConnect
+// session, or disconnects or closes a restored session. never on page load,
+// session restore or another wallet's connect.
 let wcModule: WalletConnectModule | null = null;
 let wcChain: WalletConnectTargetChain = WalletConnectTargetChain.PUBLIC;
+
+type AppKitOptions = NonNullable<TWalletConnectModuleParams["appKitOptions"]>;
+
+// AppKit defaults features.analytics to true and then reports every modal event
+// to pulse.walletconnect.org. its INITIALIZE and CONNECT_SUCCESS events are sent
+// even with analytics off; the CSP (src/lib/config/csp.ts) blocks those. the kit
+// spreads appKitOptions over its own createAppKit options, so only the keys set
+// here change; the type still asks for projectId and networks, which the kit
+// already passes itself.
+const APPKIT_OVERRIDES: Partial<AppKitOptions> = { features: { analytics: false } };
 
 function realWalletConnect(projectId: string): WalletConnectModule {
   if (wcModule) return wcModule;
@@ -123,6 +134,9 @@ function realWalletConnect(projectId: string): WalletConnectModule {
   wcModule = new WalletConnectModule({
     projectId,
     allowedChains: [wcChain],
+    appKitOptions: APPKIT_OVERRIDES as AppKitOptions,
+    // the sign client's core keeps its own event log for pulse.walletconnect.org
+    signClientOptions: { telemetryEnabled: false },
     metadata: {
       name: "Account Demolisher",
       description: "Close a Stellar account and reclaim its reserves",

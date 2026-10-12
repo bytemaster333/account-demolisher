@@ -4,11 +4,20 @@ import { Keypair } from "@stellar/stellar-sdk";
 
 import { MAINNET, TESTNET } from "@/lib/config/networks";
 
+// the WalletConnect module params these tests look at
+interface WcParams {
+  allowedChains?: string[];
+  appKitOptions?: { features?: { analytics?: boolean } };
+  signClientOptions?: { telemetryEnabled?: boolean };
+}
+
 // counts real WalletConnect constructions: building that module opens a relay
 // socket and makes AppKit report the page url to WalletConnect, so it must only
 // happen when the user actually uses WalletConnect
 const wc = vi.hoisted(() => ({
   constructed: 0,
+  // the params the last real module was built with
+  params: null as WcParams | null,
   address: "",
   // the sign client's open sessions, and every relay disconnect it was asked for
   sessions: new Set<string>(),
@@ -31,7 +40,7 @@ vi.mock("@creit.tech/stellar-wallets-kit/modules/wallet-connect", async (importO
   // then is the session deleted, so two overlapping disconnects of one topic
   // both pass validation and the later delete throws
   class CountingWalletConnectModule {
-    wcParams: { allowedChains?: string[] };
+    wcParams: WcParams;
     readonly #client: {
       session: { keys: string[] };
       disconnect: (p: { topic: string }) => Promise<void>;
@@ -40,8 +49,9 @@ vi.mock("@creit.tech/stellar-wallets-kit/modules/wallet-connect", async (importO
     get signClient() {
       return wc.relayUp ? this.#client : undefined;
     }
-    constructor(params: { allowedChains?: string[] }) {
+    constructor(params: WcParams) {
       wc.constructed++;
+      wc.params = params;
       this.wcParams = params;
       this.#client = {
         session: {
@@ -132,6 +142,7 @@ async function pageLoad(storage: Record<string, string>) {
   vi.resetModules();
   vi.restoreAllMocks();
   wc.constructed = 0;
+  wc.params = null;
   wc.sessions.clear();
   wc.disconnects = [];
   wc.failTopic = null;
@@ -196,6 +207,16 @@ describe("session restore and WalletConnect start-up (L-105)", () => {
     await expect(picked.getAddress()).resolves.toEqual({ address: B });
     await picked.getAddress();
     expect(wc.constructed).toBe(1);
+  });
+
+  it("starts WalletConnect with AppKit analytics and sign-client telemetry off (M-61)", async () => {
+    const { kit } = await pageLoad({});
+    kit.getKit(TESTNET);
+    wc.address = B;
+    const picked = kitApi.activeModules.value.find((m) => m.productId === "wallet_connect")!;
+    await picked.getAddress();
+    expect(wc.params?.appKitOptions?.features?.analytics).toBe(false);
+    expect(wc.params?.signClientOptions?.telemetryEnabled).toBe(false);
   });
 
   it("leaves WalletConnect out entirely when no project id is configured", async () => {

@@ -102,6 +102,16 @@ describe("Content-Security-Policy", () => {
     expect(directive(csp, "font-src")).toContain("https://fonts.reown.com");
   });
 
+  it("blocks the WalletConnect telemetry hosts (M-61)", () => {
+    const csp = buildContentSecurityPolicy({ isDev: false });
+    for (const name of ["connect-src", "img-src", "frame-src", "default-src"]) {
+      expect(directive(csp, name).filter((src) => src.includes("pulse."))).toEqual([]);
+    }
+    // dev keeps the same list, only adding ws: for HMR
+    const devConnect = directive(buildContentSecurityPolicy({ isDev: true }), "connect-src");
+    expect(devConnect.filter((src) => src.includes("pulse."))).toEqual([]);
+  });
+
   it("allows the icon host of every wallet module the picker loads", () => {
     const img = directive(buildContentSecurityPolicy({ isDev: false }), "img-src");
     const hosts = walletIconUrls().map((u) => new URL(u).origin);
