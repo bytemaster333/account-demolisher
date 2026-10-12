@@ -263,6 +263,44 @@ describe("a reviewed close that splits says why before Create", () => {
       }),
     ).toThrow(/doesn't trust USD issued by/);
   });
+
+  it("asks a market-sell plan to rebuild rather than naming its split", () => {
+    const result = gate({ tree, audit, deterministic: false });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/may sell assets on the market\. Rebuild it/);
+  });
+
+  it("names both claims when one is untrusted and another has no disposal", () => {
+    // EUR is trusted but nothing was chosen for it, so its claim is split off
+    // too; naming only USD would send the signer back to a review that refuses
+    const eurIssuer = Keypair.random().publicKey();
+    const eur = { kind: "credit", code: "EUR", issuer: eurIssuer } as const;
+    const both = makeAudit({
+      balances: [
+        ...makeAudit().balances,
+        {
+          asset: eur,
+          amount: "1.0000000",
+          limit: "1000.0000000",
+          buyingLiabilities: "0",
+          sellingLiabilities: "0",
+          isAuthorized: true,
+        },
+      ],
+      claimableBalances: [
+        cb(CB_KEEP, { asset: { kind: "credit", code: "USD", issuer }, issuerAuthRequired: false }),
+        cb(CB_DROP, { asset: eur }),
+      ],
+    });
+    const bothTree = makeTree({
+      audit: both,
+      opts: { selectedClaimableBalanceIds: [CB_KEEP, CB_DROP] },
+    });
+    const result = gate({ tree: bothTree, audit: both });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/doesn't trust USD issued by/);
+    expect(result.reason).toMatch(/\(EUR issued by G[A-Z0-9]+\) has no disposal chosen/);
+  });
 });
 
 describe("claims that may fail inside the 72h signing window (H-29)", () => {

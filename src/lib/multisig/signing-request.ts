@@ -191,26 +191,34 @@ export function bundleSplitReason(audit: AccountAudit, batches: readonly Classic
     audit.balances.filter((b) => b.asset.kind === "credit").map((b) => pathKey(b.asset)),
   );
   const untrusted = new Map<string, string>();
+  const undisposed = new Map<string, string>();
   for (const op of leading) {
     if (op.kind !== "claim_claimable_balance") continue;
     const asset = op.metadata["asset"] as AssetIdentifier;
-    if (asset.kind === "credit" && !trusted.has(pathKey(asset))) {
-      untrusted.set(pathKey(asset), `${asset.code} issued by ${asset.issuer}`);
-    }
+    if (asset.kind !== "credit") continue;
+    const target = trusted.has(pathKey(asset)) ? undisposed : untrusted;
+    target.set(pathKey(asset), `${asset.code} issued by ${asset.issuer}`);
   }
+  // both can apply at once; naming only one would send the user back to a
+  // review that refuses again for the other
+  const reasons: string[] = [];
   if (untrusted.size > 0) {
-    return (
+    reasons.push(
       `This account doesn't trust ${[...untrusted.values()].join(", ")}, so claiming that ` +
-      "claimable balance means opening the trustline and claiming in a transaction of its " +
-      "own first. Leave the balance unclaimed, or close with all signers present."
+        "claimable balance means opening the trustline and claiming in a transaction of its " +
+        "own first. Leave the balance unclaimed, or close with all signers present.",
     );
   }
-  return (
-    "A claimable balance in a credit asset has no disposal chosen (send it to the " +
-    "destination or return it to its issuer), so it would have to be claimed in a " +
-    "transaction of its own first. Choose a disposal for it, leave it unclaimed, or close " +
-    "with all signers present."
-  );
+  if (undisposed.size > 0 || reasons.length === 0) {
+    const named = undisposed.size > 0 ? ` (${[...undisposed.values()].join(", ")})` : "";
+    reasons.push(
+      `A claimable balance in a credit asset${named} has no disposal chosen (send it to the ` +
+        "destination or return it to its issuer), so it would have to be claimed in a " +
+        "transaction of its own first. Choose a disposal for it, leave it unclaimed, or close " +
+        "with all signers present.",
+    );
+  }
+  return reasons.join(" ");
 }
 
 // ── envelope inspection (never blind-sign) ───────────────────────────────────

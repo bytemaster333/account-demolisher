@@ -76,12 +76,10 @@ export function assessSigningRequest(input: {
           "can't be packaged as one signing request. Handle it with all signers present first.",
       };
     }
-    // a claim that has to land first, or more than 100 operations, splits the
-    // close; Create would refuse it, so say why before the signer gets there
-    const split = splitMessage(input.tree, input.audit);
-    if (split !== null) return { ok: false, reason: split };
   }
 
+  // before the split check: a plan that sells on the market splits for its own
+  // reasons, and the fix for those is the rebuild, not anything the split names
   if (!input.deterministic) {
     return {
       ok: false,
@@ -89,6 +87,13 @@ export function assessSigningRequest(input: {
         "This plan was built for a single signer and may sell assets on the market. Rebuild it " +
         "as a shared-account close before creating a signing request.",
     };
+  }
+
+  // a claim that has to land first, or more than 100 operations, splits the
+  // close; Create would refuse it, so say why before the signer gets there
+  if (input.tree !== null) {
+    const split = splitMessage(input.tree, input.audit);
+    if (split !== null) return { ok: false, reason: split };
   }
 
   return { ok: true };
