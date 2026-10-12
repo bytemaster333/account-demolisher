@@ -276,9 +276,6 @@ export function DemolishFlow(): React.JSX.Element {
 
   // the destination the run was built with; the form can drift from it
   const runDestination = runInput?.destination ?? choices.form.destination.trim();
-  const destination = choices.form.destination.trim();
-  const destHead = destination.length > 4 ? destination.slice(0, -4) : "";
-  const destTail = destination.length > 0 ? destination.slice(-4) : "";
 
   const baseReserve = useBaseReserve(runNetwork, audit !== null);
   const baseReserveStroops = baseReserve.stroops;
@@ -512,16 +509,9 @@ export function DemolishFlow(): React.JSX.Element {
         </>
       ) : null}
 
-      {/* hidden inputs preserved for E2E selectors */}
-      <input
-        type="hidden"
-        data-testid="connector-ready"
-        value={hasConnector ? "true" : "false"}
-        readOnly
-      />
+      {/* the flow unit tests read the machine state here to tell apart states
+          that look the same on screen */}
       <input type="hidden" data-testid="machine-state" value={String(state)} readOnly />
-      <input type="hidden" data-testid="dest-head" value={destHead} readOnly />
-      <input type="hidden" data-testid="dest-tail" value={destTail} readOnly />
     </div>
   );
 }
