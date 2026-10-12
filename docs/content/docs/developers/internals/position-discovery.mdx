@@ -80,7 +80,7 @@ it owes, zero included. A transfer of a classic asset into an account without a 
 traps the whole claim (`Error(Contract, #13)`). So the plan opens a payout trustline for every
 gauge token of the pool before the claim, whether that gauge owes anything or not. When one of those
 lines cannot be opened (the issuer authorizes every new line, the issuer account is gone, or the
-existing line is not authorized), the claim is left out, and the Warnings step names the pool and
+existing line is not authorized), the claim is left out, and the Check the plan step names the pool and
 the rewards that closing the account forfeits. A gauge never blocks the close.
 
 **Exits** (`src/lib/adapters/aquarius/`):

@@ -44,7 +44,7 @@ ordinary balances: the close sells them for XLM, or you choose what happens to t
 ### A Blend loan you cannot repay from the account
 
 Repaying a Blend loan needs the borrowed token in the account. Blend has no built-in swap, and the
-app does not buy the token for you. When the account holds too little, the Warnings step says so.
+app does not buy the token for you. When the account holds too little, the Check the plan step says so.
 Send enough of the borrowed token to the account, or repay the loan in Blend, then come back.
 
 When the borrowed asset is locked in your open DEX offers or a classic liquidity pool, the plan
@@ -61,8 +61,8 @@ prepares the close:
    first so they are queued with your deposit. When that claim fails on chain today, **Fix issues**
    shows the accrued BLND and asks you to leave it unclaimed. Emissions on a deposit you already
    queued in full, or in a pool where nothing is deposited any more, are not claimed: claiming them
-   would add new backstop shares under a new withdrawal lock. **About this plan** in the Warnings
-   step names the BLND each such pool leaves behind. These rewards never block the close.
+   would add new backstop shares under a new withdrawal lock. **About this plan** in the Check
+   the plan step names the BLND each such pool leaves behind. These rewards never block the close.
 2. The plan queues the withdrawal and runs every other exit, and the account stays open. Review
    reads **Review the preparation**, the confirmation reads **Confirm preparing the close**, and the
    result reads **Preparation done, account still open** with the unlock date.
@@ -82,13 +82,13 @@ in a pool you already left are not found, so claim those in Aquarius before you 
 The claim pays out every gauge of the pool, so the plan first opens a trustline for each gauge's
 token, including a gauge that owes you nothing. When the account cannot hold one of those tokens
 (its issuer has to approve every new trustline, the issuer no longer exists, or your trustline is
-not authorized), the claim is left out and the Warnings step tells you which rewards closing the
+not authorized), the claim is left out and the Check the plan step tells you which rewards closing the
 account forfeits. The close goes ahead either way.
 
 ## Leftover balances
 
 Unwinding a position leaves tokens in the account. The classic close sells every classic balance
-for XLM through the Stellar DEX, unless you choose in the Warnings step to send it as-is or return
+for XLM through the Stellar DEX, unless you choose in the Check the plan step to send it as-is or return
 it to its issuer. Two sales that trade through the same market run in separate transactions, and
 each one is quoted again after the one before it lands. When that fresh quote is worse than the
 one you reviewed by more than the slippage tolerance, the close stops before selling it and the
@@ -100,7 +100,7 @@ by more than 2%, is never sold without your answer. See
 
 A SEP-41 token someone sent you lives inside its own contract, not as a trustline balance, so it
 does not block the close and stays on the deleted account unless you move it. The **Standalone
-tokens** card in the Warnings step lists the ones the scan found. Nothing is swept unless you tick
+tokens** card in the Check the plan step lists the ones the scan found. Nothing is swept unless you tick
 it, and you can convert the ticked ones to XLM through Soroswap instead of sending them as-is.
 
 When a token you ticked cannot be sent, the account still closes, and the result reads **Account
@@ -118,7 +118,7 @@ to merge while any is open or unreadable.
 ## Protocols that are not supported
 
 The close unwinds Blend, Aquarius and Soroswap. When the account holds tokens from contracts the app
-does not recognize, the Warnings step says that any of them can be a position in another app (a
+does not recognize, the Check the plan step says that any of them can be a position in another app (a
 pool share, a loan or vault receipt, a staked balance). Unwind those in their own app first: the
 close can only move such a token as-is, which does not reclaim what it stands for.
 
