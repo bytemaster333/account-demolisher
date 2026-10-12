@@ -57,8 +57,9 @@
 // worst blend row, so no cap changed for it. those withdraws trapped before
 // 2026-10-07 only because the builder asked for i128::MAX of a reserve whose
 // b_rate is below 1e12, which overflowed the pool's bToken conversion (fixed in
-// blend/exit.ts v2WithdrawRequest). the aquarius worst cases restore the pool's reward pages (one RewardInvData page is 3,316 bytes),
-// the blend ones up to 8 entries.
+// blend/exit.ts v2WithdrawRequest). the aquarius worst cases restore the pool's
+// reward pages (one RewardInvData page is 3,316 bytes), the blend ones up to 8
+// entries.
 //
 // 17 of the 70 testnet remove_liquidity runs cost 36,812,907 to 174,084,607 and
 // declared 14,700 to 53,204 write bytes: those checked restore an archived
