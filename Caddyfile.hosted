@@ -1,0 +1,24 @@
+# the proxy for the hosted deployment (docker-compose.hosted.yml): the app on
+# SITE_ADDRESS, the documentation on DOCS_ADDRESS, and the www name redirected
+# to the app. caddy obtains and renews a certificate for each name.
+#
+# client X-Forwarded-For is handled as in the main Caddyfile, so the app still
+# sees exactly one trusted hop (TRUSTED_PROXY_HOPS=1).
+{$SITE_ADDRESS} {
+	request_body {
+		max_size 64KB
+	}
+	reverse_proxy app:3000
+}
+
+www.{$SITE_ADDRESS} {
+	redir https://{$SITE_ADDRESS}{uri} permanent
+}
+
+{$DOCS_ADDRESS} {
+	# the docs take no request bodies; search is a GET
+	request_body {
+		max_size 64KB
+	}
+	reverse_proxy docs:3020
+}

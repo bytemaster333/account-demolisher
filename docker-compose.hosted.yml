@@ -1,0 +1,25 @@
+# the hosted deployment: the app and proxy from docker-compose.yml plus the
+# documentation site, each on its own domain.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.hosted.yml up --build -d
+#
+# needs SITE_ADDRESS (the app's domain, e.g. demolisher.app) and DOCS_ADDRESS
+# (e.g. docs.demolisher.app) in .env, both pointing at this host.
+services:
+  proxy:
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?set SITE_ADDRESS to the app domain}
+      DOCS_ADDRESS: ${DOCS_ADDRESS:?set DOCS_ADDRESS to the docs domain}
+    volumes:
+      - ./Caddyfile.hosted:/etc/caddy/Caddyfile:ro
+    depends_on:
+      docs:
+        condition: service_healthy
+
+  docs:
+    build:
+      context: ./docs
+    expose:
+      - "3020"
+    init: true
+    restart: unless-stopped

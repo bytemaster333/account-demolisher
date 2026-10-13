@@ -2,6 +2,7 @@
   "name": "account-demolisher-docs",
   "version": "0.0.0",
   "private": true,
+  "packageManager": "pnpm@12.10.1",
   "scripts": {
     "build": "next build",
     "dev": "next dev --port 3020",

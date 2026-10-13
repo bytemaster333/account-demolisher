@@ -1,0 +1,16 @@
+# allow-list: only what the docs build reads reaches the builder
+*
+
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!next.config.mjs
+!tsconfig.json
+!postcss.config.mjs
+!app
+!components
+!content
+!lib
+
+**/.DS_Store
+**/.env*
