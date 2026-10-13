@@ -188,7 +188,7 @@ See [SEP support](/docs/developers/protocol/sep-support).
 ## Run one instance
 
 The signing relay and the rate limiter keep their state in process memory, and the metrics store
-serializes its writes inside one process. Behind a load balancer, instances do not share signing
+and the co-sign log serialize their writes inside one process. Behind a load balancer, instances do not share signing
 requests, and a co-signer routed to another instance does not find the request. Run one instance.
 
 See [Signing relay API](/docs/developers/protocol/signing-relay).
