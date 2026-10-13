@@ -1162,6 +1162,11 @@ async function runFinalClassic(node: FinalClassicTxNode, run: Run): Promise<Conf
   const mediator = node.metadata.useMediator ? mediatorSession(run) : null;
   const baseReserve = await readBaseReserve(deps.horizon);
   let lastQuotes: string | null = null;
+  // signed transactions of this close that failed in a ledger, so a later stop
+  // never claims nothing was signed. only an operation failure gets that far
+  // (and spends the fee and sequence number); a fee, sequence or expiry
+  // rejection never reaches a ledger.
+  let failedInLedger = 0;
 
   // one batch per phase, re-audited after each lands: a liquidity_pool_withdraw
   // credits assets a later batch must convert and remove, which the same tx
@@ -1213,7 +1218,12 @@ async function runFinalClassic(node: FinalClassicTxNode, run: Run): Promise<Conf
             feePerOpStroops: feeBase,
           },
         );
-        if (stuck.length > 0) throw creditsBlocked(stuck);
+        if (stuck.length > 0) {
+          throw creditsBlocked(stuck, {
+            landed: journal.landedPhases.length,
+            failed: failedInLedger,
+          });
+        }
       };
       const quotedClaims = claimedIn(freshAudit);
       let freshPaths = await quote(freshAudit, quotedClaims);
@@ -1404,6 +1414,7 @@ async function runFinalClassic(node: FinalClassicTxNode, run: Run): Promise<Conf
     } catch (err) {
       const kind = classicRejectionKind(err);
       if (kind === null || attempt === MAX_MERGE_ATTEMPTS) throw err;
+      if (kind === "price" || kind === "drift") failedInLedger += 1;
       refusedQuotes = null;
       switch (kind) {
         case "fee":
@@ -1594,16 +1605,35 @@ function withClaimWindow(
 
 // a conversion the batcher refuses at execute time: the market moved past what
 // the user reviewed, or over the price-impact cap. the close stops before
-// signing and the rebuilt plan asks per token.
-function creditsBlocked(stuck: readonly UnroutableCredit[]): CloseFailure {
+// signing this batch and the rebuilt plan asks per token.
+function creditsBlocked(
+  stuck: readonly UnroutableCredit[],
+  signedSoFar: { readonly landed: number; readonly failed: number },
+): CloseFailure {
   const reasons = stuck.map((c) => `${c.code}: ${blockReason(c)}`).join("; ");
   const priced = stuck.some((c) => c.reason !== "no_path");
   return new CloseFailure(
     priced ? "conversion_refused" : "not_mergeable",
     `account_merge blocked: ${stuck.length} credit balance(s) can't be disposed of as reviewed ` +
-      `(${reasons}). Nothing was signed. Rebuild the plan to choose for each one: sell at the ` +
-      "new price, send it to your destination as-is, or return it to its issuer.",
+      `(${reasons}). ${signedSoFarNote(signedSoFar)} Rebuild the plan to choose for each one: ` +
+      "sell at the new price, send it to your destination as-is, or return it to its issuer.",
   );
+}
+
+// what this close has already signed, so a stop never claims less than happened
+function signedSoFarNote(s: { readonly landed: number; readonly failed: number }): string {
+  if (s.landed === 0 && s.failed === 0) return "Nothing was signed.";
+  const parts: string[] = [];
+  if (s.landed > 0) {
+    parts.push(`${s.landed} earlier transaction(s) of this close already landed`);
+  }
+  if (s.failed > 0) {
+    parts.push(
+      `${s.failed} signed attempt(s) failed on the network because the market or the account ` +
+        "changed first; a failed transaction moves no balance and costs only its fee",
+    );
+  }
+  return `${parts.join(", and ")}. Nothing else was signed.`;
 }
 
 function blockReason(c: UnroutableCredit): string {

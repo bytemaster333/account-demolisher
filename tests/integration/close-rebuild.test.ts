@@ -120,6 +120,21 @@ describe("integration: RETRY that rebuilds a failed close (testnet)", () => {
       ),
     );
 
+    // horizon prices paths from its own copy of the order book, which can trail
+    // the ledger. confirm only once it quotes the new bid, so the close's
+    // re-quote sees the move and stops before signing; against a stale quote it
+    // would sign a sale the network then fails for missing its floor.
+    const deadline = Date.now() + 60_000;
+    for (;;) {
+      const paths = await horizon.strictSendPaths(tst, "100", [Asset.native()]).call();
+      const best = Math.max(0, ...paths.records.map((p) => Number(p.destination_amount)));
+      if (best > 0 && best <= 100) break;
+      if (Date.now() > deadline) {
+        throw new Error(`horizon still quotes ${best} XLM for 100 RTRY a minute after the move`);
+      }
+      await new Promise((r) => setTimeout(r, 2_000));
+    }
+
     const sequenceBefore = (await horizon.loadAccount(f.kp.publicKey())).sequence;
     confirm(actor);
     const failed = await waitForOutcome(actor);

@@ -566,6 +566,50 @@ describe("a conversion that misses its floor on chain", () => {
     expect(d.connector.signTransaction).toHaveBeenCalledTimes(1);
   });
 
+  it("says a failed attempt was signed when the re-quote then stops the close", async () => {
+    // the first quote is stale: the signed sale misses its floor on chain, and the
+    // fresh quote is below what the user reviewed
+    resolveCreditPaths
+      .mockResolvedValueOnce(path("2000.0000000"))
+      .mockResolvedValueOnce(path("1000.0000000"));
+    const d = deps();
+    d.submitClassic.mockRejectedValueOnce(priceMiss());
+    const t = tree(
+      finalNode([], {
+        reviewedConversionQuotes: {
+          [`USDC:${USDC_ISSUER}`]: {
+            sourceAmount: "500.0000000",
+            destinationAmount: "2000.0000000",
+          },
+        },
+      }),
+    );
+    const err = await run(t, d).catch((e: unknown) => e);
+    expect(err).toMatchObject({ kind: "conversion_refused" });
+    const message = (err as Error).message;
+    expect(message).not.toContain("Nothing was signed.");
+    expect(message).toContain("1 signed attempt(s) failed on the network");
+    expect(message).toContain("Nothing else was signed.");
+    expect(d.connector.signTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("says nothing was signed when the first re-quote stops the close", async () => {
+    resolveCreditPaths.mockResolvedValue(path("1000.0000000"));
+    const d = deps();
+    const t = tree(
+      finalNode([], {
+        reviewedConversionQuotes: {
+          [`USDC:${USDC_ISSUER}`]: {
+            sourceAmount: "500.0000000",
+            destinationAmount: "2000.0000000",
+          },
+        },
+      }),
+    );
+    await expect(run(t, d)).rejects.toThrow(/Nothing was signed\./);
+    expect(d.connector.signTransaction).not.toHaveBeenCalled();
+  });
+
   it("does retry when the market moved and the quote changed", async () => {
     resolveCreditPaths
       .mockResolvedValueOnce(path("2000.0000000"))
