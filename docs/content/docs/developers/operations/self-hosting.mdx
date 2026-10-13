@@ -70,6 +70,33 @@ declared as a volume. The build context is an
 allow-list (`.dockerignore`), so `.env` files and anything else outside the sources never reach the
 builder.
 
+### Run a signed release
+
+Publishing a GitHub release runs `.github/workflows/release.yml`. It repeats the checks CI runs
+(typecheck, lint, format, unit and integration tests, the dependency audit, end-to-end tests),
+builds the app, and attaches `account-demolisher-<tag>.tar.gz` to the release. The archive holds
+`.next`, `public`, `package.json`, `next.config.ts` and the lockfile. A signed SLSA
+build-provenance attestation records that this workflow built the archive from the tagged commit.
+The public build settings are baked in at that point: the repository's variables, or else
+`testnet`, `reference`, the reference WalletConnect project id and `https://demolisher.app`.
+
+`scripts/deploy-release.sh` runs that archive on a Compose host instead of building from source:
+
+```bash
+scripts/deploy-release.sh v1.0.0 user@host -i ~/.ssh/key.pem
+```
+
+1. It downloads the archive and checks it with `gh attestation verify`. The archive must be signed
+   by `release.yml` in this repository, from the commit the tag points to, on a GitHub-hosted
+   runner.
+2. It copies the repository at that commit to the host, followed by the archive.
+3. It starts the stack with `docker-compose.release.yml` layered on top. That file builds the app
+   image from `release/Dockerfile`, which refuses any archive whose SHA-256 differs from the
+   verified one, installs the archive's production dependencies from its lockfile, and runs the
+   same non-root image as the source build.
+
+The host keeps its own `.env` for the runtime secrets. The script never reads or sends it.
+
 ## Proxy and rate limits
 
 Every API route is rate-limited per client address. A route handler has no peer address, so the

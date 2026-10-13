@@ -88,6 +88,9 @@ Thumbs.db
 !THREAT-MODEL.md
 !scripts/qa/README.md
 
+# release artifacts scripts/deploy-release.sh downloads; the attested file lives on github
+release/*.tar.gz
+
 # internal working files (owner rule: internal artifacts live in resources/ and are never committed)
 resources/
 .claude/

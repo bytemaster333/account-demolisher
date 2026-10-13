@@ -1,0 +1,19 @@
+# runs the app from a signed release artifact instead of building it from
+# source. layer it over the other compose files:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.hosted.yml \
+#     -f docker-compose.release.yml up --build -d
+#
+# scripts/deploy-release.sh sets the three RELEASE_* values after it has
+# verified the artifact's provenance attestation; release/Dockerfile then builds
+# only from a file with that exact sha256. the NEXT_PUBLIC_* build args from
+# docker-compose.yml still reach the build but go unused: the artifact already
+# has its public settings baked in.
+services:
+  app:
+    image: account-demolisher:${RELEASE_TAG:?set RELEASE_TAG to the release being deployed}
+    build:
+      context: ./release
+      args:
+        ARTIFACT: ${RELEASE_ARTIFACT:?set RELEASE_ARTIFACT to the artifact file name}
+        ARTIFACT_SHA256: ${RELEASE_SHA256:?set RELEASE_SHA256 to the verified artifact digest}
