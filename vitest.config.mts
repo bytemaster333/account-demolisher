@@ -12,6 +12,7 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["tests/unit/**/*.test.{ts,tsx}"],
+    setupFiles: ["tests/helpers/unit-setup.ts"],
     passWithNoTests: false,
     // `pnpm test:coverage`, which ci runs. the measured scope is the logic the
     // unit suite exists for: the close engine, adapters and safety checks

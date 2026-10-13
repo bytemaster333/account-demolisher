@@ -109,8 +109,32 @@ The route authenticates the token, applies the rate limit, and then:
 | `NETWORK_MISMATCH`   | 400    | `network` differs from the network bound into the token   |
 | validator codes      | 400    | See [Validation failure codes](#validation-failure-codes) |
 | `SIGNING_FAILED`     | 500    | Signing a validated envelope threw                        |
+| `COSIGN_LOG_FAILED`  | 500    | The co-signature could not be written to the co-sign log  |
 
 Success answers `{ "ok": true, "signedXdr": "..." }`.
+
+### The co-sign log
+
+Before it returns a signature, the route appends one JSON line to `cosign.jsonl` in
+`METRICS_DB_DIR` and syncs it to disk. A signature leaves the server only once its line is on disk.
+When the write fails, the route answers `COSIGN_LOG_FAILED` and keeps the signature, so the log
+holds every forward the server has handed out, including one that never reached the ledger.
+
+| Field         | Value                                         |
+| ------------- | --------------------------------------------- |
+| `signedAt`    | When the server signed, in Unix milliseconds  |
+| `network`     | `mainnet` or `testnet`                        |
+| `txHash`      | The hash of the co-signed transaction, in hex |
+| `mediator`    | The mediator account                          |
+| `destination` | The destination of both operations            |
+| `memoXdr`     | The memo, as base64 XDR                       |
+| `amount`      | The payment, in XLM                           |
+| `fee`         | The fee, in stroops                           |
+| `maxTime`     | The end of the time bounds, in Unix seconds   |
+
+Every field is part of the signed envelope, and lands on the ledger once the forward is submitted.
+The log never holds the flow token or its nonce, because with the master seed they derive the
+mediator key.
 
 ### Fee and attempts
 
@@ -119,8 +143,8 @@ capacity, `fee_charged.p90` above it, clamped between 100 and 1,000,000 stroops 
 unreadable answer fails the forward. The forward makes up to four attempts. A forward that expires
 unseen, or a `tx_insufficient_fee` refusal, triples the bid up to the 1,000,000-stroop ceiling.
 `tx_bad_seq`, `tx_too_late` and `tx_no_source_account` reload the mediator, which detects a forward
-another tab already landed. A 429 or an unreachable mediator route is retried three times with
-backoff, honoring `retry-after` up to 60 seconds.
+another tab already landed. A 429, an unreachable mediator route or a `COSIGN_LOG_FAILED` answer is retried three times
+with backoff, honoring `retry-after` up to 60 seconds.
 
 ## Key derivation
 

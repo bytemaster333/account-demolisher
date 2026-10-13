@@ -47,7 +47,7 @@ Never expose these to the client.
 | `MEDIATOR_ALLOWED_ORIGIN` | unset                               | Comma-separated origins allowed to call the mediator routes cross-origin. Unset means same-origin only                                                                                                       |
 | `TRUSTED_PROXY_HOPS`      | `1`                                 | How many reverse proxies in front of the app append to `X-Forwarded-For`. The rate limiter keys on the entry that many places from the right. A whole number, at least 1                                     |
 | `METRICS_ADMIN_TOKEN`     | unset                               | The bearer token for `GET /api/metrics`. Unset, or shorter than 16 characters, makes that read answer 503. Recording metrics does not need it                                                                |
-| `METRICS_DB_DIR`          | `data/` under the working directory | Where the metrics store keeps `closes.jsonl` and `counters.json`. Must be writable. The Docker image sets `/app/data`                                                                                        |
+| `METRICS_DB_DIR`          | `data/` under the working directory | Where the metrics store keeps `closes.jsonl` and `counters.json`, and the mediator its co-sign log, `cosign.jsonl`. Must be writable. The Docker image sets `/app/data`                                      |
 
 ### Validation
 

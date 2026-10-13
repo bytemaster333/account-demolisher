@@ -88,8 +88,8 @@ Server-only:
   on `0` or a non-integer (`src/instrumentation.ts`).
 - `METRICS_ADMIN_TOKEN`: the bearer token for reading `GET /api/metrics` (at least 16
   characters).
-- `METRICS_DB_DIR`: the writable directory for the metrics store. Defaults to `data/` under the
-  working directory; the Docker image uses `/app/data`.
+- `METRICS_DB_DIR`: the writable directory for the metrics store and the mediator's co-sign log.
+  Defaults to `data/` under the working directory; the Docker image uses `/app/data`.
 
 Public (inlined at build time):
 

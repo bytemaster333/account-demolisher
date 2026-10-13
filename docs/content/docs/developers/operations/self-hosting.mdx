@@ -131,8 +131,11 @@ See [Mediator forward protocol](/docs/developers/protocol/mediator).
 ## Metrics
 
 The app records first-party usage events in `METRICS_DB_DIR` (`closes.jsonl` and `counters.json`);
-see [Usage metrics](/docs/developers/security/model#usage-metrics). The directory must be writable
-by the app's user; the Docker image uses `/app/data` on the `metrics` volume. Set
+see [Usage metrics](/docs/developers/security/model#usage-metrics). The same directory holds
+`cosign.jsonl`, the record of every forward the mediator co-signs (see
+[The co-sign log](/docs/developers/protocol/mediator#the-co-sign-log)). The directory must be
+writable by the app's user, because the mediator refuses to co-sign when it cannot record the
+signature; the Docker image uses `/app/data` on the `metrics` volume. Set
 `METRICS_ADMIN_TOKEN` to a random value of at least 16 characters to read the totals:
 
 ```bash

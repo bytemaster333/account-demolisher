@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   Account,
   Asset,
@@ -7,6 +10,7 @@ import {
   Networks,
   Operation,
   TransactionBuilder,
+  type Transaction,
 } from "@stellar/stellar-sdk";
 
 // the route modules are server-only; stub the guard for vitest's node env
@@ -18,6 +22,7 @@ process.env.MEDIATOR_SECRET = MASTER;
 import { encodeMemoCommitment } from "@/lib/mediator/forward-terms";
 import { REFUSED_DESTINATIONS } from "@/lib/safety/cex-registry";
 import { GET, OPTIONS, POST, PUT, __resetRateLimiterForTests } from "@/app/api/mediator/sign/route";
+import { COSIGN_LOG_FILE, type CosignRecord } from "@/server/cosign-log";
 import { MEDIATOR_FLOW_TTL_MS } from "@/server/mediator-secret";
 
 const CEX = Keypair.random().publicKey();
@@ -79,16 +84,35 @@ function post(body: unknown, headers: Record<string, string> = {}): Promise<Resp
   );
 }
 
-beforeEach(() => {
+let dataDir: string;
+
+beforeEach(async () => {
+  dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "mediator-sign-"));
+  vi.stubEnv("METRICS_DB_DIR", dataDir);
   vi.stubEnv("TRUSTED_PROXY_HOPS", "1");
   __resetRateLimiterForTests();
 });
 
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
+  await fs.rm(dataDir, { recursive: true, force: true });
 });
+
+async function cosignLog(): Promise<CosignRecord[]> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(path.join(dataDir, COSIGN_LOG_FILE), "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw e;
+  }
+  return raw
+    .split("\n")
+    .filter((l) => l.length > 0)
+    .map((l) => JSON.parse(l) as CosignRecord);
+}
 
 describe("GET /api/mediator/sign (mint)", () => {
   it("returns a token bound to destination, network and memo, never cacheable", async () => {
@@ -211,6 +235,66 @@ describe("POST /api/mediator/sign (co-sign)", () => {
     expect(body.ok).toBe(true);
     const signed = TransactionBuilder.fromXdr(body.signedXdr, Networks.TESTNET);
     expect(signed.signatures).toHaveLength(1);
+  });
+
+  it("records every forward it co-signs before handing the signature out", async () => {
+    const flow = await mint();
+    const res = await post({
+      envelopeXdr: forwardXdr(flow.mediatorPublicKey, DEPOSIT_MEMO),
+      flowToken: flow.flowToken,
+      network: "testnet",
+    });
+    expect(res.status).toBe(200);
+    const { signedXdr } = (await res.json()) as { signedXdr: string };
+    const signed = TransactionBuilder.fromXdr(signedXdr, Networks.TESTNET) as Transaction;
+    const log = await cosignLog();
+    expect(log).toHaveLength(1);
+    expect(log[0]).toEqual({
+      signedAt: expect.any(Number),
+      network: "testnet",
+      txHash: Buffer.from(signed.hash()).toString("hex"),
+      mediator: flow.mediatorPublicKey,
+      destination: CEX,
+      memoXdr: encodeMemoCommitment(DEPOSIT_MEMO),
+      amount: "100.0000000",
+      fee: "200",
+      maxTime: signed.timeBounds!.maxTime,
+    });
+    // the token's nonce derives the mediator key, so it never reaches the log
+    const raw = await fs.readFile(path.join(dataDir, COSIGN_LOG_FILE), "utf8");
+    expect(raw).not.toContain(flow.flowToken.split(".")[1]);
+  });
+
+  it("records nothing for a forward it refuses", async () => {
+    const flow = await mint();
+    const res = await post({
+      envelopeXdr: forwardXdr(flow.mediatorPublicKey, Memo.text("attacker")),
+      flowToken: flow.flowToken,
+      network: "testnet",
+    });
+    expect(res.status).toBe(400);
+    expect(await cosignLog()).toEqual([]);
+  });
+
+  it("withholds the signature when the co-signature can't be recorded", async () => {
+    const flow = await mint();
+    // a data dir under a regular file can't be created, like a read-only volume
+    const blocker = path.join(dataDir, "not-a-dir");
+    await fs.writeFile(blocker, "x");
+    vi.stubEnv("METRICS_DB_DIR", path.join(blocker, "data"));
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await post({
+      envelopeXdr: forwardXdr(flow.mediatorPublicKey, DEPOSIT_MEMO),
+      flowToken: flow.flowToken,
+      network: "testnet",
+    });
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ ok: false, code: "COSIGN_LOG_FAILED" });
+    expect(body).not.toHaveProperty("signedXdr");
+    expect(err).toHaveBeenCalledWith(
+      expect.stringContaining("could not record a co-signed forward"),
+    );
   });
 
   it("refuses a forward to the committed exchange with an attacker's memo", async () => {

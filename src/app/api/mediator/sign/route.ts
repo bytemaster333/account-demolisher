@@ -6,6 +6,7 @@ import { requireNetwork } from "@/lib/config/networks";
 import { decodeMemoCommitment, isMediatorNetworkId } from "@/lib/mediator/forward-terms";
 import { validateMediatorForwardEnvelope } from "@/lib/mediator/validator";
 import { lookupRefusedDestination } from "@/lib/safety/cex-registry";
+import { appendCosignRecord, cosignRecordFor } from "@/server/cosign-log";
 import { resolveMediatorFlow, startMediatorFlow } from "@/server/mediator-secret";
 import { createLimiter, rateLimitByIp, rateLimitByKey } from "@/server/rate-limit";
 import { readJsonCapped, MAX_JSON_BODY_BYTES, BodyTooLargeError } from "@/server/read-body";
@@ -169,14 +170,31 @@ export async function POST(request: Request): Promise<Response> {
   );
   if (!result.ok) return failure(result.code, result.reason, 400, cors);
 
+  const tx = result.tx;
+  let signedXdr: string;
   try {
-    const tx = result.tx;
     tx.sign(flow.keypair);
-    return jsonResponse({ ok: true, signedXdr: tx.toEnvelope().toXdr("base64") }, 200, cors);
+    signedXdr = tx.toEnvelope().toXdr("base64");
   } catch (err) {
     logMediatorError("POST /api/mediator/sign failed to sign a validated forward", err);
     return failure("SIGNING_FAILED", "Failed to sign envelope.", 500, cors);
   }
+
+  // the signature leaves only once the co-sign log has it on disk, so the log
+  // holds every forward this server ever handed out. a client that gets this
+  // error retries; the balance stays in the mediator meanwhile.
+  try {
+    await appendCosignRecord(cosignRecordFor(tx, flow.networkId, Date.now()));
+  } catch (err) {
+    logMediatorError("POST /api/mediator/sign could not record a co-signed forward", err);
+    return failure(
+      "COSIGN_LOG_FAILED",
+      "The forward was not co-signed because the server could not record it; retry shortly.",
+      500,
+      cors,
+    );
+  }
+  return jsonResponse({ ok: true, signedXdr }, 200, cors);
 }
 
 // starts a fresh mediator flow: a flow token bound to the destination, network

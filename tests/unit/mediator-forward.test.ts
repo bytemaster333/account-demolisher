@@ -439,6 +439,19 @@ describe("submitMediatorForward against a busy or flaky mediator endpoint", () =
     expect(sleeps.slice(-2)).toEqual([2_000, 4_000]);
   });
 
+  it("retries a co-signature the server could not record", async () => {
+    const input = await mergedFlow();
+    interruptSigning(1, () =>
+      Response.json(
+        { ok: false, code: "COSIGN_LOG_FAILED", reason: "could not record it" },
+        { status: 500 },
+      ),
+    );
+    expect((await submitMediatorForward(input, deps)).ok).toBe(true);
+    expect(sleeps).toContain(2_000);
+    expect(fake.submitted).toHaveLength(1);
+  });
+
   it("gives up after three retries and sends nothing", async () => {
     const input = await mergedFlow();
     interruptSigning(4, rateLimited("1"));

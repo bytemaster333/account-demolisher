@@ -325,10 +325,19 @@ async function startingFeePerOp(server: Horizon.Server): Promise<number> {
   return Math.min(Math.max(fee, NETWORK_MIN_FEE_PER_OP), MAX_FORWARD_FEE_PER_OP);
 }
 
+// answers that say nothing about the envelope, only that the server could not
+// serve it right now (busy, unreachable, or unable to record the co-signature)
+const TRANSIENT_ENDPOINT_CODES: ReadonlySet<string> = new Set([
+  "RATE_LIMITED",
+  "NETWORK_ERROR",
+  "COSIGN_LOG_FAILED",
+]);
+
 // one call to a mediator endpoint, retried on a 429 (waiting what the server
-// asked, capped) or a transport failure. a refusal is never retried. this runs
-// after the user's balance is already in the mediator, so a busy endpoint must
-// not end the forward on its first answer.
+// asked, capped), a transport failure, or a co-signature the server could not
+// record. a refusal is never retried. this runs after the user's balance is
+// already in the mediator, so a busy endpoint must not end the forward on its
+// first answer.
 async function withEndpointRetry<T extends { ok: boolean }>(
   call: () => Promise<T | MediatorFailure>,
   sleep: (ms: number) => Promise<void>,
@@ -337,7 +346,7 @@ async function withEndpointRetry<T extends { ok: boolean }>(
   for (let retry = 0; retry < ENDPOINT_RETRIES; retry++) {
     if (result.ok) return result;
     const failure = result as MediatorFailure;
-    if (failure.code !== "RATE_LIMITED" && failure.code !== "NETWORK_ERROR") return result;
+    if (!TRANSIENT_ENDPOINT_CODES.has(failure.code)) return result;
     const backoff = ENDPOINT_BACKOFF_MS * 2 ** retry;
     const asked =
       failure.retryAfterSeconds === undefined ? backoff : failure.retryAfterSeconds * 1000;
