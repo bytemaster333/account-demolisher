@@ -77,13 +77,15 @@ design/
 # os
 Thumbs.db
 
-# all markdown by default except the repo readme, the two public policy
-# documents (the disclosure policy and the architecture overview) and the qa
-# seeders' readme, which auditors use to reproduce manual testnet checks
+# all markdown by default except the repo readme, the public policy
+# documents (the disclosure policy, the architecture overview and the stride
+# threat model) and the qa seeders' readme, which auditors use to reproduce
+# manual testnet checks
 *.md
 !README.md
 !SECURITY.md
 !ARCHITECTURE.md
+!THREAT-MODEL.md
 !scripts/qa/README.md
 
 # internal working files (owner rule: internal artifacts live in resources/ and are never committed)

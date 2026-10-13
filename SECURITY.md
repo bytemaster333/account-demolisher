@@ -3,8 +3,9 @@
 Account Demolisher signs irreversible transactions: a merged account is gone. This file says how to
 report a vulnerability, what the app trusts, what defends each boundary, and the risks that remain.
 The full threat model is the
-[security model](https://docs.demolisher.app/docs/developers/security/model) page, and the review
-history is on the [audit status](https://docs.demolisher.app/docs/developers/security/audit) page.
+[security model](https://docs.demolisher.app/docs/developers/security/model) page, the STRIDE threat
+model with the dataflow diagram is [THREAT-MODEL.md](THREAT-MODEL.md), and the review history is on
+the [audit status](https://docs.demolisher.app/docs/developers/security/audit) page.
 
 ## Reporting a vulnerability
 

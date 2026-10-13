@@ -159,7 +159,8 @@ Full documentation is at <https://docs.demolisher.app>, built from the `docs/` f
   [audit status](https://docs.demolisher.app/docs/developers/security/audit)
 - [Self-hosting](https://docs.demolisher.app/docs/developers/operations/self-hosting)
 
-[SECURITY.md](SECURITY.md) covers reporting a vulnerability, and
+[SECURITY.md](SECURITY.md) covers reporting a vulnerability,
+[THREAT-MODEL.md](THREAT-MODEL.md) is the STRIDE threat model with its dataflow diagram, and
 [ARCHITECTURE.md](ARCHITECTURE.md) gives a map of the code.
 
 ## License

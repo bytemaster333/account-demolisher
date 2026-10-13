@@ -1,0 +1,147 @@
+<svg viewBox="0 0 1000 650" width="1000" height="650" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#222"/></marker>
+  </defs>
+  <style>
+    .tb{fill:none;stroke:#c0392b;stroke-width:2;stroke-dasharray:8 5}
+    .tbl{fill:#c0392b;font-weight:bold;font-size:12px}
+    .ext{fill:#fff;stroke:#222;stroke-width:1.5}
+    .proc{fill:#eef4ff;stroke:#2457a6;stroke-width:1.5}
+    .sbg{fill:#fff8e6}
+    .sl{stroke:#a67a00;stroke-width:1.5}
+    .f{stroke:#222;stroke-width:1.3;fill:none;marker-end:url(#a)}
+    .f2{stroke:#222;stroke-width:1.3;fill:none;marker-end:url(#a);marker-start:url(#a)}
+    .ln{stroke:#222;stroke-width:1.3;fill:none}
+    .fl{font-size:10.5px;fill:#111;font-weight:600}
+    .t{font-size:12px;font-weight:600}
+    .s{font-size:10.5px;fill:#333}
+  </style>
+
+  <!-- external users -->
+  <rect class="ext" x="40" y="22" width="170" height="52"/>
+  <text class="t" x="125" y="44" text-anchor="middle">E1 Account owner</text>
+  <text class="s" x="125" y="61" text-anchor="middle">reviews, confirms</text>
+  <rect class="ext" x="255" y="22" width="190" height="52"/>
+  <text class="t" x="350" y="44" text-anchor="middle">E3 Co-signers</text>
+  <text class="s" x="350" y="61" text-anchor="middle">their own browser and wallet</text>
+
+  <!-- TB1 browser -->
+  <rect class="tb" x="20" y="98" width="450" height="400" rx="10"/>
+  <text class="tbl" x="32" y="116">TB1  Account owner's browser (trusted)</text>
+  <rect class="proc" x="40" y="128" width="190" height="54" rx="25"/>
+  <text class="t" x="135" y="151" text-anchor="middle">P1 Discovery + audit</text>
+  <text class="s" x="135" y="168" text-anchor="middle">account, allowances, positions</text>
+  <rect class="proc" x="260" y="128" width="190" height="54" rx="25"/>
+  <text class="t" x="355" y="151" text-anchor="middle">P2 Plan + simulate</text>
+  <text class="s" x="355" y="168" text-anchor="middle">pure generator, batcher</text>
+  <rect class="proc" x="40" y="218" width="190" height="54" rx="25"/>
+  <text class="t" x="135" y="241" text-anchor="middle">P3 Sign-time guards</text>
+  <text class="s" x="135" y="258" text-anchor="middle">allow-list, auth tree, fee caps</text>
+  <rect class="proc" x="260" y="218" width="190" height="54" rx="25"/>
+  <text class="t" x="355" y="241" text-anchor="middle">P4 Executor</text>
+  <text class="s" x="355" y="258" text-anchor="middle">rebuild, verify, submit</text>
+  <rect class="proc" x="40" y="308" width="190" height="54" rx="25"/>
+  <text class="t" x="135" y="331" text-anchor="middle">P5 Mediator client</text>
+  <text class="s" x="135" y="348" text-anchor="middle">flow, forward builder</text>
+  <rect class="proc" x="260" y="308" width="190" height="54" rx="25"/>
+  <text class="t" x="355" y="331" text-anchor="middle">P6 Secret-key connector</text>
+  <text class="s" x="355" y="348" text-anchor="middle">seed in memory only</text>
+  <rect class="sbg" x="40" y="400" width="190" height="44"/>
+  <line class="sl" x1="40" y1="400" x2="230" y2="400"/><line class="sl" x1="40" y1="444" x2="230" y2="444"/>
+  <text class="t" x="135" y="418" text-anchor="middle">D1 Browser storage</text>
+  <text class="s" x="135" y="434" text-anchor="middle">recovery records, flow tokens</text>
+  <text class="s" x="40" y="462">D1 also holds the close journal and</text>
+  <text class="s" x="40" y="476">the mainnet acknowledgement</text>
+
+  <path class="f" d="M125,74 V126"/><text class="fl" x="131" y="90">F1</text>
+  <path class="f" d="M230,155 H258"/>
+  <path class="f" d="M355,182 V216"/>
+  <path class="f" d="M258,245 H232"/>
+  <path class="f" d="M300,272 L200,306"/>
+  <path class="f" d="M355,272 V306"/>
+  <path class="f" d="M135,362 V398"/><text class="fl" x="141" y="386">F9</text>
+
+  <!-- TB2 wallet -->
+  <rect class="tb" x="20" y="520" width="300" height="110" rx="10"/>
+  <text class="tbl" x="32" y="538">TB2  Wallet (separate signer)</text>
+  <rect class="ext" x="40" y="550" width="260" height="62"/>
+  <text class="t" x="170" y="572" text-anchor="middle">E2 Wallet, Ledger or WalletConnect</text>
+  <text class="s" x="170" y="590" text-anchor="middle">shows its own confirmation, signs</text>
+  <path class="f2" d="M450,245 H462 V581 H302"/>
+  <text class="fl" x="330" y="575">F4 unsigned XDR</text>
+  <text class="fl" x="330" y="598">F5 signed envelope</text>
+
+  <!-- TB3 deployment -->
+  <rect class="tb" x="500" y="20" width="485" height="270" rx="10"/>
+  <text class="tbl" x="512" y="38">TB3  Deployment (operator-controlled)</text>
+  <rect class="proc" x="515" y="118" width="130" height="62" rx="25"/>
+  <text class="t" x="580" y="142" text-anchor="middle">P7 Caddy</text>
+  <text class="s" x="580" y="157" text-anchor="middle">TLS, 64 KB cap</text>
+  <text class="s" x="580" y="170" text-anchor="middle">X-Forwarded-For</text>
+  <path class="ln" d="M645,149 H660 M660,69 V249"/>
+  <rect class="proc" x="680" y="48" width="160" height="42" rx="20"/>
+  <text class="t" x="760" y="67" text-anchor="middle">P8 App + CSP</text>
+  <text class="s" x="760" y="82" text-anchor="middle">code every close runs</text>
+  <rect class="proc" x="680" y="108" width="160" height="42" rx="20"/>
+  <text class="t" x="760" y="127" text-anchor="middle">P9 Mediator routes</text>
+  <text class="s" x="760" y="142" text-anchor="middle">mint, co-sign, renew</text>
+  <rect class="proc" x="680" y="168" width="160" height="42" rx="20"/>
+  <text class="t" x="760" y="187" text-anchor="middle">P10 Signing relay</text>
+  <text class="s" x="760" y="202" text-anchor="middle">verify, merge, stream</text>
+  <rect class="proc" x="680" y="228" width="160" height="42" rx="20"/>
+  <text class="t" x="760" y="247" text-anchor="middle">P11 Metrics</text>
+  <text class="s" x="760" y="262" text-anchor="middle">verify close on Horizon</text>
+  <path class="f" d="M660,69 H678"/><path class="f" d="M660,129 H678"/><path class="f" d="M660,189 H678"/><path class="f" d="M660,249 H678"/>
+  <rect class="sbg" x="858" y="110" width="118" height="40"/>
+  <line class="sl" x1="858" y1="110" x2="976" y2="110"/><line class="sl" x1="858" y1="150" x2="976" y2="150"/>
+  <text class="t" x="917" y="126" text-anchor="middle">D2 Server env</text>
+  <text class="s" x="917" y="141" text-anchor="middle">MEDIATOR_SECRET</text>
+  <rect class="sbg" x="858" y="170" width="118" height="40"/>
+  <line class="sl" x1="858" y1="170" x2="976" y2="170"/><line class="sl" x1="858" y1="210" x2="976" y2="210"/>
+  <text class="t" x="917" y="186" text-anchor="middle">D3 Process memory</text>
+  <text class="s" x="917" y="201" text-anchor="middle">requests, rate buckets</text>
+  <rect class="sbg" x="858" y="230" width="118" height="40"/>
+  <line class="sl" x1="858" y1="230" x2="976" y2="230"/><line class="sl" x1="858" y1="270" x2="976" y2="270"/>
+  <text class="t" x="917" y="246" text-anchor="middle">D4 Metrics files</text>
+  <text class="s" x="917" y="261" text-anchor="middle">closes, counters</text>
+  <path class="f" d="M856,130 H842"/><path class="f2" d="M842,190 H856"/><path class="f2" d="M842,250 H856"/>
+
+  <!-- browser and co-signers to the proxy -->
+  <path class="f2" d="M450,155 C480,155 485,149 513,149"/>
+  <path class="f" d="M445,48 C490,48 500,128 513,132"/>
+  <text class="fl" x="476" y="196">F2 F7 F8</text>
+  <text class="fl" x="476" y="210">F10 F11</text>
+  <text class="fl" x="452" y="42">F10</text>
+
+  <!-- TB4 network -->
+  <rect class="tb" x="500" y="315" width="485" height="315" rx="10"/>
+  <text class="tbl" x="512" y="333">TB4  Stellar network and third parties (untrusted)</text>
+  <path class="ln" d="M520,350 H965"/>
+  <path class="f" d="M580,350 V366"/><path class="f" d="M740,350 V366"/><path class="f" d="M900,350 V366"/>
+  <rect class="ext" x="515" y="368" width="135" height="50"/>
+  <text class="t" x="582" y="389" text-anchor="middle">E4 Horizon</text>
+  <text class="s" x="582" y="405" text-anchor="middle">state, classic submit</text>
+  <rect class="ext" x="665" y="368" width="150" height="50"/>
+  <text class="t" x="740" y="389" text-anchor="middle">E5 Soroban RPC</text>
+  <text class="s" x="740" y="405" text-anchor="middle">events, simulate, submit</text>
+  <rect class="ext" x="830" y="368" width="145" height="50"/>
+  <text class="t" x="902" y="389" text-anchor="middle">E6 Aquarius API</text>
+  <text class="s" x="902" y="405" text-anchor="middle">pool discovery</text>
+  <path class="f" d="M582,418 V454"/><path class="f" d="M700,418 V454"/><path class="f" d="M790,418 V454"/>
+  <rect class="sbg" x="515" y="456" width="260" height="46"/>
+  <line class="sl" x1="515" y1="456" x2="775" y2="456"/><line class="sl" x1="515" y1="502" x2="775" y2="502"/>
+  <text class="t" x="645" y="475" text-anchor="middle">D5 Stellar ledger</text>
+  <text class="s" x="645" y="492" text-anchor="middle">account, mediator account, positions</text>
+  <rect class="ext" x="790" y="456" width="185" height="46"/>
+  <text class="t" x="882" y="475" text-anchor="middle">E7 Contracts on chain</text>
+  <text class="s" x="882" y="492" text-anchor="middle">pinned DeFi, arbitrary tokens</text>
+  <path class="f" d="M645,502 V552"/><text class="fl" x="652" y="532">F13 forward + merge</text>
+  <rect class="ext" x="545" y="554" width="230" height="56"/>
+  <text class="t" x="660" y="577" text-anchor="middle">E8 Destination or exchange</text>
+  <text class="s" x="660" y="594" text-anchor="middle">credits by memo on a shared address</text>
+
+  <!-- browser and server to the network -->
+  <path class="f2" d="M450,335 C485,335 490,350 518,350"/>
+  <text class="fl" x="476" y="372">F3 F6</text>
+  <path class="f" d="M940,290 V348"/><text class="fl" x="946" y="310">F12</text>
+</svg>
