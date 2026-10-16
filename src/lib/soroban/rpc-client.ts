@@ -1,6 +1,8 @@
 import { rpc, type FeeBumpTransaction, type Transaction } from "@stellar/stellar-sdk";
 import type { NetworkConfig } from "@/lib/config/networks";
 
+import { parseRetentionFloor } from "./event-retention";
+
 // memoized soroban rpc client per primary rpc url. the client fails over across
 // the network's vetted endpoints when the current one rate-limits or faults, so
 // heavy discovery (Soroswap pair walks, allowance event scans, per-pool Blend
@@ -40,11 +42,14 @@ const JSONRPC_PROCESSING_LIMIT = -32001;
 
 // which thrown errors justify switching endpoints. only host-specific faults are
 // worth retrying elsewhere: rate limits (429), upstream 5xx, the processing-limit
-// throttle, and network/timeout errors. a deterministic 4xx or json-rpc error is
-// the same on every host, so failing over just multiplies load. the sdk throws a
-// json-rpc error as the plain {code, message} object from the response body, and
-// an http failure as an axios-style error carrying response.status.
+// throttle, network/timeout errors, and a getEvents range below what this host
+// holds (hosts keep different history; see scanStartFromHealth). a deterministic
+// 4xx or json-rpc error is the same on every host, so failing over just
+// multiplies load. the sdk throws a json-rpc error as the plain {code, message}
+// object from the response body, and an http failure as an axios-style error
+// carrying response.status.
 export function isFailoverError(err: unknown): boolean {
+  if (parseRetentionFloor(err) !== null) return true;
   const status = extractHttpStatus(err);
   if (status !== null) {
     return status === 429 || (status >= 500 && status < 600);

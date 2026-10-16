@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { StrKey } from "@stellar/stellar-sdk";
 
 import { describeIncompleteScan, scanEventWindows } from "@/lib/soroban/event-scan";
+import { buildFailoverServer } from "@/lib/soroban/rpc-client";
 import { addr, fakeEventsRpc, sym } from "./event-scan-fake-rpc";
 
 const USER = "GDQNY3PBOJOKYZSRMK2S7LHHGWZIUISD4QORETLMXEWXBI7KFZZMKTL3";
@@ -39,6 +40,30 @@ describe("scanEventWindows", () => {
       expect(r.startLedger).toBeGreaterThanOrEqual(5_000);
       expect(r.endLedger).toBeDefined();
     }
+  });
+
+  it("scans the whole window when a short host answers the health check, through a full host", async () => {
+    // a load-balanced endpoint: the primary restarted and holds only the newest
+    // ledgers, the fallback holds the full window (testnet, 2026-10-16)
+    const events = [ping(5_100), ping(12_000), ping(19_999)];
+    const short = fakeEventsRpc({
+      oldestLedger: 18_000,
+      latestLedger: 20_000,
+      ledgerRetentionWindow: 15_001,
+      events,
+    });
+    const full = fakeEventsRpc({ oldestLedger: 5_000, latestLedger: 20_000, events });
+    const res = await scanEventWindows(buildFailoverServer([short.server, full.server]), FILTERS, {
+      lastLedger: 20_000,
+      windowLedgers: 4_000,
+      minWindowLedgers: 100,
+      concurrency: 2,
+      budgetMs: 5_000,
+    });
+    expect(res.incomplete).toBeNull();
+    expect(res.events.map((e) => e.ledger)).toEqual([5_100, 12_000, 19_999]);
+    // the old windows went to the full host after the short one refused them
+    expect(full.requests.some((r) => (r.startLedger ?? 0) < 18_000)).toBe(true);
   });
 
   it("halves a window the host refuses as too costly instead of failing the scan", async () => {

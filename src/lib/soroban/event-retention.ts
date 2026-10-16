@@ -15,6 +15,32 @@ export const RETENTION_RETRY_MARGIN_LEDGERS = 60;
 // bounded re-clamp retries so a second range error can't loop forever.
 export const MAX_RETENTION_RETRIES = 3;
 
+// how far a host's history may fall short of its configured window before it
+// counts as a short host rather than one whose window just slid a little
+export const SHORT_HOST_TOLERANCE_LEDGERS = 1_000;
+
+// the first ledger a scan should ask for, judged from one getHealth answer. a
+// load-balanced endpoint can mix hosts with different history: on 2026-10-16
+// soroban-testnet.stellar.org answered from hosts holding the full 120,960
+// ledgers and from one holding about 9,800, which had restarted. that host's
+// oldest ledger is not the network's floor, so a scan sized by it would quietly
+// cover hours instead of days. a host short of its own configured window is
+// ignored in favour of that window; requests below its floor then fail over to
+// a host that has them (isFailoverError), and a floor every host reports is
+// still clamped to by the scanners.
+export function scanStartFromHealth(health: {
+  readonly latestLedger: number;
+  readonly oldestLedger: number;
+  readonly ledgerRetentionWindow?: number;
+}): number {
+  const window = health.ledgerRetentionWindow;
+  const held = health.latestLedger - health.oldestLedger + 1;
+  if (typeof window === "number" && window > 0 && held < window - SHORT_HOST_TOLERANCE_LEDGERS) {
+    return Math.max(1, health.latestLedger - window + 1) + RETENTION_RETRY_MARGIN_LEDGERS;
+  }
+  return health.oldestLedger + RETENTION_RETRY_MARGIN_LEDGERS;
+}
+
 // parses the retention floor from a getEvents "ledger range: N - M" error, checking
 // both the direct message and a nested cause. returns null if the error isn't a
 // recognizable range error.

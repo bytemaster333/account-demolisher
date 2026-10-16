@@ -109,6 +109,30 @@ describe("buildFailoverServer", () => {
   });
 });
 
+describe("a getEvents range a host does not hold", () => {
+  const rangeError = {
+    code: -32600,
+    message: "startLedger must be within the ledger range: 5214911 - 5224363",
+  };
+
+  it("is failover-worthy, since hosts keep different history", () => {
+    expect(isFailoverError(rangeError)).toBe(true);
+  });
+
+  it("is retried on the next host, and the last host's answer stands", async () => {
+    const aFn = vi.fn().mockRejectedValue(rangeError);
+    const bFn = vi.fn().mockResolvedValue("from-b");
+    const server = buildFailoverServer([
+      fakeServer({ getEvents: aFn }),
+      fakeServer({ getEvents: bFn }),
+    ]);
+    await expect(
+      (server as unknown as { getEvents: () => Promise<unknown> }).getEvents(),
+    ).resolves.toBe("from-b");
+    expect(aFn).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("isFailoverError reads json-rpc error objects and real http statuses only", () => {
   it("fails over on the rpc's processing-limit throttle, thrown as a plain object", () => {
     expect(

@@ -26,6 +26,9 @@ export interface FakeEventsRpcOptions {
   readonly hangAtOrBelow?: number;
   // ms each request takes (real timers, or advanced fake ones)
   readonly latencyMs?: number;
+  // the window the host is configured to keep; defaults to what it holds. set it
+  // larger to model a host that restarted and holds less than its window
+  readonly ledgerRetentionWindow?: number;
 }
 
 export function eventId(ledger: number, index: number): string {
@@ -100,7 +103,8 @@ export function fakeEventsRpc(opts: FakeEventsRpcOptions) {
       status: "healthy",
       latestLedger: opts.latestLedger,
       oldestLedger: opts.oldestLedger,
-      ledgerRetentionWindow: opts.latestLedger - opts.oldestLedger,
+      ledgerRetentionWindow:
+        opts.ledgerRetentionWindow ?? opts.latestLedger - opts.oldestLedger + 1,
     }),
     getEvents,
   } as unknown as rpc.Server;

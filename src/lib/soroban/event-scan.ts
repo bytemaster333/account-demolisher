@@ -17,6 +17,7 @@ import {
   MAX_RETENTION_RETRIES,
   RETENTION_RETRY_MARGIN_LEDGERS,
   parseRetentionFloor,
+  scanStartFromHealth,
 } from "./event-retention";
 import { isProcessingLimitError } from "./rpc-client";
 
@@ -97,14 +98,11 @@ export async function scanEventWindows(
 
   // start at the host's reported floor instead of sending a request that is
   // bound to fail below it. the margin covers the floor advancing while the
-  // newer windows run first.
+  // newer windows run first. a host holding less than its configured window is
+  // not taken as the floor (scanStartFromHealth).
   const health = await server.getHealth();
   const lastLedger = Math.min(opts.lastLedger, health.latestLedger);
-  let rangeStart = Math.max(
-    1,
-    lastLedger - lookback + 1,
-    health.oldestLedger + RETENTION_RETRY_MARGIN_LEDGERS,
-  );
+  let rangeStart = Math.max(1, lastLedger - lookback + 1, scanStartFromHealth(health));
 
   const queue: Window[] = [];
   for (let end = lastLedger + 1; end > rangeStart; end -= opts.windowLedgers) {

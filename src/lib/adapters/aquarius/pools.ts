@@ -18,6 +18,7 @@ import {
   MAX_RETENTION_RETRIES,
   RETENTION_RETRY_MARGIN_LEDGERS,
   parseRetentionFloor,
+  scanStartFromHealth,
 } from "@/lib/soroban/event-retention";
 import { getAquariusRouterId } from "@/lib/adapters/aquarius/client";
 import { findConcentratedPool } from "@/lib/adapters/aquarius/concentrated-pools";
@@ -423,15 +424,13 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
     const latest = await this.server.getLatestLedger();
     // start a margin above the host's reported floor, as event-scan.ts does: a
     // start at exactly latest - retention is already below the floor by the time
-    // the request lands, and every scan would pay a failed request and a retry
+    // the request lands, and every scan would pay a failed request and a retry.
+    // a host holding less than its configured window is not taken as the floor
+    // (scanStartFromHealth)
     const health = await this.server.getHealth();
     let startLedger = Math.min(
       latest.sequence,
-      Math.max(
-        1,
-        latest.sequence - this.lookbackLedgers,
-        health.oldestLedger + RETENTION_RETRY_MARGIN_LEDGERS,
-      ),
+      Math.max(1, latest.sequence - this.lookbackLedgers, scanStartFromHealth(health)),
     );
 
     // the router emits deposit/withdraw with topics [symbol, Vec<Address> tokens,

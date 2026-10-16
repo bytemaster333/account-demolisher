@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
 
-import { EVENT_RETENTION_WINDOW_LEDGERS, parseRetentionFloor } from "@/lib/soroban/event-retention";
+import {
+  EVENT_RETENTION_WINDOW_LEDGERS,
+  RETENTION_RETRY_MARGIN_LEDGERS,
+  parseRetentionFloor,
+  scanStartFromHealth,
+} from "@/lib/soroban/event-retention";
 
 // the rejection testnet rpc gave on 2026-10-12 for getEvents({ startLedger: 2 }):
 // a plain json-rpc error object, not an Error instance
@@ -35,5 +40,40 @@ describe("parseRetentionFloor", () => {
 describe("EVENT_RETENTION_WINDOW_LEDGERS", () => {
   it("covers the stock 7-day rpc window at 5 seconds a ledger", () => {
     expect(EVENT_RETENTION_WINDOW_LEDGERS).toBe((7 * 24 * 60 * 60) / 5);
+  });
+});
+
+describe("scanStartFromHealth", () => {
+  const M = RETENTION_RETRY_MARGIN_LEDGERS;
+
+  it("starts a margin above the floor of a host that holds its whole window", () => {
+    expect(
+      scanStartFromHealth({
+        latestLedger: 200_000,
+        oldestLedger: 79_041,
+        ledgerRetentionWindow: 120_960,
+      }),
+    ).toBe(79_041 + M);
+  });
+
+  it("ignores the floor of a host holding far less than its window", () => {
+    // the restarted testnet host of 2026-10-16: 9,792 of 120,960 ledgers
+    expect(
+      scanStartFromHealth({
+        latestLedger: 5_224_703,
+        oldestLedger: 5_214_911,
+        ledgerRetentionWindow: 120_960,
+      }),
+    ).toBe(5_224_703 - 120_960 + 1 + M);
+  });
+
+  it("never asks below ledger 1 on a network younger than the window", () => {
+    expect(
+      scanStartFromHealth({ latestLedger: 5_000, oldestLedger: 2, ledgerRetentionWindow: 120_960 }),
+    ).toBe(1 + M);
+  });
+
+  it("uses the floor when the host reports no window", () => {
+    expect(scanStartFromHealth({ latestLedger: 10_000, oldestLedger: 4_000 })).toBe(4_000 + M);
   });
 });
