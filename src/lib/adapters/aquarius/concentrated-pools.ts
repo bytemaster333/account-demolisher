@@ -5,10 +5,11 @@
 // entry point. the lists below were enumerated on chain through the router's
 // get_tokens_sets_count + get_pools_for_tokens_range, keeping every pool whose
 // contract instance runs the concentrated wasm below (router.pool_type answers
-// "concentrated" for them). last enumeration 2026-10-08: mainnet 43 of the 368
-// router pools (6 more than on 2026-10-06; the REST api listed 41 of them that
-// day), testnet 37 of 364, and every router pool on either network runs one of
-// three wasms, so no concentrated pool is on another version. a pool deployed
+// "concentrated" for them). last enumeration of mainnet 2026-10-16: 44 of the 369
+// router pools (one more than on 2026-10-08, the XLM/sUSD pool CBNPFXQT...; the
+// REST api listed 42 of them that day, that pool included), and every router
+// pool still runs one of three wasms, so no concentrated pool is on another
+// version. testnet was last enumerated 2026-10-08: 37 of 364. a pool deployed
 // after this snapshot is not on the list; discovery reports it as an error so the
 // merge stays blocked instead of silently leaving the position behind, and
 // tests/integration/mainnet/aquarius-mainnet-exits fails until it is added.
@@ -23,7 +24,7 @@ export interface AquariusConcentratedPool {
   readonly tokens: readonly string[];
 }
 
-export const CONCENTRATED_POOLS_VERIFIED_AT = "2026-10-08";
+export const CONCENTRATED_POOLS_VERIFIED_AT = "2026-10-16";
 export const CONCENTRATED_POOLS_SOURCE =
   "on-chain AquariusAmmRouter get_pools_for_tokens_range enumeration filtered by contract instance wasm; both sets cross-checked against the amm-api.aqua.network pool_type=concentrated listing";
 
@@ -173,6 +174,14 @@ export const MAINNET_CONCENTRATED_POOLS: readonly AquariusConcentratedPool[] = [
     tokens: [
       "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA",
       "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
+    ],
+  },
+  {
+    address: "CBNPFXQT7BMMAZSCAP4Z3VWBXMSFRDRUFABPABPIKPGHGN7IHV3J2MD3",
+    poolIndex: "24f9c991c44acf33fff5f44031c40385d235dc212d7379e824ba3db1c35371f3",
+    tokens: [
+      "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA",
+      "CDFZUVS5YNLXU7VENKOUDEOHCJGKQNVUBWD7KMN6E7ZROKPYPFLRUJFG",
     ],
   },
   {
