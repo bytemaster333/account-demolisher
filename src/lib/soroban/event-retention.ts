@@ -19,6 +19,19 @@ export const MAX_RETENTION_RETRIES = 3;
 // counts as a short host rather than one whose window just slid a little
 export const SHORT_HOST_TOLERANCE_LEDGERS = 1_000;
 
+// a range error whose floor sits this far above the ledger asked for came from a
+// host short of history (a load balancer can send the next request to a full
+// one), not from the window sliding past the request. the scanners ask again
+// instead of narrowing the scan to that host's floor.
+export function isShortHostFloor(floor: number, requestedStart: number): boolean {
+  return floor - requestedStart > SHORT_HOST_TOLERANCE_LEDGERS;
+}
+
+// how often a scanner asks again after a short host's range error before it
+// reports the range as unreadable. with one short host behind a balancer that
+// spreads requests evenly, six refusals in a row is about a 1-in-64 chance.
+export const MAX_SHORT_HOST_RETRIES = 6;
+
 // the first ledger a scan should ask for, judged from one getHealth answer. a
 // load-balanced endpoint can mix hosts with different history: on 2026-10-16
 // soroban-testnet.stellar.org answered from hosts holding the full 120,960

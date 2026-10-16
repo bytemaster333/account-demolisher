@@ -15,7 +15,9 @@ import type { rpc } from "@stellar/stellar-sdk";
 import {
   EVENT_RETENTION_WINDOW_LEDGERS,
   MAX_RETENTION_RETRIES,
+  MAX_SHORT_HOST_RETRIES,
   RETENTION_RETRY_MARGIN_LEDGERS,
+  isShortHostFloor,
   parseRetentionFloor,
   scanStartFromHealth,
 } from "./event-retention";
@@ -66,6 +68,7 @@ interface Window {
   // exclusive, as getEvents reads endLedger
   readonly end: number;
   readonly retentionRetries: number;
+  readonly shortHostRetries: number;
 }
 
 type WindowOutcome =
@@ -106,7 +109,12 @@ export async function scanEventWindows(
 
   const queue: Window[] = [];
   for (let end = lastLedger + 1; end > rangeStart; end -= opts.windowLedgers) {
-    queue.push({ start: Math.max(rangeStart, end - opts.windowLedgers), end, retentionRetries: 0 });
+    queue.push({
+      start: Math.max(rangeStart, end - opts.windowLedgers),
+      end,
+      retentionRetries: 0,
+      shortHostRetries: 0,
+    });
   }
 
   const byId = new Map<string, rpc.Api.EventResponse>();
@@ -190,13 +198,25 @@ export async function scanEventWindows(
         case "split": {
           const mid = w.start + Math.floor((w.end - w.start) / 2);
           // newer half first, so coverage keeps growing back from the tip
-          queue.unshift(
-            { start: mid, end: w.end, retentionRetries: w.retentionRetries },
-            { start: w.start, end: mid, retentionRetries: w.retentionRetries },
-          );
+          queue.unshift({ ...w, start: mid, end: w.end }, { ...w, start: w.start, end: mid });
           break;
         }
         case "floor": {
+          // a host far short of this window's ledgers: ask again, most likely
+          // reaching a host that holds them, rather than giving the range up
+          if (isShortHostFloor(outcome.floor, w.start)) {
+            if (w.shortHostRetries < MAX_SHORT_HOST_RETRIES) {
+              queue.unshift({ ...w, shortHostRetries: w.shortHostRetries + 1 });
+            } else {
+              failure ??= {
+                reason: "rpc-error",
+                detail:
+                  `the RPC kept answering from a host whose history starts at ledger ` +
+                  `${outcome.floor}, so ledgers ${w.start}-${w.end - 1} could not be read`,
+              };
+            }
+            break;
+          }
           const clamped = outcome.floor + RETENTION_RETRY_MARGIN_LEDGERS;
           rangeStart = Math.max(rangeStart, Math.min(clamped, w.end));
           // the whole window aged out of retention: nothing left there to scan
@@ -208,7 +228,7 @@ export async function scanEventWindows(
             };
             break;
           }
-          queue.unshift({ start: clamped, end: w.end, retentionRetries: w.retentionRetries + 1 });
+          queue.unshift({ ...w, start: clamped, retentionRetries: w.retentionRetries + 1 });
           break;
         }
         case "fail":

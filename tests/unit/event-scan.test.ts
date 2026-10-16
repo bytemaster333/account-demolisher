@@ -66,6 +66,47 @@ describe("scanEventWindows", () => {
     expect(full.requests.some((r) => (r.startLedger ?? 0) < 18_000)).toBe(true);
   });
 
+  it("asks again for a window a short host refused, instead of narrowing the scan", async () => {
+    const { server, requests } = fakeEventsRpc({
+      oldestLedger: 5_000,
+      latestLedger: 20_000,
+      // 14,000 sits in a window the short host refuses; dropping that window
+      // would lose it while still calling the scan complete
+      events: [ping(5_100), ping(12_000), ping(14_000), ping(19_999)],
+      shortHostFirst: { floor: 18_000, requests: 3 },
+    });
+    const res = await scanEventWindows(server, FILTERS, {
+      lastLedger: 20_000,
+      windowLedgers: 4_000,
+      minWindowLedgers: 100,
+      concurrency: 1,
+      budgetMs: 5_000,
+    });
+    expect(res.incomplete).toBeNull();
+    expect(res.events.map((e) => e.ledger)).toEqual([5_100, 12_000, 14_000, 19_999]);
+    expect(requests.length).toBeGreaterThan(4);
+  });
+
+  it("reports the range unread when every answer comes from a short host", async () => {
+    // the host holds 2,001 ledgers but is configured for 15,001
+    const { server } = fakeEventsRpc({
+      oldestLedger: 18_000,
+      latestLedger: 20_000,
+      ledgerRetentionWindow: 15_001,
+      events: [ping(19_999)],
+    });
+    const res = await scanEventWindows(server, FILTERS, {
+      lastLedger: 20_000,
+      windowLedgers: 4_000,
+      minWindowLedgers: 100,
+      concurrency: 1,
+      budgetMs: 5_000,
+    });
+    expect(res.incomplete).toMatchObject({ reason: "rpc-error" });
+    // never passed off as a full scan of the window the host is configured for
+    expect(res.incomplete!.detail).toContain("history starts at ledger 18000");
+  });
+
   it("halves a window the host refuses as too costly instead of failing the scan", async () => {
     const { server, requests } = fakeEventsRpc({
       oldestLedger: 1,

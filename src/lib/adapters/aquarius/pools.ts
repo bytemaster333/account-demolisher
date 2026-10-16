@@ -17,6 +17,8 @@ import {
   EVENT_RETENTION_WINDOW_LEDGERS,
   MAX_RETENTION_RETRIES,
   RETENTION_RETRY_MARGIN_LEDGERS,
+  MAX_SHORT_HOST_RETRIES,
+  isShortHostFloor,
   parseRetentionFloor,
   scanStartFromHealth,
 } from "@/lib/soroban/event-retention";
@@ -452,6 +454,7 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
 
     let cursor: string | undefined;
     let retentionRetries = 0;
+    let shortHostRetries = 0;
     let exhausted = false;
     for (let page = 0; ; page++) {
       if (page >= this.maxPages) {
@@ -467,11 +470,21 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
       try {
         resp = await this.server.getEvents(request);
       } catch (err) {
-        // on the first page, a startLedger below the RPC retention floor throws a
-        // "ledger range" error. re-clamp to the reported floor (plus a margin) and
-        // redo this page instead of aborting the whole (fallback) scan.
-        const floor = cursor === undefined ? parseRetentionFloor(err) : null;
-        if (floor === null || retentionRetries >= MAX_RETENTION_RETRIES) throw err;
+        const floor = parseRetentionFloor(err);
+        if (floor === null) throw err;
+        // a host short of history answered (a cursor page always asks for
+        // ledgers an earlier page was served, so a range error there is one too):
+        // ask again for the same page, most likely reaching a host that holds it
+        if (cursor !== undefined || isShortHostFloor(floor, startLedger)) {
+          if (shortHostRetries >= MAX_SHORT_HOST_RETRIES) throw err;
+          shortHostRetries += 1;
+          page -= 1; // the for-loop's page++ then redoes this page
+          continue;
+        }
+        // on the first page, a startLedger the retention window has just slid
+        // past throws a "ledger range" error. re-clamp to the reported floor (plus
+        // a margin) and redo this page instead of aborting the whole scan.
+        if (retentionRetries >= MAX_RETENTION_RETRIES) throw err;
         retentionRetries += 1;
         startLedger = Math.min(latest.sequence, floor + RETENTION_RETRY_MARGIN_LEDGERS);
         page -= 1; // the for-loop's page++ then redoes this page with the clamp

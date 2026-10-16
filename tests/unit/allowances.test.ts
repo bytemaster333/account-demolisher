@@ -138,9 +138,9 @@ describe("allowance scan range", () => {
       events: [approveEvent(30_000, vecValue(5n, 60_000))],
     });
     const health = await fake.server.getHealth();
-    // the host now retains less than it reported a moment ago
+    // the host's window slid on a little since it reported its floor
     const moved = fakeEventsRpc({
-      oldestLedger: 5_000,
+      oldestLedger: 500,
       latestLedger: 50_000,
       events: [approveEvent(30_000, vecValue(5n, 60_000))],
     });
@@ -150,7 +150,28 @@ describe("allowance scan range", () => {
     } as rpc.Server;
     const recs = await enumerateAllowances(server, USER, 50_000, 50_000);
     expect(recs.map((r) => r.amount)).toEqual([5n]);
-    expect(moved.requests.some((r) => r.startLedger === 5_060)).toBe(true);
+    expect(moved.requests.some((r) => r.startLedger === 560)).toBe(true);
+  });
+
+  it("refuses to call a scan complete when the floor jumps far past the health read", async () => {
+    const fake = fakeEventsRpc({
+      oldestLedger: 1,
+      latestLedger: 50_000,
+      events: [approveEvent(30_000, vecValue(5n, 60_000))],
+    });
+    const health = await fake.server.getHealth();
+    // 5,000 ledgers is hours of sliding: a host short of history, not a slide
+    const short = fakeEventsRpc({
+      oldestLedger: 5_000,
+      latestLedger: 50_000,
+      events: [approveEvent(30_000, vecValue(5n, 60_000))],
+    });
+    const server = {
+      getHealth: async () => health,
+      getEvents: short.server.getEvents,
+    } as rpc.Server;
+    const scan = await scanAllowances(server, USER, 50_000, 50_000);
+    expect(scan.incomplete).toMatchObject({ reason: "rpc-error" });
   });
 
   it("reports a partial scan instead of returning it as complete", async () => {

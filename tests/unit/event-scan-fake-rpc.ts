@@ -29,6 +29,9 @@ export interface FakeEventsRpcOptions {
   // the window the host is configured to keep; defaults to what it holds. set it
   // larger to model a host that restarted and holds less than its window
   readonly ledgerRetentionWindow?: number;
+  // the first `requests` getEvents calls answer as if the host's history began
+  // at `floor`: a load balancer routing them to a host that restarted
+  readonly shortHostFirst?: { readonly floor: number; readonly requests: number };
 }
 
 export function eventId(ledger: number, index: number): string {
@@ -56,10 +59,13 @@ export function fakeEventsRpc(opts: FakeEventsRpcOptions) {
     if (opts.latencyMs !== undefined) await new Promise((r) => setTimeout(r, opts.latencyMs));
     if (req.startLedger === undefined) throw new Error("fake rpc: cursor paging is not modelled");
     const start = req.startLedger;
-    if (start < opts.oldestLedger || start > opts.latestLedger) {
+    const short = opts.shortHostFirst;
+    const oldest =
+      short !== undefined && requests.length <= short.requests ? short.floor : opts.oldestLedger;
+    if (start < oldest || start > opts.latestLedger) {
       throw {
         code: -32600,
-        message: `startLedger must be within the ledger range: ${opts.oldestLedger} - ${opts.latestLedger}`,
+        message: `startLedger must be within the ledger range: ${oldest} - ${opts.latestLedger}`,
       };
     }
     const end = Math.min(req.endLedger ?? start + 10_000, opts.latestLedger + 1);

@@ -223,6 +223,58 @@ describe("Aquarius event scan", () => {
     expect(requests[0]!.startLedger).toBe(1_000_000 - 120_960 + 60);
   });
 
+  it("asks again when a short host refuses the first page, without narrowing the scan", async () => {
+    const requests: rpc.Api.GetEventsRequest[] = [];
+    const server = scanServer((req) => {
+      requests.push(req);
+      // two answers from a host that restarted and holds only the newest ledgers
+      if (requests.length <= 2) throw new Error("ledger range: 990000 - 1000000");
+      return {
+        events: [],
+        cursor: "",
+        latestLedger: 1_000_000,
+      } as unknown as rpc.Api.GetEventsResponse;
+    });
+    await new AquariusEventScanPoolProvider({ server, network: MAINNET }).getUserPools(USER);
+    expect(requests).toHaveLength(3);
+    expect(new Set(requests.map((r) => r.startLedger))).toEqual(new Set([879_060]));
+  });
+
+  it("asks again for a cursor page a short host refused", async () => {
+    const requests: rpc.Api.GetEventsRequest[] = [];
+    const server = scanServer((req) => {
+      requests.push(req);
+      if (requests.length === 1) {
+        return {
+          events: [],
+          cursor: "c1",
+          latestLedger: 1_000_000,
+        } as unknown as rpc.Api.GetEventsResponse;
+      }
+      if (requests.length === 2) throw new Error("ledger range: 990000 - 1000000");
+      return {
+        events: [],
+        cursor: "c1",
+        latestLedger: 1_000_000,
+      } as unknown as rpc.Api.GetEventsResponse;
+    });
+    await new AquariusEventScanPoolProvider({ server, network: MAINNET }).getUserPools(USER);
+    expect(requests.map((r) => ("cursor" in r ? r.cursor : undefined))).toEqual([
+      undefined,
+      "c1",
+      "c1",
+    ]);
+  });
+
+  it("gives up on a page a short host keeps refusing", async () => {
+    const server = scanServer(() => {
+      throw new Error("ledger range: 990000 - 1000000");
+    });
+    await expect(
+      new AquariusEventScanPoolProvider({ server, network: MAINNET }).getUserPools(USER),
+    ).rejects.toThrow(/ledger range: 990000/);
+  });
+
   it("asks the rpc only for this user's router deposit and withdraw events", async () => {
     const requests: rpc.Api.GetEventsRequest[] = [];
     const server = scanServer((req) => {
