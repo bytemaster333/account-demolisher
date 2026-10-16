@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # deploy a signed release to a host that runs the docker compose stack.
 #
-#   scripts/deploy-release.sh v1.0.0 azureuser@52.249.220.55 [ssh options...]
+#   scripts/deploy-release.sh v1.0.0 user@host [ssh options...]
 #
 # 1. downloads the release artifact from github,
 # 2. verifies its slsa provenance: built by .github/workflows/release.yml in this
@@ -17,6 +17,9 @@ set -euo pipefail
 
 REPO="${REPO:-bytemaster333/account-demolisher}"
 REMOTE_DIR="${REMOTE_DIR:-/opt/account-demolisher}"
+# the compose files the host runs, release override last. a host behind a shared
+# edge proxy adds docker-compose.edge.yml: COMPOSE_FILES="... docker-compose.edge.yml ..."
+COMPOSE_FILES="${COMPOSE_FILES:-docker-compose.yml docker-compose.hosted.yml docker-compose.release.yml}"
 
 if [[ $# -lt 2 ]]; then
   echo "usage: $0 <tag> <ssh-target> [ssh options...]" >&2
@@ -26,6 +29,12 @@ TAG="$1"
 TARGET="$2"
 shift 2
 SSH_OPTS=("$@")
+
+# runs a command on the host. the expansion below survives an empty option list
+# under set -u on bash 3.2, which macOS ships
+remote() {
+  ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "$TARGET" "$@"
+}
 
 # the tag ends up in file names and a remote command, so it is checked once here
 if [[ ! "$TAG" =~ ^v[0-9A-Za-z._-]+$ ]]; then
@@ -56,11 +65,21 @@ echo "verified $NAME ($SHA), built from $COMMIT"
 
 # the deployment files (compose, caddy, release/Dockerfile, the docs app) at the
 # commit the artifact was built from, then the artifact itself
-git archive "$COMMIT" | ssh "${SSH_OPTS[@]}" "$TARGET" "tar -x -C '$REMOTE_DIR'"
-ssh "${SSH_OPTS[@]}" "$TARGET" "find '$REMOTE_DIR/release' -maxdepth 1 -name 'account-demolisher-*.tar.gz' -delete"
-ssh "${SSH_OPTS[@]}" "$TARGET" "cat > '$REMOTE_DIR/release/$NAME'" <"$WORK/$NAME"
+git archive "$COMMIT" | remote "tar -x -C '$REMOTE_DIR'"
+remote "find '$REMOTE_DIR/release' -maxdepth 1 -name 'account-demolisher-*.tar.gz' -delete"
+remote "cat > '$REMOTE_DIR/release/$NAME'" <"$WORK/$NAME"
 
-ssh "${SSH_OPTS[@]}" "$TARGET" "cd '$REMOTE_DIR' && \
+# file names only: letters, digits, dots, dashes and underscores
+COMPOSE_ARGS=""
+for f in $COMPOSE_FILES; do
+  if [[ ! "$f" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "refusing compose file name '$f'" >&2
+    exit 1
+  fi
+  COMPOSE_ARGS="$COMPOSE_ARGS -f $f"
+done
+
+remote "cd '$REMOTE_DIR' && \
   export RELEASE_TAG='$TAG' RELEASE_ARTIFACT='$NAME' RELEASE_SHA256='$SHA' && \
-  docker compose -f docker-compose.yml -f docker-compose.hosted.yml -f docker-compose.release.yml up --build -d && \
-  docker compose -f docker-compose.yml -f docker-compose.hosted.yml -f docker-compose.release.yml ps"
+  docker compose$COMPOSE_ARGS up --build -d --remove-orphans && \
+  docker compose$COMPOSE_ARGS ps"

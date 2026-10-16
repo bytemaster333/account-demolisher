@@ -1,0 +1,31 @@
+# for a host where one shared caddy (outside this project) owns ports 80 and 443
+# and routes several projects over an external docker network named `edge`.
+# layer it over the hosted files:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.hosted.yml \
+#     -f docker-compose.edge.yml up -d
+#
+# this project's own proxy is kept out (it only starts under the standalone-proxy
+# profile), and the app and docs join `edge` under names that can't collide with
+# another project's. deploy/edge/account-demolisher.caddy is the site file the
+# shared caddy loads. that caddy must be the only proxy in front of the app and
+# keep caddy's default X-Forwarded-For handling, so TRUSTED_PROXY_HOPS stays 1.
+services:
+  proxy:
+    profiles: ["standalone-proxy"]
+
+  app:
+    networks:
+      default: {}
+      edge:
+        aliases: [account-demolisher-app]
+
+  docs:
+    networks:
+      default: {}
+      edge:
+        aliases: [account-demolisher-docs]
+
+networks:
+  edge:
+    external: true

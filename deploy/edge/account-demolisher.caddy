@@ -1,0 +1,26 @@
+# account-demolisher's sites on a shared edge caddy (see docker-compose.edge.yml).
+# the same three blocks as Caddyfile.hosted, with the upstreams named by their
+# aliases on the shared `edge` network.
+#
+# the edge caddy ignores any X-Forwarded-For a client sends and sets it to the
+# connecting address, so the app sees exactly one trusted hop
+# (TRUSTED_PROXY_HOPS=1). nothing else may proxy in front of it.
+demolisher.app {
+	# the largest body the app accepts is 32 KiB (a multisig plan on /api/plan)
+	request_body {
+		max_size 64KB
+	}
+	reverse_proxy account-demolisher-app:3000
+}
+
+www.demolisher.app {
+	redir https://demolisher.app{uri} permanent
+}
+
+docs.demolisher.app {
+	# the docs take no request bodies; search is a GET
+	request_body {
+		max_size 64KB
+	}
+	reverse_proxy account-demolisher-docs:3020
+}
