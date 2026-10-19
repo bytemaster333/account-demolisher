@@ -95,6 +95,19 @@ A standalone SEP-41 token appears in the **Standalone tokens** card of the Check
 choose whether to sweep it. If it stands for a position in a DeFi app the close does not support,
 unwind it in that app first, because moving the token as-is does not reclaim what it represents.
 
+## How far back does the app look for allowances and tokens?
+
+Soroban RPC keeps about seven days of contract events, and the app always scans that window. When
+the deployment has a Lumeus key for the network, the app also reads your account's whole history
+from Lumeus, a hosted Stellar history index: every approve you granted, every contract token Lumeus
+shows you holding, and every Aquarius router deposit you made. Your browser sends your address to
+Lumeus directly, the same way it sends it to Horizon and the RPC. Every allowance, balance and pool
+found this way is read on chain before the plan uses it.
+
+The allowance viewer, the **Standalone tokens** card, **Review before closing** and the result
+screen each say which window they covered. Without Lumeus, add an older standalone token by its contract address, and check an
+older approval in the spending app.
+
 ## Where is the source?
 
 [github.com/bytemaster333/account-demolisher](https://github.com/bytemaster333/account-demolisher),

@@ -95,9 +95,16 @@ revoked.
 ## What the scan covers
 
 The viewer reads approve events from Soroban RPC, which keeps about seven days of event history.
-An approval granted earlier than that and never changed since does not appear, so check the
-spending app directly if you know you approved something earlier. When the scan cannot cover the
-whole window, the page says **The scan didn't finish**.
+When the deployment has a Lumeus key for the network, the viewer also reads every approve event the
+address ever granted from Lumeus, a hosted Stellar history index, and combines the two lists. The
+line under the page title says which one you get: **its whole approve history through Lumeus** or
+**the last 7 days of on-chain events**.
+
+Without Lumeus, an approval granted more than about seven days ago and never changed since does not
+appear, so check the spending app directly if you know you approved something earlier. When the
+scan cannot cover the whole window, or Lumeus cannot be read, the page says **The scan didn't
+finish** and names the reason. A Lumeus failure leaves the last seven days checked, and **Scan**
+tries again.
 
 A token contract can emit approve events for any spenders it likes. When one contract reports
 approvals for more than 20 different spenders, the viewer lists the 20 most recent and says **Some

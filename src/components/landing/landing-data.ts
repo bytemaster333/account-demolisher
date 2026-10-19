@@ -294,7 +294,7 @@ export const faqsFor = (walletConnect: boolean): ReadonlyArray<FaqEntry> => [
   },
   {
     q: "What is the allowance viewer?",
-    a: "A standalone tool, at /allowances, that lists the SEP-41 token allowances any account set in the last 7 days of on-chain events, and lets you revoke them from the wallet that owns the account. Think of it as the Stellar analog of revoke.cash.",
+    a: "A standalone tool, at /allowances, that lists the SEP-41 token allowances any account set, found from its whole approve history through Lumeus, our history partner (or the last 7 days of on-chain events on a deployment without a Lumeus key), and lets you revoke them from the wallet that owns the account. Think of it as the Stellar analog of revoke.cash.",
   },
   {
     q: "Is it really open source?",

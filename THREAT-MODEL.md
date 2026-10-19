@@ -3,6 +3,7 @@
 Prepared for the Soroban Security Audit Bank intake on 13 October 2026, against commit `300c53d` of
 <https://github.com/bytemaster333/account-demolisher>. It follows the SDF STRIDE template
 (<https://developers.stellar.org/docs/build/security-docs/threat-modeling>).
+Updated on 19 October 2026 for the Lumeus history index (Tamper.9, DoS.8).
 Live deployment: <https://demolisher.app>. Documentation: <https://docs.demolisher.app>.
 
 ## 1. What are we working on?
@@ -54,9 +55,11 @@ The threat tables refer to these step numbers.
    stays in browser memory.
 3. **Discover.** The browser:
    - audits the account on Horizon;
-   - scans allowances through Soroban RPC events;
+   - scans allowances through Soroban RPC events and, when a key is configured, through the
+     account's whole history on Lumeus, a hosted history index run by a partner;
    - reads DeFi positions directly from the protocol contracts;
-   - asks the Aquarius API for pools.
+   - asks the Aquarius API for pools;
+   - asks Lumeus for the account's held contract tokens and Aquarius router deposits.
 4. **Plan and preview.** A pure generator turns that state into a dependency-ordered plan tree.
    - Every Soroban step is built and simulated.
    - The sign-time checks run early, so an unsafe step is refused before the user confirms.
@@ -98,21 +101,21 @@ The threat tables refer to these step numbers.
 Red dashed boxes are trust boundaries. Rounded blue boxes are processes, white rectangles are
 external entities, and the amber bars open at both ends are data stores.
 
-| Flow | From, to                         | Data                                                                                                      | Crosses    |
-| ---- | -------------------------------- | --------------------------------------------------------------------------------------------------------- | ---------- |
-| F1   | E1 to P1..P4                     | destination, memo, per-balance choices, typed confirmation                                                | none       |
-| F2   | P8 via P7 to the browser         | all JavaScript the close runs, the CSP and security headers                                               | TB3 to TB1 |
-| F3   | P1 to E4, E5, E6, E7             | sends the account address; receives balances, offers, signers, positions, allowance events and pool lists | TB1 to TB4 |
-| F4   | P4 to E2                         | unsigned transaction XDR plus the network passphrase                                                      | TB1 to TB2 |
-| F5   | E2 to P4                         | signed envelope, checked by `verifySignedEnvelope`                                                        | TB2 to TB1 |
-| F6   | P4 to E4, E5                     | signed classic and Soroban transactions                                                                   | TB1 to TB4 |
-| F7   | P5 to P9                         | mint: sends destination, network and memo; receives the flow token and the mediator public key            | TB1 to TB3 |
-| F8   | P5 to P9                         | co-sign: the forward envelope and flow token; renew: the flow token                                       | TB1 to TB3 |
-| F9   | P5 to D1                         | recovery record: account, mediator, flow token, destination, memo, network                                | none       |
-| F10  | the browsers of E1 and E3 to P10 | partially signed envelope, added signatures, the server-sent state stream                                 | TB1 to TB3 |
-| F11  | browser to P11                   | visit and funnel counters, the merge transaction hash                                                     | TB1 to TB3 |
-| F12  | P9, P10, P11 to E4               | mediator existence, account signers and thresholds, merge transaction lookup                              | TB3 to TB4 |
-| F13  | D5 to E8                         | forward payment with the committed memo, then the merge of the mediator                                   | TB4        |
+| Flow | From, to                         | Data                                                                                                                      | Crosses    |
+| ---- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| F1   | E1 to P1..P4                     | destination, memo, per-balance choices, typed confirmation                                                                | none       |
+| F2   | P8 via P7 to the browser         | all JavaScript the close runs, the CSP and security headers                                                               | TB3 to TB1 |
+| F3   | P1 to E4, E5, E6, E7             | sends the account address; receives balances, offers, signers, positions, allowance events, pool lists and Lumeus history | TB1 to TB4 |
+| F4   | P4 to E2                         | unsigned transaction XDR plus the network passphrase                                                                      | TB1 to TB2 |
+| F5   | E2 to P4                         | signed envelope, checked by `verifySignedEnvelope`                                                                        | TB2 to TB1 |
+| F6   | P4 to E4, E5                     | signed classic and Soroban transactions                                                                                   | TB1 to TB4 |
+| F7   | P5 to P9                         | mint: sends destination, network and memo; receives the flow token and the mediator public key                            | TB1 to TB3 |
+| F8   | P5 to P9                         | co-sign: the forward envelope and flow token; renew: the flow token                                                       | TB1 to TB3 |
+| F9   | P5 to D1                         | recovery record: account, mediator, flow token, destination, memo, network                                                | none       |
+| F10  | the browsers of E1 and E3 to P10 | partially signed envelope, added signatures, the server-sent state stream                                                 | TB1 to TB3 |
+| F11  | browser to P11                   | visit and funnel counters, the merge transaction hash                                                                     | TB1 to TB3 |
+| F12  | P9, P10, P11 to E4               | mediator existence, account signers and thresholds, merge transaction lookup                                              | TB3 to TB4 |
+| F13  | D5 to E8                         | forward payment with the committed memo, then the merge of the mediator                                                   | TB4        |
 
 ### Assets, from most to least severe
 
@@ -153,6 +156,7 @@ Each issue names the step (section 1) and the flow (diagram) it applies to.
 | Tamper.6 | (Step 1, F2) A compromised server or supply-chain package serves modified app code that changes the destination before the user signs.                                                                                                       |
 | Tamper.7 | (Step 8, F10) A co-signer posts a signature for a different transaction, or submits a bloated envelope.                                                                                                                                      |
 | Tamper.8 | (Step 1, F2) A network attacker in the middle injects script.                                                                                                                                                                                |
+| Tamper.9 | (Step 3, F3) A compromised or wrong Lumeus answer adds fabricated approvals, tokens or pools, or leaves real ones out, so the plan revokes or sweeps the wrong things or misses a live one.                                                  |
 
 ### Repudiation
 
@@ -164,14 +168,14 @@ Each issue names the step (section 1) and the flow (diagram) it applies to.
 
 ### Information disclosure
 
-| ID     | Issue                                                                                                                                                    |
-| ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Info.1 | (Step 2) The pasted secret key leaks through the server, logs, storage, analytics or a crash report.                                                     |
-| Info.2 | (Step 7, F9) A flow token stored in browser storage, or written to a log, is read by another party and reused.                                           |
-| Info.3 | (Step 7) A server error message or log line prints `MEDIATOR_SECRET`.                                                                                    |
-| Info.4 | (Steps 3 and 9, F3, F11) Third-party hosts (RPC, the Aquarius API, WalletConnect) and the metrics endpoint learn which address is being closed and when. |
-| Info.5 | (Step 8, F10) The relay exposes a pending shared close (account, signers, transaction) to anyone who learns its id.                                      |
-| Info.6 | (Step 2) A pasted secret key stays readable in the page's memory after the close, for script that runs in the page later.                                |
+| ID     | Issue                                                                                                                                                            |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Info.1 | (Step 2) The pasted secret key leaks through the server, logs, storage, analytics or a crash report.                                                             |
+| Info.2 | (Step 7, F9) A flow token stored in browser storage, or written to a log, is read by another party and reused.                                                   |
+| Info.3 | (Step 7) A server error message or log line prints `MEDIATOR_SECRET`.                                                                                            |
+| Info.4 | (Steps 3 and 9, F3, F11) Third-party hosts (RPC, the Aquarius API, Lumeus, WalletConnect) and the metrics endpoint learn which address is being closed and when. |
+| Info.5 | (Step 8, F10) The relay exposes a pending shared close (account, signers, transaction) to anyone who learns its id.                                              |
+| Info.6 | (Step 2) A pasted secret key stays readable in the page's memory after the close, for script that runs in the page later.                                        |
 
 ### Denial of service
 
@@ -184,6 +188,7 @@ Each issue names the step (section 1) and the flow (diagram) it applies to.
 | DoS.5 | (Step 6) A hostile token makes its own transfer or revoke cost so much in fees that the close cannot proceed, or drains XLM through fees.                    |
 | DoS.6 | (Steps 4-6) A plan strands the account: a merge before every subentry is gone, a step that can never succeed, or a cycle in the plan.                        |
 | DoS.7 | (Step 8) Several app instances behind a load balancer do not share signing requests or rate limits, so a co-signer misses the request and limits multiply.   |
+| DoS.8 | (Step 3, F3) The Lumeus publishable key is in the page, so anyone can copy it and spend its rate limit, or Lumeus is down, and the history read fails.       |
 
 ### Elevation of privilege
 
@@ -226,6 +231,7 @@ Each treatment names the code that implements it. The status column means:
 | Tamper.6 | **T6R1** Supply-chain controls: the committed lockfile is installed with `--frozen-lockfile`; `pnpm audit --prod --audit-level high` runs in CI; the base image is pinned by digest; GitHub Actions are pinned by commit SHA and checked by zizmor and actionlint. **T6R2** The release workflow builds an artifact with a signed SLSA build-provenance attestation. **T6R3** A host can run the attested artifact instead of building from source: `scripts/deploy-release.sh` verifies the artifact with `gh attestation verify` (signed by `release.yml` in this repository, from the tagged commit, on a GitHub-hosted runner), and `release/Dockerfile` refuses any file whose SHA-256 differs from the verified one. The reference deployment runs release `v1.0.0` this way since 13 October 2026. **T6R4** The security docs tell users that every close trusts the operator to serve honest code. | Done   |
 | Tamper.7 | **T7R1** A signature is merged only when the transaction hash matches the stored one and the signature verifies. Duplicates are detected by the signer key recovered from the signature, and the envelope stops collecting at the threshold (`src/lib/multisig/partial-xdr.ts`). **T7R2** The envelope is capped at 24,576 base64 characters and the request body at 32,768 bytes.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Done   |
 | Tamper.8 | **T8R1** HTTPS is terminated at Caddy with Let's Encrypt. Production sends HSTS, `X-Frame-Options: DENY`, `nosniff` and `Referrer-Policy: no-referrer`. The CSP `connect-src` lists every host the browser may contact.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Done   |
+| Tamper.9 | **T9R1** Lumeus only adds candidates. Every allowance is read again with `allowance()`, every token with `balance()` and every pool through the Aquarius router before the plan uses it (`src/lib/lumeus/client.ts`). **T9R2** The RPC scans still run and their results are unioned with Lumeus by the RPC event id, so a recent row Lumeus leaves out is still found. **T9R3** A Lumeus walk counts only when it reached the end of its range, and it closes an RPC scan's gap only when it covers the ledgers that scan reached (`mergePartnerEvents`).                                                                                                                                                                                                                                                                                                                                                 | Done   |
 
 ### Repudiation
 
@@ -237,14 +243,14 @@ Each treatment names the code that implements it. The status column means:
 
 ### Information disclosure
 
-| Issue  | Treatment                                                                                                                                                                                                                                                                                                                                                                                                    | Status          |
-| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------- |
-| Info.1 | **I1R1** `SecretKeyConnector` (`src/lib/wallet/secret-key.ts`) holds the seed in a private field for the connector's lifetime and rebuilds the keypair for each signature. The seed is never sent to the server, stored, or included in metrics, and no server route accepts a key.                                                                                                                          | Done            |
-| Info.2 | **I2R1** A flow token only unlocks a forward to the committed destination, with the committed memo, on the committed network. Renewal keeps those terms, so a leaked token cannot redirect funds. **I2R2** A token lives 15 minutes. Old four-part tokens, which did not bind the memo, are refused.                                                                                                         | Done            |
-| Info.3 | **I3R1** Mediator route errors go to the server log with any Stellar seed pattern redacted (`src/app/api/mediator/_shared/http.ts`), and clients get only an error code. The secret lives in an env file on the host readable only by its owner (mode 600).                                                                                                                                                  | Done            |
-| Info.4 | **I4R1** No third-party analytics. The metrics are first-party and carry no address, wallet id or amount. The merge hash is public on the ledger anyway. WalletConnect analytics and telemetry are off, and the remaining telemetry host is left out of `connect-src`. **I4R2** The security docs list for users the hosts that see the address: Horizon, RPC, the Aquarius API and the WalletConnect relay. | Done / Accepted |
-| Info.5 | **I5R1** A relay request holds only public data: a transaction envelope that will be on chain, and the signers read from Horizon. Its id is a 256-bit transaction hash. Requests live in memory and expire with the transaction, after at most 72 hours.                                                                                                                                                     | Accepted        |
-| Info.6 | **I6R1** JavaScript cannot erase memory, so `SecretKeyConnector` keeps the seed in a private field and drops it on disconnect, leaving it for the garbage collector. The CSP limits which scripts can load into the page (S2R1), and the connect screen keeps the pasted key under **Advanced**, for users with no wallet; a wallet keeps the key outside the page.                                          | Accepted        |
+| Issue  | Treatment                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Status          |
+| ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
+| Info.1 | **I1R1** `SecretKeyConnector` (`src/lib/wallet/secret-key.ts`) holds the seed in a private field for the connector's lifetime and rebuilds the keypair for each signature. The seed is never sent to the server, stored, or included in metrics, and no server route accepts a key.                                                                                                                                                                                                                   | Done            |
+| Info.2 | **I2R1** A flow token only unlocks a forward to the committed destination, with the committed memo, on the committed network. Renewal keeps those terms, so a leaked token cannot redirect funds. **I2R2** A token lives 15 minutes. Old four-part tokens, which did not bind the memo, are refused.                                                                                                                                                                                                  | Done            |
+| Info.3 | **I3R1** Mediator route errors go to the server log with any Stellar seed pattern redacted (`src/app/api/mediator/_shared/http.ts`), and clients get only an error code. The secret lives in an env file on the host readable only by its owner (mode 600).                                                                                                                                                                                                                                           | Done            |
+| Info.4 | **I4R1** No third-party analytics. The metrics are first-party and carry no address, wallet id or amount. The merge hash is public on the ledger anyway. WalletConnect analytics and telemetry are off, and the remaining telemetry host is left out of `connect-src`. **I4R2** The security docs list for users the hosts that see the address: Horizon, RPC, the Aquarius API, Lumeus and the WalletConnect relay. The browser calls Lumeus directly, so the server still never learns the address. | Done / Accepted |
+| Info.5 | **I5R1** A relay request holds only public data: a transaction envelope that will be on chain, and the signers read from Horizon. Its id is a 256-bit transaction hash. Requests live in memory and expire with the transaction, after at most 72 hours.                                                                                                                                                                                                                                              | Accepted        |
+| Info.6 | **I6R1** JavaScript cannot erase memory, so `SecretKeyConnector` keeps the seed in a private field and drops it on disconnect, leaving it for the garbage collector. The CSP limits which scripts can load into the page (S2R1), and the connect screen keeps the pasted key under **Advanced**, for users with no wallet; a wallet keeps the key outside the page.                                                                                                                                   | Accepted        |
 
 ### Denial of service
 
@@ -257,6 +263,7 @@ Each treatment names the code that implements it. The status column means:
 | DoS.5 | **D5R1** The same fee caps and write bounds as T3R2. A step over its cap is refused, with the fee spelled out, instead of signed.                                                                                                                                                                                                                                                                                                                                                                             | Done            |
 | DoS.6 | **D6R1** Hard stops at audit time: `AUTH_IMMUTABLE` and sponsoring accounts. The close splits automatically past 100 operations, and for pool shares, isolated claims and conversions that share a market. The merge guard (T2R3) and the fuzzing in T5R2 also apply. The adversarial test corpus covers deleted issuers, non-compliant tokens, mid-flow changes and high subentry counts.                                                                                                                    | Done            |
 | DoS.7 | **D7R1** The self-hosting guide says to run one instance, and why. The signing relay, the rate limiter, the metrics store and the co-sign log all keep their state or serialize their writes inside one process.                                                                                                                                                                                                                                                                                              | Accepted        |
+| DoS.8 | **D8R1** The key is publishable: Lumeus accepts it only with an allowed `Origin`, only for read routes, and with a per-IP limit. A full or read key fails the build (`next.config.ts`). **D8R2** A failed Lumeus read leaves the RPC result as it was and is shown: the allowances page names the failure, and the close flow records it in its diagnostics.                                                                                                                                                  | Done            |
 
 ### Elevation of privilege
 

@@ -41,11 +41,11 @@ Compose runs two services:
 Compose reads a `.env` file next to `docker-compose.yml` only to fill in its own `${...}` values.
 No other variable reaches the containers.
 
-| Where it goes  | Variables                                                                                                                                                                                                                                  |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| App build args | `NEXT_PUBLIC_STELLAR_NETWORK` (default `testnet`), `NEXT_PUBLIC_DEPLOYMENT_MODE` (default `self-hosted`), `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID`, `NEXT_PUBLIC_SITE_URL`, `NEXT_PUBLIC_SLIPPAGE_BPS`, `NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS` |
-| App runtime    | `MEDIATOR_SECRET`, `MEDIATOR_ALLOWED_ORIGIN`, `METRICS_ADMIN_TOKEN`, `TRUSTED_PROXY_HOPS` (default `1`), and `METRICS_DB_DIR`, fixed to `/app/data`                                                                                        |
-| Proxy runtime  | `SITE_ADDRESS`: your domain, for which Caddy obtains and renews a TLS certificate automatically. The default `:80` serves plain HTTP on any host name                                                                                      |
+| Where it goes  | Variables                                                                                                                                                                                                                                                                                                      |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| App build args | `NEXT_PUBLIC_STELLAR_NETWORK` (default `testnet`), `NEXT_PUBLIC_DEPLOYMENT_MODE` (default `self-hosted`), `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID`, `NEXT_PUBLIC_SITE_URL`, `NEXT_PUBLIC_SLIPPAGE_BPS`, `NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS`, `NEXT_PUBLIC_LUMEUS_TESTNET_KEY`, `NEXT_PUBLIC_LUMEUS_MAINNET_KEY` |
+| App runtime    | `MEDIATOR_SECRET`, `MEDIATOR_ALLOWED_ORIGIN`, `METRICS_ADMIN_TOKEN`, `TRUSTED_PROXY_HOPS` (default `1`), and `METRICS_DB_DIR`, fixed to `/app/data`                                                                                                                                                            |
+| Proxy runtime  | `SITE_ADDRESS`: your domain, for which Caddy obtains and renews a TLS certificate automatically. The default `:80` serves plain HTTP on any host name                                                                                                                                                          |
 
 The public variables are build arguments because `next build` inlines them. After changing one,
 rebuild with `docker compose up --build -d`.
@@ -79,6 +79,8 @@ builds the app, and attaches `account-demolisher-<tag>.tar.gz` to the release. T
 build-provenance attestation records that this workflow built the archive from the tagged commit.
 The public build settings are baked in at that point: the repository's variables, or else
 `testnet`, `reference`, the reference WalletConnect project id and `https://demolisher.app`.
+The Lumeus keys come only from the repository variables `NEXT_PUBLIC_LUMEUS_TESTNET_KEY` and
+`NEXT_PUBLIC_LUMEUS_MAINNET_KEY`, and a release built without them scans on the RPC alone.
 
 `scripts/deploy-release.sh` runs that archive on a Compose host instead of building from source:
 
@@ -138,6 +140,27 @@ Every variable, with its default and validation, is in
   the mediator, to a registry exchange or a destination that publishes the SEP-29 memo flag, is
   refused before it starts, and direct closes work as usual.
 
+## Lumeus history keys
+
+Soroban RPC keeps about seven days of contract events. With a Lumeus key for a network, the
+allowance, held-token and Aquarius scans also read the account's whole history from Lumeus, a
+hosted Stellar history index, and every result is still read on chain before the plan uses it. The
+keys are optional: without one, the scans run on the RPC window alone.
+
+The browser calls Lumeus directly, so the key ships in the page. Only a publishable key
+(`lum_pub_...`) is accepted, and any other key fails the build. To create one:
+
+1. Sign in to the Lumeus dashboard at [app.lumeus.dev](https://app.lumeus.dev), or call
+   `POST /v1/keys` on the Lumeus Activity host of that network with a full key of your workspace.
+2. Create a key with access `publishable` for the network, and put your site's origin in
+   `allowed_origins` (exact `scheme://host[:port]`, no wildcards). A publishable key answers only
+   requests from an origin on that list, so the reference deployment's key does not work on your
+   domain. Add `http://localhost:3000` to use it with `pnpm dev`.
+3. Set it as `NEXT_PUBLIC_LUMEUS_TESTNET_KEY` or `NEXT_PUBLIC_LUMEUS_MAINNET_KEY` and rebuild.
+
+A publishable key reads Lumeus data only and is rate limited per visitor IP. The Content Security
+Policy already lists the Lumeus hosts of both networks, whether a key is set or not.
+
 ## The mediator secret
 
 You need `MEDIATOR_SECRET` only for exchange closes.
@@ -172,8 +195,9 @@ curl -H "Authorization: Bearer $METRICS_ADMIN_TOKEN" https://yourdomain.example/
 ## Content Security Policy
 
 The CSP is built in `src/lib/config/csp.ts` and set on every document response by `src/proxy.ts`.
-`connect-src` follows the endpoints in `src/lib/config/networks.ts`. Any other host the browser
-needs goes into `csp.ts`, or the browser blocks it.
+`connect-src` follows the endpoints in `src/lib/config/networks.ts`, plus the hosts listed in
+`csp.ts` itself (the Aquarius API, Lumeus and WalletConnect). Any other host the browser needs goes
+into `csp.ts`, or the browser blocks it.
 
 See [Security model](/docs/developers/security/model#content-security-policy).
 

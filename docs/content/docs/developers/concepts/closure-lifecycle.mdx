@@ -14,7 +14,10 @@ Four stages: **discover**, **plan**, **preview**, **execute**.
 Horizon is read for the full account state. Soroban RPC is scanned for the account's SEP-41
 approvals, and each one is read back from the token's `allowance()`; those that read zero are
 dropped. Blend, Aquarius and Soroswap are probed for open positions, the Aquarius reward gauges
-for what they owe, and the account's transfer history for standalone tokens.
+for what they owe, and the account's transfer history for standalone tokens. With a Lumeus key for
+the network, the allowance, standalone-token and Aquarius scans also read the account's whole
+history from Lumeus, a hosted Stellar history index, and every result is read on chain like a
+scanned one.
 
 The audit, the reads of positions that keep the account from merging, and the payout trustline
 checks are required: a failure there fails discovery or blocks the close. The allowance and

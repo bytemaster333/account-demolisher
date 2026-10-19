@@ -56,10 +56,17 @@ those pools.
 **Standard pools** are found by two sources whose results are combined:
 `AquariusAPIPoolProvider` reads the Aquarius REST API (`amm-api.aqua.network`, or the testnet
 host), and `AquariusEventScanPoolProvider` scans the router's deposit and withdraw events over the
-RPC's retention window, about seven days. Both always run. Pools are keyed by their sorted token
+RPC's retention window, about seven days. Both always run. With a Lumeus key for the network, the
+scan also asks Lumeus, a hosted Stellar history index, for every `deposit` event the router emitted
+with the account as topic 2, over the whole history
+(`/accounts/{G}/contract-events?name=deposit&position=2&contract={router}`), and adds the pools
+those events name to the ones it observed. Every pool, from either list, is resolved through the
+router's `get_pools` and its share balance read on chain. Pools are keyed by their sorted token
 set plus pool index, because a pool index is unique only within a token set. When the REST source
-fails, what the scan found is kept and an error is recorded, because the scan cannot rule out an
-older position. When the scan fails, what REST found is kept and an error is recorded too, because
+fails, what the scan found is kept and an error is recorded. Without Lumeus, the error says the
+scan cannot rule out an older position. When Lumeus answered, it says router deposits were checked
+over the whole history but a pool share received by transfer could not be ruled out. When Lumeus
+was asked and failed, its reason joins the error. When the scan fails, what REST found is kept and an error is recorded too, because
 a REST answer that left out a recent pool cannot be checked against the chain. Either error warns
 at review and makes the merge-time check refuse the merge. Discovery fails only when both sources
 fail. Share balances are read on chain.
@@ -118,6 +125,22 @@ and no aggregator take part in a close.
 and keeps the positive ones. Stellar asset contract events carry an extra topic and never match, on
 purpose: those balances are classic trustlines the classic close handles. The window is the RPC's
 retention, about seven days, and the account owner can add an older token by contract address.
+
+With a Lumeus key for the network, `partnerHeldTokens` in `src/lib/lumeus/client.ts` reads the
+account's contract-storage holdings from the Lumeus Assets API, unverified balances included
+(`/accounts/{G}/holdings?kind=contract&include=unverified`), alongside the RPC scan. Those contract
+ids join the scanned ones as candidates, and each candidate gets the same `balance()` read. The
+holdings stand for every token received up to their `as_of_ledger`, so an RPC scan that stopped
+early counts as complete when that ledger reaches the first ledger the scan covered. A Lumeus
+failure leaves the RPC result as it was and adds a `held-token partner history` entry to the
+discovery diagnostics. The **Standalone tokens** card says which coverage the scan had.
+
+An Aquarius or Soroswap LP share is a SEP-41 token too, so the scan finds the shares of pools the
+plan already exits. `withoutPositionShares` in `src/lib/orchestrator/actors/discover.ts` removes
+them from the held and unreadable lists, using share ids read from the Aquarius router
+(`share_id`) and the Soroswap factory (`get_pair`) by `positionShareTokens`
+(`src/lib/adapters/positions/share-tokens.ts`), never from the token itself. When one of those reads
+fails, every token stays listed and the failure goes to the discovery diagnostics.
 
 ## Common properties of the exit builders
 

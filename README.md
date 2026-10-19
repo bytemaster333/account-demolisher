@@ -102,6 +102,10 @@ Public (inlined at build time):
   value fails the build.
 - `NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS`: a floor for a conversion's XLM output (default 0). A bad
   value fails the build.
+- `NEXT_PUBLIC_LUMEUS_TESTNET_KEY`, `NEXT_PUBLIC_LUMEUS_MAINNET_KEY`: Lumeus publishable keys
+  (`lum_pub_...`). With a key, the allowance, held-token and Aquarius scans also read the account's
+  whole history from Lumeus, a hosted history index, and check every result on chain. Without one
+  they cover the RPC's ~7 days. Any other kind of key fails the build.
 
 Horizon and Soroban RPC endpoints are pinned per network in `src/lib/config/networks.ts`.
 

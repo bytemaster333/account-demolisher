@@ -79,6 +79,10 @@ Your browser talks to these services directly:
 - **Horizon and Soroban RPC** for the selected network, to read the account and submit
   transactions.
 - **The Aquarius API**, to find your Aquarius pool positions.
+- **Lumeus**, a hosted Stellar history index, only when the deployment has a Lumeus key for the
+  network. It receives your address and answers with your past approvals, your contract token
+  holdings and your Aquarius router deposits. The key is read-only and works only from the
+  deployment's own site.
 - **WalletConnect**, only when you pick WalletConnect, sign with a WalletConnect session you
   restored, or disconnect or close such a session. Its relay carries the encrypted session, and
   its RPC, API and verify hosts back the connection and the Reown AppKit modal. The app turns

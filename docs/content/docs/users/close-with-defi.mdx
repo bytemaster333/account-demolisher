@@ -107,7 +107,13 @@ When a token you ticked cannot be sent, the account still closes, and the result
 closed, tokens left behind**. It lists each token by its contract id with the amount and the
 reason. Those tokens stay on the closed account, and nobody can move them afterwards.
 
-The scan looks back about seven days. Add an older token by its contract address.
+The scan reads token transfers and mints from about the last seven days. When the deployment has a
+Lumeus key for the network, it also takes the tokens Lumeus, a hosted Stellar history index, shows
+the account holding, whenever they arrived. Every token the scan finds has its balance read on chain
+first. The card says which scan ran. Add a token the scan missed by its contract address.
+
+An Aquarius or Soroswap pool share whose position the plan already exits is not listed as a
+standalone token.
 
 ## When a protocol cannot be read
 

@@ -72,6 +72,7 @@ and `testnet` for testnet.
 The browser contacts only hosts in the Content Security Policy. `connect-src` is derived from
 `NETWORKS` (each network's Horizon, RPC, failovers and friendbot), so an endpoint you add in
 `src/lib/config/networks.ts` joins the policy with it. Any other host the browser needs goes into
-`src/lib/config/csp.ts`.
+`src/lib/config/csp.ts`, which already lists the Aquarius API, the Lumeus hosts
+(`src/lib/lumeus/hosts.ts`) and WalletConnect.
 
 See [Security model](/docs/developers/security/model#content-security-policy).

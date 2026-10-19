@@ -18,9 +18,39 @@ DEFAULT_SCAN_WINDOW_LEDGERS = EVENT_RETENTION_WINDOW_LEDGERS = 120_960
 ```
 
 Soroban RPC keeps events for about seven days by default: `7 × 24 × 60 × 60 / 5 = 120,960`
-ledgers at five seconds a ledger. Every event scan in the app looks back this far at most, and an
-allowance whose last approve is older than the window cannot be found by an event scan. The allowance
-viewer, the Review step and the status panel all state this seven-day limit.
+ledgers at five seconds a ledger. Every RPC event scan in the app looks back this far at most, and
+an allowance whose last approve is older than the window cannot be found by an RPC scan alone.
+
+## Full history through Lumeus
+
+When the build carries a Lumeus publishable key for the network
+(`NEXT_PUBLIC_LUMEUS_TESTNET_KEY` or `NEXT_PUBLIC_LUMEUS_MAINNET_KEY`), `partnerApprovals` in
+`src/lib/lumeus/client.ts` passes `scanAllowances` a `partner` read. Lumeus is a hosted Stellar
+history index. The read asks its Activity API for every contract event named `approve` whose topic
+1 is the owner, over the whole history:
+
+```
+GET /accounts/{owner}/contract-events?name=approve&position=1&limit=200&order=asc
+```
+
+The browser sends it with the publishable key, following `_links.next` on the same host until
+`range_complete` is true, for at most 25 pages. A walk that hits the cap, a next link to another
+host, a page that fails to parse, or an event whose XDR does not decode throws, so a partial answer
+is never taken for a complete one.
+
+The RPC scan runs alongside it. `mergePartnerEvents` in `src/lib/soroban/event-scan.ts` unions the
+two event lists, deduplicated and ordered by the RPC event id each Lumeus record carries
+(`rpc_event_id`), so the folding below sees one ordered stream. Lumeus answers through its snapshot
+ledger, returned as `partnerThroughLedger`. An RPC scan that stopped early counts as complete only
+when that ledger reaches the first ledger the RPC scan did cover; otherwise its incomplete report
+stands.
+
+A Lumeus failure leaves the RPC result as it was and sets `partnerError`. The viewer adds it to
+**The scan didn't finish** notice, and a close records it in the discovery diagnostics. Without a
+key for the network, `partner` is absent and the scan runs on the RPC window alone.
+
+The allowance viewer, the Review step and the status panel state which coverage the scan had: the
+whole approve history through Lumeus, or the seven-day RPC window.
 
 ## Scanning
 
@@ -57,7 +87,7 @@ cleanly, or that names a different owner, is ignored.
 ### The per-contract cap
 
 Any contract can emit approve events naming you, for spenders it chooses, and its `allowance()` is
-its own code too. A contract with more than 20 spenders in the window is cut to its 20 most recent,
+its own code too. A contract with more than 20 spenders in the scan is cut to its 20 most recent,
 and the cut is reported with a note that the token is hostile. A Stellar Asset Contract is never
 cut: it runs no token code, so each of its approve events is an approval you signed. The cap bounds
 the confirm reads, the revokes a close plans, and the rows the viewer renders.
@@ -142,8 +172,10 @@ contract. A merge does not remove allowances: they live in the token's storage.
 ## Held tokens
 
 A separate scan in `src/lib/soroban/held-tokens.ts` finds standalone SEP-41 balances: it reads
-`transfer` and `mint` events crediting the account in the same seven-day window, then probes
-`balance(address)` on each emitting contract. The close moves those balances with `TransferAsIs`,
+`transfer` and `mint` events crediting the account in the same seven-day window and, with a Lumeus
+key, adds the account's contract-token holdings from Lumeus, then probes `balance(address)` on each
+candidate contract. See
+[Position discovery](/docs/developers/internals/position-discovery#standalone-tokens). The close moves those balances with `TransferAsIs`,
 or sells them with `ConvertSorobanToXLM`. `assertSafeTransferInvocation` holds a transfer to exactly
 `transfer(user, destination, amount)` the same way the revoke guard holds an approve, under the
 `untrusted-transfer` fee class: a resource fee of at most 7,500,000 stroops, at most 16,384 declared

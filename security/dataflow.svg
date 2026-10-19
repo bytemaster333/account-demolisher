@@ -125,8 +125,8 @@
   <text class="t" x="740" y="389" text-anchor="middle">E5 Soroban RPC</text>
   <text class="s" x="740" y="405" text-anchor="middle">events, simulate, submit</text>
   <rect class="ext" x="830" y="368" width="145" height="50"/>
-  <text class="t" x="902" y="389" text-anchor="middle">E6 Aquarius API</text>
-  <text class="s" x="902" y="405" text-anchor="middle">pool discovery</text>
+  <text class="t" x="902" y="389" text-anchor="middle">E6 Aquarius API, Lumeus</text>
+  <text class="s" x="902" y="405" text-anchor="middle">pools, account history</text>
   <path class="f" d="M582,418 V454"/><path class="f" d="M700,418 V454"/><path class="f" d="M790,418 V454"/>
   <rect class="sbg" x="515" y="456" width="260" height="46"/>
   <line class="sl" x1="515" y1="456" x2="775" y2="456"/><line class="sl" x1="515" y1="502" x2="775" y2="502"/>

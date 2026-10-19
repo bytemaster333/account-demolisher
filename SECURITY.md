@@ -83,8 +83,8 @@ the audit status page lists the counts by severity.
 `script-src` is `'self' 'unsafe-inline' 'wasm-unsafe-eval'`. Next's inline hydration scripts are not
 nonce-stamped in this deployment, and a nonce-only policy blocks hydration. The policy loads no
 third-party script origin, but an injected inline script would run and could reach every origin
-`connect-src` allows: Horizon, Soroban RPC, friendbot, the Aquarius API, and the WalletConnect and
-Reown hosts. `next.config.ts` adds `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
+`connect-src` allows: Horizon, Soroban RPC, friendbot, the Aquarius API, Lumeus (the hosted history
+index the scans read with a publishable key), and the WalletConnect and Reown hosts. `next.config.ts` adds `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
 `Referrer-Policy: no-referrer`, a `Permissions-Policy`, and HSTS in production.
 
 ## Residual risks
