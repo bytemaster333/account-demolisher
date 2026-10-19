@@ -26,21 +26,13 @@ an allowance whose last approve is older than the window cannot be found by an R
 When the build carries a Lumeus publishable key for the network
 (`NEXT_PUBLIC_LUMEUS_TESTNET_KEY` or `NEXT_PUBLIC_LUMEUS_MAINNET_KEY`), `partnerApprovals` in
 `src/lib/lumeus/client.ts` passes `scanAllowances` a `partner` read. Lumeus is a hosted Stellar
-history index. The read asks its Activity API for every contract event named `approve` whose topic
-1 is the owner, over the whole history:
-
-```
-GET /accounts/{owner}/contract-events?name=approve&position=1&limit=200&order=asc
-```
-
-The browser sends it with the publishable key, following `_links.next` on the same host until
-`range_complete` is true, for at most 25 pages. A walk that hits the cap, a next link to another
-host, a page that fails to parse, or an event whose XDR does not decode throws, so a partial answer
-is never taken for a complete one.
+history index. The read asks it for every `approve` event whose first address topic is the owner,
+over the whole history, and fails unless the answer is complete, so a partial answer is never taken
+for a complete one.
 
 The RPC scan runs alongside it. `mergePartnerEvents` in `src/lib/soroban/event-scan.ts` unions the
-two event lists, deduplicated and ordered by the RPC event id each Lumeus record carries
-(`rpc_event_id`), so the folding below sees one ordered stream. Lumeus answers through its snapshot
+two event lists, deduplicated and ordered by the RPC event id, so the folding below sees one ordered
+stream. Lumeus answers through its snapshot
 ledger, returned as `partnerThroughLedger`. An RPC scan that stopped early counts as complete only
 when that ledger reaches the first ledger the RPC scan did cover; otherwise its incomplete report
 stands.

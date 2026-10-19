@@ -58,8 +58,7 @@ those pools.
 host), and `AquariusEventScanPoolProvider` scans the router's deposit and withdraw events over the
 RPC's retention window, about seven days. Both always run. With a Lumeus key for the network, the
 scan also asks Lumeus, a hosted Stellar history index, for every `deposit` event the router emitted
-with the account as topic 2, over the whole history
-(`/accounts/{G}/contract-events?name=deposit&position=2&contract={router}`), and adds the pools
+with the account as topic 2, over the whole history, and adds the pools
 those events name to the ones it observed. Every pool, from either list, is resolved through the
 router's `get_pools` and its share balance read on chain. Pools are keyed by their sorted token
 set plus pool index, because a pool index is unique only within a token set. When the REST source
@@ -127,10 +126,9 @@ purpose: those balances are classic trustlines the classic close handles. The wi
 retention, about seven days, and the account owner can add an older token by contract address.
 
 With a Lumeus key for the network, `partnerHeldTokens` in `src/lib/lumeus/client.ts` reads the
-account's contract-storage holdings from the Lumeus Assets API, unverified balances included
-(`/accounts/{G}/holdings?kind=contract&include=unverified`), alongside the RPC scan. Those contract
+account's contract-storage token holdings from Lumeus, alongside the RPC scan. Those contract
 ids join the scanned ones as candidates, and each candidate gets the same `balance()` read. The
-holdings stand for every token received up to their `as_of_ledger`, so an RPC scan that stopped
+holdings stand for every token received up to the ledger they were read at, so an RPC scan that stopped
 early counts as complete when that ledger reaches the first ledger the scan covered. A Lumeus
 failure leaves the RPC result as it was and adds a `held-token partner history` entry to the
 discovery diagnostics. The **Standalone tokens** card says which coverage the scan had.

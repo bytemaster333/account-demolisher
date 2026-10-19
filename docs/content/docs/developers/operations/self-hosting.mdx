@@ -79,8 +79,6 @@ builds the app, and attaches `account-demolisher-<tag>.tar.gz` to the release. T
 build-provenance attestation records that this workflow built the archive from the tagged commit.
 The public build settings are baked in at that point: the repository's variables, or else
 `testnet`, `reference`, the reference WalletConnect project id and `https://demolisher.app`.
-The Lumeus keys come only from the repository variables `NEXT_PUBLIC_LUMEUS_TESTNET_KEY` and
-`NEXT_PUBLIC_LUMEUS_MAINNET_KEY`, and a release built without them scans on the RPC alone.
 
 `scripts/deploy-release.sh` runs that archive on a Compose host instead of building from source:
 
@@ -148,18 +146,8 @@ hosted Stellar history index, and every result is still read on chain before the
 keys are optional: without one, the scans run on the RPC window alone.
 
 The browser calls Lumeus directly, so the key ships in the page. Only a publishable key
-(`lum_pub_...`) is accepted, and any other key fails the build. To create one:
-
-1. Sign in to the Lumeus dashboard at [app.lumeus.dev](https://app.lumeus.dev), or call
-   `POST /v1/keys` on the Lumeus Activity host of that network with a full key of your workspace.
-2. Create a key with access `publishable` for the network, and put your site's origin in
-   `allowed_origins` (exact `scheme://host[:port]`, no wildcards). A publishable key answers only
-   requests from an origin on that list, so the reference deployment's key does not work on your
-   domain. Add `http://localhost:3000` to use it with `pnpm dev`.
-3. Set it as `NEXT_PUBLIC_LUMEUS_TESTNET_KEY` or `NEXT_PUBLIC_LUMEUS_MAINNET_KEY` and rebuild.
-
-A publishable key reads Lumeus data only and is rate limited per visitor IP. The Content Security
-Policy already lists the Lumeus hosts of both networks, whether a key is set or not.
+(`lum_pub_...`) for your own site's origin is accepted, and any other key fails the build. Set it as
+`NEXT_PUBLIC_LUMEUS_TESTNET_KEY` or `NEXT_PUBLIC_LUMEUS_MAINNET_KEY` and rebuild.
 
 ## The mediator secret
 
