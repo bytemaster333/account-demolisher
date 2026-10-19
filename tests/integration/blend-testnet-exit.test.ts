@@ -17,6 +17,7 @@ import { TESTNET } from "@/lib/config/networks";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
 import { fetchLedgerClock } from "@/lib/stellar/ledger-clock";
+import { fundWithFriendbot } from "../helpers/friendbot";
 
 // Live testnet proof that a Blend borrower can be closed out: open a real loan
 // on the testnet v2 pool, then repay and withdraw with the transactions the
@@ -28,8 +29,7 @@ const POOL = BLEND_TESTNET_POOL_IDS[0]!;
 const XLM_SAC = Asset.native().contractId(TESTNET.passphrase);
 
 async function friendbot(pk: string): Promise<void> {
-  const res = await fetch(`${TESTNET.friendbot}?addr=${encodeURIComponent(pk)}`);
-  if (!res.ok) throw new Error(`friendbot funding failed for ${pk}: ${res.status}`);
+  await fundWithFriendbot(pk);
 }
 
 async function signAndSend(kp: Keypair, tx: Transaction): Promise<void> {

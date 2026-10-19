@@ -10,6 +10,7 @@ import { getHorizon } from "@/lib/stellar/horizon-client";
 import type { ClassicBatch } from "@/lib/types/plan";
 
 import { nativeBalance, toStroops } from "../helpers/headless-close";
+import { fundWithFriendbot } from "../helpers/friendbot";
 
 // live testnet run of the batcher's exchange close for an account that sits
 // close to its reserve (H-16). the close funds the helper (mediator) account
@@ -24,8 +25,7 @@ const BASE_RESERVE = 5_000_000n;
 const MEDIATOR_FUNDING = 20_000_000n;
 
 async function friendbot(pk: string): Promise<void> {
-  const res = await fetch(`${TESTNET.friendbot}/?addr=${encodeURIComponent(pk)}`);
-  if (!res.ok) throw new Error(`friendbot funding failed for ${pk}: HTTP ${res.status}`);
+  await fundWithFriendbot(pk);
 }
 
 async function submitBatch(batch: ClassicBatch, signer: Keypair) {

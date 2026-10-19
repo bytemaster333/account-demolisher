@@ -6,6 +6,7 @@ import { buildCloseTransaction } from "@/lib/multisig/signing-request";
 import { __resetRelayForTests, addSignature, createPlan, getPlan } from "@/server/signing-relay";
 import { auditAccount } from "@/lib/stellar/account-audit";
 import { getHorizon } from "@/lib/stellar/horizon-client";
+import { fundWithFriendbot } from "../helpers/friendbot";
 
 // live testnet proof for H-32: core rejects a close that carries a signature it
 // didn't need (tx_bad_auth_extra), and the relay's stored envelope, which stops
@@ -14,8 +15,7 @@ import { getHorizon } from "@/lib/stellar/horizon-client";
 const server = getHorizon(TESTNET);
 
 async function friendbotFund(pk: string): Promise<void> {
-  const res = await fetch(`${TESTNET.friendbot}/?addr=${encodeURIComponent(pk)}`);
-  if (!res.ok) throw new Error(`friendbot funding failed for ${pk}: HTTP ${res.status}`);
+  await fundWithFriendbot(pk);
 }
 
 function resultCodes(e: unknown): unknown {

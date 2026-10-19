@@ -14,6 +14,7 @@ vi.mock("server-only", () => ({}));
 import { verifyCloseTx } from "@/server/close-verify";
 import { TESTNET } from "@/lib/config/networks";
 import { closeMarkerOperations } from "@/lib/metrics/close-marker";
+import { fundWithFriendbot } from "../helpers/friendbot";
 
 // end-to-end proof of the close ledger: create real merges on live testnet, one
 // carrying the close marker and one without, and confirm verifyCloseTx counts
@@ -22,8 +23,7 @@ import { closeMarkerOperations } from "@/lib/metrics/close-marker";
 const server = new Horizon.Server(TESTNET.horizon, { allowHttp: false });
 
 async function friendbot(pubkey: string): Promise<void> {
-  const res = await fetch(`${TESTNET.friendbot}?addr=${encodeURIComponent(pubkey)}`);
-  if (!res.ok) throw new Error(`friendbot funding failed for ${pubkey}: ${res.status}`);
+  await fundWithFriendbot(pubkey);
 }
 
 async function mergeWith(ops: readonly xdr.Operation[]): Promise<string> {

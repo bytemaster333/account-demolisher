@@ -21,6 +21,7 @@ import { generatePlan } from "@/lib/plan/generator";
 import { hydratePlanTransactions } from "@/lib/plan/hydration";
 import { simulateNode } from "@/lib/plan/simulator";
 import { topologicalOrder } from "@/lib/plan/tree";
+import { fundWithFriendbot } from "../helpers/friendbot";
 
 // Live testnet proof that the FULL close pipeline runs end-to-end against real
 // contracts for a MIXED plan (a Soroban step + the classic merge):
@@ -37,8 +38,7 @@ const horizon = getHorizon(TESTNET);
 const horizonDirect = new Horizon.Server(TESTNET.horizon, { allowHttp: false });
 
 async function friendbot(pk: string): Promise<void> {
-  const res = await fetch(`${TESTNET.friendbot}?addr=${encodeURIComponent(pk)}`);
-  if (!res.ok) throw new Error(`friendbot funding failed for ${pk}: ${res.status}`);
+  await fundWithFriendbot(pk);
 }
 
 async function submitClassic(kp: Keypair, build: (b: TransactionBuilder) => void): Promise<void> {

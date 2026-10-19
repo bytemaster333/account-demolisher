@@ -11,17 +11,16 @@ import {
   TransactionBuilder,
   type xdr,
 } from "@stellar/stellar-sdk";
+import { fundWithFriendbot } from "../../helpers/friendbot";
 
 export const HORIZON_URL = "https://horizon-testnet.stellar.org";
 export const SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org";
 export const PASSPHRASE = Networks.TESTNET;
-const FRIENDBOT_URL = "https://friendbot.stellar.org";
 
 export const horizon = new Horizon.Server(HORIZON_URL);
 
 export async function friendbotFund(publicKey: string): Promise<void> {
-  const res = await fetch(`${FRIENDBOT_URL}/?addr=${encodeURIComponent(publicKey)}`);
-  if (!res.ok) throw new Error(`friendbot funding failed for ${publicKey}: HTTP ${res.status}`);
+  await fundWithFriendbot(publicKey);
 }
 
 export async function accountExists(publicKey: string): Promise<boolean> {

@@ -5,6 +5,7 @@ import { blndTokenForNetwork } from "@/lib/adapters/blend/constants";
 import { TESTNET } from "@/lib/config/networks";
 import { buildTrustlineTx } from "@/lib/stellar/trustline-tx";
 import { fetchLedgerClock } from "@/lib/stellar/ledger-clock";
+import { fundWithFriendbot } from "../helpers/friendbot";
 
 // live testnet check that the change_trust a close adds before a blend
 // emissions claim lands, and leaves a line the BLND SAC can pay into
@@ -13,8 +14,7 @@ const horizon = new Horizon.Server(TESTNET.horizon);
 describe("integration: BLND trustline for emissions claims on testnet", () => {
   it("opens an authorized trustline to the pinned BLND asset", async () => {
     const kp = Keypair.random();
-    const res = await fetch(`${TESTNET.friendbot}?addr=${encodeURIComponent(kp.publicKey())}`);
-    if (!res.ok) throw new Error(`friendbot funding failed: ${res.status}`);
+    await fundWithFriendbot(kp.publicKey());
 
     const blnd = blndTokenForNetwork(TESTNET);
     const tx = buildTrustlineTx(

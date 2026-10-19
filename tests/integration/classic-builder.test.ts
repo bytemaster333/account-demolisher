@@ -16,6 +16,7 @@ import { getHorizon } from "@/lib/stellar/horizon-client";
 import { TESTNET } from "@/lib/config/networks";
 import { CLOSE_MARKER_NAME, CLOSE_MARKER_VALUE } from "@/lib/metrics/close-marker";
 import type { BatchedOperation } from "@/lib/types/plan";
+import { fundWithFriendbot } from "../helpers/friendbot";
 
 // live testnet close of an account carrying every non-ed25519 signer type, with
 // a base64 hash memo, built through the real batcher and builder and anchored to
@@ -24,8 +25,7 @@ import type { BatchedOperation } from "@/lib/types/plan";
 const server = getHorizon(TESTNET);
 
 async function friendbotFund(pk: string): Promise<void> {
-  const res = await fetch(`${TESTNET.friendbot}/?addr=${encodeURIComponent(pk)}`);
-  if (!res.ok) throw new Error(`friendbot funding failed for ${pk}: HTTP ${res.status}`);
+  await fundWithFriendbot(pk);
 }
 
 function randomBytes32(): Uint8Array {

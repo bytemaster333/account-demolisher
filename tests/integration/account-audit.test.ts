@@ -26,6 +26,7 @@ import { planClaimableBalances } from "@/lib/plan/classic-batcher";
 import type { BatchedOperation } from "@/lib/types/plan";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { TESTNET } from "@/lib/config/networks";
+import { fundWithFriendbot } from "../helpers/friendbot";
 
 // live testnet checks that the audit's merge verdicts match what core actually
 // does: each blocked case also submits the merge and expects the matching
@@ -34,8 +35,7 @@ import { TESTNET } from "@/lib/config/networks";
 const server = getHorizon(TESTNET);
 
 async function friendbotFund(pk: string): Promise<void> {
-  const res = await fetch(`${TESTNET.friendbot}/?addr=${encodeURIComponent(pk)}`);
-  if (!res.ok) throw new Error(`friendbot funding failed for ${pk}: HTTP ${res.status}`);
+  await fundWithFriendbot(pk);
 }
 
 async function submitAs(kp: Keypair, ops: readonly xdr.Operation[]): Promise<void> {

@@ -14,6 +14,7 @@ import {
   type PageFlowInput,
 } from "@/lib/orchestrator/page-flow-machine";
 import type { Connector } from "@/lib/wallet/connector";
+import { fundWithFriendbot } from "./friendbot";
 
 export type FlowSnapshot = SnapshotFrom<typeof pageFlowMachine>;
 export type FlowActor = ReturnType<typeof createActor<typeof pageFlowMachine>>;
@@ -115,9 +116,8 @@ export function outcomeSummary(s: FlowSnapshot): string {
 }
 
 export async function friendbotFund(network: NetworkConfig, publicKey: string): Promise<void> {
-  if (network.friendbot === null) throw new Error(`${network.id} has no friendbot`);
-  const res = await fetch(`${network.friendbot}?addr=${encodeURIComponent(publicKey)}`);
-  if (!res.ok) throw new Error(`friendbot funding failed for ${publicKey}: HTTP ${res.status}`);
+  if (network.id !== "testnet") throw new Error(`${network.id} has no friendbot`);
+  await fundWithFriendbot(publicKey);
 }
 
 export async function nativeBalance(horizon: Horizon.Server, publicKey: string): Promise<bigint> {

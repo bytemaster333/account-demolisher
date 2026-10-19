@@ -18,6 +18,7 @@ import { executePlanTreeOnChain, type ConfirmationReceipt } from "@/lib/orchestr
 import { buildPlanTree, type PlanNode } from "@/lib/plan/tree";
 import { pathKey } from "@/lib/types/plan";
 import type { AssetIdentifier } from "@/lib/types/account";
+import { fundWithFriendbot } from "../helpers/friendbot";
 
 // Live testnet reproduction of SEC-13. An account that holds a classic (CAP-38)
 // liquidity pool can't be closed in a single sweep: a liquidity_pool_withdraw
@@ -30,8 +31,7 @@ import type { AssetIdentifier } from "@/lib/types/account";
 const server = getHorizon(TESTNET);
 
 async function friendbotFund(pk: string): Promise<void> {
-  const res = await fetch(`${TESTNET.friendbot}/?addr=${encodeURIComponent(pk)}`);
-  if (!res.ok) throw new Error(`friendbot funding failed for ${pk}: HTTP ${res.status}`);
+  await fundWithFriendbot(pk);
 }
 
 async function submitAs(kp: Keypair, build: (b: TransactionBuilder) => void): Promise<void> {

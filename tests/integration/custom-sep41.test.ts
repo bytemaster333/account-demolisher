@@ -15,6 +15,7 @@ import { balance, buildApprove, buildTransfer, allowance } from "@/lib/soroban/s
 import { enumerateAllowances, buildRevoke } from "@/lib/soroban/allowances";
 import { assertSafeTransferInvocation } from "@/lib/soroban/transfer-guard";
 import { fetchLedgerClock } from "@/lib/stellar/ledger-clock";
+import { fundWithFriendbot } from "../helpers/friendbot";
 
 // End-to-end proof of Deliverable-1 completion criterion A on LIVE testnet: a
 // real SEP-41 token contract is deployed, an account is given a token balance and
@@ -36,8 +37,7 @@ const rpc = getRpc(TESTNET);
 const horizon = new Horizon.Server(TESTNET.horizon, { allowHttp: false });
 
 async function friendbot(pk: string): Promise<void> {
-  const res = await fetch(`${TESTNET.friendbot}?addr=${encodeURIComponent(pk)}`);
-  if (!res.ok) throw new Error(`friendbot funding failed for ${pk}: ${res.status}`);
+  await fundWithFriendbot(pk);
 }
 
 // build, sign, and submit a CLASSIC transaction, waiting for it to apply.

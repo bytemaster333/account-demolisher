@@ -14,6 +14,7 @@ import { DEFAULT_TX_VALIDITY_SECONDS, fetchLedgerClock } from "@/lib/stellar/led
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { TESTNET } from "@/lib/config/networks";
 import { mergeSignatures } from "@/lib/multisig/partial-xdr";
+import { fundWithFriendbot } from "../helpers/friendbot";
 
 // Live testnet proof of the 2-of-3 multisig close via the PARTIAL-XDR merge path
 // (the relay's coordination mechanism), NOT the locally-held-keys connector. A
@@ -26,8 +27,7 @@ import { mergeSignatures } from "@/lib/multisig/partial-xdr";
 const server = getHorizon(TESTNET);
 
 async function friendbotFund(pk: string): Promise<void> {
-  const res = await fetch(`${TESTNET.friendbot}/?addr=${encodeURIComponent(pk)}`);
-  if (!res.ok) throw new Error(`friendbot funding failed for ${pk}: HTTP ${res.status}`);
+  await fundWithFriendbot(pk);
 }
 
 // one signer signs the canonical tx ALONE and returns its partial envelope xdr

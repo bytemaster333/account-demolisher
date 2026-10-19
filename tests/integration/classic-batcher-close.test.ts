@@ -19,6 +19,7 @@ import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
 import { DEFAULT_TX_VALIDITY_SECONDS, fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { pathKey } from "@/lib/types/plan";
+import { fundWithFriendbot } from "../helpers/friendbot";
 
 // live testnet run of the batcher's own output, phase by phase the way the
 // executor runs it: a claimable balance of an asset the account does not trust
@@ -29,8 +30,7 @@ import { pathKey } from "@/lib/types/plan";
 const server = getHorizon(TESTNET);
 
 async function friendbot(pk: string): Promise<void> {
-  const res = await fetch(`${TESTNET.friendbot}/?addr=${encodeURIComponent(pk)}`);
-  if (!res.ok) throw new Error(`friendbot funding failed for ${pk}: HTTP ${res.status}`);
+  await fundWithFriendbot(pk);
 }
 
 describe("integration: classic close of an account holding an untrusted claimable balance", () => {

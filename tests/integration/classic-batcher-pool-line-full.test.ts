@@ -18,6 +18,7 @@ import { buildClassicTransaction } from "@/lib/stellar/classic-builder";
 import { DEFAULT_TX_VALIDITY_SECONDS, fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { pathKey } from "@/lib/types/plan";
+import { fundWithFriendbot } from "../helpers/friendbot";
 
 // live testnet run of the batcher's own output: a pool withdraw whose payout
 // alone overflows a custom trustline limit. core fails it with
@@ -26,8 +27,7 @@ import { pathKey } from "@/lib/types/plan";
 const server = getHorizon(TESTNET);
 
 async function friendbot(pk: string): Promise<void> {
-  const res = await fetch(`${TESTNET.friendbot}/?addr=${encodeURIComponent(pk)}`);
-  if (!res.ok) throw new Error(`friendbot funding failed for ${pk}: HTTP ${res.status}`);
+  await fundWithFriendbot(pk);
 }
 
 async function submitAs(kp: Keypair, ops: readonly xdr.Operation[]): Promise<void> {

@@ -14,6 +14,7 @@ import { getHorizon } from "@/lib/stellar/horizon-client";
 import { TESTNET } from "@/lib/config/networks";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
 import { MultiSignerConnector, type MultiSignerMember } from "../helpers/multi-signer";
+import { fundWithFriendbot } from "../helpers/friendbot";
 
 // Live testnet proof of R2/R13: build a real 2-of-2 multisig account, then close
 // it by gathering both signers through the MultiSignerConnector and running the
@@ -22,8 +23,7 @@ import { MultiSignerConnector, type MultiSignerMember } from "../helpers/multi-s
 const server = getHorizon(TESTNET);
 
 async function friendbotFund(pk: string): Promise<void> {
-  const res = await fetch(`${TESTNET.friendbot}/?addr=${encodeURIComponent(pk)}`);
-  if (!res.ok) throw new Error(`friendbot funding failed for ${pk}: HTTP ${res.status}`);
+  await fundWithFriendbot(pk);
 }
 
 function member(kp: Keypair, weight: number): MultiSignerMember {

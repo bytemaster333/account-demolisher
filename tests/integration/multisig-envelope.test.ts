@@ -11,6 +11,7 @@ import { trimToThreshold } from "@/components/multisig/envelope";
 import { TESTNET } from "@/lib/config/networks";
 import { thresholdForClose } from "@/lib/multisig/signing-request";
 import { getHorizon } from "@/lib/stellar/horizon-client";
+import { fundWithFriendbot } from "../helpers/friendbot";
 
 // live testnet proof that a 2-of-3 close signed by all three is rejected with
 // tx_bad_auth_extra, and that the trimmed envelope lands.
@@ -18,8 +19,7 @@ import { getHorizon } from "@/lib/stellar/horizon-client";
 const server = getHorizon(TESTNET);
 
 async function friendbotFund(pk: string): Promise<void> {
-  const res = await fetch(`${TESTNET.friendbot}/?addr=${encodeURIComponent(pk)}`);
-  if (!res.ok) throw new Error(`friendbot funding failed for ${pk}: HTTP ${res.status}`);
+  await fundWithFriendbot(pk);
 }
 
 function resultCodes(e: unknown): unknown {

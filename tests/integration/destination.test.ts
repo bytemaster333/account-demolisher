@@ -5,6 +5,7 @@ import { destinationRequiresMediator, requireMemoEnforcement } from "@/lib/safet
 import { describeSubmitError } from "@/lib/errors";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { TESTNET } from "@/lib/config/networks";
+import { fundWithFriendbot } from "../helpers/friendbot";
 
 // a live SEP-29 destination: the up-front check must see the flag, and a
 // memo-less merge into it must fail with a message that names the cause
@@ -12,8 +13,7 @@ import { TESTNET } from "@/lib/config/networks";
 const server = getHorizon(TESTNET);
 
 async function friendbotFund(pk: string): Promise<void> {
-  const res = await fetch(`${TESTNET.friendbot}/?addr=${encodeURIComponent(pk)}`);
-  if (!res.ok) throw new Error(`friendbot funding failed for ${pk}: HTTP ${res.status}`);
+  await fundWithFriendbot(pk);
 }
 
 describe("integration: SEP-29 destination (testnet)", () => {

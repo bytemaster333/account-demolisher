@@ -13,6 +13,7 @@ import { loadBundleFreshness } from "@/lib/multisig/bundle-freshness";
 import { buildCloseTransaction } from "@/lib/multisig/signing-request";
 import { auditAccount } from "@/lib/stellar/account-audit";
 import { getHorizon } from "@/lib/stellar/horizon-client";
+import { fundWithFriendbot } from "../helpers/friendbot";
 
 // live testnet proof that a published bundle is checked against the account
 // before submit: build a real bundle, then change the account the way a griefer
@@ -21,8 +22,7 @@ import { getHorizon } from "@/lib/stellar/horizon-client";
 const server = getHorizon(TESTNET);
 
 async function friendbotFund(pk: string): Promise<void> {
-  const res = await fetch(`${TESTNET.friendbot}/?addr=${encodeURIComponent(pk)}`);
-  if (!res.ok) throw new Error(`friendbot funding failed for ${pk}: HTTP ${res.status}`);
+  await fundWithFriendbot(pk);
 }
 
 async function submit(kp: Keypair, ...ops: ReturnType<typeof Operation.payment>[]): Promise<void> {

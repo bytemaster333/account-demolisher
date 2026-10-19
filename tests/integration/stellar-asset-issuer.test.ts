@@ -17,6 +17,7 @@ import { TESTNET } from "@/lib/config/networks";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { exitTrustlineGaps, readWrappedAssets } from "@/lib/soroban/stellar-asset";
 import { getHorizon } from "@/lib/stellar/horizon-client";
+import { fundWithFriendbot } from "../helpers/friendbot";
 
 // live testnet check of what an issuer's account says about a payout line the
 // close would open: with auth_required a new line can't receive the SAC payout,
@@ -26,8 +27,7 @@ const horizon = getHorizon(TESTNET);
 const server = getRpc(TESTNET);
 
 async function friendbot(pk: string): Promise<void> {
-  const res = await fetch(`${TESTNET.friendbot}/?addr=${encodeURIComponent(pk)}`);
-  if (!res.ok) throw new Error(`friendbot funding failed for ${pk}: HTTP ${res.status}`);
+  await fundWithFriendbot(pk);
 }
 
 async function submitSoroban(tx: Transaction, kp: Keypair): Promise<void> {

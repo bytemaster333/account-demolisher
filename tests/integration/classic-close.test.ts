@@ -13,6 +13,7 @@ import { DEFAULT_TX_VALIDITY_SECONDS, fetchLedgerClock } from "@/lib/stellar/led
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { TESTNET } from "@/lib/config/networks";
 import { SecretKeyConnector } from "@/lib/wallet/secret-key";
+import { fundWithFriendbot } from "../helpers/friendbot";
 
 // Live testnet round-trip: fund an account, give it real subentries, audit it,
 // then run the actual demolition (batcher -> builder -> sign -> submit) and
@@ -22,8 +23,7 @@ import { SecretKeyConnector } from "@/lib/wallet/secret-key";
 const server = getHorizon(TESTNET);
 
 async function friendbotFund(pk: string): Promise<void> {
-  const res = await fetch(`${TESTNET.friendbot}/?addr=${encodeURIComponent(pk)}`);
-  if (!res.ok) throw new Error(`friendbot funding failed for ${pk}: HTTP ${res.status}`);
+  await fundWithFriendbot(pk);
 }
 
 async function submitAs(kp: Keypair, build: (b: TransactionBuilder) => void): Promise<void> {

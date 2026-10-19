@@ -22,6 +22,7 @@ import { TESTNET } from "@/lib/config/networks";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
 import { fetchLedgerClock } from "@/lib/stellar/ledger-clock";
+import { fundWithFriendbot } from "../helpers/friendbot";
 
 // discovery dates an existing backstop queue from the chain's own q4w entries
 // (M-25). mainnet has too little backstop activity to always hold a locked
@@ -51,8 +52,7 @@ const address = (a: string): xdr.ScVal => nativeToScVal(a, { type: "address" });
 const i128 = (n: bigint): xdr.ScVal => nativeToScVal(n, { type: "i128" });
 
 async function friendbot(pk: string): Promise<void> {
-  const res = await fetch(`${TESTNET.friendbot}?addr=${encodeURIComponent(pk)}`);
-  if (!res.ok) throw new Error(`friendbot funding failed for ${pk}: ${res.status}`);
+  await fundWithFriendbot(pk);
 }
 
 // ledger the last transaction of this test landed in

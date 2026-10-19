@@ -17,6 +17,7 @@ import { buildPlanTree, type PlanNode } from "@/lib/plan/tree";
 import { getRpc } from "@/lib/soroban/rpc-client";
 import { getHorizon } from "@/lib/stellar/horizon-client";
 import { fetchLedgerClock } from "@/lib/stellar/ledger-clock";
+import { fundWithFriendbot } from "../helpers/friendbot";
 
 // live testnet check of the payout trustline a pool exit needs: a SAC transfer
 // into an account with no line traps with Error(Contract, #13), and once the
@@ -27,8 +28,7 @@ const horizon = getHorizon(TESTNET);
 const server = getRpc(TESTNET);
 
 async function friendbot(pk: string): Promise<void> {
-  const res = await fetch(`${TESTNET.friendbot}/?addr=${encodeURIComponent(pk)}`);
-  if (!res.ok) throw new Error(`friendbot funding failed for ${pk}: HTTP ${res.status}`);
+  await fundWithFriendbot(pk);
 }
 
 async function submitSoroban(tx: Transaction, kp: Keypair): Promise<void> {
