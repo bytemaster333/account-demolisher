@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   Address,
+  Contract,
   Operation,
   StrKey,
   scValToNative,
@@ -312,6 +313,92 @@ describe("Aquarius event scan", () => {
       ),
     ).rejects.toThrow(/3-page cap/);
     expect(n).toBe(3);
+  });
+
+  // a server whose rpc scan finds nothing (the deposit is older than it keeps)
+  // and whose router reads answer for POOL_OK
+  function partnerOnlyServer() {
+    const sims = simServer((contract, fn) => {
+      if (fn === "get_pools") {
+        return xdr.ScVal.scvMap([
+          new xdr.ScMapEntry({
+            key: xdr.ScVal.scvBytes(Buffer.from(IDX_OK, "hex")),
+            val: new Address(POOL_OK).toScVal(),
+          }),
+        ]);
+      }
+      if (fn === "pool_type") return xdr.ScVal.scvSymbol("constant_product");
+      if (fn === "share_id") return new Address(SHARE_OK).toScVal();
+      if (fn === "balance" && contract === SHARE_OK) return i128(500n);
+      throw new Error(`HostError: ${contract}.${fn} trapped`);
+    });
+    const scan = scanServer(
+      () =>
+        ({
+          events: [],
+          cursor: "",
+          latestLedger: 1_000_000,
+        }) as unknown as rpc.Api.GetEventsResponse,
+    );
+    return Object.assign(scan, { simulateTransaction: sims.simulateTransaction });
+  }
+
+  // the router's deposit(tokens, user) with the pool first in its data
+  function partnerDeposit(router: string): rpc.Api.EventResponse {
+    return {
+      id: "0000000000000000500-0000000000",
+      type: "contract",
+      ledger: 500,
+      ledgerClosedAt: "",
+      transactionIndex: 1,
+      operationIndex: 0,
+      inSuccessfulContractCall: true,
+      txHash: "",
+      contractId: new Contract(router),
+      topic: [
+        xdr.ScVal.scvSymbol("deposit"),
+        xdr.ScVal.scvVec([new Address(TOKEN_A).toScVal(), new Address(TOKEN_B).toScVal()]),
+        new Address(USER).toScVal(),
+      ],
+      value: xdr.ScVal.scvVec([new Address(POOL_OK).toScVal(), i128(10n)]),
+    };
+  }
+
+  it("finds a pool from a router deposit only the partner history holds", async () => {
+    const asked: string[][] = [];
+    const scan = await new AquariusEventScanPoolProvider({
+      server: partnerOnlyServer(),
+      network: MAINNET,
+      partner: async (router, user) => {
+        asked.push([router, user]);
+        return { events: [partnerDeposit(router)], throughLedger: 999_999 };
+      },
+    }).scanWithPartner(USER);
+    expect(asked).toEqual([[getAquariusRouterId(MAINNET), USER]]);
+    expect(scan.pools).toEqual([
+      {
+        poolIndex: IDX_OK,
+        poolAddress: POOL_OK,
+        poolType: "constant_product",
+        tokens: [TOKEN_A, TOKEN_B],
+        shareBalance: 500n,
+      },
+    ]);
+    expect(scan.partnerThroughLedger).toBe(999_999);
+    expect(scan.partnerError).toBeNull();
+  });
+
+  it("keeps the rpc result and reports why when the partner history fails", async () => {
+    const scan = await new AquariusEventScanPoolProvider({
+      server: partnerOnlyServer(),
+      network: MAINNET,
+      partner: async () => {
+        throw new Error("partner index answered HTTP 503");
+      },
+    }).scanWithPartner(USER);
+    expect(scan.pools).toEqual([]);
+    expect(scan.partnerThroughLedger).toBeNull();
+    expect(scan.partnerError).toBe("partner index answered HTTP 503");
   });
 });
 

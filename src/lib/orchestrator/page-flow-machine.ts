@@ -16,6 +16,8 @@ import { txHashHex } from "@/lib/orchestrator/submit";
 import { discoveryWarningFor } from "@/lib/orchestrator/warnings";
 import {
   discoverActor,
+  NO_PARTNER_COVERAGE,
+  type PartnerCoverage,
   type DiscoverInput,
   type UnopenableExitLine,
 } from "@/lib/orchestrator/actors/discover";
@@ -118,6 +120,8 @@ export interface PageFlowContext {
   // true when the optional standalone-token scan couldn't complete (timeout/blip);
   // lets the UI still offer the manual add-a-token affordance in that case.
   readonly heldTokenScanFailed: boolean;
+  // how far back the partner history index answered for the scans
+  readonly partnerCoverage: PartnerCoverage;
   readonly discoveryWarnings: readonly string[];
   // technical detail behind the discovery warnings, for a collapsed section
   readonly discoveryDiagnostics: readonly string[];
@@ -206,6 +210,7 @@ const initialContext: PageFlowContext = {
   heldTokens: [],
   unreadableHeldTokens: [],
   heldTokenScanFailed: false,
+  partnerCoverage: NO_PARTNER_COVERAGE,
   discoveryWarnings: [],
   discoveryDiagnostics: [],
   exitTrustlineGaps: [],
@@ -371,6 +376,7 @@ const clearedDiscovery = {
   heldTokens: [],
   unreadableHeldTokens: [],
   heldTokenScanFailed: false,
+  partnerCoverage: NO_PARTNER_COVERAGE,
   discoveryWarnings: [],
   discoveryDiagnostics: [],
   exitTrustlineGaps: [],
@@ -480,6 +486,7 @@ export const pageFlowMachine = setup({
             heldTokens: ({ event }) => event.output.heldTokens,
             unreadableHeldTokens: ({ event }) => event.output.unreadableHeldTokens,
             heldTokenScanFailed: ({ event }) => event.output.heldTokenScanFailed,
+            partnerCoverage: ({ event }) => event.output.partnerCoverage ?? NO_PARTNER_COVERAGE,
             discoveryWarnings: ({ event }) => event.output.discoveryWarnings,
             discoveryDiagnostics: ({ event }) => event.output.discoveryDiagnostics,
             exitTrustlineGaps: ({ event }) => event.output.exitTrustlineGaps,

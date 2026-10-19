@@ -76,6 +76,7 @@ export function AcknowledgeStage({
             onRebuild={onRebuild}
             convertToXLM={choices.convertHeldTokensToXLM}
             onConvertToXLMChange={choices.setConvertHeldTokensToXLM}
+            partnerAsOfLedger={ctx.partnerCoverage.heldTokensAsOfLedger}
           />
         )
       }

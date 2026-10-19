@@ -13,7 +13,34 @@ vi.mock("@/lib/soroban/allowances", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/lib/soroban/allowances")>();
   return {
     ...real,
-    enumerateAllowances: (...args: unknown[]) => scan.enumerate(...args),
+    // the page reads the scan result; the cases are written as the list or the
+    // partial-scan error enumerateAllowances gives for the same scan
+    scanAllowances: async (...args: unknown[]) => {
+      try {
+        const records = (await scan.enumerate(...args)) as unknown[];
+        return {
+          records,
+          incomplete: null,
+          overflow: [],
+          partnerThroughLedger: null,
+          partnerError: null,
+        };
+      } catch (e) {
+        if (
+          e instanceof real.AllowanceScanIncompleteError ||
+          e instanceof real.AllowanceScanOverflowError
+        ) {
+          return {
+            records: e.partial,
+            incomplete: e.incomplete,
+            overflow: e.overflow,
+            partnerThroughLedger: null,
+            partnerError: null,
+          };
+        }
+        throw e;
+      }
+    },
     confirmAllowancesOnChain: (...args: unknown[]) => scan.confirm(...args),
   };
 });

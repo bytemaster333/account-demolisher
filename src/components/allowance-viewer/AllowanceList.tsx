@@ -52,6 +52,9 @@ export interface AllowanceListProps {
   readonly busy?: boolean;
   // rows per page; the page passes none and gets ALLOWANCE_ROWS_PER_PAGE
   readonly pageSize?: number;
+  // the ledger the partner history index answered the scan through, or null
+  // when the scan saw only the rpc's ~7 days
+  readonly historyThroughLedger?: number | null;
 }
 
 const HEADER_CELL: React.CSSProperties = {
@@ -71,6 +74,7 @@ export function AllowanceList({
   onRevoked,
   busy,
   pageSize = ALLOWANCE_ROWS_PER_PAGE,
+  historyThroughLedger = null,
 }: AllowanceListProps): React.JSX.Element {
   const visible = useMemo(
     () => (showExpired ? records : records.filter(isActive)),
@@ -96,7 +100,13 @@ export function AllowanceList({
           {activeCount} active {activeCount === 1 ? "approval" : "approvals"}
         </span>
         <span style={{ fontSize: 12, color: "var(--fg-3)" }}>
-          <InfoTip tip="We looked back about the last 7 days of on-chain history (the RPC's event-retention limit). 'Active' approvals can still be used; the rest have expired or are already zero.">
+          <InfoTip
+            tip={
+              historyThroughLedger !== null
+                ? "We looked through the account's whole approve history, read from Lumeus, our history partner. 'Active' approvals can still be used; the rest have expired or are already zero."
+                : "We looked back about the last 7 days of on-chain history (the RPC's event-retention limit). 'Active' approvals can still be used; the rest have expired or are already zero."
+            }
+          >
             {records.length} found
           </InfoTip>
         </span>

@@ -13,6 +13,7 @@ import {
   vec as scvVec,
 } from "@/lib/soroban/scval";
 import { simulateRead } from "@/lib/soroban/simulate";
+import type { PartnerEventCoverage } from "@/lib/soroban/event-scan";
 import {
   EVENT_RETENTION_WINDOW_LEDGERS,
   MAX_RETENTION_RETRIES,
@@ -77,7 +78,7 @@ function poolIndexToScVal(poolIndexHex: string): xdr.ScVal {
 }
 
 // router.share_id(tokens, pool_index) -> address. returns the SEP-41 share-token id
-async function readShareIdFromRouter(
+export async function readShareIdFromRouter(
   server: rpc.Server,
   network: NetworkConfig,
   routerId: string,
@@ -395,6 +396,10 @@ export interface AquariusEventScanPoolProviderOptions {
   // the start is never below the host's reported floor plus a margin
   readonly lookbackLedgers?: number;
   readonly maxPages?: number;
+  // the user's router deposit events from a partner history index, over the
+  // whole history: a pool joined before the rpc's window is found from them. a
+  // failed read leaves the rpc result and is reported by scanWithPartner
+  readonly partner?: (routerId: string, user: string) => Promise<PartnerEventCoverage>;
 }
 
 const DEFAULT_EVENT_LOOKBACK_LEDGERS = EVENT_RETENTION_WINDOW_LEDGERS;
@@ -408,8 +413,10 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
   private readonly routerId: string;
   private readonly lookbackLedgers: number;
   private readonly maxPages: number;
+  private readonly partner: AquariusEventScanPoolProviderOptions["partner"];
 
   constructor(opts: AquariusEventScanPoolProviderOptions) {
+    this.partner = opts.partner;
     this.server = opts.server;
     this.network = opts.network;
     this.routerId = getAquariusRouterId(opts.network);
@@ -423,6 +430,21 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
   }
 
   async getUserPools(userPublicKey: string): Promise<AquariusPool[]> {
+    return (await this.scanWithPartner(userPublicKey)).pools;
+  }
+
+  // the pools, with how far back the partner index covered router deposits
+  // (null when it was not asked or failed, with the reason in partnerError)
+  async scanWithPartner(userPublicKey: string): Promise<{
+    pools: AquariusPool[];
+    partnerThroughLedger: number | null;
+    partnerError: string | null;
+  }> {
+    const partnerEvents = this.partner?.(this.routerId, userPublicKey);
+    // settled here so a rejection while the rpc scan runs is not unhandled
+    partnerEvents?.catch(() => undefined);
+    let partnerThroughLedger: number | null = null;
+    let partnerError: string | null = null;
     const latest = await this.server.getLatestLedger();
     // start a margin above the host's reported floor, as event-scan.ts does: a
     // start at exactly latest - retention is already below the floor by the time
@@ -513,6 +535,26 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
       );
     }
 
+    let partner: PartnerEventCoverage | null = null;
+    if (partnerEvents !== undefined) {
+      try {
+        partner = await partnerEvents;
+        partnerThroughLedger = partner.throughLedger;
+      } catch (e) {
+        partnerError = errorMessage(e);
+      }
+    }
+    if (partner !== null) {
+      for (const ev of partner.events) {
+        const decoded = tryDecodeDepositOrWithdrawEvent(ev, userPublicKey, this.routerId);
+        if (decoded === null) continue;
+        const key = `${decoded.tokens.join(",")}|${decoded.poolAddress}`;
+        if (!observed.has(key)) {
+          observed.set(key, { tokens: decoded.tokens, poolAddress: decoded.poolAddress });
+        }
+      }
+    }
+
     const out: AquariusPool[] = [];
     // cache get_pools(tokens) per tokens tuple
     const poolsByTokens = new Map<string, Map<string, string>>();
@@ -560,7 +602,7 @@ export class AquariusEventScanPoolProvider implements AquariusPoolProvider {
         );
       }
     }
-    return out;
+    return { pools: out, partnerThroughLedger, partnerError };
   }
 
   async getPoolShareBalance(

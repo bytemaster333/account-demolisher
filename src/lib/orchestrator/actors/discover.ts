@@ -44,6 +44,8 @@ import {
 } from "@/lib/adapters/aquarius/gauges";
 import { ALL_PROTOCOLS, discoveryWarningFor } from "@/lib/orchestrator/warnings";
 import { withTimeout } from "@/lib/with-timeout";
+import { partnerApprovals, partnerHeldTokens } from "@/lib/lumeus/client";
+import { positionShareTokens } from "@/lib/adapters/positions/share-tokens";
 
 export interface DiscoverInput {
   readonly publicKey: string;
@@ -86,7 +88,20 @@ export interface DiscoverOutput {
   // what the reward gauges of each aquarius pool the account is in owe it; the
   // plan claims each before the pool's withdraw
   readonly aquariusGaugeRewards: readonly PoolGaugeRewards[];
+  readonly partnerCoverage?: PartnerCoverage;
 }
+
+// how far back the partner history index answered, per scan. null where it was
+// not configured or failed: that scan then saw only the rpc's ~7 days
+export interface PartnerCoverage {
+  readonly allowancesThroughLedger: number | null;
+  readonly heldTokensAsOfLedger: number | null;
+}
+
+export const NO_PARTNER_COVERAGE: PartnerCoverage = {
+  allowancesThroughLedger: null,
+  heldTokensAsOfLedger: null,
+};
 
 // per-discovery-step ceiling so a hanging rpc can't pin the ui on a spinner
 export const DISCOVERY_TIMEOUT_MS = 30_000;
@@ -113,6 +128,7 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
     allowances: readonly AllowanceRecord[];
     warning?: string;
     detail?: string;
+    partnerThroughLedger?: number | null;
   }> =
     input.allowances && input.allowances.length > 0
       ? Promise.resolve({ allowances: input.allowances })
@@ -126,7 +142,9 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
             );
             const scan = await withTimeout(
               "scanAllowances",
-              scanAllowances(rpc, input.publicKey, latest.sequence, DEFAULT_SCAN_WINDOW_LEDGERS),
+              scanAllowances(rpc, input.publicKey, latest.sequence, DEFAULT_SCAN_WINDOW_LEDGERS, {
+                ...optionalPartner(partnerApprovals(input.network, input.publicKey)),
+              }),
               DISCOVERY_TIMEOUT_MS,
             );
             // an allowance already spent through transfer_from (or revoked) reads
@@ -171,8 +189,10 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
               );
             }
             if (confirmDetail !== undefined) details.push(confirmDetail);
+            if (scan.partnerError) details.push(`allowance partner history: ${scan.partnerError}`);
             return {
               allowances,
+              partnerThroughLedger: scan.partnerThroughLedger,
               ...(warnings.length > 0 ? { warning: warnings.join(" ") } : {}),
               ...(details.length > 0 ? { detail: details.join("; ") } : {}),
             };
@@ -222,6 +242,7 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
     failed: boolean;
     warning?: string;
     detail?: string;
+    partnerAsOfLedger?: number | null;
   }> = (async () => {
     try {
       const rpc = getRpc(input.network);
@@ -232,20 +253,22 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
       );
       const scan = await withTimeout(
         "discoverHeldTokens",
-        discoverHeldTokens(rpc, input.publicKey, latest.sequence, input.network),
+        discoverHeldTokens(rpc, input.publicKey, latest.sequence, input.network, {
+          ...optionalPartner(partnerHeldTokens(input.network, input.publicKey)),
+        }),
         DISCOVERY_TIMEOUT_MS,
       );
+      const details: string[] = [];
+      if (scan.incomplete !== null) details.push(`held-token scan: ${scan.incomplete.detail}`);
+      if (scan.partnerError) details.push(`held-token partner history: ${scan.partnerError}`);
       return {
         held: scan.held,
         unreadable: scan.unreadable,
         failed: false,
+        partnerAsOfLedger: scan.partnerAsOfLedger,
         // a scan that covered only part of the window says so; what it found stays
-        ...(scan.incomplete !== null
-          ? {
-              warning: heldTokenScanWarning(scan.incomplete),
-              detail: `held-token scan: ${scan.incomplete.detail}`,
-            }
-          : {}),
+        ...(scan.incomplete !== null ? { warning: heldTokenScanWarning(scan.incomplete) } : {}),
+        ...(details.length > 0 ? { detail: details.join("; ") } : {}),
       };
     } catch (e) {
       // an optional, opt-in scan with a manual-add fallback: a blip must not read
@@ -268,6 +291,7 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
     heldPromise,
   ]);
   const positions = positionResult.positions;
+  const held = await withoutPositionShares(input, positions, heldResult);
 
   // a pool exit pays each pool token to the account, and a stellar asset
   // contract writes a classic asset into its trustline: without one the whole
@@ -290,7 +314,7 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
   // shortfall, forfeited gauge rewards) so copy doesn't reshuffle between runs
   if (allowanceResult.warning) discoveryWarnings.push(allowanceResult.warning);
   if (heldResult.warning) discoveryWarnings.push(heldResult.warning);
-  for (const r of [allowanceResult, positionResult, heldResult]) {
+  for (const r of [allowanceResult, positionResult, heldResult, held]) {
     if (r.detail) discoveryDiagnostics.push(r.detail);
   }
   for (const e of positions.errors) {
@@ -311,8 +335,8 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
   // held tokens from unrecognized contracts are the visible trace of a position
   // in an unsupported app we can't unwind; ask the user to close those first
   const manualClose = manualCloseRequiredNotice({
-    heldTokenCount: heldResult.held.length,
-    unreadableTokenCount: heldResult.unreadable.length,
+    heldTokenCount: held.held.length,
+    unreadableTokenCount: held.unreadable.length,
   });
   if (manualClose) discoveryWarnings.push(manualClose);
 
@@ -320,8 +344,8 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
     audit,
     positions,
     allowances: allowanceResult.allowances,
-    heldTokens: heldResult.held,
-    unreadableHeldTokens: heldResult.unreadable,
+    heldTokens: held.held,
+    unreadableHeldTokens: held.unreadable,
     heldTokenScanFailed: heldResult.failed,
     discoveryWarnings,
     discoveryDiagnostics,
@@ -331,8 +355,42 @@ export const discoverActor = fromPromise<DiscoverOutput, DiscoverInput>(async ({
       ? { aquariusRewardToken: exits.aquariusRewardToken }
       : {}),
     aquariusGaugeRewards: gauges.claimable,
+    partnerCoverage: {
+      allowancesThroughLedger: allowanceResult.partnerThroughLedger ?? null,
+      heldTokensAsOfLedger: heldResult.partnerAsOfLedger ?? null,
+    },
   };
 });
+
+function optionalPartner<T>(partner: T | undefined): { partner?: T } {
+  return partner === undefined ? {} : { partner };
+}
+
+// an aquarius or soroswap share the plan already exits is not a standalone token.
+// the share ids are read from the router and the factory; when that read fails,
+// every token stays listed, which at worst repeats a position as a token
+async function withoutPositionShares(
+  input: DiscoverInput,
+  positions: ProtocolPositions,
+  scan: { readonly held: readonly HeldToken[]; readonly unreadable: readonly string[] },
+): Promise<{ held: readonly HeldToken[]; unreadable: readonly string[]; detail?: string }> {
+  if (scan.held.length === 0 && scan.unreadable.length === 0) return scan;
+  if (positions.aquarius.length === 0 && positions.soroswap.length === 0) return scan;
+  let shares: Set<string>;
+  try {
+    shares = await withTimeout(
+      "positionShareTokens",
+      positionShareTokens(getRpc(input.network), input.network, input.publicKey, positions),
+      DISCOVERY_TIMEOUT_MS,
+    );
+  } catch (e) {
+    return { ...scan, detail: `pool share tokens: ${errorMessage(e)}` };
+  }
+  return {
+    held: scan.held.filter((t) => !shares.has(t.contractId)),
+    unreadable: scan.unreadable.filter((id) => !shares.has(id)),
+  };
+}
 
 // aquarius gauge rewards are paid only by the pool's gauges_claim, which the
 // plan runs ahead of the pool's withdraw. a failed read stops discovery with the

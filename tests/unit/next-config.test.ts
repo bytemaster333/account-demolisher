@@ -4,7 +4,12 @@ import type { NextConfig } from "next";
 // next.config.ts is what `next build` and `next dev` evaluate first, so a bad
 // public setting that only the build can inline must stop them there (L-29)
 
-const KEYS = ["NEXT_PUBLIC_SLIPPAGE_BPS", "NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS"] as const;
+const KEYS = [
+  "NEXT_PUBLIC_SLIPPAGE_BPS",
+  "NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS",
+  "NEXT_PUBLIC_LUMEUS_TESTNET_KEY",
+  "NEXT_PUBLIC_LUMEUS_MAINNET_KEY",
+] as const;
 const orig = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
 
 async function loadConfig(): Promise<NextConfig> {
@@ -55,5 +60,26 @@ describe("next.config request body bound (M-51)", () => {
   it("caps the body the proxy may buffer at 32 KB", async () => {
     const config = await loadConfig();
     expect(config.experimental?.proxyClientMaxBodySize).toBe("32kb");
+  });
+});
+
+describe("next.config lumeus key validation", () => {
+  it.each(["NEXT_PUBLIC_LUMEUS_TESTNET_KEY", "NEXT_PUBLIC_LUMEUS_MAINNET_KEY"] as const)(
+    "refuses a full-access key in %s without printing it",
+    async (name) => {
+      process.env[name] = "lum_live_secretvalue";
+      const err = await loadConfig().then(
+        () => null,
+        (e: unknown) => e as Error,
+      );
+      expect(err?.message).toMatch(new RegExp(`${name} must be a Lumeus publishable key`));
+      expect(err?.message).not.toContain("secretvalue");
+    },
+  );
+
+  it("builds with a publishable key or none", async () => {
+    process.env.NEXT_PUBLIC_LUMEUS_TESTNET_KEY = "lum_pub_abc123";
+    process.env.NEXT_PUBLIC_LUMEUS_MAINNET_KEY = "";
+    await expect(loadConfig()).resolves.toBeDefined();
   });
 });

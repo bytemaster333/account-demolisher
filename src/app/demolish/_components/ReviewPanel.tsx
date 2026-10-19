@@ -16,7 +16,7 @@ import { explorerAccountUrl } from "@/lib/explorer";
 import { hasHiddenCharacters, safeDisplay } from "@/lib/safe-display";
 import type { BundleabilityResult } from "@/lib/multisig/signing-request";
 import type { PlanNode, PreparePlan } from "@/lib/plan/tree";
-import { EVENT_RETENTION_WINDOW_LEDGERS } from "@/lib/soroban/event-retention";
+import { allowanceReviewNote } from "@/lib/lumeus/copy";
 import type { AccountAudit, AssetIdentifier } from "@/lib/types/account";
 import { pathKey, type ClassicMemo } from "@/lib/types/plan";
 
@@ -74,8 +74,12 @@ export function ReviewPanel({
   onBack,
   onDemolish,
   shared,
+  allowanceHistoryThroughLedger = null,
 }: {
   readonly planGroups: readonly PlanGroup[];
+  // the ledger the partner history index answered the allowance scan through,
+  // or null when the scan saw only the rpc's ~7 days
+  readonly allowanceHistoryThroughLedger?: number | null;
   readonly audit: AccountAudit;
   // the network's base reserve from the latest ledger; null while it loads or
   // when it couldn't be read
@@ -327,9 +331,7 @@ export function ReviewPanel({
       ) : null}
 
       <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: "var(--fg-3)" }}>
-        Token spending permissions are found from the network&apos;s recent approve events, about
-        the last 7 days ({EVENT_RETENTION_WINDOW_LEDGERS.toLocaleString("en-US")} ledgers). A
-        permission granted before that isn&apos;t seen, so it isn&apos;t revoked here.
+        {allowanceReviewNote(allowanceHistoryThroughLedger)}
       </p>
 
       {/* destination + memo + amount + account snapshot */}

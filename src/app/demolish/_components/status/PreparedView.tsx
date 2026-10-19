@@ -16,7 +16,12 @@ export function preparedView(run: StatusRun): StatusView {
     iconAnimation: "pop .35s ease-out",
     title: "Preparation done, account still open",
     subtitle: <PreparedNote prepared={run.prepared} />,
-    headerExtras: <RunNotes executionNotes={run.executionNotes} />,
+    headerExtras: (
+      <RunNotes
+        executionNotes={run.executionNotes}
+        allowanceHistoryThroughLedger={run.allowanceHistoryThroughLedger ?? null}
+      />
+    ),
     footer: (
       <ReceiptFooter
         kind="prepared"

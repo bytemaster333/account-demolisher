@@ -27,6 +27,7 @@ export function ReviewStage({
   onDemolish,
   onRebuild,
   onLeaveOutRisky,
+  allowanceHistoryThroughLedger = null,
 }: {
   readonly review: RunReview;
   readonly audit: AccountAudit;
@@ -44,6 +45,7 @@ export function ReviewStage({
   readonly onRebuild: () => void;
   // rebuilds without the claims at risk in the signing window
   readonly onLeaveOutRisky: () => void;
+  readonly allowanceHistoryThroughLedger?: number | null;
 }): React.JSX.Element {
   const { claimRisks, signing } = shared;
   // back to the nearest earlier step this plan has
@@ -64,6 +66,7 @@ export function ReviewStage({
       deterministic={runInput.deterministicDisposal === true}
       network={network}
       blockers={review.blockers}
+      allowanceHistoryThroughLedger={allowanceHistoryThroughLedger}
       {...(tree?.prepareOnly ? { prepareOnly: tree.prepareOnly } : {})}
       onBack={onBack}
       onDemolish={onDemolish}

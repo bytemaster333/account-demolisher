@@ -13,6 +13,15 @@ import {
 // undefined; treat blank as unset so the default applies instead of failing
 const blankToUndefined = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
 
+const publishableLumeusKey = z
+  .string()
+  .trim()
+  .optional()
+  .transform((v) => (v === undefined || v === "" ? undefined : v))
+  .refine((v) => v === undefined || /^lum_pub_[A-Za-z0-9_]+$/.test(v), {
+    message: "a lumeus key in the client bundle must be a publishable key (lum_pub_...)",
+  });
+
 const PublicEnvSchema = z.object({
   // testnet and mainnet are the only supported targets
   NEXT_PUBLIC_STELLAR_NETWORK: z.preprocess(
@@ -33,6 +42,12 @@ const PublicEnvSchema = z.object({
     .trim()
     .optional()
     .transform((v) => (v === undefined || v === "" ? undefined : v)),
+  // lumeus publishable keys (partner history index), one per network. they ship
+  // in the client bundle, so only the publishable kind is accepted: a full or
+  // read key would hand anyone who opens the page the workspace's own access.
+  // unset or blank leaves the scans on the rpc alone.
+  NEXT_PUBLIC_LUMEUS_TESTNET_KEY: publishableLumeusKey,
+  NEXT_PUBLIC_LUMEUS_MAINNET_KEY: publishableLumeusKey,
   // unset or blank keeps the default; anything else must parse, so an operator
   // typo fails the config instead of quietly changing money-path protection
   NEXT_PUBLIC_SLIPPAGE_BPS: z
@@ -64,6 +79,8 @@ export function getPublicEnv(): PublicEnv {
     NEXT_PUBLIC_STELLAR_NETWORK: process.env.NEXT_PUBLIC_STELLAR_NETWORK,
     NEXT_PUBLIC_DEPLOYMENT_MODE: process.env.NEXT_PUBLIC_DEPLOYMENT_MODE,
     NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID,
+    NEXT_PUBLIC_LUMEUS_TESTNET_KEY: process.env.NEXT_PUBLIC_LUMEUS_TESTNET_KEY,
+    NEXT_PUBLIC_LUMEUS_MAINNET_KEY: process.env.NEXT_PUBLIC_LUMEUS_MAINNET_KEY,
     NEXT_PUBLIC_SLIPPAGE_BPS: process.env.NEXT_PUBLIC_SLIPPAGE_BPS,
     NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS: process.env.NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS,
   });

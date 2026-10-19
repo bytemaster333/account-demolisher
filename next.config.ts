@@ -103,4 +103,16 @@ if (existsSync(slippageSource)) {
   slippage.parseMinMarketOutEnv(process.env.NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS);
 }
 
+// the lumeus keys are inlined into the page too. only a publishable key belongs
+// there: a full or read key would hand every visitor the workspace's access, so
+// one stops the build before it can ship. the value itself is never printed.
+for (const name of ["NEXT_PUBLIC_LUMEUS_TESTNET_KEY", "NEXT_PUBLIC_LUMEUS_MAINNET_KEY"]) {
+  const value = process.env[name]?.trim();
+  if (value !== undefined && value !== "" && !/^lum_pub_[A-Za-z0-9_]+$/.test(value)) {
+    throw new Error(
+      `${name} must be a Lumeus publishable key (lum_pub_...): it is inlined into the page`,
+    );
+  }
+}
+
 export default config;

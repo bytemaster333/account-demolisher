@@ -128,6 +128,9 @@ jobs:
           NEXT_PUBLIC_DEPLOYMENT_MODE: ${{ vars.NEXT_PUBLIC_DEPLOYMENT_MODE || 'reference' }}
           NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: ${{ vars.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || '5e8254e53e856a4b90f676c51efea4d4' }}
           NEXT_PUBLIC_SITE_URL: ${{ vars.NEXT_PUBLIC_SITE_URL || 'https://demolisher.app' }}
+          # publishable, origin-locked lumeus keys; unset leaves the scans on the rpc
+          NEXT_PUBLIC_LUMEUS_TESTNET_KEY: ${{ vars.NEXT_PUBLIC_LUMEUS_TESTNET_KEY }}
+          NEXT_PUBLIC_LUMEUS_MAINNET_KEY: ${{ vars.NEXT_PUBLIC_LUMEUS_MAINNET_KEY }}
         run: pnpm build
 
       - name: Package the built app

@@ -31,7 +31,10 @@ export function succeededView(run: StatusRun): StatusView {
       <>
         {run.mergeHash ? <ProofLink network={run.network} mergeHash={run.mergeHash} /> : null}
         {leftBehind ? <LeftBehindTokens tokens={run.leftBehind} network={run.network} /> : null}
-        <RunNotes executionNotes={run.executionNotes} />
+        <RunNotes
+          executionNotes={run.executionNotes}
+          allowanceHistoryThroughLedger={run.allowanceHistoryThroughLedger ?? null}
+        />
       </>
     ),
     footer: (

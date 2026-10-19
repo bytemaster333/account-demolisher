@@ -5,6 +5,7 @@ import { StrKey } from "@stellar/stellar-sdk";
 
 import { Button, Checkbox, Notice } from "@/components/ui";
 import type { NetworkConfig } from "@/lib/config/networks";
+import { heldTokenScanNote } from "@/lib/lumeus/copy";
 import { MAX_PRICE_IMPACT_BPS } from "@/lib/plan/price-impact";
 import type { HeldToken } from "@/lib/soroban/held-tokens";
 import { getRpc } from "@/lib/soroban/rpc-client";
@@ -16,7 +17,7 @@ import { shortAddress } from "@/lib/safe-display";
 // classic balances they don't block the merge and would be left behind on the
 // deleted account. the card says how far back the scan looked, lists what it
 // found, and lets the user opt in per token (nothing is swept automatically) or
-// add a token by contract id that the ~7-day scan couldn't see.
+// add a token by contract id that the scan couldn't see.
 export function StandaloneTokensCard({
   discovered,
   unreadable,
@@ -28,6 +29,7 @@ export function StandaloneTokensCard({
   onRebuild,
   convertToXLM = false,
   onConvertToXLMChange,
+  partnerAsOfLedger = null,
 }: {
   readonly discovered: readonly HeldToken[];
   readonly unreadable: readonly string[];
@@ -43,6 +45,9 @@ export function StandaloneTokensCard({
   // transferring them as-is. Absent → the toggle is not shown.
   readonly convertToXLM?: boolean;
   readonly onConvertToXLMChange?: (value: boolean) => void;
+  // the ledger the partner history index read the account's holdings at, or null
+  // when the scan saw only the rpc's ~7 days
+  readonly partnerAsOfLedger?: number | null;
 }): React.JSX.Element {
   const [manualId, setManualId] = useState("");
   const [manualError, setManualError] = useState<string | null>(null);
@@ -177,8 +182,7 @@ export function StandaloneTokensCard({
         you move them. Nothing here is swept unless you tick it.
       </p>
       <p style={{ margin: "0 0 10px", fontSize: 12, lineHeight: 1.5, color: "var(--fg-3)" }}>
-        This scan only sees about the last 7 days of activity. If someone sent you a token before
-        that, it won&apos;t appear. Add it by contract address below.
+        {heldTokenScanNote(partnerAsOfLedger)}
       </p>
 
       {isCex ? (

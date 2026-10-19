@@ -52,6 +52,9 @@ export interface StatusWidgetProps {
   readonly landedPhases?: readonly PhaseReceipt[];
   // technical detail behind the discovery warnings
   readonly discoveryDiagnostics?: readonly string[];
+  // the ledger the partner history index answered the allowance scan through, or
+  // null when the scan saw only the rpc's ~7 days
+  readonly allowanceHistoryThroughLedger?: number | null;
   // the run's own prepared close (unlock time and reason), for the prepared state
   readonly prepared?: PreparePlan | null;
   readonly onRetry: () => void;

@@ -72,6 +72,7 @@ export function RunStatusStage({
         leftBehind={ctx.leftBehindTokens}
         landedPhases={ctx.landedPhases}
         discoveryDiagnostics={ctx.discoveryDiagnostics}
+        allowanceHistoryThroughLedger={ctx.partnerCoverage.allowancesThroughLedger}
         prepared={ctx.preparedClose}
         onRetry={onRetry}
         onReset={onReset}

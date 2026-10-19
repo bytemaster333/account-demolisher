@@ -9,6 +9,7 @@ import {
   type Transaction,
 } from "@stellar/stellar-sdk";
 import type { NetworkConfig } from "@/lib/config/networks";
+import { errorMessage } from "@/lib/errors";
 import { fromScValAddress, fromScValI128, fromScValSymbol, fromScValU32 } from "./scval";
 import { allowance as readAllowance, buildApprove } from "./sep41";
 import { mapConcurrent } from "./concurrency";
@@ -18,7 +19,12 @@ import {
   isStellarAssetInstance,
 } from "./contract-instance";
 import { EVENT_RETENTION_WINDOW_LEDGERS } from "./event-retention";
-import { scanEventWindows, type EventScanIncomplete } from "./event-scan";
+import {
+  mergePartnerEvents,
+  scanEventWindows,
+  type EventScanIncomplete,
+  type PartnerEventCoverage,
+} from "./event-scan";
 
 // one active sep-41 allowance attributable to the user
 export interface AllowanceRecord {
@@ -114,6 +120,10 @@ export interface AllowanceScanOptions {
   // keep records whose latest approve set the amount to zero (a revoke)
   readonly includeZero?: boolean;
   readonly budgetMs?: number;
+  // the user's approve events from a partner history index, over the whole
+  // history. they join the rpc scan's own; a failed read leaves the rpc result
+  // as it was and is reported in partnerError
+  readonly partner?: () => Promise<PartnerEventCoverage>;
 }
 
 // any contract can emit approve(user, spender) events for spenders of its own
@@ -143,6 +153,11 @@ export interface AllowanceScan {
   readonly incomplete: EventScanIncomplete | null;
   // contracts whose rows were cut; empty when nothing was
   readonly overflow: readonly AllowanceOverflow[];
+  // the last ledger the partner index answered through, when it was asked and
+  // answered: approvals older than the rpc keeps are covered up to there
+  readonly partnerThroughLedger: number | null;
+  // why the partner index could not be used, when it was asked
+  readonly partnerError: string | null;
 }
 
 // thrown by enumerateAllowances for a partial scan, carrying what was found
@@ -224,14 +239,18 @@ export async function scanAllowances(
     topics: [[approveSymbolXdr, fromAddressXdr, "*", "*"]],
   };
 
-  const scan = await scanEventWindows(server, [eventFilter3, eventFilter4], {
-    lastLedger: currentLedger,
-    lookbackLedgers: scanWindowLedgers,
-    windowLedgers: SCAN_WINDOW_SLICE_LEDGERS,
-    minWindowLedgers: SCAN_MIN_SLICE_LEDGERS,
-    concurrency: SCAN_CONCURRENCY,
-    budgetMs: options.budgetMs ?? SCAN_BUDGET_MS,
-  });
+  const [rpcScan, partner] = await Promise.all([
+    scanEventWindows(server, [eventFilter3, eventFilter4], {
+      lastLedger: currentLedger,
+      lookbackLedgers: scanWindowLedgers,
+      windowLedgers: SCAN_WINDOW_SLICE_LEDGERS,
+      minWindowLedgers: SCAN_MIN_SLICE_LEDGERS,
+      concurrency: SCAN_CONCURRENCY,
+      budgetMs: options.budgetMs ?? SCAN_BUDGET_MS,
+    }),
+    readPartner(options.partner),
+  ]);
+  const scan = partner.coverage === null ? rpcScan : mergePartnerEvents(rpcScan, partner.coverage);
 
   // the scan returns events in on-chain order (ledger, tx, op, event), so the
   // last approve seen for a key is the one in force, even two in one ledger
@@ -273,7 +292,24 @@ export async function scanAllowances(
     for (const r of kept) records.push(r.rec);
     overflow.push({ contractId, spenders: rows.length, kept: kept.length });
   }
-  return { records, incomplete: scan.incomplete, overflow };
+  return {
+    records,
+    incomplete: scan.incomplete,
+    overflow,
+    partnerThroughLedger: partner.coverage?.throughLedger ?? null,
+    partnerError: partner.error,
+  };
+}
+
+async function readPartner(
+  read: (() => Promise<PartnerEventCoverage>) | undefined,
+): Promise<{ coverage: PartnerEventCoverage | null; error: string | null }> {
+  if (read === undefined) return { coverage: null, error: null };
+  try {
+    return { coverage: await read(), error: null };
+  } catch (e) {
+    return { coverage: null, error: errorMessage(e) };
+  }
 }
 
 // the ids among these whose instance runs the built-in stellar asset contract.

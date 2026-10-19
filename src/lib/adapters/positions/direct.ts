@@ -20,6 +20,7 @@ import { getRpc } from "@/lib/soroban/rpc-client";
 import type { rpc } from "@stellar/stellar-sdk";
 import type { NetworkConfig } from "@/lib/config/networks";
 import { errorMessage } from "@/lib/errors";
+import { partnerRouterDeposits } from "@/lib/lumeus/client";
 import {
   type AquariusConcentratedPositionSummary,
   type AquariusPositionSummary,
@@ -58,8 +59,16 @@ export interface AquariusProviderFactory {
 
 const defaultAquariusFactory: AquariusProviderFactory = (server, network) => ({
   primary: new AquariusAPIPoolProvider({ server, network }),
-  fallback: new AquariusEventScanPoolProvider({ server, network }),
+  fallback: new AquariusEventScanPoolProvider({
+    server,
+    network,
+    ...optionalPartner(partnerRouterDeposits(network)),
+  }),
 });
+
+function optionalPartner<T>(partner: T | undefined): { partner?: T } {
+  return partner === undefined ? {} : { partner };
+}
 
 // pluggable deps for testability, one per external call site
 export interface DirectContractProviderDeps {
@@ -259,11 +268,25 @@ export class DirectContractProvider implements IDeFiPositionProvider {
     // answer that left a recent pool out would go unchecked.
     // concentrated positions sit in the pool contracts, where neither source
     // looks, so every pinned concentrated pool is read directly.
-    const [apiResult, scanResult, concentratedResult] = await Promise.allSettled([
+    // a scan that can also ask the partner history index reports how far back
+    // that reached, which changes what a REST failure leaves unchecked
+    const scanWithPartner =
+      fallback instanceof AquariusEventScanPoolProvider
+        ? fallback.scanWithPartner(userAddress)
+        : fallback.getUserPools(userAddress).then((pools) => ({
+            pools,
+            partnerThroughLedger: null,
+            partnerError: null,
+          }));
+    const [apiResult, scanFull, concentratedResult] = await Promise.allSettled([
       primary.getUserPools(userAddress),
-      fallback.getUserPools(userAddress),
+      scanWithPartner,
       this.deps.aquariusDiscoverConcentrated(server, network, userAddress),
     ]);
+    const scanResult: PromiseSettledResult<readonly AquariusPool[]> =
+      scanFull.status === "fulfilled"
+        ? { status: "fulfilled", value: scanFull.value.pools }
+        : scanFull;
 
     const sourceErrors: string[] = [];
     if (apiResult.status === "rejected") {
@@ -273,9 +296,14 @@ export class DirectContractProvider implements IDeFiPositionProvider {
           `Aquarius discovery failed: REST=${apiMsg}; event-scan fallback=${errorMessage(scanResult.reason)}`,
         );
       }
+      const partner = scanFull.status === "fulfilled" ? scanFull.value : null;
       sourceErrors.push(
-        `Aquarius REST source failed (${apiMsg}); the on-chain scan only covers about the ` +
-          `last 7 days, so an older Aquarius position could not be ruled out`,
+        partner !== null && partner.partnerThroughLedger !== null
+          ? `Aquarius REST source failed (${apiMsg}); router deposits were checked over the ` +
+              `whole history, but a pool share received by transfer could not be ruled out`
+          : `Aquarius REST source failed (${apiMsg}); the on-chain scan only covers about the ` +
+              `last 7 days, so an older Aquarius position could not be ruled out` +
+              (partner?.partnerError ? ` (partner history: ${partner.partnerError})` : ""),
       );
     } else if (scanResult.status === "rejected") {
       sourceErrors.push(

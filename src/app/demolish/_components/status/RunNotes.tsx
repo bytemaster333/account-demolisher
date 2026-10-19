@@ -1,13 +1,15 @@
 "use client";
 
-import { EVENT_RETENTION_WINDOW_LEDGERS } from "@/lib/soroban/event-retention";
+import { allowanceRunNote } from "@/lib/lumeus/copy";
 
 // what the header says once a run is over, whether it ended or failed: the
 // best-effort steps that fell short, and how far back allowances were looked for
 export function RunNotes({
   executionNotes,
+  allowanceHistoryThroughLedger = null,
 }: {
   readonly executionNotes: readonly string[];
+  readonly allowanceHistoryThroughLedger?: number | null;
 }): React.JSX.Element {
   return (
     <>
@@ -28,9 +30,7 @@ export function RunNotes({
         </div>
       ) : null}
       <p style={{ margin: "10px 0 0", fontSize: 11.5, lineHeight: 1.5, color: "var(--fg-3)" }}>
-        Token spending permissions were looked for in about the last 7 days of approve events (
-        {EVENT_RETENTION_WINDOW_LEDGERS.toLocaleString("en-US")} ledgers); an older one was not
-        seen.
+        {allowanceRunNote(allowanceHistoryThroughLedger)}
       </p>
     </>
   );

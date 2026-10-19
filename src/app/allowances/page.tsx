@@ -27,15 +27,14 @@ import { errorMessage } from "@/lib/errors";
 import { NETWORKS, type NetworkConfig } from "@/lib/config/networks";
 import { trackVisit } from "@/lib/metrics/beacon";
 import {
-  AllowanceScanIncompleteError,
-  AllowanceScanOverflowError,
   confirmAllowancesOnChain,
   describeAllowanceOverflow,
-  enumerateAllowances,
+  scanAllowances,
   type AllowanceRecord,
 } from "@/lib/soroban/allowances";
 import { describeIncompleteScan } from "@/lib/soroban/event-scan";
 import { getRpc } from "@/lib/soroban/rpc-client";
+import { lumeusFor, partnerApprovals } from "@/lib/lumeus/client";
 import type { Connector } from "@/lib/wallet/connector";
 import { WalletKitConnector } from "@/lib/wallet/connector";
 import { getActiveConnector } from "@/lib/wallet/active-connector";
@@ -86,6 +85,9 @@ export default function AllowancesPage(): React.JSX.Element {
   // set when some token contract reported more spenders than the scan keeps:
   // its newest rows are shown, and this names the contract
   const [scanCut, setScanCut] = useState<string | null>(null);
+  // the ledger the partner history index answered through for the shown scan,
+  // or null when the scan saw only the rpc's ~7 days
+  const [historyThrough, setHistoryThrough] = useState<number | null>(null);
   const [showExpired, setShowExpired] = useState(false);
 
   // the live signing connector: the app-wide active one when present (the only
@@ -117,6 +119,7 @@ export default function AllowancesPage(): React.JSX.Element {
       setError(null);
       setScanGap(null);
       setScanCut(null);
+      setHistoryThrough(null);
       setRecords(null);
       setCurrentLedger(null);
 
@@ -132,29 +135,27 @@ export default function AllowancesPage(): React.JSX.Element {
         const rpc = getRpc(network);
         const latest = await rpc.getLatestLedger();
         const ledger = latest.sequence;
-        let list: readonly AllowanceRecord[];
-        let gap: string | null = null;
-        let cut: string | null = null;
-        try {
-          list = await enumerateAllowances(rpc, target, ledger, undefined, {
-            includeExpired: true,
-          });
-        } catch (e: unknown) {
-          // a cut contract is reported next to the rows that were kept, never
-          // in place of them: otherwise one contract emitting fake approvals
-          // would hide every real allowance on the page
-          if (e instanceof AllowanceScanOverflowError) {
-            list = e.partial;
-            cut = describeAllowanceOverflow(e.overflow);
-          } else if (e instanceof AllowanceScanIncompleteError) {
-            // what was found is real, but the list isn't complete; show both
-            list = e.partial;
-            gap = `${describeIncompleteScan(e.incomplete, "allowances")} Allowances approved in the part it missed may be missing here, or show an older amount. Scan again to retry.`;
-            if (e.overflow.length > 0) cut = describeAllowanceOverflow(e.overflow);
-          } else {
-            throw e;
-          }
+        const partner = partnerApprovals(network, target);
+        const scan = await scanAllowances(rpc, target, ledger, undefined, {
+          includeExpired: true,
+          ...(partner !== undefined ? { partner } : {}),
+        });
+        // what was found is real even when the scan stopped early or a contract
+        // was cut; both are reported next to the rows, never in place of them
+        const list: readonly AllowanceRecord[] = scan.records;
+        const gaps: string[] = [];
+        if (scan.incomplete !== null) {
+          gaps.push(
+            `${describeIncompleteScan(scan.incomplete, "allowances")} Allowances approved in the part it missed may be missing here, or show an older amount. Scan again to retry.`,
+          );
         }
+        if (scan.partnerError !== null) {
+          gaps.push(
+            `Lumeus, our history partner, could not be read (${scan.partnerError}), so only about the last 7 days of approvals were checked. Scan again to retry.`,
+          );
+        }
+        const gap = gaps.length > 0 ? gaps.join(" ") : null;
+        const cut = scan.overflow.length > 0 ? describeAllowanceOverflow(scan.overflow) : null;
         // event amounts can be fabricated by a hostile token, so each one is
         // checked against the token's allowance() when there is a simulation
         // source. a failed or skipped check leaves the row marked unconfirmed.
@@ -166,6 +167,7 @@ export default function AllowancesPage(): React.JSX.Element {
         if (loadSeq.current !== seq) return; // superseded (network switch or newer scan)
         setScanGap(gap);
         setScanCut(cut);
+        setHistoryThrough(scan.partnerThroughLedger);
         setRecords(confirmed);
         setCurrentLedger(ledger);
         setViewedAddress(target);
@@ -252,8 +254,11 @@ export default function AllowancesPage(): React.JSX.Element {
               <InfoTip tip="SEP-41 is Stellar's standard for smart-contract (Soroban) tokens. An allowance is a standing approval that lets another address spend your tokens up to a limit, until it expires or you revoke it.">
                 SEP-41
               </InfoTip>{" "}
-              allowances on an account, found from the last 7 days of on-chain events, so you can
-              review and revoke the ones you no longer want.
+              allowances on an account, found from{" "}
+              {lumeusFor(network) !== null
+                ? "its whole approve history through Lumeus, our history partner,"
+                : "the last 7 days of on-chain events,"}{" "}
+              so you can review and revoke the ones you no longer want.
             </>
           }
         />
@@ -398,7 +403,9 @@ export default function AllowancesPage(): React.JSX.Element {
                 }
                 body={
                   scanGap === null
-                    ? "No approvals were found for this address in about the last 7 days of on-chain history (the RPC's event-retention limit). An older, still-standing approval may not be discoverable by this scan."
+                    ? historyThrough !== null
+                      ? "No standing approvals were found for this address in its whole on-chain history."
+                      : "No approvals were found for this address in about the last 7 days of on-chain history (the RPC's event-retention limit). An older, still-standing approval may not be discoverable by this scan."
                     : "The scan stopped early, so this address may still have allowances it didn't reach."
                 }
               />
@@ -422,6 +429,7 @@ export default function AllowancesPage(): React.JSX.Element {
                   showExpired={showExpired}
                   onRevoked={onSingleRevoked}
                   busy={bulkRunning}
+                  historyThroughLedger={historyThrough}
                 />
               </>
             )

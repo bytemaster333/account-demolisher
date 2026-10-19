@@ -7,6 +7,7 @@
 // actually uses (Horizon, Soroban RPC and its failovers, friendbot).
 
 import { NETWORKS } from "@/lib/config/networks";
+import { LUMEUS_HOSTS } from "@/lib/lumeus/hosts";
 
 function originOf(url: string): string {
   const u = new URL(url);
@@ -30,6 +31,11 @@ const AMM_CONNECT_SRC = [
   "https://amm-api.aqua.network",
   "https://amm-api-testnet.aqua.network",
 ] as const;
+
+// the partner history index (lumeus) the scans read with a publishable key. listed
+// whether or not a key is set: the policy is built at run time, the key at build
+// time, and an unused origin opens nothing the page does not already call
+const LUMEUS_CONNECT_SRC = Object.values(LUMEUS_HOSTS).flatMap((h) => [h.activity, h.assets]);
 
 // WalletConnect / Reown AppKit hosts. reached only when a user picks the
 // WalletConnect wallet, signs with a restored WalletConnect session, or
@@ -91,7 +97,12 @@ export interface CspOptions {
 // script origin, object-src 'none', frame-ancestors 'none', base-uri and
 // form-action 'self'. dev additionally needs 'unsafe-eval' and ws: for HMR.
 export function buildContentSecurityPolicy({ isDev }: CspOptions): string {
-  const connect = [...networkEndpoints(), ...AMM_CONNECT_SRC, ...WALLETCONNECT_CONNECT_SRC];
+  const connect = [
+    ...networkEndpoints(),
+    ...AMM_CONNECT_SRC,
+    ...LUMEUS_CONNECT_SRC,
+    ...WALLETCONNECT_CONNECT_SRC,
+  ];
   return [
     "default-src 'self'",
     `connect-src 'self' ${isDev ? "ws: wss: " : ""}${connect.join(" ")}`,

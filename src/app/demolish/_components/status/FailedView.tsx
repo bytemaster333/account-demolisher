@@ -38,7 +38,10 @@ export function failedView(run: StatusRun): StatusView {
           retryResumes={run.retryResumes}
           failureKind={run.failureKind}
         />
-        <RunNotes executionNotes={run.executionNotes} />
+        <RunNotes
+          executionNotes={run.executionNotes}
+          allowanceHistoryThroughLedger={run.allowanceHistoryThroughLedger ?? null}
+        />
         <ResultCodes parsed={parsed} />
       </>
     ),

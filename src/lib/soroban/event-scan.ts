@@ -318,3 +318,28 @@ export function describeIncompleteScan(incomplete: EventScanIncomplete, what: st
   const detail = incomplete.reason === "rpc-error" ? ` (${incomplete.detail})` : "";
   return `The scan for ${what} checked ${span} because ${STOP_REASON_TEXT[incomplete.reason]}${detail}.`;
 }
+
+// what a partner history index answered for the same question as a scan: every
+// matching event from the network's first ledger through throughLedger
+export interface PartnerEventCoverage {
+  readonly events: readonly rpc.Api.EventResponse[];
+  readonly throughLedger: number;
+}
+
+// the union of a scan and a partner answer, ordered and deduplicated by the rpc
+// event id both carry. the partner covers everything up to its throughLedger, so
+// an rpc scan that stopped early leaves no gap when its covered part reaches
+// down to that ledger. a partner that stops short of it leaves the report as it
+// was, which understates the coverage rather than overstating it.
+export function mergePartnerEvents(
+  scan: EventScanResult,
+  partner: PartnerEventCoverage,
+): EventScanResult {
+  const byId = new Map<string, rpc.Api.EventResponse>();
+  for (const ev of scan.events) byId.set(ev.id, ev);
+  for (const ev of partner.events) if (!byId.has(ev.id)) byId.set(ev.id, ev);
+  const events = [...byId.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const closed =
+    scan.incomplete !== null && partner.throughLedger + 1 >= scan.incomplete.coveredFromLedger;
+  return { events, incomplete: closed ? null : scan.incomplete };
+}

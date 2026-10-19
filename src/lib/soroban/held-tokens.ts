@@ -26,6 +26,7 @@
 import { Address, xdr, type rpc } from "@stellar/stellar-sdk";
 
 import type { NetworkConfig } from "@/lib/config/networks";
+import { errorMessage } from "@/lib/errors";
 import { mapConcurrent } from "@/lib/soroban/concurrency";
 import {
   describeIncompleteScan,
@@ -51,6 +52,18 @@ export interface HeldTokenScan {
   // set when the event scan did not cover the whole retention window; tokens
   // credited only in the uncovered part are missing from held/unreadable
   readonly incomplete: EventScanIncomplete | null;
+  // the ledger the partner index's holdings were read at, when it was asked and
+  // answered
+  readonly partnerAsOfLedger: number | null;
+  // why the partner index could not be used, when it was asked
+  readonly partnerError: string | null;
+}
+
+// the contract tokens a partner index says an address holds now, read at
+// asOfLedger. candidates only: each is read on chain like a scanned one.
+export interface PartnerHeldTokens {
+  readonly contractIds: readonly string[];
+  readonly asOfLedger: number;
 }
 
 export interface HeldTokenScanOptions {
@@ -58,6 +71,7 @@ export interface HeldTokenScanOptions {
   readonly budgetMs?: number;
   readonly windowLedgers?: number;
   readonly concurrency?: number;
+  readonly partner?: () => Promise<PartnerHeldTokens>;
 }
 
 // measured against the public mainnet rpcs on 2026-10-06 with this filter: 1,000
@@ -134,12 +148,19 @@ export async function discoverHeldTokens(
   network: NetworkConfig,
   options: HeldTokenScanOptions = {},
 ): Promise<HeldTokenScan> {
-  const { contractIds: candidates, incomplete } = await scanTokensCreditedTo(
-    server,
-    userAddress,
-    currentLedger,
-    options,
-  );
+  const [scan, partner] = await Promise.all([
+    scanTokensCreditedTo(server, userAddress, currentLedger, options),
+    readPartnerHoldings(options.partner),
+  ]);
+  const candidates = [...new Set([...scan.contractIds, ...(partner.held?.contractIds ?? [])])];
+  // the partner's holdings stand for every token received up to their ledger, so
+  // a scan that covered back to there leaves nothing unchecked
+  const incomplete =
+    scan.incomplete !== null &&
+    partner.held !== null &&
+    partner.held.asOfLedger + 1 >= scan.incomplete.coveredFromLedger
+      ? null
+      : scan.incomplete;
 
   // probe every candidate concurrently (bounded), each independently time-boxed.
   // balance() is a read-only simulation (no signed tx), so a hostile token can
@@ -166,5 +187,22 @@ export async function discoverHeldTokens(
     else if (p.bal > 0n) held.push({ contractId: p.contractId, balance: p.bal });
     // p.bal === 0n: the account holds none of it; nothing to sweep, drop it
   }
-  return { held, unreadable, incomplete };
+  return {
+    held,
+    unreadable,
+    incomplete,
+    partnerAsOfLedger: partner.held?.asOfLedger ?? null,
+    partnerError: partner.error,
+  };
+}
+
+async function readPartnerHoldings(
+  read: (() => Promise<PartnerHeldTokens>) | undefined,
+): Promise<{ held: PartnerHeldTokens | null; error: string | null }> {
+  if (read === undefined) return { held: null, error: null };
+  try {
+    return { held: await read(), error: null };
+  } catch (e) {
+    return { held: null, error: errorMessage(e) };
+  }
 }

@@ -472,6 +472,7 @@ export function DemolishFlow(): React.JSX.Element {
                       onDemolish={() => setShowConfirmDialog(true)}
                       onRebuild={onStart}
                       onLeaveOutRisky={start.onLeaveOutRisky}
+                      allowanceHistoryThroughLedger={ctx.partnerCoverage.allowancesThroughLedger}
                     />
                   ) : null}
 
