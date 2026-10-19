@@ -129,9 +129,15 @@ describe("integration: closing an account with a live Aquarius pool share (testn
     expect(await accountExists(horizon, user)).toBe(false);
     expect(await aquariusPools(user)).toHaveLength(0);
     // the 100 XLM that bought AQUA went back as AQUA to its issuer, so the
-    // destination gets about 9,900 XLM: the friendbot 10,000 less that and fees
+    // destination gets about 9,900 XLM: the friendbot 10,000 less that and fees.
+    // a gauge reward the close claimed is paid on top, so the ceiling only holds
+    // when no claim was planned
     const received = (await nativeBalance(horizon, destination.publicKey())) - destBefore;
     expect(received).toBeGreaterThan(9_890_0000000n);
-    expect(received).toBeLessThan(10_000_0000000n);
-  });
+    if (!kinds.includes("ClaimAquariusGaugeRewards")) {
+      expect(received).toBeLessThan(10_000_0000000n);
+    }
+    // the close runs discovery, the gauge claim, the withdraw and the classic
+    // batches against live testnet, which alone can pass two minutes
+  }, 270_000);
 });
