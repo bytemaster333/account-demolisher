@@ -12,7 +12,7 @@ Account Demolisher closes a Stellar account cleanly and sends everything in it t
 (another wallet or an exchange). In one reviewed flow it:
 
 - cancels DEX offers and withdraws classic AMM shares;
-- unwinds Soroban DeFi positions (Blend, Aquarius, Soroswap, FxDAO) and drains SEP-41 tokens;
+- unwinds Soroban DeFi positions (Blend, Aquarius, Soroswap) and drains SEP-41 tokens;
 - revokes token allowances and claims selected claimable balances;
 - sells credit balances for XLM within a price cap;
 - removes trustlines, data entries and extra signers;
@@ -41,7 +41,7 @@ TypeScript application. The code that holds value at risk is:
   - the rate limiter;
   - the metrics store and its on-chain close verification.
 - **Contracts it calls**: third-party, and not in scope for a re-audit. These are pinned entry points
-  of Blend, Aquarius, Soroswap and FxDAO, plus arbitrary SEP-41 token contracts found on the user's
+  of Blend, Aquarius and Soroswap, plus arbitrary SEP-41 token contracts found on the user's
   account.
 
 ### Happy path of a close
