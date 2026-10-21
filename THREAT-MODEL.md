@@ -57,7 +57,7 @@ The threat tables refer to these step numbers.
 3. **Discover.** The browser:
    - audits the account on Horizon;
    - scans allowances through Soroban RPC events and, when a key is configured, through the
-     account's whole history on Lumeus, a hosted history index run by a partner;
+     account's whole history on Lumeus, a hosted Stellar history index;
    - reads DeFi positions directly from the protocol contracts;
    - asks the Aquarius API for pools;
    - asks Lumeus for the account's held contract tokens and Aquarius router deposits.
@@ -264,7 +264,7 @@ Each treatment names the code that implements it. The status column means:
 | DoS.5 | **D5R1** The same fee caps and write bounds as T3R2. A step over its cap is refused, with the fee spelled out, instead of signed.                                                                                                                                                                                                                                                                                                                                                                             | Done            |
 | DoS.6 | **D6R1** Hard stops at audit time: `AUTH_IMMUTABLE` and sponsoring accounts. The close splits automatically past 100 operations, and for pool shares, isolated claims and conversions that share a market. The merge guard (T2R3) and the fuzzing in T5R2 also apply. The adversarial test corpus covers deleted issuers, non-compliant tokens, mid-flow changes and high subentry counts.                                                                                                                    | Done            |
 | DoS.7 | **D7R1** The self-hosting guide says to run one instance, and why. The signing relay, the rate limiter, the metrics store and the co-sign log all keep their state or serialize their writes inside one process.                                                                                                                                                                                                                                                                                              | Accepted        |
-| DoS.8 | **D8R1** The key is publishable: Lumeus accepts it only with an allowed `Origin`, only for read routes, and with a per-IP limit. A full or read key fails the build (`next.config.ts`). **D8R2** A failed Lumeus read leaves the RPC result as it was and is shown: the allowances page names the failure, and the close flow records it in its diagnostics.                                                                                                                                                  | Done            |
+| DoS.8 | **D8R1** The key is a read-only publishable key locked to the site's origin; any other key fails the build (`next.config.ts`). **D8R2** A failed Lumeus read leaves the RPC result as it was and is shown: the allowances page names the failure, and the close flow records it in its diagnostics.                                                                                                                                                                                                           | Done            |
 
 ### Elevation of privilege
 
