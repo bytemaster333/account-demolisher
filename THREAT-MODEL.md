@@ -308,6 +308,17 @@ After the model, a CI run on live testnet found one more: when a stale quote let
 and the network then failed it, the retry's stop message still said nothing was signed. The message
 now counts what the close already signed (`signedSoFarNote` in `src/lib/orchestrator/executor.ts`).
 
+Two more followed:
+
+- A load-balanced RPC that routes some requests to a host holding only a few days of history made
+  the event scans narrow their range to that host's floor and report it as covered. A range error is
+  now a failover reason, and a short host's floor is retried instead of trusted
+  (`src/lib/soroban/event-retention.ts`, `src/lib/soroban/event-scan.ts`).
+- With full-history token discovery, the Aquarius and Soroswap LP shares of positions the plan already
+  exits were listed as unrecognized tokens and triggered the manual-close notice. Their share ids are
+  now read from the Aquarius router and the Soroswap factory and left out of that list
+  (`src/lib/adapters/positions/share-tokens.ts`).
+
 ### Requested audit focus
 
 From the SCF tranche scope:
@@ -319,5 +330,6 @@ From the SCF tranche scope:
    - the sign-time guards and fee caps in `src/lib/soroban/`;
    - `src/lib/wallet/` and `src/lib/multisig/`;
    - `src/server/signing-relay.ts`;
-   - `src/lib/orchestrator/` and `src/lib/adapters/`.
+   - `src/lib/orchestrator/` and `src/lib/adapters/`;
+   - the Lumeus reads in `src/lib/lumeus/`, whose answers must only add candidates.
 4. **An SDK and dependency supply-chain review.**
