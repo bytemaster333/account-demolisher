@@ -1,9 +1,10 @@
 # Account Demolisher: STRIDE Threat Model
 
-Prepared for the Soroban Security Audit Bank intake on 13 October 2026, against commit `300c53d` of
-<https://github.com/bytemaster333/account-demolisher>. It follows the SDF STRIDE template
+Prepared for the Soroban Security Audit Bank intake on 13 October 2026 and last updated on
+21 October 2026. It describes release `v1.0.2` (commit `a55d98b`) of
+<https://github.com/bytemaster333/account-demolisher>, the version the live deployment runs, including
+the Lumeus history index added on 19 October (Tamper.9, DoS.8). It follows the SDF STRIDE template
 (<https://developers.stellar.org/docs/build/security-docs/threat-modeling>).
-Updated on 19 October 2026 for the Lumeus history index (Tamper.9, DoS.8).
 Live deployment: <https://demolisher.app>. Documentation: <https://docs.demolisher.app>.
 
 ## 1. What are we working on?
