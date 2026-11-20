@@ -131,6 +131,8 @@ jobs:
           # publishable, origin-locked lumeus keys; unset leaves the scans on the rpc
           NEXT_PUBLIC_LUMEUS_TESTNET_KEY: ${{ vars.NEXT_PUBLIC_LUMEUS_TESTNET_KEY }}
           NEXT_PUBLIC_LUMEUS_MAINNET_KEY: ${{ vars.NEXT_PUBLIC_LUMEUS_MAINNET_KEY }}
+          # public usagemap site key; unset leaves analytics off
+          NEXT_PUBLIC_USAGEMAP_SITE: ${{ vars.NEXT_PUBLIC_USAGEMAP_SITE }}
         run: pnpm build
 
       - name: Package the built app
