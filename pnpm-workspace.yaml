@@ -27,3 +27,9 @@ overrides:
   # jayson 5.0.0 drops both packages, and web3.js only loads jayson/lib/client/browser,
   # which in 5.0.0 differs from 4.3.0 only in generating ids with crypto.randomUUID.
   "@solana/web3.js@1>jayson": 5.0.0
+
+  # patched releases of transitive deps the high-severity audit gate flags:
+  # zod <4.6.6 can exhaust memory on oversized collections, and follow-redirects
+  # <=1.16.1 can forward credentials across redirects (via the blend sdk's axios).
+  "zod@>=4 <4.6.6": ^4.6.6
+  "follow-redirects@<1.16.2": ^1.16.2
