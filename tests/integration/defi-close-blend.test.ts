@@ -14,6 +14,7 @@ import {
   outcomeSummary,
 } from "../helpers/headless-close";
 import { horizon, submitSorobanAs } from "../helpers/testnet-seed";
+import { xlmBorrowBlocked } from "../helpers/blend-capacity";
 
 // a full close of an account with live Blend positions, run through the app's
 // own state machine and executor (discovery, plan, hydration, signing, submit,
@@ -46,84 +47,90 @@ function request(type: number, amount: bigint): xdr.ScVal {
   ]);
 }
 
+const blocked = await xlmBorrowBlocked(POOL, 2000_0000000n, 100_0000000n);
+if (blocked !== null) console.warn(`skipped: ${blocked}`);
+
 describe("integration: closing an account with live Blend positions (testnet)", () => {
-  it("repays, withdraws supply and collateral, and merges through the executor", async () => {
-    const kp = Keypair.random();
-    const user = kp.publicKey();
-    const destination = Keypair.random();
-    await friendbotFund(TESTNET, user);
-    await friendbotFund(TESTNET, destination.publicKey());
+  it.skipIf(blocked !== null)(
+    "repays, withdraws supply and collateral, and merges through the executor",
+    async () => {
+      const kp = Keypair.random();
+      const user = kp.publicKey();
+      const destination = Keypair.random();
+      await friendbotFund(TESTNET, user);
+      await friendbotFund(TESTNET, destination.publicKey());
 
-    // 500 XLM plain supply, 1500 XLM collateral, 100 XLM borrowed
-    await submitSorobanAs(
-      kp,
-      new Contract(POOL).call(
-        "submit",
-        nativeToScVal(user, { type: "address" }),
-        nativeToScVal(user, { type: "address" }),
-        nativeToScVal(user, { type: "address" }),
-        xdr.ScVal.scvVec([
-          request(SUPPLY, 500_0000000n),
-          request(SUPPLY_COLLATERAL, 1500_0000000n),
-          request(BORROW, 100_0000000n),
-        ]),
-      ),
-    );
-    const opened = await loadUserPositions(TESTNET, user, [POOL]);
-    expect(opened.errors).toEqual([]);
-    const pos = opened.positions[0]!;
-    expect(pos.supply.get(XLM_SAC) ?? 0n).toBeGreaterThan(0n);
-    expect(pos.collateral.get(XLM_SAC) ?? 0n).toBeGreaterThan(0n);
-    expect(pos.liabilities.get(XLM_SAC) ?? 0n).toBeGreaterThan(0n);
+      // 500 XLM plain supply, 1500 XLM collateral, 100 XLM borrowed
+      await submitSorobanAs(
+        kp,
+        new Contract(POOL).call(
+          "submit",
+          nativeToScVal(user, { type: "address" }),
+          nativeToScVal(user, { type: "address" }),
+          nativeToScVal(user, { type: "address" }),
+          xdr.ScVal.scvVec([
+            request(SUPPLY, 500_0000000n),
+            request(SUPPLY_COLLATERAL, 1500_0000000n),
+            request(BORROW, 100_0000000n),
+          ]),
+        ),
+      );
+      const opened = await loadUserPositions(TESTNET, user, [POOL]);
+      expect(opened.errors).toEqual([]);
+      const pos = opened.positions[0]!;
+      expect(pos.supply.get(XLM_SAC) ?? 0n).toBeGreaterThan(0n);
+      expect(pos.collateral.get(XLM_SAC) ?? 0n).toBeGreaterThan(0n);
+      expect(pos.liabilities.get(XLM_SAC) ?? 0n).toBeGreaterThan(0n);
 
-    const destBefore = await nativeBalance(horizon, destination.publicKey());
+      const destBefore = await nativeBalance(horizon, destination.publicKey());
 
-    const { review, outcome } = await closeHeadless({
-      publicKey: user,
-      network: TESTNET,
-      connector: new SecretKeyConnector(kp.secret()),
-      destination: destination.publicKey(),
-      useMediator: false,
-    });
+      const { review, outcome } = await closeHeadless({
+        publicKey: user,
+        network: TESTNET,
+        connector: new SecretKeyConnector(kp.secret()),
+        destination: destination.publicKey(),
+        useMediator: false,
+      });
 
-    // the reviewed plan unwinds the loan before it touches the collateral
-    const kinds = [...review.context.tree!.allNodes.values()].map((n) => n.kind);
-    expect(kinds).toEqual(
-      expect.arrayContaining(["RepayBlend", "WithdrawBlend", "FinalClassicTx"]),
-    );
+      // the reviewed plan unwinds the loan before it touches the collateral
+      const kinds = [...review.context.tree!.allNodes.values()].map((n) => n.kind);
+      expect(kinds).toEqual(
+        expect.arrayContaining(["RepayBlend", "WithdrawBlend", "FinalClassicTx"]),
+      );
 
-    expect(outcome.matches("succeeded"), outcomeSummary(outcome)).toBe(true);
-    expect(outcome.context.result?.mergedTxHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(outcome.matches("succeeded"), outcomeSummary(outcome)).toBe(true);
+      expect(outcome.context.result?.mergedTxHash).toMatch(/^[0-9a-f]{64}$/);
 
-    // every withdraw waits on the repays in the plan, and on chain each repay
-    // landed in an earlier ledger than any withdraw
-    const ran = [...outcome.context.tree!.allNodes.values()];
-    const repays = ran.filter((n) => n.kind === "RepayBlend");
-    const withdraws = ran.filter((n) => n.kind === "WithdrawBlend");
-    expect(repays.length).toBeGreaterThan(0);
-    expect(withdraws.length).toBeGreaterThan(0);
-    const landedAt = (n: (typeof ran)[number]): number => {
-      expect(n.status, `${n.id} ${n.kind}`).toBe("confirmed");
-      if (n.executed === undefined) throw new Error(`${n.id} has no receipt`);
-      return n.executed.ledger;
-    };
-    const lastRepay = Math.max(...repays.map(landedAt));
-    for (const w of withdraws) {
-      expect(w.dependencies).toEqual(expect.arrayContaining(repays.map((r) => r.id)));
-      expect(landedAt(w)).toBeGreaterThan(lastRepay);
-    }
+      // every withdraw waits on the repays in the plan, and on chain each repay
+      // landed in an earlier ledger than any withdraw
+      const ran = [...outcome.context.tree!.allNodes.values()];
+      const repays = ran.filter((n) => n.kind === "RepayBlend");
+      const withdraws = ran.filter((n) => n.kind === "WithdrawBlend");
+      expect(repays.length).toBeGreaterThan(0);
+      expect(withdraws.length).toBeGreaterThan(0);
+      const landedAt = (n: (typeof ran)[number]): number => {
+        expect(n.status, `${n.id} ${n.kind}`).toBe("confirmed");
+        if (n.executed === undefined) throw new Error(`${n.id} has no receipt`);
+        return n.executed.ledger;
+      };
+      const lastRepay = Math.max(...repays.map(landedAt));
+      for (const w of withdraws) {
+        expect(w.dependencies).toEqual(expect.arrayContaining(repays.map((r) => r.id)));
+        expect(landedAt(w)).toBeGreaterThan(lastRepay);
+      }
 
-    // on chain: the account is gone, the pool holds nothing for it, and the
-    // destination got the supplied XLM back (10,000 from friendbot, less the 100
-    // repaid with interest is a wash with the 100 borrowed, less fees)
-    expect(await accountExists(horizon, user)).toBe(false);
-    const after = await loadUserPositions(TESTNET, user, [POOL]);
-    expect(after.errors).toEqual([]);
-    const left = after.positions[0];
-    expect((left?.supply.size ?? 0) + (left?.collateral.size ?? 0)).toBe(0);
-    expect(left?.liabilities.size ?? 0).toBe(0);
-    const received = (await nativeBalance(horizon, destination.publicKey())) - destBefore;
-    expect(received).toBeGreaterThan(9_990_0000000n);
-    expect(received).toBeLessThan(10_000_0000000n);
-  });
+      // on chain: the account is gone, the pool holds nothing for it, and the
+      // destination got the supplied XLM back (10,000 from friendbot, less the 100
+      // repaid with interest is a wash with the 100 borrowed, less fees)
+      expect(await accountExists(horizon, user)).toBe(false);
+      const after = await loadUserPositions(TESTNET, user, [POOL]);
+      expect(after.errors).toEqual([]);
+      const left = after.positions[0];
+      expect((left?.supply.size ?? 0) + (left?.collateral.size ?? 0)).toBe(0);
+      expect(left?.liabilities.size ?? 0).toBe(0);
+      const received = (await nativeBalance(horizon, destination.publicKey())) - destBefore;
+      expect(received).toBeGreaterThan(9_990_0000000n);
+      expect(received).toBeLessThan(10_000_0000000n);
+    },
+  );
 });

@@ -25,6 +25,7 @@ import {
   outcomeSummary,
 } from "../helpers/headless-close";
 import { horizon, rpc, submitClassicAs, submitSorobanAs } from "../helpers/testnet-seed";
+import { xlmBorrowBlocked } from "../helpers/blend-capacity";
 
 // a full close of an account that has accrued BLND emissions in a Blend pool,
 // run through the app's own state machine and executor. the account borrows
@@ -92,117 +93,124 @@ async function borrow(kp: Keypair, collateralXlm: bigint, usdc: bigint): Promise
   );
 }
 
+const blocked = await xlmBorrowBlocked(POOL, 2000_0000000n, 60_0000000n);
+if (blocked !== null) console.warn(`skipped: ${blocked}`);
+
 describe("integration: closing an account with accrued Blend emissions (testnet)", () => {
-  it("repays, withdraws, opens the BLND line, claims the emissions and merges", async () => {
-    const friend = Keypair.random();
-    const kp = Keypair.random();
-    const user = kp.publicKey();
-    const destination = Keypair.random();
-    await friendbotFund(TESTNET, friend.publicKey());
-    await friendbotFund(TESTNET, user);
-    await friendbotFund(TESTNET, destination.publicKey());
+  it.skipIf(blocked !== null)(
+    "repays, withdraws, opens the BLND line, claims the emissions and merges",
+    async () => {
+      const friend = Keypair.random();
+      const kp = Keypair.random();
+      const user = kp.publicKey();
+      const destination = Keypair.random();
+      await friendbotFund(TESTNET, friend.publicKey());
+      await friendbotFund(TESTNET, user);
+      await friendbotFund(TESTNET, destination.publicKey());
 
-    const usdc = await classicAsset(USDC, user);
-    const blnd = await classicAsset(BLND, user);
+      const usdc = await classicAsset(USDC, user);
+      const blnd = await classicAsset(BLND, user);
 
-    // the USDC borrow side's emission program, restarted when it has run out
-    const reserves = (await read(POOL, "get_reserve_list", [], user)) as string[];
-    const usdcIndex = reserves.indexOf(USDC);
-    expect(usdcIndex).toBeGreaterThanOrEqual(0);
-    const borrowTokenId = usdcIndex * 2;
-    const programOf = async () =>
-      (await read(
-        POOL,
-        "get_reserve_emissions",
-        [nativeToScVal(borrowTokenId, { type: "u32" })],
-        user,
-      )) as { eps: bigint; expiration: bigint } | null;
-    const program = await programOf();
-    if (program === null) throw new Error(`pool ${POOL} has no USDC borrow emission program`);
-    if (program.expiration < BigInt(Math.floor(Date.now() / 1000) + 600)) {
-      await submitSorobanAs(friend, new Contract(POOL).call("gulp_emissions"));
-      const restarted = await programOf();
-      expect(restarted?.expiration ?? 0n).toBeGreaterThan(BigInt(Math.floor(Date.now() / 1000)));
-    }
+      // the USDC borrow side's emission program, restarted when it has run out
+      const reserves = (await read(POOL, "get_reserve_list", [], user)) as string[];
+      const usdcIndex = reserves.indexOf(USDC);
+      expect(usdcIndex).toBeGreaterThanOrEqual(0);
+      const borrowTokenId = usdcIndex * 2;
+      const programOf = async () =>
+        (await read(
+          POOL,
+          "get_reserve_emissions",
+          [nativeToScVal(borrowTokenId, { type: "u32" })],
+          user,
+        )) as { eps: bigint; expiration: bigint } | null;
+      const program = await programOf();
+      if (program === null) throw new Error(`pool ${POOL} has no USDC borrow emission program`);
+      if (program.expiration < BigInt(Math.floor(Date.now() / 1000) + 600)) {
+        await submitSorobanAs(friend, new Contract(POOL).call("gulp_emissions"));
+        const restarted = await programOf();
+        expect(restarted?.expiration ?? 0n).toBeGreaterThan(BigInt(Math.floor(Date.now() / 1000)));
+      }
 
-    // a friend borrows USDC too and sends 5 to the user, so the user holds more
-    // USDC than its own debt plus the interest it accrues before the repay
-    for (const kpx of [friend, kp]) {
-      await submitClassicAs(kpx, (b) =>
-        b.addOperation(Operation.changeTrust({ asset: usdc.asset })),
+      // a friend borrows USDC too and sends 5 to the user, so the user holds more
+      // USDC than its own debt plus the interest it accrues before the repay
+      for (const kpx of [friend, kp]) {
+        await submitClassicAs(kpx, (b) =>
+          b.addOperation(Operation.changeTrust({ asset: usdc.asset })),
+        );
+      }
+      await borrow(friend, 500_0000000n, 10_0000000n);
+      await submitClassicAs(friend, (b) =>
+        b.addOperation(Operation.payment({ destination: user, asset: usdc.asset, amount: "5" })),
       );
-    }
-    await borrow(friend, 500_0000000n, 10_0000000n);
-    await submitClassicAs(friend, (b) =>
-      b.addOperation(Operation.payment({ destination: user, asset: usdc.asset, amount: "5" })),
-    );
-    await borrow(kp, 1500_0000000n, 50_0000000n);
+      await borrow(kp, 1500_0000000n, 50_0000000n);
 
-    // emissions accrue per second; wait until the borrow position has some
-    let claimable: readonly number[] = [];
-    for (let i = 0; i < 30 && !claimable.includes(borrowTokenId); i++) {
-      const loaded = await loadUserPositions(TESTNET, user, [POOL]);
-      expect(loaded.errors).toEqual([]);
-      claimable = loaded.positions[0]?.claimableEmissionTokenIds ?? [];
-      if (!claimable.includes(borrowTokenId)) await new Promise((r) => setTimeout(r, 2_000));
-    }
-    expect(claimable).toContain(borrowTokenId);
+      // emissions accrue per second; wait until the borrow position has some
+      let claimable: readonly number[] = [];
+      for (let i = 0; i < 30 && !claimable.includes(borrowTokenId); i++) {
+        const loaded = await loadUserPositions(TESTNET, user, [POOL]);
+        expect(loaded.errors).toEqual([]);
+        claimable = loaded.positions[0]?.claimableEmissionTokenIds ?? [];
+        if (!claimable.includes(borrowTokenId)) await new Promise((r) => setTimeout(r, 2_000));
+      }
+      expect(claimable).toContain(borrowTokenId);
 
-    const destBefore = await nativeBalance(horizon, destination.publicKey());
+      const destBefore = await nativeBalance(horizon, destination.publicKey());
 
-    const { review, outcome } = await closeHeadless({
-      publicKey: user,
-      network: TESTNET,
-      connector: new SecretKeyConnector(kp.secret()),
-      destination: destination.publicKey(),
-      useMediator: false,
-      returnToIssuerAssetKeys: [usdc.key, blnd.key],
-    });
+      const { review, outcome } = await closeHeadless({
+        publicKey: user,
+        network: TESTNET,
+        connector: new SecretKeyConnector(kp.secret()),
+        destination: destination.publicKey(),
+        useMediator: false,
+        returnToIssuerAssetKeys: [usdc.key, blnd.key],
+      });
 
-    const kinds = [...review.context.tree!.allNodes.values()].map((n) => n.kind);
-    expect(kinds).toEqual(
-      expect.arrayContaining([
-        "RepayBlend",
-        "WithdrawBlend",
-        "AddBlndTrustline",
-        "ClaimBlendEmissions",
-        "FinalClassicTx",
-      ]),
-    );
+      const kinds = [...review.context.tree!.allNodes.values()].map((n) => n.kind);
+      expect(kinds).toEqual(
+        expect.arrayContaining([
+          "RepayBlend",
+          "WithdrawBlend",
+          "AddBlndTrustline",
+          "ClaimBlendEmissions",
+          "FinalClassicTx",
+        ]),
+      );
 
-    expect(outcome.matches("succeeded"), outcomeSummary(outcome)).toBe(true);
-    const claim = [...outcome.context.tree!.allNodes.values()].find(
-      (n) => n.kind === "ClaimBlendEmissions",
-    );
-    expect(claim?.status).toBe("confirmed");
-    const claimTx = await rpc.getTransaction(claim!.executed!.txHash);
-    expect(claimTx.status).toBe("SUCCESS");
-    // the pool's claim returns the BLND it paid out
-    if (claimTx.status !== "SUCCESS" || claimTx.returnValue === undefined) {
-      throw new Error("the emissions claim returned nothing");
-    }
-    const paid = BigInt(scValToNative(claimTx.returnValue) as bigint);
-    expect(paid).toBeGreaterThan(0n);
-    // and nothing is left accrued on the borrow side it claimed. the account is
-    // gone, so the read is simulated from the destination
-    const accruedAfter = (await read(
-      POOL,
-      "get_user_emissions",
-      [addr(user), nativeToScVal(borrowTokenId, { type: "u32" })],
-      destination.publicKey(),
-    )) as { index: bigint; accrued: bigint } | null;
-    expect(accruedAfter, "the pool holds no emissions record for the user").not.toBeNull();
-    expect(accruedAfter!.accrued).toBe(0n);
+      expect(outcome.matches("succeeded"), outcomeSummary(outcome)).toBe(true);
+      const claim = [...outcome.context.tree!.allNodes.values()].find(
+        (n) => n.kind === "ClaimBlendEmissions",
+      );
+      expect(claim?.status).toBe("confirmed");
+      const claimTx = await rpc.getTransaction(claim!.executed!.txHash);
+      expect(claimTx.status).toBe("SUCCESS");
+      // the pool's claim returns the BLND it paid out
+      if (claimTx.status !== "SUCCESS" || claimTx.returnValue === undefined) {
+        throw new Error("the emissions claim returned nothing");
+      }
+      const paid = BigInt(scValToNative(claimTx.returnValue) as bigint);
+      expect(paid).toBeGreaterThan(0n);
+      // and nothing is left accrued on the borrow side it claimed. the account is
+      // gone, so the read is simulated from the destination
+      const accruedAfter = (await read(
+        POOL,
+        "get_user_emissions",
+        [addr(user), nativeToScVal(borrowTokenId, { type: "u32" })],
+        destination.publicKey(),
+      )) as { index: bigint; accrued: bigint } | null;
+      expect(accruedAfter, "the pool holds no emissions record for the user").not.toBeNull();
+      expect(accruedAfter!.accrued).toBe(0n);
 
-    // on chain: the account is gone and the pool holds nothing for it
-    expect(await accountExists(horizon, user)).toBe(false);
-    const after = await loadUserPositions(TESTNET, user, [POOL]);
-    expect(after.errors).toEqual([]);
-    const left = after.positions[0];
-    expect((left?.collateral.size ?? 0) + (left?.liabilities.size ?? 0)).toBe(0);
-    // the collateral came back as XLM; the USDC and BLND went to their issuers
-    const received = (await nativeBalance(horizon, destination.publicKey())) - destBefore;
-    expect(received).toBeGreaterThan(9_990_0000000n);
-    expect(received).toBeLessThan(10_000_0000000n);
-  }, 270_000);
+      // on chain: the account is gone and the pool holds nothing for it
+      expect(await accountExists(horizon, user)).toBe(false);
+      const after = await loadUserPositions(TESTNET, user, [POOL]);
+      expect(after.errors).toEqual([]);
+      const left = after.positions[0];
+      expect((left?.collateral.size ?? 0) + (left?.liabilities.size ?? 0)).toBe(0);
+      // the collateral came back as XLM; the USDC and BLND went to their issuers
+      const received = (await nativeBalance(horizon, destination.publicKey())) - destBefore;
+      expect(received).toBeGreaterThan(9_990_0000000n);
+      expect(received).toBeLessThan(10_000_0000000n);
+    },
+    270_000,
+  );
 });

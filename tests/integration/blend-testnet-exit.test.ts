@@ -18,6 +18,7 @@ import { getRpc } from "@/lib/soroban/rpc-client";
 import { SOROBAN_INCLUSION_FEE } from "@/lib/soroban/simulate";
 import { fetchLedgerClock } from "@/lib/stellar/ledger-clock";
 import { fundWithFriendbot } from "../helpers/friendbot";
+import { xlmBorrowBlocked } from "../helpers/blend-capacity";
 
 // Live testnet proof that a Blend borrower can be closed out: open a real loan
 // on the testnet v2 pool, then repay and withdraw with the transactions the
@@ -65,63 +66,69 @@ function request(type: number, amount: bigint): xdr.ScVal {
   ]);
 }
 
+const blocked = await xlmBorrowBlocked(POOL, 2000_0000000n, 100_0000000n);
+if (blocked !== null) console.warn(`skipped: ${blocked}`);
+
 describe("integration: Blend borrower exit on testnet", () => {
-  it("repays a live loan and withdraws the collateral with the built transactions", async () => {
-    const kp = Keypair.random();
-    const user = kp.publicKey();
-    await friendbot(user);
+  it.skipIf(blocked !== null)(
+    "repays a live loan and withdraws the collateral with the built transactions",
+    async () => {
+      const kp = Keypair.random();
+      const user = kp.publicKey();
+      await friendbot(user);
 
-    // open the position: 2000 XLM collateral, 100 XLM borrowed
-    const open = new TransactionBuilder(await horizon.loadAccount(user), {
-      fee: SOROBAN_INCLUSION_FEE,
-      networkPassphrase: TESTNET.passphrase,
-    })
-      .addOperation(
-        new Contract(POOL).call(
-          "submit",
-          nativeToScVal(user, { type: "address" }),
-          nativeToScVal(user, { type: "address" }),
-          nativeToScVal(user, { type: "address" }),
-          xdr.ScVal.scvVec([request(2, 2000_0000000n), request(4, 100_0000000n)]),
-        ),
-      )
-      .setTimeout(120)
-      .build();
-    await signAndSend(kp, (await rpc.prepareTransaction(open)) as Transaction);
+      // open the position: 2000 XLM collateral, 100 XLM borrowed
+      const open = new TransactionBuilder(await horizon.loadAccount(user), {
+        fee: SOROBAN_INCLUSION_FEE,
+        networkPassphrase: TESTNET.passphrase,
+      })
+        .addOperation(
+          new Contract(POOL).call(
+            "submit",
+            nativeToScVal(user, { type: "address" }),
+            nativeToScVal(user, { type: "address" }),
+            nativeToScVal(user, { type: "address" }),
+            xdr.ScVal.scvVec([request(2, 2000_0000000n), request(4, 100_0000000n)]),
+          ),
+        )
+        .setTimeout(120)
+        .build();
+      await signAndSend(kp, (await rpc.prepareTransaction(open)) as Transaction);
 
-    const opened = await loadUserPositions(TESTNET, user, [POOL]);
-    expect(opened.errors).toEqual([]);
-    const debt = opened.positions[0]!.liabilities.get(XLM_SAC)!;
-    // underlying units: the 100 XLM borrowed plus at most a little interest
-    expect(debt).toBeGreaterThanOrEqual(100_0000000n);
-    expect(debt).toBeLessThan(100_1000000n);
+      const opened = await loadUserPositions(TESTNET, user, [POOL]);
+      expect(opened.errors).toEqual([]);
+      const debt = opened.positions[0]!.liabilities.get(XLM_SAC)!;
+      // underlying units: the 100 XLM borrowed plus at most a little interest
+      expect(debt).toBeGreaterThanOrEqual(100_0000000n);
+      expect(debt).toBeLessThan(100_1000000n);
 
-    const repay = await buildBlendRepayTx(
-      TESTNET,
-      { poolId: POOL, asset: XLM_SAC },
-      user,
-      await horizon.loadAccount(user),
-      { server: rpc, ledgerCloseTime: (await fetchLedgerClock(TESTNET)).closedAt },
-    );
-    expect(repay.amount).toBeLessThan(2n ** 63n);
-    expect(repay.amount).toBeGreaterThan(repay.debt);
-    await signAndSend(kp, repay.transaction);
+      const repay = await buildBlendRepayTx(
+        TESTNET,
+        { poolId: POOL, asset: XLM_SAC },
+        user,
+        await horizon.loadAccount(user),
+        { server: rpc, ledgerCloseTime: (await fetchLedgerClock(TESTNET)).closedAt },
+      );
+      expect(repay.amount).toBeLessThan(2n ** 63n);
+      expect(repay.amount).toBeGreaterThan(repay.debt);
+      await signAndSend(kp, repay.transaction);
 
-    const repaid = await loadUserPositions(TESTNET, user, [POOL]);
-    expect(repaid.positions[0]!.liabilities.size).toBe(0);
-    expect(repaid.positions[0]!.collateral.get(XLM_SAC)).toBeGreaterThan(0n);
+      const repaid = await loadUserPositions(TESTNET, user, [POOL]);
+      expect(repaid.positions[0]!.liabilities.size).toBe(0);
+      expect(repaid.positions[0]!.collateral.get(XLM_SAC)).toBeGreaterThan(0n);
 
-    const withdraw = await buildBlendWithdrawTx(
-      TESTNET,
-      { poolId: POOL, asset: XLM_SAC, bucket: "collateral" },
-      user,
-      await horizon.loadAccount(user),
-      { server: rpc, ledgerCloseTime: (await fetchLedgerClock(TESTNET)).closedAt },
-    );
-    await signAndSend(kp, withdraw.transaction);
+      const withdraw = await buildBlendWithdrawTx(
+        TESTNET,
+        { poolId: POOL, asset: XLM_SAC, bucket: "collateral" },
+        user,
+        await horizon.loadAccount(user),
+        { server: rpc, ledgerCloseTime: (await fetchLedgerClock(TESTNET)).closedAt },
+      );
+      await signAndSend(kp, withdraw.transaction);
 
-    const closed = await loadUserPositions(TESTNET, user, [POOL]);
-    const left = closed.positions[0]!;
-    expect(left.liabilities.size + left.collateral.size + left.supply.size).toBe(0);
-  });
+      const closed = await loadUserPositions(TESTNET, user, [POOL]);
+      const left = closed.positions[0]!;
+      expect(left.liabilities.size + left.collateral.size + left.supply.size).toBe(0);
+    },
+  );
 });
