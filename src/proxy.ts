@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import { buildContentSecurityPolicy } from "@/lib/config/csp";
+import { USAGEMAP_SITE } from "@/lib/config/usagemap";
 
 // sets the Content-Security-Policy on each document response. scripts use
 // 'unsafe-inline' rather than a per-request nonce: Next's inline hydration
@@ -10,7 +11,7 @@ import { buildContentSecurityPolicy } from "@/lib/config/csp";
 // this is the Next 16 `proxy` file convention (the renamed `middleware`).
 export function proxy(_request: NextRequest): NextResponse {
   const isDev = process.env.NODE_ENV !== "production";
-  const csp = buildContentSecurityPolicy({ isDev });
+  const csp = buildContentSecurityPolicy({ isDev, usagemap: USAGEMAP_SITE !== null });
   const response = NextResponse.next();
   response.headers.set("content-security-policy", csp);
   return response;

@@ -3,6 +3,11 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/components/layout/ThemeProvider";
 import { SITE_URL } from "@/lib/config/site";
+import {
+  USAGEMAP_SITE,
+  USAGEMAP_TRACKER_INTEGRITY,
+  USAGEMAP_TRACKER_SRC,
+} from "@/lib/config/usagemap";
 
 const geist = Geist({ subsets: ["latin"], display: "swap", variable: "--font-geist" });
 const geistMono = Geist_Mono({
@@ -46,6 +51,17 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
           }}
         />
         <ThemeProvider>{children}</ThemeProvider>
+        {/* UsageMap analytics (src/lib/config/usagemap.ts): cookie-free page views,
+            only when NEXT_PUBLIC_USAGEMAP_SITE is set; pinned file with SRI */}
+        {USAGEMAP_SITE !== null && (
+          <script
+            src={USAGEMAP_TRACKER_SRC}
+            integrity={USAGEMAP_TRACKER_INTEGRITY}
+            crossOrigin="anonymous"
+            data-site={USAGEMAP_SITE}
+            defer
+          />
+        )}
       </body>
     </html>
   );
