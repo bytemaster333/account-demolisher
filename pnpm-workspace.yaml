@@ -33,3 +33,10 @@ overrides:
   # <=1.16.1 can forward credentials across redirects (via the blend sdk's axios).
   "zod@>=4 <4.6.6": ^4.6.6
   "follow-redirects@<1.16.2": ^1.16.2
+  # @reown/appkit-wallet pins zod 3.22.4 even in its latest 2.0.0 and
+  # @coinbase/cdp-sdk asks for ^3.25 (both inside the walletconnect ui), and zod 3
+  # has no patched release. every zod api they call (object, string with min,
+  # regex and email, literal, array, two-argument record, optional, or, safeParse)
+  # behaves the same in zod 4, so both get the patched 4.x
+  "@reown/appkit-wallet>zod": ^4.6.6
+  "@coinbase/cdp-sdk>zod": ^4.6.6
