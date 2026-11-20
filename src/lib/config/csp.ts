@@ -8,6 +8,7 @@
 
 import { NETWORKS } from "@/lib/config/networks";
 import { LUMEUS_HOSTS } from "@/lib/lumeus/hosts";
+import { USAGEMAP_HOSTS } from "@/lib/config/usagemap";
 
 function originOf(url: string): string {
   const u = new URL(url);
@@ -86,6 +87,9 @@ const WALLETCONNECT_FONT_SRC = ["https://fonts.reown.com"] as const;
 
 export interface CspOptions {
   readonly isDev: boolean;
+  /** UsageMap analytics is on (src/lib/config/usagemap.ts): its pinned tracker host
+   * joins script-src and both ingest hosts join connect-src. off by default. */
+  readonly usagemap?: boolean;
 }
 
 // script-src uses 'unsafe-inline' rather than a per-request nonce: Next emits
@@ -94,19 +98,22 @@ export interface CspOptions {
 // injected inline script would run, and connect-src still allows Horizon (which
 // accepts any signed transaction) and the WalletConnect relay, so a script
 // injection is not contained by this policy. what stays closed: no third-party
-// script origin, object-src 'none', frame-ancestors 'none', base-uri and
-// form-action 'self'. dev additionally needs 'unsafe-eval' and ws: for HMR.
-export function buildContentSecurityPolicy({ isDev }: CspOptions): string {
+// script origin (except the UsageMap tracker host when analytics is on: one
+// SRI-pinned file, see src/lib/config/usagemap.ts), object-src 'none',
+// frame-ancestors 'none', base-uri and form-action 'self'. dev additionally needs
+// 'unsafe-eval' and ws: for HMR.
+export function buildContentSecurityPolicy({ isDev, usagemap = false }: CspOptions): string {
   const connect = [
     ...networkEndpoints(),
     ...AMM_CONNECT_SRC,
     ...LUMEUS_CONNECT_SRC,
     ...WALLETCONNECT_CONNECT_SRC,
+    ...(usagemap ? USAGEMAP_HOSTS : []),
   ];
   return [
     "default-src 'self'",
     `connect-src 'self' ${isDev ? "ws: wss: " : ""}${connect.join(" ")}`,
-    `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'${isDev ? " 'unsafe-eval'" : ""}`,
+    `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'${isDev ? " 'unsafe-eval'" : ""}${usagemap ? ` ${USAGEMAP_HOSTS[0]}` : ""}`,
     "style-src 'self' 'unsafe-inline'",
     `img-src 'self' data:${isDev ? " blob:" : ""} ${WALLET_IMG_SRC.join(" ")}`,
     `font-src 'self'${isDev ? " data:" : ""} ${WALLETCONNECT_FONT_SRC.join(" ")}`,

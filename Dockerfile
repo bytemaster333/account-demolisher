@@ -42,6 +42,8 @@ ARG NEXT_PUBLIC_SLIPPAGE_BPS
 ARG NEXT_PUBLIC_MIN_MARKET_OUT_STROOPS
 ARG NEXT_PUBLIC_LUMEUS_TESTNET_KEY
 ARG NEXT_PUBLIC_LUMEUS_MAINNET_KEY
+# UsageMap analytics site key (public; empty = off, src/lib/config/usagemap.ts)
+ARG NEXT_PUBLIC_USAGEMAP_SITE
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN pnpm build

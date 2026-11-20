@@ -55,6 +55,22 @@ describe("Content-Security-Policy", () => {
     expect(scriptSrc).not.toContain("http");
   });
 
+  it("UsageMap off (default): no usagemap origin anywhere in the policy", () => {
+    const csp = buildContentSecurityPolicy({ isDev: false });
+    expect(csp).not.toContain("usagemap.dev");
+  });
+
+  it("UsageMap on: only the pinned tracker host joins script-src, both ingest hosts join connect-src", () => {
+    const csp = buildContentSecurityPolicy({ isDev: false, usagemap: true });
+    const scriptSrc = csp.split(";").find((d) => d.trim().startsWith("script-src")) ?? "";
+    expect(scriptSrc).toContain("https://e1.usagemap.dev");
+    expect(scriptSrc).not.toContain("e2.usagemap.dev");
+    expect(scriptSrc).not.toContain("'unsafe-eval'");
+    const connect = csp.split(";").find((d) => d.trim().startsWith("connect-src")) ?? "";
+    expect(connect).toContain("https://e1.usagemap.dev");
+    expect(connect).toContain("https://e2.usagemap.dev");
+  });
+
   it("allow-lists both networks and locks down frame/object/base", () => {
     const csp = buildContentSecurityPolicy({ isDev: false });
     expect(csp).toContain("default-src 'self'");
